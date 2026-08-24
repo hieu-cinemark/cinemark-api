@@ -1,0 +1,33 @@
+[Unit]
+Description=cinemark-api ingest consumer (Kafka raw_posts/raw_comments -> Postgres)
+# Kafka itself isn't a systemd unit here (runs in Docker per docker-compose.yml) -
+# docker.service ordering keeps this from racing Kafka's container on boot.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust these two paths to wherever this repo actually lives on the server.
+WorkingDirectory=/opt/cinemark-api
+ExecStart=/opt/cinemark-api/.venv/bin/python -m app.workers.ingest_consumer.main
+EnvironmentFile=/opt/cinemark-api/.env
+
+# Crashes (bad message, DB hiccup that somehow escapes the per-message
+# try/except, etc.) should come back on their own, not require a human -
+# RestartSec avoids a hot crash-loop hammering Postgres/Kafka if the root
+# cause is external and still broken.
+Restart=on-failure
+RestartSec=5
+
+# Run as a dedicated unprivileged user, not root - create it once with:
+#   sudo useradd --system --no-create-home cinemark
+User=cinemark
+Group=cinemark
+
+# journald captures this consumer's stdout (structlog's console output) -
+# view it with: journalctl -u cinemark-ingest-consumer -f
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
