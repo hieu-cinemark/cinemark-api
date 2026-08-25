@@ -6,7 +6,7 @@ needs an admin adds `user: User = Depends(require_admin)` instead."""
 from __future__ import annotations
 
 from fastapi import Depends
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import APIKeyCookie
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AuthenticationError, AuthorizationError
@@ -15,11 +15,11 @@ from app.db.session import get_db
 from app.models.user import User
 from app.services.users import UserRepository
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
+access_token_cookie = APIKeyCookie(name="access_token", auto_error=False)
 
 
 async def get_current_user(
-    token: str | None = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)
+    token: str | None = Depends(access_token_cookie), db: AsyncSession = Depends(get_db)
 ) -> User:
     if token is None:
         raise AuthenticationError("Not authenticated.")

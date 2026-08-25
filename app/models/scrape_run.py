@@ -28,6 +28,12 @@ class ScrapeRun(UUIDPrimaryKeyMixin, Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Denormalized (not a keyword_id FK) so the label survives the Keyword
+    # row being edited/deleted later, same reasoning as
+    # ScrapeRequestLog.keyword - this is a label for a human watching the
+    # run's log, not a queryable relationship.
+    keyword: Mapped[str | None] = mapped_column(String, nullable=True)
+    platform: Mapped[Platform | None] = mapped_column(String, nullable=True)
 
     items: Mapped[list["ScrapeRunItem"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     request_logs: Mapped[list["ScrapeRequestLog"]] = relationship(

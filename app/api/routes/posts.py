@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -16,15 +16,15 @@ from app.models.enums import Platform
 from app.models.keyword import Keyword
 from app.models.movie import Movie
 from app.models.post import Post
-from app.schemas.post import PostRead
+from app.schemas.post import PostListResponse, PostRead
 
 router = APIRouter(prefix="/posts", tags=["posts"])
 
-DEFAULT_LIMIT = 100
+DEFAULT_LIMIT = 20
 MAX_LIMIT = 500
 
 
-@router.get("", response_model=list[PostRead])
+@router.get("", response_model=PostListResponse)
 async def list_posts(
     movie_id: uuid.UUID | None = None,
     keyword_id: uuid.UUID | None = None,
@@ -32,7 +32,15 @@ async def list_posts(
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
-) -> list[PostRead]:
+) -> PostListResponse:
+    filters = []
+    if movie_id is not None:
+        filters.append(Post.movie_id == movie_id)
+    if keyword_id is not None:
+        filters.append(Post.keyword_id == keyword_id)
+    if platform is not None:
+        filters.append(Post.platform == platform)
+
     stmt = (
         select(Post, Movie.title, Keyword.keyword)
         .join(Movie, Post.movie_id == Movie.id)
@@ -44,15 +52,15 @@ async def list_posts(
         .limit(limit)
         .offset(offset)
     )
-    if movie_id is not None:
-        stmt = stmt.where(Post.movie_id == movie_id)
-    if keyword_id is not None:
-        stmt = stmt.where(Post.keyword_id == keyword_id)
-    if platform is not None:
-        stmt = stmt.where(Post.platform == platform)
+    count_stmt = select(func.count()).select_from(Post)
+    for condition in filters:
+        stmt = stmt.where(condition)
+        count_stmt = count_stmt.where(condition)
 
     rows = (await db.execute(stmt)).all()
-    return [
+    total = (await db.execute(count_stmt)).scalar_one()
+
+    items = [
         PostRead(
             id=post.id,
             movie_id=post.movie_id,
@@ -77,3 +85,4 @@ async def list_posts(
         )
         for post, movie_title, keyword_text in rows
     ]
+    return PostListResponse(items=items, total=total)

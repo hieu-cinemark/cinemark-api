@@ -32,3 +32,8 @@ class PostRead(BaseModel):
     posted_at: datetime | None
     scraped_at: datetime
     keyword_match: bool
+
+
+class PostListResponse(BaseModel):
+    items: list[PostRead]
+    total: int

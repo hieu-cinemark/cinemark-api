@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://cinemark:cinemark@localhost:5432/cinemark"
     kafka_bootstrap_servers: str = "localhost:9092"
 
+    # Same Redis instance spider-hub's RedisCache connects to (see
+    # social_crawler/services/redis.py there) - read-only from this side,
+    # just to report the Facebook session cache's status on the Platforms
+    # page. Env var names match spider-hub's for a shared .env to work.
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: str | None = None
+
     jwt_secret_key: str = "dev-only-insecure-secret-change-me"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
@@ -41,6 +50,10 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def cookie_secure(self) -> bool:
+        return self.environment == "production"
 
 
 @lru_cache

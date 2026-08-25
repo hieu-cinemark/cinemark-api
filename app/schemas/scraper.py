@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
-from app.models.enums import RunStatus
+from app.models.enums import Platform, RunStatus
 
 
 class RunScraperRequest(BaseModel):
@@ -37,6 +37,12 @@ class TriggerTokenRefreshResponse(BaseModel):
     run_id: uuid.UUID
 
 
+class FacebookTokenStatus(BaseModel):
+    valid: bool
+    account: str | None = None
+    expires_in_seconds: int | None = None
+
+
 class ScrapeRunLogRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -47,4 +53,12 @@ class ScrapeRunLogRead(BaseModel):
 
 class ScrapeRunLogsResponse(BaseModel):
     status: RunStatus
+    keyword: str | None = None
+    platform: Platform | None = None
     logs: list[ScrapeRunLogRead]
+
+
+class ActiveRunResponse(BaseModel):
+    run_id: uuid.UUID | None
+    keyword: str | None = None
+    platform: Platform | None = None
