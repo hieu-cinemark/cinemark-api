@@ -17,43 +17,31 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "console"  # "console" (human-readable) | "json" (prod, machine-parseable)
 
-    database_url: str = "postgresql+asyncpg://cinemark:cinemark@localhost:5432/cinemark"
     kafka_bootstrap_servers: str = "localhost:9092"
 
     # Same Redis instance spider-hub's RedisCache connects to (see
     # social_crawler/services/redis.py there) - read-only from this side,
-    # just to report the Facebook session cache's status on the Platforms
-    # page. Env var names match spider-hub's for a shared .env to work.
+    # just to report the Facebook session cache's status. Env var names
+    # match spider-hub's for a shared .env to work.
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: str | None = None
 
-    jwt_secret_key: str = "dev-only-insecure-secret-change-me"
-    jwt_algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
-    refresh_token_expire_days: int = 30
-
     cors_origins: str = "http://localhost:3000"
 
-    # Cloudflare R2 (S3-compatible) - archives scraped media (post/comment
-    # images, video thumbnails, stickers, gifs) since Facebook's own CDN
-    # URLs are signed and expire; downloading once at ingest time and
-    # re-hosting in R2 keeps them available long-term. All optional - media
-    # archiving is skipped (not an error) if these aren't set.
-    r2_account_id: str | None = None
-    r2_access_key_id: str | None = None
-    r2_secret_access_key: str | None = None
-    r2_bucket_name: str | None = None
-    r2_public_url: str | None = None  # e.g. https://media.yourdomain.com, if the bucket has a public custom domain
+    # Cloudflare D1 - lets the ingest consumer read/write cinemark-scraper's
+    # D1 database over Cloudflare's HTTP query API (D1 bindings only exist
+    # inside a Worker; this is the only way in from a plain VPS process).
+    # See app/services/d1.py. All optional - the D1 calls are skipped (not
+    # an error) if these aren't set.
+    cloudflare_account_id: str | None = None
+    cloudflare_api_token: str | None = None
+    cloudflare_d1_database_id: str | None = None
 
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
-
-    @property
-    def cookie_secure(self) -> bool:
-        return self.environment == "production"
 
 
 @lru_cache

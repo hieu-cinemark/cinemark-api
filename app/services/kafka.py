@@ -1,9 +1,10 @@
 """Publishes crawl-trigger requests to Kafka - the producer side of
 spider-hub's crawl_request_consumer.py, which listens for these and
-launches the matching `scrapy crawl` subprocess. Both app/api/routes/scraper.py
-(manual "run" button) and the daily scheduler script publish through the
-same function, so a manual trigger and a scheduled one are indistinguishable
-downstream - one code path, one contract.
+launches the matching `scrapy crawl` subprocess. Both the per-platform
+/<platform>/run routes (app/api/routes/platform_scraper.py, manual "run"
+button) and the daily scheduler script publish through the same function,
+so a manual trigger and a scheduled one are indistinguishable downstream -
+one code path, one contract.
 
 Mirrors spider-hub's own social_crawler/services/kafka.py: fire-and-forget,
 never blocks/fails the request over a Kafka outage - a crawl trigger that
@@ -56,8 +57,7 @@ async def publish_crawl_request(
     *,
     platform: str,
     keyword: str,
-    keyword_id: uuid.UUID,
-    run_id: uuid.UUID | None = None,
+    keyword_id: str,
     max_pages: int | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
@@ -65,13 +65,14 @@ async def publish_crawl_request(
     """Returns whether the request was actually published - callers decide
     what to tell the user if Kafka is down (e.g. still return 202 since the
     trigger endpoint's job is just to ask, not to guarantee delivery, or
-    surface a warning - see app/api/routes/scraper.py)."""
+    surface a warning - see app/api/routes/platform_scraper.py). keyword_id is D1's
+    own keywords.id (see app/services/d1.py) - threaded through unchanged so
+    the raw_posts message this crawl eventually produces carries an id the
+    ingest consumer can resolve straight back through D1."""
     if _producer is None:
-        logger.warning("kafka_producer_not_started", keyword_id=str(keyword_id))
+        logger.warning("kafka_producer_not_started", keyword_id=keyword_id)
         return False
-    value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": str(keyword_id)}
-    if run_id is not None:
-        value["run_id"] = str(run_id)
+    value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": keyword_id}
     if max_pages is not None:
         value["max_pages"] = max_pages
     if start_date is not None:
@@ -81,27 +82,26 @@ async def publish_crawl_request(
     try:
         await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{platform}:{keyword_id}", value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc), keyword_id=str(keyword_id))
+        logger.warning("kafka_publish_failed", error=str(exc), keyword_id=keyword_id)
         return False
     return True
 
 
-async def publish_token_refresh_request(*, run_id: uuid.UUID) -> bool:
+async def publish_token_refresh_request() -> bool:
     """Publishes to the same crawl_requests topic as publish_crawl_request,
     tagged type="refresh_token" so crawl_request_consumer.py runs the
     Facebook auth bootstrap script (see spider-hub's
     social_crawler/spiders/facebook/auth/bootstrap.py and
     scripts/refresh_token.sh, which already does this on a 4h cron) instead
-    of a scrapy spider. Kept as its own function rather than overloading
-    publish_crawl_request - the fields genuinely don't overlap (no
-    platform/keyword/keyword_id here)."""
+    of a scrapy spider."""
     if _producer is None:
-        logger.warning("kafka_producer_not_started", run_id=str(run_id))
+        logger.warning("kafka_producer_not_started")
         return False
-    value: dict[str, Any] = {"type": "refresh_token", "run_id": str(run_id)}
+    key = str(uuid.uuid4())
+    value: dict[str, Any] = {"type": "refresh_token"}
     try:
-        await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"refresh_token:{run_id}", value=value)
+        await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"refresh_token:{key}", value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc), run_id=str(run_id))
+        logger.warning("kafka_publish_failed", error=str(exc))
         return False
     return True
