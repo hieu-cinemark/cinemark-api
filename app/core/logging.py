@@ -35,11 +35,7 @@ def _configure_once() -> None:
     # cleanly); a readable console renderer everywhere else - matching
     # spider-hub's dev-vs-prod split, just driven by settings here instead
     # of always-console since this runs as a long-lived server, not a CLI.
-    renderer = (
-        structlog.processors.JSONRenderer()
-        if settings.log_format == "json"
-        else structlog.dev.ConsoleRenderer()
-    )
+    renderer = structlog.processors.JSONRenderer() if settings.log_format == "json" else structlog.dev.ConsoleRenderer()
 
     structlog.configure(
         processors=[*shared_processors, renderer],

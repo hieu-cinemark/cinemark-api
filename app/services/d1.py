@@ -45,9 +45,7 @@ MIN_CONTENT_LENGTH = 10
 
 
 def _configured() -> bool:
-    return bool(
-        settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id
-    )
+    return bool(settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id)
 
 
 async def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]] | None:
@@ -57,8 +55,7 @@ async def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, 
         return None
 
     url = (
-        f"{_BASE_URL}/accounts/{settings.cloudflare_account_id}"
-        f"/d1/database/{settings.cloudflare_d1_database_id}/query"
+        f"{_BASE_URL}/accounts/{settings.cloudflare_account_id}/d1/database/{settings.cloudflare_d1_database_id}/query"
     )
     headers = {"Authorization": f"Bearer {settings.cloudflare_api_token}"}
 
@@ -249,9 +246,7 @@ def _contains_keyword(content: str | None, keyword: str | None) -> bool:
     return True
 
 
-async def persist_post(
-    *, movie_id: str, keyword_id: str, keyword: str, platform: str, draft: PostDraft
-) -> None:
+async def persist_post(*, movie_id: str, keyword_id: str, keyword: str, platform: str, draft: PostDraft) -> None:
     """Upsert one scraped post (any registered platform) straight into
     cinemark-scraper's own `posts` table (+ an engagement snapshot on
     change) - ported from its src/jobs/persist-post.ts so both the

@@ -31,7 +31,9 @@ def build_run_route(router: APIRouter, platform: str) -> None:
             keywords = await get_enabled_keywords(platform=platform, movie_id=payload.movie_id)
 
         if not keywords:
-            logger.info("scraper_run_no_keywords", platform=platform, keyword_id=payload.keyword_id, movie_id=payload.movie_id)
+            logger.info(
+                "scraper_run_no_keywords", platform=platform, keyword_id=payload.keyword_id, movie_id=payload.movie_id
+            )
             return RunScraperResponse(requested=0, published=0)
 
         published = 0

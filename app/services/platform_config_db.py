@@ -23,7 +23,9 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-ACCOUNT_COLUMNS = "id, platform, account_id, password, totp_secret, cookie, token, email, enabled, created_at, updated_at"
+ACCOUNT_COLUMNS = (
+    "id, platform, account_id, password, totp_secret, cookie, token, email, enabled, created_at, updated_at"
+)
 PROXY_COLUMNS = "id, platform, proxy_url, username, password, login_use_proxy, enabled, created_at, updated_at"
 
 _ACCOUNT_CREATE_COLUMNS = ("platform", "account_id", "password", "totp_secret", "cookie", "token", "email", "enabled")
@@ -46,7 +48,9 @@ async def _connect() -> psycopg.AsyncConnection[Any]:
 async def list_accounts(platform: str | None = None) -> list[dict[str, Any]]:
     async with await _connect() as conn, conn.cursor() as cur:
         if platform:
-            await cur.execute(f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts WHERE platform = %s ORDER BY id", (platform,))
+            await cur.execute(
+                f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts WHERE platform = %s ORDER BY id", (platform,)
+            )
         else:
             await cur.execute(f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts ORDER BY platform, id")
         return await cur.fetchall()

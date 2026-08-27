@@ -153,16 +153,12 @@ async def _tail_until_done(platform: str, path: Path, start_offset: int) -> None
                     if "token_refresh_finished" in line and platform_marker in line:
                         state.status = "success"
                         state.finished_at = _now_iso()
-                        _broadcast(
-                            platform, {"type": "status", "status": "success", "finished_at": state.finished_at}
-                        )
+                        _broadcast(platform, {"type": "status", "status": "success", "finished_at": state.finished_at})
                         return
                     if "token_refresh_failed" in line and platform_marker in line:
                         state.status = "failed"
                         state.finished_at = _now_iso()
-                        _broadcast(
-                            platform, {"type": "status", "status": "failed", "finished_at": state.finished_at}
-                        )
+                        _broadcast(platform, {"type": "status", "status": "failed", "finished_at": state.finished_at})
                         return
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 

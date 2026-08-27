@@ -22,7 +22,7 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
-    
+
     kafka_bootstrap_servers: str = "localhost:9092"
 
     # Same Redis instance spider-hub's RedisCache connects to (see

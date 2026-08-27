@@ -75,6 +75,7 @@ async def _note_drop(platform: str, reason: str, **context: Any) -> None:
             f"{count} drops in the last {DROP_COUNTER_TTL_SECONDS // 60}m\n{details}"
         )
 
+
 async def handle_post(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
     post_id = payload.get("post_id")
