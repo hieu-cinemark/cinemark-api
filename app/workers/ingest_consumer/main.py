@@ -27,6 +27,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import get_keyword, persist_post
 from app.services.platforms import get_post_mapper
+from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.services.telegram import send_telegram_message
 
 logger = get_logger(__name__)
 
@@ -35,21 +37,64 @@ CONSUMER_GROUP = "cinemark-api.ingest"
 
 _MESSAGE_CONCURRENCY = 8
 
+# A burst of silent drops (unregistered platform mapper, malformed
+# producer payload, a keyword that got disabled/deleted mid-flight) used to
+# only ever show up as a WARNING log line nobody was watching - exactly how
+# TikTok's missing mapper went unnoticed until someone happened to check
+# the dashboard. This turns a *sustained* burst of one specific drop reason
+# into a Telegram alert instead, without paging on every single message
+# once a platform is already known to be broken.
+DROP_ALERT_THRESHOLD = 10
+# Rolling window, not a lifetime count - "10 drops in the last hour" is a
+# meaningful signal; "10 drops since whenever this key first appeared,
+# maybe weeks ago" isn't. Reset by re-arming the key's TTL each time a
+# fresh window starts (the first increment after expiry/creation).
+DROP_COUNTER_TTL_SECONDS = 3600
+
+_DROP_ALERT_TEXT = {
+    "mapper": "unregistered platform mapper (see app/services/platforms.py)",
+    "missing_keyword_id": "posts arriving with no keyword_id (producer bug?)",
+    "unknown_keyword_id": "posts referencing an unknown/disabled keyword_id",
+}
+
+
+async def _note_drop(platform: str, reason: str, **context: Any) -> None:
+    """Atomically increments this (platform, reason)'s rolling-window
+    counter and fires exactly one Telegram alert the instant it crosses
+    DROP_ALERT_THRESHOLD - not once per message after that, so an ongoing
+    outage doesn't spam the channel once it's already been reported."""
+    client = get_redis_client()
+    key = f"{REDIS_KEY_PREFIX}ingest_drop:{platform}:{reason}"
+    count = await client.incr(key)
+    if count == 1:
+        await client.expire(key, DROP_COUNTER_TTL_SECONDS)
+    if count == DROP_ALERT_THRESHOLD:
+        details = " | ".join(f"{k}={v}" for k, v in context.items())
+        await send_telegram_message(
+            f"🚨 Ingest drop alert: {platform} - {_DROP_ALERT_TEXT[reason]}\n"
+            f"{count} drops in the last {DROP_COUNTER_TTL_SECONDS // 60}m\n{details}"
+        )
 
 async def handle_post(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
+    post_id = payload.get("post_id")
+
     mapper = get_post_mapper(platform)
     if mapper is None:
+        logger.warning("post_unregistered_platform", platform=platform, post_id=post_id)
+        await _note_drop(platform, "mapper", post_id=post_id)
         return
 
     keyword_id = payload.get("keyword_id")
     if not keyword_id:
-        logger.warning("post_missing_keyword_id", platform=platform, post_id=payload.get("post_id"))
+        logger.warning("post_missing_keyword_id", platform=platform, post_id=post_id)
+        await _note_drop(platform, "missing_keyword_id", post_id=post_id)
         return
 
     keyword = await get_keyword(keyword_id, platform=platform)
     if keyword is None:
-        logger.warning("post_unknown_keyword_id", platform=platform, keyword_id=keyword_id, post_id=payload.get("post_id"))
+        logger.warning("post_unknown_keyword_id", platform=platform, keyword_id=keyword_id, post_id=post_id)
+        await _note_drop(platform, "unknown_keyword_id", post_id=post_id, keyword_id=keyword_id)
         return
 
     draft = mapper(payload)

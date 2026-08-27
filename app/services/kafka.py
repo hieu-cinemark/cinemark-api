@@ -87,21 +87,21 @@ async def publish_crawl_request(
     return True
 
 
-async def publish_token_refresh_request() -> bool:
+async def publish_token_refresh_request(platform: str) -> bool:
     """Publishes to the same crawl_requests topic as publish_crawl_request,
-    tagged type="refresh_token" so crawl_request_consumer.py runs the
-    Facebook auth bootstrap script (see spider-hub's
-    social_crawler/spiders/facebook/auth/bootstrap.py and
-    scripts/refresh_token.sh, which already does this on a 4h cron) instead
-    of a scrapy spider."""
+    tagged type="refresh_token" so crawl_request_consumer.py runs the given
+    platform's auth bootstrap script (see spider-hub's
+    social_crawler/spiders/<platform>/auth/bootstrap.py - facebook and
+    threads both have one; scripts/refresh_token.sh already does the
+    Facebook one on a 4h cron) instead of a scrapy spider."""
     if _producer is None:
-        logger.warning("kafka_producer_not_started")
+        logger.warning("kafka_producer_not_started", platform=platform)
         return False
     key = str(uuid.uuid4())
-    value: dict[str, Any] = {"type": "refresh_token"}
+    value: dict[str, Any] = {"type": "refresh_token", "platform": platform}
     try:
-        await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"refresh_token:{key}", value=value)
+        await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"refresh_token:{platform}:{key}", value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc))
+        logger.warning("kafka_publish_failed", error=str(exc), platform=platform)
         return False
     return True

@@ -8,8 +8,15 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.cron import router as cron_router
 from app.api.routes.facebook import router as facebook_router
 from app.api.routes.health import router as health_router
+from app.api.routes.logs import router as logs_router
+from app.api.routes.movies import router as movies_router
+from app.api.routes.settings import router as settings_router
+from app.api.routes.stats import router as stats_router
+from app.api.routes.threads import router as threads_router
+from app.api.routes.tiktok import router as tiktok_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import get_logger
@@ -32,6 +39,13 @@ register_exception_handlers(app)
 
 app.include_router(health_router)
 app.include_router(facebook_router)
+app.include_router(threads_router)
+app.include_router(tiktok_router)
+app.include_router(stats_router)
+app.include_router(logs_router)
+app.include_router(movies_router)
+app.include_router(settings_router)
+app.include_router(cron_router)
 
 
 @app.on_event("startup")

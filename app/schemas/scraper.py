@@ -35,7 +35,14 @@ class TriggerTokenRefreshResponse(BaseModel):
     ok: bool
 
 
-class FacebookTokenStatus(BaseModel):
+class TokenStatus(BaseModel):
     valid: bool
     account: str | None = None
     expires_in_seconds: int | None = None
+
+
+class KeywordOut(BaseModel):
+    id: str
+    movie_id: str
+    movie_title: str
+    keyword: str

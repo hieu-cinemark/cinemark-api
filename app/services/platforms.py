@@ -54,8 +54,66 @@ def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
     }
 
 
+def _map_threads_post(payload: dict[str, Any]) -> PostDraft:
+    """spider-hub's ThreadsPostItem field names -> PostDraft. Unlike
+    Facebook, Threads has real repost/quote counts of its own (not
+    collapsed into a single "shares" figure), so those map directly instead
+    of defaulting to 0."""
+    timestamp = payload.get("timestamp")
+    return {
+        "external_id": payload.get("post_id"),
+        "url": payload.get("url"),
+        "author": payload.get("author_username") or payload.get("author_name"),
+        "content": payload.get("message"),
+        "media": {
+            "media_type": payload.get("media_type"),
+            "media_url": payload.get("media_url"),
+        },
+        "like_count": payload.get("like_count") or 0,
+        "reply_count": payload.get("reply_count") or 0,
+        "repost_count": payload.get("repost_count") or 0,
+        "quote_count": payload.get("quote_count") or 0,
+        "reshare_count": 0,
+        "view_count": 0,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
+def _map_tiktok_post(payload: dict[str, Any]) -> PostDraft:
+    """spider-hub's TikTokVideoItem field names -> PostDraft. Unlike
+    Facebook/Threads, TikTok exposes a real play/view count directly (not
+    collapsed into likes the way Facebook's "reactions" is), so view_count
+    maps to it instead of defaulting to 0. TikTok has no repost/quote
+    concept distinct from its own share count, so repost_count takes that
+    and quote_count/reshare_count stay 0, same rationale as
+    _map_facebook_post's shares -> repost_count."""
+    timestamp = payload.get("create_time")
+    return {
+        "external_id": payload.get("video_id"),
+        "url": payload.get("url"),
+        "author": payload.get("author_username") or payload.get("author_name"),
+        "content": payload.get("desc"),
+        "media": {
+            "media_type": "video",
+            "media_url": payload.get("play_url"),
+            "duration_seconds": payload.get("duration"),
+        },
+        "like_count": payload.get("like_count") or 0,
+        "reply_count": payload.get("comment_count") or 0,
+        "repost_count": payload.get("share_count") or 0,
+        "quote_count": 0,
+        "reshare_count": 0,
+        "view_count": payload.get("play_count") or 0,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
 PLATFORM_POST_MAPPERS: dict[str, Callable[[dict[str, Any]], PostDraft]] = {
     "facebook": _map_facebook_post,
+    "threads": _map_threads_post,
+    "tiktok": _map_tiktok_post,
 }
 
 

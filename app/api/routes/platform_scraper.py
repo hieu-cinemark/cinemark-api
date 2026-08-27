@@ -11,9 +11,13 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.core.errors import NotFoundError
+from app.core.logging import get_logger
 from app.schemas.scraper import RunScraperRequest, RunScraperResponse
 from app.services.d1 import get_enabled_keywords, get_keyword
 from app.services.kafka import publish_crawl_request
+
+logger = get_logger(__name__)
+
 
 def build_run_route(router: APIRouter, platform: str) -> None:
     @router.post("/run", response_model=RunScraperResponse)
@@ -27,6 +31,7 @@ def build_run_route(router: APIRouter, platform: str) -> None:
             keywords = await get_enabled_keywords(platform=platform, movie_id=payload.movie_id)
 
         if not keywords:
+            logger.info("scraper_run_no_keywords", platform=platform, keyword_id=payload.keyword_id, movie_id=payload.movie_id)
             return RunScraperResponse(requested=0, published=0)
 
         published = 0
@@ -42,4 +47,12 @@ def build_run_route(router: APIRouter, platform: str) -> None:
             if ok:
                 published += 1
 
+        logger.info(
+            "scraper_run_triggered",
+            platform=platform,
+            requested=len(keywords),
+            published=published,
+            keyword_id=payload.keyword_id,
+            movie_id=payload.movie_id,
+        )
         return RunScraperResponse(requested=len(keywords), published=published)

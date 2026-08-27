@@ -82,6 +82,97 @@ async def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, 
     return results[0].get("results", []) if results else []
 
 
+async def get_post_counts_by_platform() -> list[dict[str, Any]]:
+    """Total posts ingested per platform, plus the most recent scrape - the
+    "how many posts have we collected per platform" figure the dashboard's
+    overview page shows. Left as a plain GROUP BY (no platform allowlist)
+    so it reflects whatever's actually in the table, including platforms
+    scraped by cinemark-scraper's own Worker (tiktok/threads) alongside
+    the ones spider-hub feeds through this service."""
+    rows = await d1_query(
+        "SELECT platform, COUNT(*) AS count, MAX(scraped_at) AS last_scraped_at FROM posts GROUP BY platform"
+    )
+    return rows or []
+
+
+async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
+    """Daily post counts per platform for the last `days` days - feeds the
+    dashboard's trend chart. scraped_at is stored as an ISO8601 string
+    (see persist_post below), so its first 10 characters are always the
+    YYYY-MM-DD date - simpler and more portable across D1's SQLite version
+    than relying on strftime() to parse the timezone offset."""
+    rows = await d1_query(
+        """
+        SELECT substr(scraped_at, 1, 10) AS day, platform, COUNT(*) AS count
+        FROM posts
+        WHERE scraped_at >= datetime('now', ?)
+        GROUP BY day, platform
+        ORDER BY day ASC
+        """,
+        [f"-{days} days"],
+    )
+    return rows or []
+
+
+async def list_movies() -> list[dict[str, Any]]:
+    """Every enabled movie - feeds the dashboard's "which movie does this
+    new keyword belong to" picker when creating a keyword inline from the
+    crawl-trigger form."""
+    rows = await d1_query("SELECT id, title FROM movies WHERE enabled = 1 ORDER BY title ASC")
+    return rows or []
+
+
+async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> dict[str, Any] | None:
+    """Used by the dashboard's inline "type a new keyword" flow (crawl
+    trigger form) - looks up an existing (movie_id, platform, keyword) row
+    first (that triple has a unique index - see cinemark-scraper's
+    src/db/schema.ts) so a repeat submission or a race with another tab
+    just returns the same row instead of erroring on the constraint."""
+    existing = await d1_query(
+        """
+        SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword
+        FROM keywords k JOIN movies m ON m.id = k.movie_id
+        WHERE k.movie_id = ? AND k.platform = ? AND k.keyword = ?
+        """,
+        [movie_id, platform, keyword],
+    )
+    if existing:
+        return existing[0]
+
+    movie_rows = await d1_query("SELECT title FROM movies WHERE id = ? AND enabled = 1", [movie_id])
+    if not movie_rows:
+        return None
+    movie_title = movie_rows[0]["title"]
+
+    keyword_id = f"kw_{uuid.uuid4()}"
+    created_at = datetime.now(tz=timezone.utc).isoformat()
+    inserted = await d1_query(
+        "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)",
+        [keyword_id, movie_id, platform, keyword, created_at],
+    )
+    if inserted is None:
+        return None
+    return {"id": keyword_id, "movie_id": movie_id, "movie_title": movie_title, "keyword": keyword}
+
+
+async def list_keywords(platform: str) -> list[dict[str, Any]]:
+    """Every enabled keyword for this platform, with its movie's title -
+    feeds the dashboard's keyword picker (GET /<platform>/keywords) so a
+    manual crawl trigger can target one keyword instead of "every enabled
+    keyword for this platform" (see get_enabled_keywords below, still used
+    for that fan-out case)."""
+    rows = await d1_query(
+        """
+        SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword
+        FROM keywords k JOIN movies m ON m.id = k.movie_id
+        WHERE k.platform = ? AND k.enabled = 1 AND m.enabled = 1
+        ORDER BY m.title ASC, k.keyword ASC
+        """,
+        [platform],
+    )
+    return rows or []
+
+
 async def get_keyword(keyword_id: str, platform: str) -> dict[str, Any] | None:
     """One enabled keyword by id, on the given platform, joined to its
     movie's enabled flag - mirrors what the deleted Postgres

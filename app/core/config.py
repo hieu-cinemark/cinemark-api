@@ -6,8 +6,11 @@ that knows what env vars this service needs."""
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -17,6 +20,9 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "console"  # "console" (human-readable) | "json" (prod, machine-parseable)
 
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+    
     kafka_bootstrap_servers: str = "localhost:9092"
 
     # Same Redis instance spider-hub's RedisCache connects to (see
@@ -38,6 +44,22 @@ class Settings(BaseSettings):
     cloudflare_account_id: str | None = None
     cloudflare_api_token: str | None = None
     cloudflare_d1_database_id: str | None = None
+
+    # Log files the dashboard's /logs routes tail - both processes are
+    # plain text files written by structlog's ConsoleRenderer (see
+    # spider-hub/social_crawler/logger.py and app/core/logging.py). Default
+    # assumes the sibling-checkout layout this workspace already uses
+    # (cinemark-api/ and spider-hub/ side by side); override in .env if a
+    # deployment puts them elsewhere.
+    spider_hub_consumer_log_path: str = str(_REPO_ROOT.parent / "spider-hub" / "consumer.log")
+    ingest_consumer_log_path: str = str(_REPO_ROOT / "ingest_consumer.log")
+
+    # Same Supabase Postgres instance spider-hub's services/db.py reads
+    # account/proxy config from (platform_accounts / platform_proxies
+    # tables) - this side gets read/write access too, for the dashboard's
+    # Settings page. None (not an error) if unset - GET/POST/PATCH/DELETE
+    # on /settings/* just 502 instead of the app failing to boot.
+    database_url: str | None = None
 
     @property
     def cors_origins_list(self) -> list[str]:
