@@ -111,6 +111,59 @@ async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
     return rows or []
 
 
+async def list_posts(
+    *,
+    platform: str | None = None,
+    keyword_id: str | None = None,
+    movie_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Paginated post feed (most recently scraped first), joined to its
+    movie/keyword for display - backs the dashboard's "review posts" tab.
+    Every filter is optional and additive; passing none returns the whole
+    table's most recent page across every platform/movie. Returns
+    (rows, total_count) so the caller can render pagination without a
+    second round trip."""
+    where = []
+    params: list[Any] = []
+    if platform:
+        where.append("p.platform = ?")
+        params.append(platform)
+    if keyword_id:
+        where.append("p.keyword_id = ?")
+        params.append(keyword_id)
+    if movie_id:
+        where.append("p.movie_id = ?")
+        params.append(movie_id)
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+    count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
+    total = (count_rows[0]["total"] if count_rows else 0) or 0
+
+    rows = await d1_query(
+        f"""
+        SELECT
+            p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
+            p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
+            p.posted_at, p.scraped_at, p.keyword_match,
+            k.keyword, m.title AS movie_title
+        FROM posts p
+        LEFT JOIN keywords k ON k.id = p.keyword_id
+        LEFT JOIN movies m ON m.id = p.movie_id
+        {where_sql}
+        ORDER BY p.scraped_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        [*params, limit, offset],
+    )
+    for row in rows or []:
+        media = json.loads(row.pop("media_json") or "{}")
+        row["media_type"] = media.get("media_type")
+        row["media_url"] = media.get("media_url")
+    return rows or [], total
+
+
 async def list_movies() -> list[dict[str, Any]]:
     """Every enabled movie - feeds the dashboard's "which movie does this
     new keyword belong to" picker when creating a keyword inline from the
@@ -244,6 +297,34 @@ def _contains_keyword(content: str | None, keyword: str | None) -> bool:
         if not needle or needle not in haystack:
             return False
     return True
+
+
+async def persist_dropped_post(*, platform: str, reason: str, payload: dict[str, Any], keyword_id: str | None = None) -> None:
+    """Archives a raw Kafka payload that the ingest consumer dropped before
+    it ever reached persist_post (unregistered platform mapper, missing/
+    unknown keyword_id - see app/workers/ingest_consumer/main.py's
+    handle_post). persist_post's own `raw_json` column already covers
+    "reprocess after fixing a mapper bug" for posts that DID get persisted;
+    this covers the posts that never got that far at all - once the
+    underlying issue is fixed (mapper registered, keyword corrected),
+    these rows are the only way to recover that data without re-scraping
+    it, which may not even be possible later (the post could be deleted by
+    then, or the crawl window long gone). Best-effort like every other
+    write here - a failure must not mask the drop itself, already logged/
+    alerted by the caller regardless of whether this archive succeeds."""
+    if not _configured():
+        return
+    await d1_query(
+        "INSERT INTO dropped_posts (id, platform, reason, keyword_id, raw_json, dropped_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            f"dropped_{uuid.uuid4()}",
+            platform,
+            reason,
+            keyword_id,
+            json.dumps(payload),
+            datetime.now(tz=timezone.utc).isoformat(),
+        ],
+    )
 
 
 async def persist_post(*, movie_id: str, keyword_id: str, keyword: str, platform: str, draft: PostDraft) -> None:

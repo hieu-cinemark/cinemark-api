@@ -25,7 +25,7 @@ from aiokafka.errors import KafkaError
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import get_keyword, persist_post
+from app.services.d1 import get_keyword, persist_dropped_post, persist_post
 from app.services.platforms import get_post_mapper
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.telegram import send_telegram_message
@@ -84,18 +84,21 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if mapper is None:
         logger.warning("post_unregistered_platform", platform=platform, post_id=post_id)
         await _note_drop(platform, "mapper", post_id=post_id)
+        await persist_dropped_post(platform=platform, reason="mapper", payload=payload)
         return
 
     keyword_id = payload.get("keyword_id")
     if not keyword_id:
         logger.warning("post_missing_keyword_id", platform=platform, post_id=post_id)
         await _note_drop(platform, "missing_keyword_id", post_id=post_id)
+        await persist_dropped_post(platform=platform, reason="missing_keyword_id", payload=payload)
         return
 
     keyword = await get_keyword(keyword_id, platform=platform)
     if keyword is None:
         logger.warning("post_unknown_keyword_id", platform=platform, keyword_id=keyword_id, post_id=post_id)
         await _note_drop(platform, "unknown_keyword_id", post_id=post_id, keyword_id=keyword_id)
+        await persist_dropped_post(platform=platform, reason="unknown_keyword_id", payload=payload, keyword_id=keyword_id)
         return
 
     draft = mapper(payload)

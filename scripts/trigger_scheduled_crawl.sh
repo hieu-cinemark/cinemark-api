@@ -21,11 +21,21 @@ set -uo pipefail
 
 CINEMARK_API_URL="${CINEMARK_API_URL:-http://localhost:8000}"
 
+log() { echo "[$(date -u +"%Y-%m-%d %H:%M:%S UTC")] $*"; }
+
+# Firing at exactly :00 every 6h, forever, is itself a bot-like signal -
+# a random startup delay (0-15 min) means the real request leaves at a
+# slightly different moment each cycle without needing a different
+# crontab entry. Skippable for manual/local runs via SKIP_STARTUP_JITTER=1.
+if [ "${SKIP_STARTUP_JITTER:-0}" != "1" ]; then
+    startup_delay=$((RANDOM % 900))
+    log "Startup jitter: sleeping ${startup_delay}s before triggering"
+    sleep "$startup_delay"
+fi
+
 # Add a platform here once it has its own router (app/api/routes/<platform>.py)
 # registered in app/main.py - nothing else in this script changes.
 PLATFORMS=(facebook)
-
-log() { echo "[$(date -u +"%Y-%m-%d %H:%M:%S UTC")] $*"; }
 
 status=0
 for platform in "${PLATFORMS[@]}"; do
