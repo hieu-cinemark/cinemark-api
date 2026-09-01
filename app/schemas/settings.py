@@ -14,6 +14,7 @@ class AccountOut(BaseModel):
     cookie: str
     token: str
     email: str
+    email_password: str
     enabled: bool
     created_at: datetime
     updated_at: datetime
@@ -27,6 +28,7 @@ class AccountCreate(BaseModel):
     cookie: str = ""
     token: str = ""
     email: str = ""
+    email_password: str = ""
     enabled: bool = True
 
 
@@ -37,6 +39,7 @@ class AccountUpdate(BaseModel):
     cookie: str | None = None
     token: str | None = None
     email: str | None = None
+    email_password: str | None = None
     enabled: bool | None = None
 
 

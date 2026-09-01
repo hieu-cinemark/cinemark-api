@@ -24,11 +24,22 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 ACCOUNT_COLUMNS = (
-    "id, platform, account_id, password, totp_secret, cookie, token, email, enabled, created_at, updated_at"
+    "id, platform, account_id, password, totp_secret, cookie, token, email, email_password, "
+    "enabled, created_at, updated_at"
 )
 PROXY_COLUMNS = "id, platform, proxy_url, username, password, login_use_proxy, enabled, created_at, updated_at"
 
-_ACCOUNT_CREATE_COLUMNS = ("platform", "account_id", "password", "totp_secret", "cookie", "token", "email", "enabled")
+_ACCOUNT_CREATE_COLUMNS = (
+    "platform",
+    "account_id",
+    "password",
+    "totp_secret",
+    "cookie",
+    "token",
+    "email",
+    "email_password",
+    "enabled",
+)
 _PROXY_CREATE_COLUMNS = ("platform", "proxy_url", "username", "password", "login_use_proxy", "enabled")
 
 
