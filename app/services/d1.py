@@ -97,12 +97,22 @@ async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
     dashboard's trend chart. scraped_at is stored as an ISO8601 string
     (see persist_post below), so its first 10 characters are always the
     YYYY-MM-DD date - simpler and more portable across D1's SQLite version
-    than relying on strftime() to parse the timezone offset."""
+    than relying on strftime() to parse the timezone offset.
+
+    The boundary comparison below still needs strftime(), though: plain
+    datetime('now', ?) returns a space-separated "YYYY-MM-DD HH:MM:SS", but
+    scraped_at uses ISO8601's "T" separator - ' ' (0x20) sorts below 'T'
+    (0x54), so a raw string comparison against datetime('now', ...) would
+    treat every row from the boundary day as ">= boundary" regardless of
+    its actual time of day (widening the window by almost 24h on that one
+    day). Formatting the boundary with the same "T" separator fixes the
+    comparison without changing what's stored.
+    """
     rows = await d1_query(
         """
         SELECT substr(scraped_at, 1, 10) AS day, platform, COUNT(*) AS count
         FROM posts
-        WHERE scraped_at >= datetime('now', ?)
+        WHERE scraped_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
         GROUP BY day, platform
         ORDER BY day ASC
         """,
@@ -363,8 +373,9 @@ async def persist_post(*, movie_id: str, keyword_id: str, keyword: str, platform
     engagement = {field: draft.get(field) or 0 for field in ENGAGEMENT_FIELDS}
     # D1 stores booleans as SQLite integers (0/1) - pass an int, not a JSON
     # bool, so the HTTP API binds it as the same type Drizzle's
-    # integer(..., {mode: "boolean"}) column expects. Always 1 here - a
-    # non-match already returned above.
+    # integer(..., {mode: "boolean"}) column expects. Can legitimately be 0
+    # - see this function's own docstring for why a non-match still gets
+    # stored instead of skipped.
     keyword_match = int(is_keyword_match)
 
     existing_rows = await d1_query(

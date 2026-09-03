@@ -31,6 +31,17 @@ class RunScraperResponse(BaseModel):
     published: int
 
 
+class JobStatus(BaseModel):
+    running: bool
+    keyword: str | None = None
+    keyword_id: str | None = None
+    started_at: int | None = None
+
+
+class StopScraperResponse(BaseModel):
+    stopped: bool
+
+
 class TriggerTokenRefreshResponse(BaseModel):
     ok: bool
 

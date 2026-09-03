@@ -72,7 +72,12 @@ async def publish_crawl_request(
     if _producer is None:
         logger.warning("kafka_producer_not_started", keyword_id=keyword_id)
         return False
-    value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": keyword_id}
+    # Lets spider-hub's crawl_request_consumer.py track this specific
+    # subprocess (crawl_job:<platform> in Redis) so the dashboard's Stop
+    # button (see app/services/crawl_jobs.py) has something to cancel by -
+    # see that module's own docstring for the full mechanism.
+    run_id = str(uuid.uuid4())
+    value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": keyword_id, "run_id": run_id}
     if max_pages is not None:
         value["max_pages"] = max_pages
     if start_date is not None:

@@ -12,7 +12,8 @@ from fastapi import APIRouter
 
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
-from app.schemas.scraper import RunScraperRequest, RunScraperResponse
+from app.schemas.scraper import JobStatus, RunScraperRequest, RunScraperResponse, StopScraperResponse
+from app.services.crawl_jobs import get_running_job, request_stop
 from app.services.d1 import get_enabled_keywords, get_keyword
 from app.services.kafka import publish_crawl_request
 
@@ -58,3 +59,26 @@ def build_run_route(router: APIRouter, platform: str) -> None:
             movie_id=payload.movie_id,
         )
         return RunScraperResponse(requested=len(keywords), published=published)
+
+    @router.get("/job-status", response_model=JobStatus)
+    async def job_status() -> JobStatus:
+        job = await get_running_job(platform)
+        if job is None:
+            return JobStatus(running=False)
+        return JobStatus(
+            running=True,
+            keyword=job.get("keyword"),
+            keyword_id=job.get("keyword_id"),
+            started_at=job.get("started_at"),
+        )
+
+    @router.post("/stop", response_model=StopScraperResponse)
+    async def stop_scraper() -> StopScraperResponse:
+        # Only ever cancels whatever spider-hub's consumer is running for
+        # this platform *right now* - a backlog of other still-queued
+        # crawl_requests for this platform (e.g. from a "run every keyword"
+        # trigger) is untouched and starts as soon as this one exits, same
+        # as the consumer's normal one-at-a-time processing already does.
+        stopped = await request_stop(platform)
+        logger.info("scraper_stop_requested", platform=platform, stopped=stopped)
+        return StopScraperResponse(stopped=stopped)
