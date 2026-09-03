@@ -35,7 +35,15 @@ fi
 
 # Add a platform here once it has its own router (app/api/routes/<platform>.py)
 # registered in app/main.py - nothing else in this script changes.
-PLATFORMS=(facebook)
+#
+# No commas between entries - bash arrays are space-separated. This used
+# to read (facebook, threads, tiktok), which silently made the first two
+# elements "facebook," and "threads," (comma glued onto the word since
+# there's no space before it) and sent every scheduled trigger to
+# "$CINEMARK_API_URL/facebook,/run" - a 404 - for those two platforms.
+# Only tiktok (the one with no trailing comma) was ever actually running
+# on this cron.
+PLATFORMS=(facebook threads tiktok)
 
 status=0
 for platform in "${PLATFORMS[@]}"; do
@@ -55,4 +63,27 @@ for platform in "${PLATFORMS[@]}"; do
     log "Trigger OK for $platform: $body"
 done
 
+# check_volume_anomaly.py compares *today's* count so far against the
+# median of the last 7 full days - run this on every 6h cycle and the
+# 00:00/06:00/12:00 runs would compare a partial day against full-day
+# baselines, firing a false "volume dropped" alert almost every time
+# (today's count so far is naturally far below a full day's median until
+# late in the day). Only run it on the last cycle before the day rolls
+# over (hour 18, paired with the "0 */6 * * *" schedule this script's own
+# header documents) - today's count is still ~6h short of complete then
+# too, but that fixed shortfall is a much smaller, steadier bias than
+# comparing a few hours' worth of posts against a full day.
+current_hour="$(date -u +%H)"
+if [ "$current_hour" = "18" ]; then
+    log "=== Checking for volume anomalies (last cycle of the day) ==="
+    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.check_volume_anomaly); then
+        log "Volume check OK"
+    else
+        log "Volume check FAILED"
+        status=1
+    fi
+fi
+
 exit $status
+
