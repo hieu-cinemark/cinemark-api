@@ -42,3 +42,33 @@ class PostPage(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class Comment(BaseModel):
+    id: str
+    post_id: str
+    platform: str
+    external_id: str
+    message: str | None = None
+    author_name: str | None = None
+    author_id: str | None = None
+    author_url: str | None = None
+    author_profile_picture: str | None = None
+    reactions_count: int
+    replies_count: int
+    posted_at: str | None = None
+    scraped_at: str
+
+
+class CommentWithPost(Comment):
+    post_content: str | None = None
+    post_url: str | None = None
+    post_author: str | None = None
+    movie_title: str | None = None
+
+
+class CommentPage(BaseModel):
+    items: list[CommentWithPost]
+    total: int
+    limit: int
+    offset: int

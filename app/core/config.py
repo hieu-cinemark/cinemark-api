@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     cloudflare_api_token: str | None = None
     cloudflare_d1_database_id: str | None = None
 
+    # "local" points app.services.d1's d1_query() at a local SQLite file
+    # instead of Cloudflare's HTTP query API - no daily D1 row-read quota
+    # for local dev/testing. Defaults to cinemark-be's already-existing
+    # local mirror of this exact database (same CLOUDFLARE_D1_DATABASE_ID,
+    # see cinemark-be/scripts/pull-local-db.js) rather than maintaining a
+    # second copy - refresh it from there (`npm run db:pull-local` in
+    # cinemark-be) when local data goes stale.
+    db_mode: str = "remote"  # "remote" | "local"
+    local_db_path: str = str(_REPO_ROOT.parent / "cinemark-be" / ".local-db" / "scraper.sqlite")
+
     # Log files the dashboard's /logs routes tail - both processes are
     # plain text files written by structlog's ConsoleRenderer (see
     # spider-hub/social_crawler/logger.py and app/core/logging.py). Default

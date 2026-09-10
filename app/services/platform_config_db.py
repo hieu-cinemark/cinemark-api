@@ -18,14 +18,14 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.core.config import settings
-from app.core.errors import NotFoundError, UpstreamError
+from app.core.errors import ConflictError, NotFoundError, UpstreamError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
 ACCOUNT_COLUMNS = (
     "id, platform, account_id, password, totp_secret, cookie, token, email, email_password, "
-    "enabled, created_at, updated_at"
+    "enabled, created_at, updated_at, last_checked_at, last_check_status"
 )
 PROXY_COLUMNS = "id, platform, proxy_url, username, password, login_use_proxy, enabled, created_at, updated_at"
 
@@ -67,18 +67,27 @@ async def list_accounts(platform: str | None = None) -> list[dict[str, Any]]:
         return await cur.fetchall()
 
 
+async def get_account(account_id: int) -> dict[str, Any] | None:
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts WHERE id = %s", (account_id,))
+        return await cur.fetchone()
+
+
 async def create_account(fields: dict[str, Any]) -> dict[str, Any]:
     columns = [c for c in _ACCOUNT_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
-    async with await _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            f"INSERT INTO platform_accounts ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
-            f"RETURNING {ACCOUNT_COLUMNS}",
-            values,
-        )
-        row = await cur.fetchone()
-        await conn.commit()
-        return row  # type: ignore[return-value]
+    try:
+        async with await _connect() as conn, conn.cursor() as cur:
+            await cur.execute(
+                f"INSERT INTO platform_accounts ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+                f"RETURNING {ACCOUNT_COLUMNS}",
+                values,
+            )
+            row = await cur.fetchone()
+            await conn.commit()
+            return row  # type: ignore[return-value]
+    except psycopg.errors.UniqueViolation as exc:
+        raise ConflictError(f"An account for {fields.get('platform')}/{fields.get('account_id')} already exists") from exc
 
 
 async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, Any]:
@@ -91,6 +100,24 @@ async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, A
         await cur.execute(
             f"UPDATE platform_accounts SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
             values,
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        raise NotFoundError(f"Account {account_id} not found")
+    return row
+
+
+async def update_account_check_result(account_id: int, *, status: str) -> dict[str, Any]:
+    """Records the outcome of a health check (see app/services/account_health.py)
+    - deliberately separate from update_account above: these columns are
+    system-written from an automated check, never user-editable through the
+    account form, so they're not part of _ACCOUNT_CREATE_COLUMNS at all."""
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"UPDATE platform_accounts SET last_checked_at = now(), last_check_status = %s "
+            f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
+            (status, account_id),
         )
         row = await cur.fetchone()
         await conn.commit()
@@ -122,15 +149,18 @@ async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
 async def create_proxy(fields: dict[str, Any]) -> dict[str, Any]:
     columns = [c for c in _PROXY_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
-    async with await _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            f"INSERT INTO platform_proxies ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
-            f"RETURNING {PROXY_COLUMNS}",
-            values,
-        )
-        row = await cur.fetchone()
-        await conn.commit()
-        return row  # type: ignore[return-value]
+    try:
+        async with await _connect() as conn, conn.cursor() as cur:
+            await cur.execute(
+                f"INSERT INTO platform_proxies ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+                f"RETURNING {PROXY_COLUMNS}",
+                values,
+            )
+            row = await cur.fetchone()
+            await conn.commit()
+            return row  # type: ignore[return-value]
+    except psycopg.errors.UniqueViolation as exc:
+        raise ConflictError(f"A proxy for {fields.get('platform')}/{fields.get('proxy_url')} already exists") from exc
 
 
 async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:

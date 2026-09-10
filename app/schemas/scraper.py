@@ -36,10 +36,15 @@ class JobStatus(BaseModel):
     keyword: str | None = None
     keyword_id: str | None = None
     started_at: int | None = None
+    type: str | None = None
 
 
 class StopScraperResponse(BaseModel):
     stopped: bool
+
+
+class RunCommentsResponse(BaseModel):
+    published: bool
 
 
 class TriggerTokenRefreshResponse(BaseModel):

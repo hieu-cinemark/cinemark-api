@@ -6,17 +6,22 @@ keywords.py) lists keywords for the dashboard's picker. Threads' spider-hub
 integration does have its own browser-bootstrap token cache, mirroring
 Facebook's field for field (see spider-hub's spiders/threads/auth/bootstrap.py)
 - so it gets the same refresh-token/token-status/WS trio via
-token_refresh.py."""
+token_refresh.py, and POST /threads/posts/{post_id}/comments/run (see
+platform_scraper.build_comments_run_route - spider-hub's threads_comments
+spider only fetches a post's first page of replies, see its own module
+docstring for why, but that's still a real comments feature worth exposing
+here)."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter
 
 from app.api.routes.keywords import build_keyword_routes
-from app.api.routes.platform_scraper import build_run_route
+from app.api.routes.platform_scraper import build_comments_run_route, build_run_route
 from app.api.routes.token_refresh import build_token_refresh_routes
 
 router = APIRouter(prefix="/threads", tags=["threads"])
 build_run_route(router, "threads")
 build_keyword_routes(router, "threads")
 build_token_refresh_routes(router, "threads")
+build_comments_run_route(router, "threads")

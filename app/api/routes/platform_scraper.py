@@ -4,18 +4,23 @@ keyword_id, by movie_id, or "every enabled keyword for this platform") built
 once here instead of copy-pasted per platform file. A platform file only
 needs to call build_run_route(router, "<platform>") and add whatever
 platform-specific extras it needs on top (see facebook.py's
-refresh-token/token-status)."""
+refresh-token/token-status).
+
+build_comments_run_route below is the same idea for POST
+/<platform>/posts/{post_id}/comments/run - shared by every platform in
+spider-hub's own COMMENTS_SPIDER_BY_PLATFORM (facebook, threads, tiktok -
+a platform not in it simply doesn't call this builder at all)."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, UpstreamError
 from app.core.logging import get_logger
-from app.schemas.scraper import JobStatus, RunScraperRequest, RunScraperResponse, StopScraperResponse
+from app.schemas.scraper import JobStatus, RunCommentsResponse, RunScraperRequest, RunScraperResponse, StopScraperResponse
 from app.services.crawl_jobs import get_running_job, request_stop
-from app.services.d1 import get_enabled_keywords, get_keyword
-from app.services.kafka import publish_crawl_request
+from app.services.d1 import get_enabled_keywords, get_keyword, get_post
+from app.services.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 
 logger = get_logger(__name__)
 
@@ -70,6 +75,7 @@ def build_run_route(router: APIRouter, platform: str) -> None:
             keyword=job.get("keyword"),
             keyword_id=job.get("keyword_id"),
             started_at=job.get("started_at"),
+            type=job.get("type"),
         )
 
     @router.post("/stop", response_model=StopScraperResponse)
@@ -82,3 +88,29 @@ def build_run_route(router: APIRouter, platform: str) -> None:
         stopped = await request_stop(platform)
         logger.info("scraper_stop_requested", platform=platform, stopped=stopped)
         return StopScraperResponse(stopped=stopped)
+
+
+def build_comments_run_route(router: APIRouter, platform: str) -> None:
+    """POST /<platform>/posts/{post_id}/comments/run - triggers spider-hub's
+    comments spider for one post (D1 id, not the platform's own post id -
+    see get_post). Only call this for a platform spider-hub actually has a
+    comments spider for (see crawl_request_consumer.py's
+    COMMENTS_SPIDER_BY_PLATFORM)."""
+
+    @router.post("/posts/{post_id}/comments/run", response_model=RunCommentsResponse)
+    async def run_comments(
+        post_id: str, max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=1, le=50)
+    ) -> RunCommentsResponse:
+        post = await get_post(post_id)
+        if post is None:
+            raise NotFoundError(f"No post {post_id}")
+        if post["platform"] != platform:
+            raise UpstreamError(f"Post {post_id} is not a {platform} post")
+        if not post.get("url"):
+            raise UpstreamError(f"Post {post_id} has no stored url - can't bootstrap a comments crawl without one")
+
+        published = await publish_comments_crawl_request(
+            platform=platform, post_external_id=post["external_id"], post_url=post["url"], max_pages=max_pages
+        )
+        logger.info("comments_run_triggered", platform=platform, post_id=post_id, max_pages=max_pages, published=published)
+        return RunCommentsResponse(published=published)

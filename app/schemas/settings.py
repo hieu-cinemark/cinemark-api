@@ -18,6 +18,8 @@ class AccountOut(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
+    last_checked_at: datetime | None = None
+    last_check_status: str | None = None
 
 
 class AccountCreate(BaseModel):

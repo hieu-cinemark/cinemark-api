@@ -123,3 +123,82 @@ def get_post_mapper(platform: str) -> Callable[[dict[str, Any]], PostDraft] | No
 
 def registered_platforms() -> set[str]:
     return set(PLATFORM_POST_MAPPERS)
+
+
+# The normalized shape every comment mapper below must produce - mirrors
+# cinemark-scraper's comments table (src/db/schema.ts) the same way
+# PostDraft mirrors posts.
+CommentDraft = dict[str, Any]
+
+
+def _map_facebook_comment(payload: dict[str, Any]) -> CommentDraft:
+    """spider-hub's FacebookCommentItem field names -> CommentDraft (see
+    social_crawler/spiders/facebook/items.py there)."""
+    timestamp = payload.get("timestamp")
+    return {
+        "external_id": payload.get("comment_id"),
+        "message": payload.get("message"),
+        "author_name": payload.get("author_name"),
+        "author_id": payload.get("author_id"),
+        "author_url": payload.get("author_url"),
+        "author_profile_picture": payload.get("author_profile_picture"),
+        "reactions_count": payload.get("reactions_count") or 0,
+        "replies_count": payload.get("replies_count") or 0,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
+def _map_threads_comment(payload: dict[str, Any]) -> CommentDraft:
+    """spider-hub's ThreadsCommentItem field names -> CommentDraft (see
+    social_crawler/spiders/threads/items.py there). Threads has no
+    separate reactions/replies split the way Facebook's payload names
+    them - "like_count"/"reply_count" map directly to the same
+    reactions_count/replies_count columns. author_url isn't a field
+    spider-hub captures for Threads (only username/name/id/avatar), so
+    it's built here from the username the same way ThreadsPostItem's own
+    author_url is constructed."""
+    timestamp = payload.get("timestamp")
+    username = payload.get("author_username")
+    return {
+        "external_id": payload.get("reply_id"),
+        "message": payload.get("message"),
+        "author_name": payload.get("author_name") or username,
+        "author_id": payload.get("author_id"),
+        "author_url": f"https://www.threads.com/@{username}" if username else None,
+        "author_profile_picture": payload.get("author_profile_picture"),
+        "reactions_count": payload.get("like_count") or 0,
+        "replies_count": payload.get("reply_count") or 0,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
+def _map_tiktok_comment(payload: dict[str, Any]) -> CommentDraft:
+    """spider-hub's TikTokCommentItem field names -> CommentDraft (see
+    social_crawler/spiders/tiktok/items.py there)."""
+    timestamp = payload.get("timestamp")
+    username = payload.get("author_username")
+    return {
+        "external_id": payload.get("comment_id"),
+        "message": payload.get("message"),
+        "author_name": payload.get("author_name") or username,
+        "author_id": payload.get("author_id"),
+        "author_url": f"https://www.tiktok.com/@{username}" if username else None,
+        "author_profile_picture": payload.get("author_avatar_url"),
+        "reactions_count": payload.get("like_count") or 0,
+        "replies_count": payload.get("reply_count") or 0,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
+PLATFORM_COMMENT_MAPPERS: dict[str, Callable[[dict[str, Any]], CommentDraft]] = {
+    "facebook": _map_facebook_comment,
+    "threads": _map_threads_comment,
+    "tiktok": _map_tiktok_comment,
+}
+
+
+def get_comment_mapper(platform: str) -> Callable[[dict[str, Any]], CommentDraft] | None:
+    return PLATFORM_COMMENT_MAPPERS.get(platform)

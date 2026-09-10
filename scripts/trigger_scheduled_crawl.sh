@@ -63,6 +63,20 @@ for platform in "${PLATFORMS[@]}"; do
     log "Trigger OK for $platform: $body"
 done
 
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Unlike check_volume_anomaly.py below, this has no time-of-day bias to
+# work around (it reads current Redis/enabled state, not a full-day count),
+# so it runs on every cycle - the more often it runs, the sooner a
+# newly-degraded account gets caught.
+log "=== Checking account health ==="
+if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.check_account_health); then
+    log "Account health check OK"
+else
+    log "Account health check FAILED"
+    status=1
+fi
+
 # check_volume_anomaly.py compares *today's* count so far against the
 # median of the last 7 full days - run this on every 6h cycle and the
 # 00:00/06:00/12:00 runs would compare a partial day against full-day
@@ -76,7 +90,6 @@ done
 current_hour="$(date -u +%H)"
 if [ "$current_hour" = "18" ]; then
     log "=== Checking for volume anomalies (last cycle of the day) ==="
-    REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
     if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.check_volume_anomaly); then
         log "Volume check OK"
     else

@@ -20,6 +20,15 @@ from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 # expected latency.
 STOP_FLAG_TTL_SECONDS = 3600
 
+# How long a Stop click keeps draining a platform's still-queued
+# BFS-discovered crawl_requests (see tiktok/features/hashtag_search/
+# search.py's _queue_bfs_hashtags) without actually running them.
+# BFS_MAX_DEPTH=2 * BFS_MAX_HASHTAGS_PER_RUN=5 bounds the realistic backlog
+# to a few dozen requests at most, each skipped near-instantly once flagged
+# - 15 minutes is generous headroom for that, while still expiring on its
+# own instead of silently suppressing BFS forever if left armed.
+BFS_DRAIN_TTL_SECONDS = 900
+
 
 async def get_running_job(platform: str) -> dict[str, Any] | None:
     """None if no job is currently running for this platform right now -
@@ -32,12 +41,20 @@ async def get_running_job(platform: str) -> dict[str, Any] | None:
 
 async def request_stop(platform: str) -> bool:
     """Flags whatever's currently running for this platform to be
-    cancelled. Returns False (no-op, nothing to stop) if no job is running
-    right now - the caller decides what that means for the response (see
+    cancelled, and arms a drain flag so any BFS-discovered crawl_requests
+    still queued behind it get skipped instead of running one after another
+    (see crawl_request_consumer.py's _run_spider, which checks
+    bfs_drain:<platform> before running a request that has a bfs_depth).
+    The drain flag is armed unconditionally - a queued backlog can exist
+    even in the gap between two crawls when nothing is running right this
+    moment. Returns False only to mean "nothing was actively running to
+    cancel" - the caller decides what that means for the response (see
     app/api/routes/platform_scraper.py)."""
+    client = get_redis_client()
+    await client.set(f"{REDIS_KEY_PREFIX}bfs_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
+
     job = await get_running_job(platform)
     if job is None:
         return False
-    client = get_redis_client()
     await client.set(f"{REDIS_KEY_PREFIX}crawl_job_cancel:{job['run_id']}", "1", ex=STOP_FLAG_TTL_SECONDS)
     return True

@@ -1,7 +1,7 @@
-"""Reads scraped posts off Kafka (published by spider-hub's spiders - see
-social_crawler/services/kafka.py there) and mirrors them into D1 (see
-app/services/d1.py). Runs as its own long-lived process, separate from the
-FastAPI app:
+"""Reads scraped posts and comments off Kafka (published by spider-hub's
+spiders - see social_crawler/services/kafka.py there) and mirrors them into
+D1 (see app/services/d1.py). Runs as its own long-lived process, separate
+from the FastAPI app:
 
     python -m app.workers.ingest_consumer.main
 
@@ -25,14 +25,23 @@ from aiokafka.errors import KafkaError
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import get_keyword, persist_dropped_post, persist_post
-from app.services.platforms import get_post_mapper
+from app.services.d1 import (
+    contains_keyword,
+    get_keyword,
+    get_post_by_external_id,
+    persist_comment,
+    persist_dropped_post,
+    persist_post,
+)
+from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.telegram import send_telegram_message
+from app.kira.relevance import classify_relevance
 
 logger = get_logger(__name__)
 
 RAW_POSTS_TOPIC = "raw_posts"
+RAW_COMMENTS_TOPIC = "raw_comments"
 CONSUMER_GROUP = "cinemark-api.ingest"
 
 _MESSAGE_CONCURRENCY = 8
@@ -55,6 +64,7 @@ _DROP_ALERT_TEXT = {
     "mapper": "unregistered platform mapper (see app/services/platforms.py)",
     "missing_keyword_id": "posts arriving with no keyword_id (producer bug?)",
     "unknown_keyword_id": "posts referencing an unknown/disabled keyword_id",
+    "d1_write_failed": "D1 write failed (see app/services/d1.py for details)",
 }
 
 
@@ -79,7 +89,7 @@ async def _note_drop(platform: str, reason: str, **context: Any) -> None:
 async def handle_post(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
     post_id = payload.get("post_id")
-
+    
     mapper = get_post_mapper(platform)
     if mapper is None:
         logger.warning("post_unregistered_platform", platform=platform, post_id=post_id)
@@ -102,10 +112,59 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     draft = mapper(payload)
-    await persist_post(
-        movie_id=keyword["movie_id"], keyword_id=keyword_id, keyword=keyword["keyword"], platform=platform, draft=draft
+    # The free substring check first - only spend a Kira call (rate-limited,
+    # see app/kira/relevance.py) on posts it actually misses (no literal
+    # keyword/synonym/abbreviation match) rather than classifying every
+    # single post regardless of whether the cheap check already found one.
+    ai_relevant = None
+    if not contains_keyword(draft.get("content"), keyword["keyword"]):
+        relevance = await classify_relevance(keyword["keyword"], draft)
+        ai_relevant = relevance.get("relevant") if relevance else None
+    ok = await persist_post(
+        movie_id=keyword["movie_id"],
+        keyword_id=keyword_id,
+        keyword=keyword["keyword"],
+        platform=platform,
+        draft=draft,
+        ai_relevant=ai_relevant,
     )
+    if not ok:
+        await _note_drop(platform, "d1_write_failed", post_id=post_id)
+        await persist_dropped_post(platform=platform, reason="d1_write_failed", payload=payload, keyword_id=keyword_id)
+        return
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
+
+
+async def handle_comment(payload: dict[str, Any]) -> None:
+    platform = payload.get("platform")
+    external_post_id = payload.get("post_id")
+
+    mapper = get_comment_mapper(platform)
+    if mapper is None:
+        # No persist_dropped_post-style archive for comments (unlike
+        # handle_post) - comments are supplementary to the post they belong
+        # to, which is already durably stored/re-fetchable by post_id, so
+        # losing an unregistered-platform comment isn't the same kind of
+        # unrecoverable loss a whole dropped post would be.
+        logger.warning("comment_unregistered_platform", platform=platform, post_id=external_post_id)
+        return
+
+    post = await get_post_by_external_id(platform, external_post_id) if external_post_id else None
+    if post is None:
+        # The post this comment belongs to isn't in D1 yet (or never will
+        # be - e.g. content_too_short skipped it, see persist_post) - a
+        # comment can't exist without its parent row (post_id has a NOT
+        # NULL FK, see cinemark-scraper's schema.ts), so there's nothing
+        # to attach it to.
+        logger.warning("comment_unknown_post", platform=platform, post_id=external_post_id)
+        return
+
+    draft = mapper(payload)
+    ok = await persist_comment(post_id=post["id"], platform=platform, draft=draft)
+    if not ok:
+        logger.warning("d1_comment_persist_failed", platform=platform, post_id=external_post_id)
+        return
+    logger.info("comment_persisted", platform=platform, post_id=external_post_id)
 
 
 async def _process_message(message: Any, semaphore: asyncio.Semaphore) -> None:
@@ -113,6 +172,8 @@ async def _process_message(message: Any, semaphore: asyncio.Semaphore) -> None:
         try:
             if message.topic == RAW_POSTS_TOPIC:
                 await handle_post(message.value)
+            elif message.topic == RAW_COMMENTS_TOPIC:
+                await handle_comment(message.value)
         except Exception as exc:
             logger.error("ingest_message_failed", topic=message.topic, error=str(exc))
 
@@ -120,6 +181,7 @@ async def _process_message(message: Any, semaphore: asyncio.Semaphore) -> None:
 async def run() -> None:
     consumer = AIOKafkaConsumer(
         RAW_POSTS_TOPIC,
+        RAW_COMMENTS_TOPIC,
         bootstrap_servers=settings.kafka_bootstrap_servers,
         group_id=CONSUMER_GROUP,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),

@@ -21,7 +21,6 @@ from app.services.platform_token import get_token_status
 
 logger = get_logger(__name__)
 
-
 def build_token_refresh_routes(router: APIRouter, platform: str) -> None:
     @router.post("/refresh-token", response_model=TriggerTokenRefreshResponse)
     async def refresh_token() -> TriggerTokenRefreshResponse:
