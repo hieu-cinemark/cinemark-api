@@ -1,4 +1,4 @@
-"""Cloudflare D1 HTTP API client - lets this VPS-hosted service read/write a
+"""Cloudflare D1 access layer - lets this VPS-hosted service read/write a
 D1 database without needing a Cloudflare Worker (D1 bindings only exist
 inside Workers; from a plain process, D1's REST query API is the only door
 in). Talks to the same D1 database cinemark-scraper's Worker owns, using its
@@ -7,6 +7,13 @@ cinemark-scraper/src/db/schema.ts) - not a separate table of our own, so a
 crawl triggered from here (get_enabled_keywords/get_keyword) and the post it
 produces (persist_post) share the exact same movie_id/keyword_id space, no
 ID-mapping layer needed.
+
+The HTTP-vs-local transport (d1_query) now lives in app/services/d1_client.py,
+and posts/comments' own queries live in app/repositories/d1/{posts,comments}.py
+- both re-exported below so existing `from app.services.d1 import
+persist_post` etc. call sites don't need to change. This module keeps the
+transport-agnostic logic for every other table (movies, keywords,
+social_topic_reports) plus the stats_summary.py passthroughs.
 
 Platform-agnostic: every function here works off app.services.platforms'
 registered_platforms(), not a hardcoded "facebook" literal - see that
@@ -19,355 +26,389 @@ only durable delivery guarantee this service has."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
-import sqlite3
 import unicodedata
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-import httpx
-
-from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.platforms import CommentDraft, PostDraft, registered_platforms
+from app.repositories.d1.comments import (
+    CommentRepository,
+    comment_repo,
+    list_all_comments,
+    list_comments,
+    persist_comment,
+)
+from app.repositories.d1.posts import (
+    ENGAGEMENT_FIELDS,
+    MIN_CONTENT_LENGTH,
+    PostRepository,
+    contains_keyword,
+    get_post,
+    get_post_by_external_id,
+    list_posts,
+    list_posts_needing_comments,
+    persist_dropped_post,
+    persist_post,
+    post_mentions_movie,
+    post_repo,
+)
+from app.services.d1_client import _configured, d1_query
+from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 
 logger = get_logger(__name__)
 
-_BASE_URL = "https://api.cloudflare.com/client/v4"
-
-_local_conn: sqlite3.Connection | None = None
-
-
-def _get_local_conn() -> sqlite3.Connection:
-    global _local_conn
-    if _local_conn is None:
-        conn = sqlite3.connect(settings.local_db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        _local_conn = conn
-    return _local_conn
-
-
-def _run_local_query(sql: str, params: list[Any] | None) -> list[dict[str, Any]]:
-    """Runs synchronously on a worker thread (see d1_query below) - Python's
-    stdlib sqlite3 has no async API, and blocking the event loop directly
-    would stall every other in-flight request for the query's duration."""
-    conn = _get_local_conn()
-    cursor = conn.execute(sql, params or [])
-    # D1's HTTP API returns [] (not an error) for a successful INSERT/UPDATE/
-    # DELETE with no rows to return - mirrored here so callers' `is None`
-    # (failure) vs `[]`/rows (success) checks behave identically in both modes.
-    if cursor.description is None:
-        conn.commit()
-        return []
-    return [dict(row) for row in cursor.fetchall()]
-
-ENGAGEMENT_FIELDS = ("like_count", "reply_count", "repost_count", "quote_count", "reshare_count", "view_count")
-
-# Below this many characters (after trimming), a post's content is treated
-# as junk - a bare reaction/emoji/one-word comment with nothing to analyze.
-# Tune freely; this is a judgment call, not derived from anything.
-MIN_CONTENT_LENGTH = 10
+# Re-exported for existing `from app.services.d1 import X` call sites - see
+# module docstring. Referencing them here (not just importing) keeps linters
+# from flagging the import as unused.
+__all_reexports__ = (
+    d1_query,
+    _configured,
+    CommentRepository,
+    comment_repo,
+    list_all_comments,
+    list_comments,
+    persist_comment,
+    PostRepository,
+    post_repo,
+    ENGAGEMENT_FIELDS,
+    MIN_CONTENT_LENGTH,
+    contains_keyword,
+    get_post,
+    get_post_by_external_id,
+    list_posts,
+    list_posts_needing_comments,
+    persist_dropped_post,
+    persist_post,
+    post_mentions_movie,
+)
 
 
-def _configured() -> bool:
-    if settings.db_mode == "local":
-        return Path(settings.local_db_path).exists()
-    return bool(settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id)
-
-
-async def d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]] | None:
-    """Runs one SQL statement against the configured D1 database. Returns
-    the result rows, or None if D1 isn't configured or the call failed."""
-    if not _configured():
-        return None
-
-    if settings.db_mode == "local":
-        try:
-            return await asyncio.to_thread(_run_local_query, sql, params)
-        except sqlite3.Error as exc:
-            logger.warning("local_db_query_failed", error=str(exc), sql=sql[:200])
-            return None
-
-    url = (
-        f"{_BASE_URL}/accounts/{settings.cloudflare_account_id}/d1/database/{settings.cloudflare_d1_database_id}/query"
-    )
-    headers = {"Authorization": f"Bearer {settings.cloudflare_api_token}"}
-
+async def _related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """TikTok co-occurring tags spider-hub stored after a crawl (Redis
+    tiktok:related_hashtags:{keyword_id}). Missing Redis or empty keys
+    just mean the dashboard shows no review chips yet."""
+    if not keyword_ids:
+        return {}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, headers=headers, json={"sql": sql, "params": params or []})
-    except httpx.HTTPError as exc:
-        logger.warning("d1_request_failed", error=str(exc))
-        return None
-
-    if resp.status_code >= 400:
-        logger.warning("d1_request_failed", status=resp.status_code, body=resp.text[:500])
-        return None
-
-    data = resp.json()
-    if not data.get("success"):
-        logger.warning("d1_query_failed", errors=data.get("errors"))
-        return None
-
-    results = data.get("result") or []
-    return results[0].get("results", []) if results else []
+        client = get_redis_client()
+        keys = [f"{REDIS_KEY_PREFIX}tiktok:related_hashtags:{kid}" for kid in keyword_ids]
+        values = await client.mget(keys)
+    except Exception as exc:
+        logger.warning("related_hashtags_redis_failed", error=str(exc))
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for kid, raw in zip(keyword_ids, values or []):
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, list):
+            continue
+        cleaned: list[dict[str, Any]] = []
+        for item in parsed:
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            cleaned.append(
+                {
+                    "id": str(item.get("id") or ""),
+                    "title": str(item["title"]).lstrip("#"),
+                    "count": int(item.get("count") or 0),
+                    "bfs_depth": int(item.get("bfs_depth") or 1),
+                }
+            )
+        if cleaned:
+            out[kid] = cleaned
+    return out
 
 
 async def get_post_counts_by_platform() -> list[dict[str, Any]]:
-    """Total posts ingested per platform, plus the most recent scrape - the
-    "how many posts have we collected per platform" figure the dashboard's
-    overview page shows. Left as a plain GROUP BY (no platform allowlist)
-    so it reflects whatever's actually in the table, including platforms
-    scraped by cinemark-scraper's own Worker (tiktok/threads) alongside
-    the ones spider-hub feeds through this service."""
-    rows = await d1_query(
-        "SELECT platform, COUNT(*) AS count, MAX(scraped_at) AS last_scraped_at FROM posts GROUP BY platform"
-    )
-    return rows or []
+    """Total posts ingested per platform, plus the most recent scrape and
+    today's vs yesterday's ingest counts. Reads pre-aggregated
+    stats_platform_daily (see app/services/stats_summary.py) - a full
+    COUNT(*) over posts via D1 HTTP is too slow for the Overview page."""
+    from app.services.stats_summary import get_post_counts_by_platform as _from_summary
+
+    return await _from_summary()
 
 
 async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
-    """Daily post counts per platform for the last `days` days - feeds the
-    dashboard's trend chart. scraped_at is stored as an ISO8601 string
-    (see persist_post below), so its first 10 characters are always the
-    YYYY-MM-DD date - simpler and more portable across D1's SQLite version
-    than relying on strftime() to parse the timezone offset.
+    """Daily post counts per platform for the last `days` days - from
+    stats_platform_daily rollups."""
+    from app.services.stats_summary import get_post_timeseries as _from_summary
 
-    The boundary comparison below still needs strftime(), though: plain
-    datetime('now', ?) returns a space-separated "YYYY-MM-DD HH:MM:SS", but
-    scraped_at uses ISO8601's "T" separator - ' ' (0x20) sorts below 'T'
-    (0x54), so a raw string comparison against datetime('now', ...) would
-    treat every row from the boundary day as ">= boundary" regardless of
-    its actual time of day (widening the window by almost 24h on that one
-    day). Formatting the boundary with the same "T" separator fixes the
-    comparison without changing what's stored.
-    """
-    rows = await d1_query(
-        """
-        SELECT substr(scraped_at, 1, 10) AS day, platform, COUNT(*) AS count
-        FROM posts
-        WHERE scraped_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
-        GROUP BY day, platform
-        ORDER BY day ASC
-        """,
-        [f"-{days} days"],
-    )
-    return rows or []
+    return await _from_summary(days)
 
 
-async def list_posts(
-    *,
-    platform: str | None = None,
-    keyword_id: str | None = None,
-    movie_id: str | None = None,
-    limit: int = 50,
-    offset: int = 0,
-) -> tuple[list[dict[str, Any]], int]:
-    """Paginated post feed (most recently scraped first), joined to its
-    movie/keyword for display - backs the dashboard's "review posts" tab.
-    Every filter is optional and additive; passing none returns the whole
-    table's most recent page across every platform/movie. Returns
-    (rows, total_count) so the caller can render pagination without a
-    second round trip."""
-    where = []
-    params: list[Any] = []
-    if platform:
-        where.append("p.platform = ?")
-        params.append(platform)
-    if keyword_id:
-        where.append("p.keyword_id = ?")
-        params.append(keyword_id)
-    if movie_id:
-        where.append("p.movie_id = ?")
-        params.append(movie_id)
-    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+async def get_comment_counts_by_platform() -> list[dict[str, Any]]:
+    """Total comments ingested per platform - same shape as
+    get_post_counts_by_platform, from stats_platform_daily."""
+    from app.services.stats_summary import get_comment_counts_by_platform as _from_summary
 
-    count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
-    total = (count_rows[0]["total"] if count_rows else 0) or 0
-
-    rows = await d1_query(
-        f"""
-        SELECT
-            p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
-            p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
-            p.posted_at, p.scraped_at, p.keyword_match,
-            k.keyword, m.title AS movie_title
-        FROM posts p
-        LEFT JOIN keywords k ON k.id = p.keyword_id
-        LEFT JOIN movies m ON m.id = p.movie_id
-        {where_sql}
-        ORDER BY p.scraped_at DESC
-        LIMIT ? OFFSET ?
-        """,
-        [*params, limit, offset],
-    )
-    for row in rows or []:
-        media = json.loads(row.pop("media_json") or "{}")
-        row["media_type"] = media.get("media_type")
-        row["media_url"] = media.get("media_url")
-    return rows or [], total
+    return await _from_summary()
 
 
-async def get_post_by_external_id(platform: str, external_id: str) -> dict[str, Any] | None:
-    """One post by (platform, external_id) - the id spider-hub's comment
-    payloads carry (see app/workers/ingest_consumer/main.py's
-    handle_comment), as opposed to get_post's D1-internal id."""
-    rows = await d1_query("SELECT id, platform, external_id, url FROM posts WHERE platform = ? AND external_id = ?", [platform, external_id])
-    return rows[0] if rows else None
+async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
+    """Daily comment counts per platform for the last `days` days."""
+    from app.services.stats_summary import get_comment_timeseries as _from_summary
+
+    return await _from_summary(days)
 
 
-async def get_post(post_id: str) -> dict[str, Any] | None:
-    """One post by its D1 id (not external_id) - used by the "fetch
-    comments for this post" trigger (see app/api/routes/facebook.py) to
-    resolve the platform's own post id + url spider-hub's bootstrap/spider
-    needs, from the D1 id the dashboard actually has on hand (see
-    app/schemas/stats.py's Post.id)."""
-    rows = await d1_query("SELECT id, platform, external_id, url FROM posts WHERE id = ?", [post_id])
-    return rows[0] if rows else None
+async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
+    """Per-search-keyword post/comment totals plus today's vs yesterday's
+    ingest - from stats_keyword_daily rollups."""
+    from app.services.stats_summary import get_keyword_volume as _from_summary
+
+    return await _from_summary(platform)
 
 
-# Above this many rows, list_comments stops returning more - an admin
-# review list, not a paginated feed like list_posts; a single post rarely
-# has more than a few hundred comments, and this is just a sanity ceiling
-# against a runaway response.
-MAX_COMMENTS_PER_POST = 500
+_MOVIE_COLUMNS = "id, title, slug, released_at, poster_url, description, director, `cast`, distributor"
 
 
-async def list_comments(post_id: str) -> list[dict[str, Any]]:
-    """Every comment stored for one post (D1 id, see get_post above),
-    newest first - backs GET /stats/posts/{post_id}/comments."""
-    rows = await d1_query(
-        """
-        SELECT id, post_id, platform, external_id, message, author_name, author_id, author_url,
-               author_profile_picture, reactions_count, replies_count, posted_at, scraped_at
-        FROM comments
-        WHERE post_id = ?
-        ORDER BY scraped_at DESC
-        LIMIT ?
-        """,
-        [post_id, MAX_COMMENTS_PER_POST],
-    )
-    return rows or []
+def movie_slug(title: str) -> str:
+    """ASCII-ish URL slug from a title (Vietnamese diacritics stripped)."""
+    folded = title.strip().replace("đ", "d").replace("Đ", "D")
+    normalized = unicodedata.normalize("NFKD", folded)
+    ascii_ish = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_ish.lower()).strip("-")
+    return slug or "movie"
 
 
-async def list_all_comments(
-    *, platform: str | None = None, movie_id: str | None = None, limit: int = 50, offset: int = 0
-) -> tuple[list[dict[str, Any]], int]:
-    """Paginated comment feed across every post (most recently collected
-    first), joined to its parent post for display - backs a dedicated
-    "Comments" review tab, same shape as list_posts above. Every filter is
-    optional and additive."""
-    where = []
-    params: list[Any] = []
-    if platform:
-        where.append("c.platform = ?")
-        params.append(platform)
-    if movie_id:
-        where.append("p.movie_id = ?")
-        params.append(movie_id)
-    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-
-    count_rows = await d1_query(
-        f"SELECT COUNT(*) AS total FROM comments c LEFT JOIN posts p ON p.id = c.post_id {where_sql}", params
-    )
-    total = (count_rows[0]["total"] if count_rows else 0) or 0
-
-    rows = await d1_query(
-        f"""
-        SELECT
-            c.id, c.post_id, c.platform, c.external_id, c.message, c.author_name, c.author_id, c.author_url,
-            c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
-            p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title
-        FROM comments c
-        LEFT JOIN posts p ON p.id = c.post_id
-        LEFT JOIN movies m ON m.id = p.movie_id
-        {where_sql}
-        ORDER BY c.scraped_at DESC
-        LIMIT ? OFFSET ?
-        """,
-        [*params, limit, offset],
-    )
-    return rows or [], total
+def _blank_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
-async def persist_comment(*, post_id: str, platform: str, draft: CommentDraft) -> bool:
-    """Upsert one scraped comment by (platform, external_id) - same shape
-    as persist_post but simpler (comments have no engagement-snapshot
-    history of their own, just a live reactions/replies count)."""
-    if not _configured():
-        return False
-
-    external_id = draft.get("external_id")
-    if not external_id:
-        return False
-
-    scraped_at = datetime.now(tz=timezone.utc).isoformat()
-    raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
-
-    existing_rows = await d1_query(
-        "SELECT id FROM comments WHERE platform = ? AND external_id = ?", [platform, external_id]
-    )
-    if existing_rows:
-        updated = await d1_query(
-            """
-            UPDATE comments SET
-                message = ?, author_name = ?, author_id = ?, author_url = ?, author_profile_picture = ?,
-                reactions_count = ?, replies_count = ?, posted_at = ?, scraped_at = ?, raw_json = ?
-            WHERE id = ?
-            """,
-            [
-                draft.get("message"),
-                draft.get("author_name"),
-                draft.get("author_id"),
-                draft.get("author_url"),
-                draft.get("author_profile_picture"),
-                draft.get("reactions_count") or 0,
-                draft.get("replies_count") or 0,
-                draft.get("posted_at"),
-                scraped_at,
-                raw_json,
-                existing_rows[0]["id"],
-            ],
-        )
-        return updated is not None
-
-    inserted = await d1_query(
-        """
-        INSERT INTO comments (
-            id, post_id, platform, external_id, message, author_name, author_id, author_url,
-            author_profile_picture, reactions_count, replies_count, posted_at, scraped_at, raw_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            f"comment_{uuid.uuid4()}",
-            post_id,
-            platform,
-            external_id,
-            draft.get("message"),
-            draft.get("author_name"),
-            draft.get("author_id"),
-            draft.get("author_url"),
-            draft.get("author_profile_picture"),
-            draft.get("reactions_count") or 0,
-            draft.get("replies_count") or 0,
-            draft.get("posted_at"),
-            scraped_at,
-            raw_json,
-        ],
-    )
-    return inserted is not None
+async def _unique_movie_slug(base: str, exclude_id: str | None = None) -> str | None:
+    slug = base
+    suffix = 2
+    while True:
+        rows = await d1_query("SELECT id FROM movies WHERE slug = ?", [slug])
+        if rows is None:
+            return None
+        clash = next((row for row in rows if row["id"] != exclude_id), None)
+        if clash is None:
+            return slug
+        slug = f"{base}-{suffix}"
+        suffix += 1
 
 
 async def list_movies() -> list[dict[str, Any]]:
     """Every enabled movie - feeds the dashboard's "which movie does this
     new keyword belong to" picker when creating a keyword inline from the
-    crawl-trigger form."""
-    rows = await d1_query("SELECT id, title FROM movies WHERE enabled = 1 ORDER BY title ASC")
+    crawl-trigger form, and the dashboard's own movie-detail table. Also
+    used by scripts/generate_social_topic_reports.py to iterate every movie
+    that should get a report (extra fields here are simply unused by that
+    caller, not a breaking change for it). `cast` needs backticks - it's a
+    SQL keyword (the CAST() function) in SQLite's own grammar, not just a
+    Python one."""
+    rows = await d1_query(f"SELECT {_MOVIE_COLUMNS} FROM movies WHERE enabled = 1 ORDER BY title ASC")
     return rows or []
+
+
+async def get_movie(movie_id: str) -> dict[str, Any] | None:
+    rows = await d1_query(f"SELECT {_MOVIE_COLUMNS} FROM movies WHERE id = ? AND enabled = 1", [movie_id])
+    if rows is None:
+        return None
+    return rows[0] if rows else None
+
+
+async def create_movie(fields: dict[str, Any]) -> dict[str, Any] | None:
+    """Dashboard Movies page create - staff type a title and optional
+    release/cast fields; slug is derived unless they pass one."""
+    title = (fields.get("title") or "").strip()
+    if not title:
+        return None
+    requested = _blank_to_none(fields.get("slug"))
+    slug = await _unique_movie_slug(movie_slug(requested or title))
+    if slug is None:
+        return None
+    now = datetime.now(tz=timezone.utc).isoformat()
+    movie_id = f"movie_{uuid.uuid4()}"
+    inserted = await d1_query(
+        f"""
+        INSERT INTO movies (
+            id, title, slug, enabled, created_at, updated_at,
+            released_at, poster_url, description, director, `cast`, distributor
+        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            movie_id,
+            title,
+            slug,
+            now,
+            now,
+            _blank_to_none(fields.get("released_at")),
+            _blank_to_none(fields.get("poster_url")),
+            _blank_to_none(fields.get("description")),
+            _blank_to_none(fields.get("director")),
+            _blank_to_none(fields.get("cast")),
+            _blank_to_none(fields.get("distributor")),
+        ],
+    )
+    if inserted is None:
+        return None
+    return await get_movie(movie_id)
+
+
+async def update_movie(movie_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+    existing = await get_movie(movie_id)
+    if not existing:
+        return None
+
+    title = existing["title"]
+    if "title" in fields and fields["title"] is not None:
+        title = fields["title"].strip() or existing["title"]
+
+    slug = existing["slug"]
+    if "slug" in fields:
+        requested = _blank_to_none(fields.get("slug"))
+        if requested:
+            unique = await _unique_movie_slug(movie_slug(requested), exclude_id=movie_id)
+            if unique is None:
+                return None
+            slug = unique
+
+    now = datetime.now(tz=timezone.utc).isoformat()
+
+    def pick(key: str) -> str | None:
+        if key not in fields:
+            return existing.get(key)
+        return _blank_to_none(fields.get(key))
+
+    updated = await d1_query(
+        f"""
+        UPDATE movies SET
+            title = ?, slug = ?, updated_at = ?,
+            released_at = ?, poster_url = ?, description = ?,
+            director = ?, `cast` = ?, distributor = ?
+        WHERE id = ? AND enabled = 1
+        """,
+        [
+            title,
+            slug,
+            now,
+            pick("released_at"),
+            pick("poster_url"),
+            pick("description"),
+            pick("director"),
+            pick("cast"),
+            pick("distributor"),
+            movie_id,
+        ],
+    )
+    if updated is None:
+        return None
+    return await get_movie(movie_id)
+
+
+async def disable_movie(movie_id: str) -> bool | None:
+    """Soft-delete from the dashboard list (keywords/posts keep the FK)."""
+    existing = await get_movie(movie_id)
+    if existing is None:
+        rows = await d1_query("SELECT id FROM movies WHERE id = ?", [movie_id])
+        if rows is None:
+            return None
+        return False
+    now = datetime.now(tz=timezone.utc).isoformat()
+    result = await d1_query(
+        "UPDATE movies SET enabled = 0, updated_at = ? WHERE id = ? AND enabled = 1",
+        [now, movie_id],
+    )
+    if result is None:
+        return None
+    return True
+
+
+# Below this many classified comments, scripts/generate_social_topic_reports.py
+# skips a movie entirely (too little signal for a meaningful topic cluster) -
+# tune freely, not derived from anything.
+MIN_COMMENTS_FOR_REPORT = 15
+
+# Cap on how many comments feed one topic-clustering Kira call - keeps the
+# prompt (and the model's reasoning-token spend) bounded regardless of how
+# large a movie's comment volume gets. Ranked by engagement first, so the
+# highest-signal comments are the ones that get dropped if a movie has more
+# than this many classified comments.
+REPORT_COMMENT_SAMPLE_SIZE = 400
+
+
+async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMENT_SAMPLE_SIZE) -> list[dict[str, Any]]:
+    """Engagement-ranked sample of this movie's already-sentiment-classified
+    comments, for the topic-clustering Kira call in
+    scripts/generate_social_topic_reports.py - NOT used for the overall
+    sentiment percentages (see get_movie_sentiment_counts, which counts
+    every classified comment, not just this capped sample)."""
+    rows = await d1_query(
+        """
+        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment
+        FROM comments c
+        JOIN posts p ON p.id = c.post_id
+        WHERE p.movie_id = ? AND c.sentiment IS NOT NULL AND c.message IS NOT NULL
+        ORDER BY c.reactions_count DESC, c.scraped_at DESC
+        LIMIT ?
+        """,
+        [movie_id, limit],
+    )
+    return rows or []
+
+
+async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
+    """Count of every classified comment for this movie, grouped by
+    sentiment label - the ground truth for the report's overall_sentiment
+    percentages (computed by the caller via plain division, not estimated
+    by an LLM), over the FULL population, not just the capped sample fed
+    to the topic-clustering call."""
+    rows = await d1_query(
+        """
+        SELECT c.sentiment, COUNT(*) AS count
+        FROM comments c
+        JOIN posts p ON p.id = c.post_id
+        WHERE p.movie_id = ? AND c.sentiment IS NOT NULL
+        GROUP BY c.sentiment
+        """,
+        [movie_id],
+    )
+    return {row["sentiment"]: row["count"] for row in (rows or [])}
+
+
+async def upsert_social_topic_report(
+    *, movie_id: str, dashboard_data_json: str, comment_count: int, post_count: int, kira_model: str | None
+) -> bool:
+    """Upsert-by-movie_id into social_topic_reports - one row per movie,
+    overwritten on each scripts/generate_social_topic_reports.py run (no
+    history kept; nothing reads past reports)."""
+    if not _configured():
+        return False
+
+    generated_at = datetime.now(tz=timezone.utc).isoformat()
+    existing_rows = await d1_query("SELECT id FROM social_topic_reports WHERE movie_id = ?", [movie_id])
+    if existing_rows:
+        updated = await d1_query(
+            """
+            UPDATE social_topic_reports SET
+                dashboard_data_json = ?, comment_count = ?, post_count = ?, kira_model = ?, generated_at = ?
+            WHERE id = ?
+            """,
+            [dashboard_data_json, comment_count, post_count, kira_model, generated_at, existing_rows[0]["id"]],
+        )
+        return updated is not None
+
+    inserted = await d1_query(
+        """
+        INSERT INTO social_topic_reports (id, movie_id, dashboard_data_json, comment_count, post_count, kira_model, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [f"str_{uuid.uuid4()}", movie_id, dashboard_data_json, comment_count, post_count, kira_model, generated_at],
+    )
+    return inserted is not None
 
 
 async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> dict[str, Any] | None:
@@ -432,7 +473,9 @@ async def get_keyword(keyword_id: str, platform: str) -> dict[str, Any] | None:
     must not silently match here."""
     rows = await d1_query(
         """
-        SELECT k.id, k.movie_id, k.platform, k.keyword
+        SELECT k.id, k.movie_id, k.platform, k.keyword,
+               m.title AS movie_title, m.director AS movie_director,
+               m.`cast` AS movie_cast, m.distributor AS movie_distributor
         FROM keywords k JOIN movies m ON m.id = k.movie_id
         WHERE k.id = ? AND k.platform = ? AND k.enabled = 1 AND m.enabled = 1
         """,
@@ -462,222 +505,28 @@ async def get_enabled_keywords(platform: str, movie_id: str | None = None) -> li
     return rows or []
 
 
-def _fold_for_keyword_match(text: str) -> str:
-    """Lowercase, strip Vietnamese diacritics, remove spaces - ported from
-    cinemark-scraper's src/lib/keyword-match.ts foldForKeywordMatch() so a
-    post ingested here agrees with how posts in the same table compute
-    keyword_match, whichever platform scraped it."""
-    decomposed = unicodedata.normalize("NFD", text)
-    without_marks = "".join(c for c in decomposed if not unicodedata.combining(c))
-    without_dd = without_marks.replace("đ", "d").replace("Đ", "D")
-    return re.sub(r"\s+", "", without_dd.lower())
-
-
-def _keyword_match_parts(keyword: str) -> list[str]:
-    """Normal keyword -> one phrase that must appear in full; `+`-joined
-    keyword -> every part must appear (any order) - mirrors
-    keywordMatchParts() in keyword-match.ts."""
-    if "+" in keyword:
-        return [part.strip() for part in keyword.split("+") if part.strip()]
-    trimmed = keyword.strip()
-    return [trimmed] if trimmed else []
-
-
-def contains_keyword(content: str | None, keyword: str | None) -> bool:
-    """Exact-substring keyword_match check. Public (not just persist_post's
-    own fallback) so callers - see app/workers/ingest_consumer/main.py's
-    handle_post - can check this cheap/free match first and only spend a
-    Kira call (see app/kira/relevance.py) on the posts it actually misses,
-    instead of classifying every single post regardless of whether the
-    free check already found a match."""
-    if not content or not keyword:
-        return False
-    haystack = _fold_for_keyword_match(content)
-    parts = _keyword_match_parts(keyword)
-    if not parts:
-        return False
-    for part in parts:
-        needle = _fold_for_keyword_match(part)
-        if not needle or needle not in haystack:
-            return False
-    return True
-
-
-async def persist_dropped_post(*, platform: str, reason: str, payload: dict[str, Any], keyword_id: str | None = None) -> None:
-    """Archives a raw Kafka payload that the ingest consumer dropped before
-    it ever reached persist_post (unregistered platform mapper, missing/
-    unknown keyword_id - see app/workers/ingest_consumer/main.py's
-    handle_post). persist_post's own `raw_json` column already covers
-    "reprocess after fixing a mapper bug" for posts that DID get persisted;
-    this covers the posts that never got that far at all - once the
-    underlying issue is fixed (mapper registered, keyword corrected),
-    these rows are the only way to recover that data without re-scraping
-    it, which may not even be possible later (the post could be deleted by
-    then, or the crawl window long gone). Best-effort like every other
-    write here - a failure must not mask the drop itself, already logged/
-    alerted by the caller regardless of whether this archive succeeds."""
-    if not _configured():
-        return
-    await d1_query(
-        "INSERT INTO dropped_posts (id, platform, reason, keyword_id, raw_json, dropped_at) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-            f"dropped_{uuid.uuid4()}",
-            platform,
-            reason,
-            keyword_id,
-            json.dumps(payload),
-            datetime.now(tz=timezone.utc).isoformat(),
-        ],
-    )
-
-
-async def persist_post(
-    *, movie_id: str, keyword_id: str, keyword: str, platform: str, draft: PostDraft, ai_relevant: bool | None = None
-) -> bool:
-    """Upsert one scraped post (any registered platform) straight into
-    cinemark-scraper's own `posts` table (+ an engagement snapshot on
-    change) - ported from its src/jobs/persist-post.ts so both the
-    Worker's own scrapers and this Kafka-fed path write through the exact
-    same logic. `draft` is already normalized by the platform's mapper
-    (see app/services/platforms.py) - this function has no
-    platform-specific field knowledge of its own.
-
-    `ai_relevant`, when given (see app/kira/relevance.py), is Kira's
-    synonym/context-aware verdict and is used for keyword_match instead of
-    the exact-substring contains_keyword check below - callers pass None
-    to fall back to the substring check (Kira not configured, or the call
-    failed) rather than blocking ingestion on an LLM hiccup."""
-    if not _configured() or platform not in registered_platforms():
-        return
-
-    external_id = draft.get("external_id")
-    if not external_id:
-        return
-
-    content = draft.get("content")
-
-    # Junk filter: too-short content (a bare reaction/emoji has no real
-    # signal to analyze) - skip entirely. Does NOT filter on keyword_match:
-    # a real commenter writing an abbreviation, an unaccented Vietnamese
-    # spelling, or the movie's English name would never literally contain
-    # the configured keyword phrase, so gating storage on that match would
-    # silently drop real posts. keyword_match is still computed and stored
-    # below as a flag for callers to filter on if they choose to, same as
-    # before - it's just not a reason to skip storing the post outright.
-    if not content or len(content.strip()) < MIN_CONTENT_LENGTH:
-        logger.info("post_skipped_junk", platform=platform, external_id=external_id, reason="content_too_short")
-        return
-    is_keyword_match = ai_relevant if ai_relevant is not None else contains_keyword(content, keyword)
-
-    scraped_at = datetime.now(tz=timezone.utc).isoformat()
-    media_json = json.dumps(draft.get("media") or {})
-    raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
-    engagement = {field: draft.get(field) or 0 for field in ENGAGEMENT_FIELDS}
-    # D1 stores booleans as SQLite integers (0/1) - pass an int, not a JSON
-    # bool, so the HTTP API binds it as the same type Drizzle's
-    # integer(..., {mode: "boolean"}) column expects. Can legitimately be 0
-    # - see this function's own docstring for why a non-match still gets
-    # stored instead of skipped.
-    keyword_match = int(is_keyword_match)
-
-    existing_rows = await d1_query(
-        "SELECT id, like_count, reply_count, repost_count, quote_count, reshare_count, view_count "
-        "FROM posts WHERE platform = ? AND external_id = ?",
-        [platform, external_id],
-    )
-    existing = existing_rows[0] if existing_rows else None
-
-    if existing is None:
-        post_id = f"post_{uuid.uuid4()}"
-        inserted = await d1_query(
-            """
-            INSERT INTO posts (
-                id, movie_id, keyword_id, platform, external_id, url, author, content, media_json,
-                like_count, reply_count, repost_count, quote_count, reshare_count, view_count,
-                posted_at, scraped_at, raw_json, keyword_match
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                post_id,
-                movie_id,
-                keyword_id,
-                platform,
-                external_id,
-                draft.get("url"),
-                draft.get("author"),
-                draft.get("content"),
-                media_json,
-                engagement["like_count"],
-                engagement["reply_count"],
-                engagement["repost_count"],
-                engagement["quote_count"],
-                engagement["reshare_count"],
-                engagement["view_count"],
-                draft.get("posted_at"),
-                scraped_at,
-                raw_json,
-                keyword_match,
-            ],
-        )
-        if inserted is None:
-            # Insert failed (race with another message for the same
-            # external_id hitting the unique index, D1 outage, ...) - the
-            # post row doesn't exist, so a snapshot referencing post_id here
-            # would be an orphan. Log and stop; the next re-scrape of this
-            # post will retry the whole upsert from scratch.
-            logger.warning("d1_post_insert_failed", platform=platform, external_id=external_id)
-            return False
-        await d1_query(
-            "INSERT INTO post_engagement_snapshots "
-            "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
-        )
-        return
-
-    post_id = existing["id"]
-    changed = any(existing.get(field) != engagement[field] for field in ENGAGEMENT_FIELDS)
-
+async def set_keyword_enabled(platform: str, keyword_id: str, enabled: bool) -> dict[str, Any] | None:
+    """Toggles one keyword on/off - lets an operator pause a stale/one-off
+    keyword (or a batch just added for testing) without deleting it, so a
+    platform's daily schedule (get_enabled_keywords above) picks up exactly
+    the intended set. platform is a defensive scope, not a lookup key on
+    its own - keyword_id is already unique - so a mismatched platform in
+    the URL can't silently toggle a different platform's row. Returns the
+    updated row, or None if the id doesn't exist under that platform, or
+    the write itself failed."""
     updated = await d1_query(
-        """
-        UPDATE posts SET
-            url = ?, author = ?, content = ?, media_json = ?,
-            like_count = ?, reply_count = ?, repost_count = ?, quote_count = ?, reshare_count = ?, view_count = ?,
-            posted_at = ?, scraped_at = ?, raw_json = ?, keyword_match = ?
-        WHERE id = ?
-        """,
-        [
-            draft.get("url"),
-            draft.get("author"),
-            draft.get("content"),
-            media_json,
-            engagement["like_count"],
-            engagement["reply_count"],
-            engagement["repost_count"],
-            engagement["quote_count"],
-            engagement["reshare_count"],
-            engagement["view_count"],
-            draft.get("posted_at"),
-            scraped_at,
-            raw_json,
-            keyword_match,
-            post_id,
-        ],
+        "UPDATE keywords SET enabled = ? WHERE id = ? AND platform = ?",
+        [1 if enabled else 0, keyword_id, platform],
     )
     if updated is None:
-        # UPDATE failed (D1 outage, ...) - post_id still refers to a real,
-        # pre-existing row (unlike the insert branch above), so nothing's
-        # orphaned, but the engagement numbers below would reflect this
-        # message's payload, not what's actually stored. Skip the snapshot;
-        # the next re-scrape retries the whole upsert.
-        logger.warning("d1_post_update_failed", platform=platform, external_id=external_id, post_id=post_id)
-        return False
-    if changed:
-        await d1_query(
-            "INSERT INTO post_engagement_snapshots "
-            "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
-        )
-        
-    return True
+        logger.warning("d1_set_keyword_enabled_failed", platform=platform, keyword_id=keyword_id, enabled=enabled)
+        return None
+    rows = await d1_query(
+        """
+        SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword, k.enabled
+        FROM keywords k JOIN movies m ON m.id = k.movie_id
+        WHERE k.id = ? AND k.platform = ?
+        """,
+        [keyword_id, platform],
+    )
+    return rows[0] if rows else None

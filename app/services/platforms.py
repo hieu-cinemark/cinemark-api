@@ -144,6 +144,7 @@ def _map_facebook_comment(payload: dict[str, Any]) -> CommentDraft:
         "author_profile_picture": payload.get("author_profile_picture"),
         "reactions_count": payload.get("reactions_count") or 0,
         "replies_count": payload.get("replies_count") or 0,
+        "parent_external_id": payload.get("parent_comment_id"),
         "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
         "raw": payload,
     }
@@ -169,6 +170,7 @@ def _map_threads_comment(payload: dict[str, Any]) -> CommentDraft:
         "author_profile_picture": payload.get("author_profile_picture"),
         "reactions_count": payload.get("like_count") or 0,
         "replies_count": payload.get("reply_count") or 0,
+        "parent_external_id": payload.get("parent_reply_id"),
         "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
         "raw": payload,
     }
@@ -188,6 +190,7 @@ def _map_tiktok_comment(payload: dict[str, Any]) -> CommentDraft:
         "author_profile_picture": payload.get("author_avatar_url"),
         "reactions_count": payload.get("like_count") or 0,
         "replies_count": payload.get("reply_count") or 0,
+        "parent_external_id": payload.get("parent_comment_id"),
         "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
         "raw": payload,
     }

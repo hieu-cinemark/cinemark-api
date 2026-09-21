@@ -60,6 +60,12 @@ class ValidationError(AppError):
     code = "validation_error"
 
 
+class NoSavedSessionError(ValidationError):
+    """This account has no Redis storage_state and no cookie field to reuse."""
+
+    code = "no_saved_session"
+
+
 class ConflictError(AppError):
     """The request conflicts with existing state (e.g. a duplicate key)."""
 

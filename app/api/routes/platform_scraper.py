@@ -18,7 +18,7 @@ from fastapi import APIRouter, Query
 from app.core.errors import NotFoundError, UpstreamError
 from app.core.logging import get_logger
 from app.schemas.scraper import JobStatus, RunCommentsResponse, RunScraperRequest, RunScraperResponse, StopScraperResponse
-from app.services.crawl_jobs import get_running_job, request_stop
+from app.services.crawl_jobs import get_running_job, is_platform_draining, request_stop
 from app.services.d1 import get_enabled_keywords, get_keyword, get_post
 from app.services.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 
@@ -51,6 +51,7 @@ def build_run_route(router: APIRouter, platform: str) -> None:
                 max_pages=payload.max_pages,
                 start_date=payload.start_date,
                 end_date=payload.end_date,
+                bfs_depth=payload.bfs_depth if payload.keyword_id is not None else None,
             )
             if ok:
                 published += 1
@@ -67,6 +68,8 @@ def build_run_route(router: APIRouter, platform: str) -> None:
 
     @router.get("/job-status", response_model=JobStatus)
     async def job_status() -> JobStatus:
+        if await is_platform_draining(platform):
+            return JobStatus(running=False)
         job = await get_running_job(platform)
         if job is None:
             return JobStatus(running=False)
@@ -76,15 +79,13 @@ def build_run_route(router: APIRouter, platform: str) -> None:
             keyword_id=job.get("keyword_id"),
             started_at=job.get("started_at"),
             type=job.get("type"),
+            account=job.get("account"),
+            post_id=job.get("post_id"),
+            username=job.get("username"),
         )
 
     @router.post("/stop", response_model=StopScraperResponse)
     async def stop_scraper() -> StopScraperResponse:
-        # Only ever cancels whatever spider-hub's consumer is running for
-        # this platform *right now* - a backlog of other still-queued
-        # crawl_requests for this platform (e.g. from a "run every keyword"
-        # trigger) is untouched and starts as soon as this one exits, same
-        # as the consumer's normal one-at-a-time processing already does.
         stopped = await request_stop(platform)
         logger.info("scraper_stop_requested", platform=platform, stopped=stopped)
         return StopScraperResponse(stopped=stopped)
@@ -99,7 +100,7 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
 
     @router.post("/posts/{post_id}/comments/run", response_model=RunCommentsResponse)
     async def run_comments(
-        post_id: str, max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=1, le=50)
+        post_id: str, max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=1, le=500)
     ) -> RunCommentsResponse:
         post = await get_post(post_id)
         if post is None:
@@ -108,7 +109,14 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
             raise UpstreamError(f"Post {post_id} is not a {platform} post")
         if not post.get("url"):
             raise UpstreamError(f"Post {post_id} has no stored url - can't bootstrap a comments crawl without one")
-
+        # Used to skip this call when the stored reply_count was 0 - removed
+        # because every platform mapper (app/services/platforms.py) coalesces
+        # a missing/uncaptured count to 0 the same as a real zero
+        # (`payload.get(...) or 0`), so a 0 here can't be trusted to mean
+        # "this post structurally has no comments" rather than "the count
+        # just wasn't captured at scrape time". Skipping on it risked
+        # permanently never fetching comments for posts that actually have
+        # them.
         published = await publish_comments_crawl_request(
             platform=platform, post_external_id=post["external_id"], post_url=post["url"], max_pages=max_pages
         )

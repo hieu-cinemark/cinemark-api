@@ -7,55 +7,14 @@ posts that never literally contain the configured keyword phrase."""
 
 from __future__ import annotations
 
-import asyncio
 import json
-import random
-import re
 from typing import Any
 
-import openai
-
 from app.core.logging import get_logger
-from app.kira.base import kira_ai
+from app.kira.client import call_kira, kira_is_enabled, parse_json_response
 from app.kira.prompt import DATA_PROMPT, SYSTEM_PROMPT
 
 logger = get_logger(__name__)
-
-_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
-
-# Caps concurrent Kira calls process-wide, independent of
-# ingest_consumer.py's own _MESSAGE_CONCURRENCY (8) - classifying every one
-# of 8 concurrent messages at once was firing 8 simultaneous Kira requests
-# and tripping the provider's rate limit, regardless of total volume over
-# time. 2 is deliberately conservative; raise it only after confirming the
-# account's actual rate limit headroom.
-_KIRA_CONCURRENCY = asyncio.Semaphore(2)
-_MAX_RATE_LIMIT_RETRIES = 3
-_RETRY_BASE_SECONDS = 2.0
-
-
-async def _call_kira(*, system_prompt: str, user_prompt: str, max_tokens: int) -> str:
-    """KiraAI.chat() uses a sync OpenAI client - run it off the event loop
-    so one classification call doesn't stall every other concurrent
-    message the ingest consumer's semaphore is juggling. Retries with
-    backoff specifically on a 429 (RateLimitError) - anything else (bad
-    JSON, auth, network) fails immediately since a retry won't help."""
-    async with _KIRA_CONCURRENCY:
-        for attempt in range(1, _MAX_RATE_LIMIT_RETRIES + 1):
-            try:
-                return await asyncio.to_thread(
-                    kira_ai.chat,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    temperature=0.0,
-                    max_tokens=max_tokens,
-                )
-            except openai.RateLimitError:
-                if attempt == _MAX_RATE_LIMIT_RETRIES:
-                    raise
-                delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
-                logger.warning("kira_rate_limited_retrying", attempt=attempt, delay_seconds=round(delay, 1))
-                await asyncio.sleep(delay)
 
 
 def _field(draft: dict[str, Any], *keys: str) -> str:
@@ -72,14 +31,57 @@ def _field(draft: dict[str, Any], *keys: str) -> str:
     return "N/A"
 
 
-async def classify_relevance(keyword: str, draft: dict[str, Any]) -> dict[str, Any] | None:
+def _movie_context(keyword_row: dict[str, Any] | None) -> str:
+    """Renders the disambiguating movie facts (title/director/cast/
+    distributor) attached to a keyword row - see get_keyword's own SELECT
+    (app/services/d1.py) - as one block for DATA_PROMPT's MOVIE INFO
+    section. None/empty when the caller passes a bare keyword string
+    (older call sites, or a keyword row that predates these columns) -
+    "N/A" degrades to the previous keyword-only behavior rather than
+    crashing on a missing key.
+
+    Why this exists at all: TARGET KEYWORD alone is ambiguous for a movie
+    whose title collides with an unrelated, common real-world phrase or
+    saying (Vietnamese example that motivated this: "Mẹ Mìn" is also a
+    decades-old folk term for a child-abductor, a frequent topic on its
+    own with zero connection to this specific film) - SYSTEM_PROMPT's own
+    semantic-tolerance rules (needed for legitimate cases like "iPhone 17
+    Pro Max" written as "con 17 Pro Max") would otherwise happily approve
+    any post about the generic topic, since nothing in a bare keyword
+    string tells Kira "this is a movie" at all. Concrete facts only Kira's
+    training data can't already know for real-world, tell-them-apart
+    grounding - not padding."""
+    if not keyword_row:
+        return "N/A"
+    facts = []
+    if keyword_row.get("movie_title"):
+        facts.append(f"Movie title: {keyword_row['movie_title']}")
+    if keyword_row.get("movie_director"):
+        facts.append(f"Director: {keyword_row['movie_director']}")
+    if keyword_row.get("movie_cast"):
+        facts.append(f"Cast: {keyword_row['movie_cast']}")
+    if keyword_row.get("movie_distributor"):
+        facts.append(f"Distributor: {keyword_row['movie_distributor']}")
+    return "\n".join(facts) if facts else "N/A"
+
+
+async def classify_relevance(keyword: str, draft: dict[str, Any], keyword_row: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Runs one scraped post through Kira's relevance classifier. Returns
     the parsed {relevant, classification, score, reason, evidence} dict, or
     None if the call or the response parsing failed - callers should fall
     back to substring matching rather than blocking ingestion on an LLM
-    hiccup (bad credentials, provider outage, malformed JSON back)."""
+    hiccup (bad credentials, provider outage, malformed JSON back).
+
+    keyword_row is the full row from app.services.d1.get_keyword (movie_*
+    columns included) when the caller has it - see _movie_context above
+    for why passing just the bare `keyword` string isn't enough to reliably
+    tell "this movie" apart from an unrelated real-world phrase that
+    happens to share its title."""
+    if not await kira_is_enabled():
+        return None
     prompt = DATA_PROMPT.format(
         keyword=keyword,
+        movie_context=_movie_context(keyword_row),
         title=_field(draft, "title"),
         description=_field(draft, "description"),
         content=draft.get("content") or "N/A",
@@ -97,11 +99,16 @@ async def classify_relevance(keyword: str, draft: dict[str, Any]) -> dict[str, A
         # (finish_reason="length", content="") rather than saving cost -
         # confirmed directly: 500 intermittently returned "" for this same
         # prompt/input, 1500 didn't.
-        response = await _call_kira(system_prompt=SYSTEM_PROMPT, user_prompt=prompt, max_tokens=1500)
-        cleaned = _JSON_FENCE_RE.sub("", response.strip())
-        parsed = json.loads(cleaned)
+        response = await call_kira(
+            task="relevance",
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=prompt,
+            max_tokens=1500,
+            platform=str(draft.get("platform") or "") or None,
+        )
+        parsed = parse_json_response(response)
         if not isinstance(parsed, dict) or "relevant" not in parsed:
-            raise ValueError(f"unexpected relevance shape: {cleaned[:200]!r}")
+            raise ValueError(f"unexpected relevance shape: {json.dumps(parsed)[:200]!r}")
         return parsed
     except Exception as exc:
         logger.warning("kira_relevance_failed", keyword=keyword, error=str(exc))

@@ -1,68 +1,22 @@
 #!/bin/bash
-# Scheduled entry point (every 6h, on the hour): triggers a crawl for every
-# enabled keyword across every movie, for each spider-hub-backed platform
-# (currently just facebook - see app/services/platforms.py), by calling
-# POST /<platform>/run with an empty body - the exact same endpoint (and
-# Kafka contract) the "run" button in the admin UI uses for a single
-# keyword/movie. There's no separate "scheduled run" code path to keep in
-# sync with the manual one.
-#
-# Same cadence cinemark-scraper's own Facebook cron used before spider-hub
-# took over as the primary source (see cinemark-scraper/src/index.ts) - "0
-# */6 * * *", not a coincidence, keeps the handoff cadence-neutral.
-#
-# Every keyword gets the same fixed cadence for now - per-keyword frequency
-# is a planned upgrade, not implemented yet.
+# Scheduled entry point (every 6h, on the hour) for the internal
+# analytics/health jobs below - account health, volume-anomaly detection,
+# AI topic reports. Does NOT trigger any crawls itself anymore: that moved
+# to app/services/scheduler.py, an in-process daily scheduler driven by the
+# dashboard's "Crawl schedule" card (crawl_schedules table) - editable
+# without touching a crontab, unlike the old fixed "every 6h, for every
+# platform, no way to change it" loop this script used to run here. See
+# that module's docstring for the full rationale, including why it also
+# replaces cinemark-scraper's Cloudflare Cron Triggers for Threads/TikTok.
 #
 # Install once via `crontab -e`:
 #   0 */6 * * * /path/to/cinemark-api/scripts/trigger_scheduled_crawl.sh >> /path/to/cinemark-api/scripts/trigger_scheduled_crawl.log 2>&1
 
 set -uo pipefail
 
-CINEMARK_API_URL="${CINEMARK_API_URL:-http://localhost:8000}"
-
 log() { echo "[$(date -u +"%Y-%m-%d %H:%M:%S UTC")] $*"; }
 
-# Firing at exactly :00 every 6h, forever, is itself a bot-like signal -
-# a random startup delay (0-15 min) means the real request leaves at a
-# slightly different moment each cycle without needing a different
-# crontab entry. Skippable for manual/local runs via SKIP_STARTUP_JITTER=1.
-if [ "${SKIP_STARTUP_JITTER:-0}" != "1" ]; then
-    startup_delay=$((RANDOM % 900))
-    log "Startup jitter: sleeping ${startup_delay}s before triggering"
-    sleep "$startup_delay"
-fi
-
-# Add a platform here once it has its own router (app/api/routes/<platform>.py)
-# registered in app/main.py - nothing else in this script changes.
-#
-# No commas between entries - bash arrays are space-separated. This used
-# to read (facebook, threads, tiktok), which silently made the first two
-# elements "facebook," and "threads," (comma glued onto the word since
-# there's no space before it) and sent every scheduled trigger to
-# "$CINEMARK_API_URL/facebook,/run" - a 404 - for those two platforms.
-# Only tiktok (the one with no trailing comma) was ever actually running
-# on this cron.
-PLATFORMS=(facebook threads tiktok)
-
 status=0
-for platform in "${PLATFORMS[@]}"; do
-    log "=== Triggering scheduled crawl: $platform (all enabled keywords) ==="
-
-    response="$(curl -s -w '\n%{http_code}' -X POST "$CINEMARK_API_URL/$platform/run" \
-        -H "Content-Type: application/json" -d '{}')"
-    http_code="$(echo "$response" | tail -n1)"
-    body="$(echo "$response" | sed '$d')"
-
-    if [ "$http_code" != "200" ]; then
-        log "Trigger FAILED for $platform (HTTP $http_code): $body"
-        status=1
-        continue
-    fi
-
-    log "Trigger OK for $platform: $body"
-done
-
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Unlike check_volume_anomaly.py below, this has no time-of-day bias to
@@ -94,6 +48,23 @@ if [ "$current_hour" = "18" ]; then
         log "Volume check OK"
     else
         log "Volume check FAILED"
+        status=1
+    fi
+fi
+
+# Regenerating the AI "top 10 topics" social listening report is a Kira-
+# heavy batch job (topic clustering + verbatim selection + narrative, one
+# movie at a time) and a movie's discussion topics don't meaningfully shift
+# within a few hours at current comment volume - so, same "don't run this
+# on every 6h cycle" reasoning as check_volume_anomaly.py above, gate it to
+# once a day. Deliberately a different hour (20, not 18) so the two
+# Kira-consuming batch jobs never stack on the same cron tick.
+if [ "$current_hour" = "20" ]; then
+    log "=== Regenerating social topic reports (once/day) ==="
+    if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.generate_social_topic_reports); then
+        log "Social topic report generation OK"
+    else
+        log "Social topic report generation FAILED"
         status=1
     fi
 fi

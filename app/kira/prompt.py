@@ -102,6 +102,34 @@ Do NOT mark a record as relevant merely because:
 - The keyword appears in a list of many unrelated products
 - The content is discussing a completely different entity
 
+TITLE-COLLISION RULE (movies specifically):
+
+Many TARGET KEYWORDs in this pipeline are Vietnamese movie titles. Some of
+these titles are also ordinary, unrelated real-world words or phrases (a
+well-known folk saying, a common noun phrase, a person's given name, etc.)
+that get discussed constantly with zero connection to any film - e.g. "Mẹ
+Mìn" is both a movie title AND a decades-old folk term for a child
+abductor, "Loạn Thế" is both a movie title and a generic phrase for
+"chaotic times".
+
+When a MOVIE INFO block is provided below, treat it as the disambiguating
+fact set for what "the TARGET KEYWORD" actually refers to here - a
+specific film with that director/cast/distributor, not the phrase's other
+possible meaning(s). A record only counts as relevant when it concerns
+THIS film: e.g. the film's release, trailer, plot, box office, reviews, a
+listed cast/crew member discussed as being in it, cinema showtimes, or
+clearly-labeled fan/promo content for it - not merely because the words in
+the title appear somewhere in the text.
+
+If the record uses the keyword's words only in their ordinary, everyday
+sense (the folk saying, the generic phrase, a person by that name with no
+tie to this film) and shows no film/entertainment signal connecting it to
+this specific movie, classify it as "irrelevant" even though the literal
+words are present - a shared surface form is not evidence of relevance on
+its own. Do not let a real-world topic's own popularity (e.g. a viral
+child-safety post about the folk meaning of "Mẹ Mìn") count toward the
+score just because it uses the same words as the title.
+
 SCORING:
 
 Return a relevance score from 0.0 to 1.0.
@@ -196,6 +224,11 @@ Analyze the following scraped data and determine whether it is relevant to the T
 
 TARGET KEYWORD:
 {keyword}
+
+MOVIE INFO (the specific film "{keyword}" refers to here, when known - see
+the TITLE-COLLISION RULE above; "N/A" means no extra facts were available,
+fall back to judging from the keyword text alone):
+{movie_context}
 
 SCRAPED DATA:
 

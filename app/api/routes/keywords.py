@@ -11,9 +11,9 @@ from __future__ import annotations
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.core.errors import UpstreamError, ValidationError
-from app.schemas.scraper import KeywordOut
-from app.services.d1 import get_or_create_keyword, list_keywords
+from app.core.errors import NotFoundError, UpstreamError, ValidationError
+from app.schemas.scraper import KeywordEnabledUpdate, KeywordOut
+from app.services.d1 import get_or_create_keyword, list_keywords, set_keyword_enabled
 
 
 class KeywordCreateRequest(BaseModel):
@@ -35,4 +35,11 @@ def build_keyword_routes(router: APIRouter, platform: str) -> None:
         row = await get_or_create_keyword(payload.movie_id, platform, keyword)
         if row is None:
             raise UpstreamError("Could not create keyword (D1 write failed or movie not found)")
+        return KeywordOut(**row)
+
+    @router.patch("/keywords/{keyword_id}", response_model=KeywordOut)
+    async def update_keyword_enabled(keyword_id: str, payload: KeywordEnabledUpdate) -> KeywordOut:
+        row = await set_keyword_enabled(platform, keyword_id, payload.enabled)
+        if row is None:
+            raise NotFoundError(f"No {platform} keyword {keyword_id}")
         return KeywordOut(**row)

@@ -1,20 +1,16 @@
 """Facebook scraper routes: POST /facebook/run (shared trigger contract -
 see platform_scraper.py), GET /facebook/keywords (see keywords.py), the
-refresh-token/token-status/WS trio every spider-hub-backed platform with
-its own browser-bootstrap token cache gets (see token_refresh.py), and
+refresh-token/token-status/WS trio (see token_refresh.py), and
 POST /facebook/posts/{post_id}/comments/run (see
-platform_scraper.build_comments_run_route - Facebook is one of the two
-platforms spider-hub has a comments spider for).
-TikTok is spider-hub-backed too (see tiktok.py) but skips the refresh-token
-trio - its identity is a captured cookie/device_id/odin_id triple, not a
-browser session token that expires and needs periodic re-bootstrapping -
-and has no comments route at all (no comments spider exists for it).
+platform_scraper.build_comments_run_route). TikTok uses the same restore /
+cookie-import trio (see tiktok.py) but recaptures device_id/odin_id rather
+than a GraphQL token cache.
 
 Adding another spider-hub-backed platform later means a new file this same
 shape: build_run_route(router, "<platform>") + build_keyword_routes (+
-build_token_refresh_routes if it has a bootstrap-captured token cache like
-Facebook/Threads do, + build_comments_run_route if spider-hub has a
-comments spider for it) - registered in app/main.py next to this one."""
+build_token_refresh_routes if sessions are restored/imported from the
+dashboard, + build_comments_run_route if spider-hub has a comments spider
+for it) - registered in app/main.py next to this one."""
 
 from __future__ import annotations
 

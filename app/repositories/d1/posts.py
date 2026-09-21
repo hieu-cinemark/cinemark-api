@@ -1,0 +1,591 @@
+"""Everything that reads/writes D1's `posts` table (+ its
+post_engagement_snapshots/dropped_posts siblings) - the same rows
+cinemark-scraper's Worker owns (see api/schema/scraper.ts there). Pulled out
+of the old app/services/d1.py monolith so this table's query patterns,
+pagination, and indexes live in one place instead of being mixed in with
+movies/keywords/comments.
+
+app/services/d1.py still re-exports every name below (persist_post,
+list_posts, ...) so existing `from app.services.d1 import persist_post`
+call sites (ingest_consumer, scripts, tests) don't need to change - only
+new code needs to reach for `post_repo` directly."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import unicodedata
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from app.core.logging import get_logger
+from app.services.d1_client import d1_query, _configured
+from app.services.platforms import PostDraft, registered_platforms
+
+logger = get_logger(__name__)
+
+ENGAGEMENT_FIELDS = ("like_count", "reply_count", "repost_count", "quote_count", "reshare_count", "view_count")
+
+# Below this many characters (after trimming), a post's content is treated
+# as junk - a bare reaction/emoji/one-word comment with nothing to analyze.
+# Tune freely; this is a judgment call, not derived from anything.
+MIN_CONTENT_LENGTH = 10
+
+#  Interactions only, deliberately excluding view_count: a view is a passive
+# impression, not a "tương tác" (interaction) - a big view count would
+# otherwise dominate the sort outright, since it's routinely 10-100x the
+# size of like/reply/repost/quote/reshare counts combined and would make
+# this look like a "most viewed" sort wearing an "engagement" label.
+_ENGAGEMENT_SCORE_SQL = "(p.like_count + p.reply_count + p.repost_count + p.quote_count + p.reshare_count)"
+
+# Spaces / punctuation stripped so "#Anh Hùng" and "#AnhHung" both match
+# the movie title "Anh Hùng".
+_HASHTAG_STRIP = re.compile(r"[\s._-]+")
+
+# Top-posts view ranks by engagement first, then keeps only posts that
+# mention the movie (full title or #TitleWithoutSpaces). Scanning this
+# many highest-engagement rows is enough for the dashboard cap of 100.
+TOP_POSTS_MENTION_SCAN = 5000
+
+
+# --- indexes -------------------------------------------------------------
+# Every index below exists because a real query in this file (or
+# ingest_consumer's persist_post upsert-check) filters/sorts on exactly
+# those columns - see each comment for which one. None of this is
+# speculative: the table had zero indexes beyond the `id` primary key until
+# 2026-09-21 (verified via PRAGMA index_list against the local mirror),
+# meaning every one of these was previously a full table scan.
+_POST_INDEXES = (
+    # /stats/posts with no platform filter (the dashboard's default "All
+    # platforms" tab - see spider-hub-dashboard's PostsReview.tsx) sorts by
+    # scraped_at with no WHERE at all - the (platform, scraped_at) index
+    # below can't serve that (rows aren't globally scraped_at-ordered
+    # unless platform is also pinned), so this plain one covers it.
+    "CREATE INDEX IF NOT EXISTS idx_posts_scraped_at ON posts(scraped_at DESC)",
+    # /stats/posts?platform=X (a platform tab) - list_posts' WHERE
+    # platform = ? ORDER BY scraped_at DESC.
+    "CREATE INDEX IF NOT EXISTS idx_posts_platform_scraped_at ON posts(platform, scraped_at DESC)",
+    # Top posts by keyword (TopPostsModal / useTopPostsByKeyword) and the
+    # daily top-comments sweep (list_posts_needing_comments) both filter on
+    # keyword_id alone (a keyword already implies one platform, so this
+    # single column is selective enough without a composite).
+    "CREATE INDEX IF NOT EXISTS idx_posts_keyword_id ON posts(keyword_id)",
+    # Top posts by movie (TopPostsModal / useTopPostsByMovie) filters on
+    # movie_id alone, same reasoning.
+    "CREATE INDEX IF NOT EXISTS idx_posts_movie_id ON posts(movie_id)",
+    # persist_post's own upsert-check (SELECT ... WHERE platform = ? AND
+    # external_id = ?) and get_post_by_external_id run on *every single*
+    # ingested post - by far the hottest query against this table. Not
+    # UNIQUE: the local mirror already has a handful of pre-existing
+    # (platform, external_id) duplicates from before this index existed
+    # (a persist_post race - see that function's own docstring assuming a
+    # unique index that never actually existed) - adding UNIQUE now would
+    # just fail to create. Deduping those is a separate, deliberate
+    # decision, not something to fold into an index migration.
+    "CREATE INDEX IF NOT EXISTS idx_posts_platform_external_id ON posts(platform, external_id)",
+)
+
+_post_indexes_ready = False
+_post_indexes_lock = asyncio.Lock()
+
+
+async def _ensure_post_indexes() -> None:
+    global _post_indexes_ready
+    if _post_indexes_ready:
+        return
+    async with _post_indexes_lock:
+        if _post_indexes_ready:
+            return
+        for sql in _POST_INDEXES:
+            await d1_query(sql, quiet=True)
+        _post_indexes_ready = True
+
+
+def post_mentions_movie(content: str | None, title: str | None) -> bool:
+    """True when the post text contains the movie's full title, or a
+    hashtag of that title with spaces stripped (#AnhHùng for "Anh Hùng")."""
+    if not content or not title:
+        return False
+    text = content.casefold()
+    name = title.strip().casefold()
+    if len(name) < 2:
+        return False
+    if name in text:
+        return True
+    compact = _HASHTAG_STRIP.sub("", name)
+    if len(compact) < 2:
+        return False
+    compact_text = _HASHTAG_STRIP.sub("", text)
+    return f"#{compact}" in compact_text
+
+
+def _fold_for_keyword_match(text: str) -> str:
+    """Lowercase, strip Vietnamese diacritics, remove spaces - ported from
+    cinemark-scraper's src/lib/keyword-match.ts foldForKeywordMatch() so a
+    post ingested here agrees with how posts in the same table compute
+    keyword_match, whichever platform scraped it."""
+    decomposed = unicodedata.normalize("NFD", text)
+    without_marks = "".join(c for c in decomposed if not unicodedata.combining(c))
+    without_dd = without_marks.replace("đ", "d").replace("Đ", "D")
+    return re.sub(r"\s+", "", without_dd.lower())
+
+
+def _keyword_match_parts(keyword: str) -> list[str]:
+    """Normal keyword -> one phrase that must appear in full; `+`-joined
+    keyword -> every part must appear (any order) - mirrors
+    keywordMatchParts() in keyword-match.ts."""
+    if "+" in keyword:
+        return [part.strip() for part in keyword.split("+") if part.strip()]
+    trimmed = keyword.strip()
+    return [trimmed] if trimmed else []
+
+
+def contains_keyword(content: str | None, keyword: str | None) -> bool:
+    """Exact-substring keyword_match check. Public (not just persist_post's
+    own fallback) so callers - see app/workers/ingest_consumer/main.py's
+    handle_post - can check this cheap/free match first and only spend a
+    Kira call (see app/kira/relevance.py) on the posts it actually misses,
+    instead of classifying every single post regardless of whether the
+    free check already found a match."""
+    if not content or not keyword:
+        return False
+    haystack = _fold_for_keyword_match(content)
+    parts = _keyword_match_parts(keyword)
+    if not parts:
+        return False
+    for part in parts:
+        needle = _fold_for_keyword_match(part)
+        if not needle or needle not in haystack:
+            return False
+    return True
+
+
+def _hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    out = rows or []
+    for row in out:
+        media = json.loads(row.pop("media_json") or "{}")
+        row["media_type"] = media.get("media_type")
+        row["media_url"] = media.get("media_url")
+    return out
+
+
+class PostRepository:
+    """Owns every query against `posts`. One process-wide instance
+    (`post_repo` below) - no per-request state, so this is just a
+    namespace for the queries plus the lazy index-creation guard above."""
+
+    async def list_posts(
+        self,
+        *,
+        platform: str | None = None,
+        keyword_id: str | None = None,
+        movie_id: str | None = None,
+        sort: str = "recent",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Paginated post feed, joined to its movie/keyword for display -
+        backs the dashboard's "review posts" tab. Every filter is optional
+        and additive; passing none returns the whole table's most recent
+        page across every platform/movie. Returns (rows, total_count) so
+        the caller can render pagination without a second round trip.
+
+        Offset pagination, not keyset: see list_posts_cursor below for why
+        this stays the live API for now despite that method existing.
+
+        sort="recent" (default): most recently scraped first, as always.
+        sort="engagement": highest-interaction first (see
+        _ENGAGEMENT_SCORE_SQL) - e.g. keyword_id + sort="engagement" +
+        limit=100 is the dashboard's "top 100 posts for this keyword" view.
+        That view only keeps posts whose text mentions the movie title in
+        full or as a hashtag (see post_mentions_movie) so a high-engagement
+        off-topic hit from the keyword crawl does not occupy the list."""
+        await _ensure_post_indexes()
+        where = []
+        params: list[Any] = []
+        if platform:
+            where.append("p.platform = ?")
+            params.append(platform)
+        if keyword_id:
+            where.append("p.keyword_id = ?")
+            params.append(keyword_id)
+        if movie_id:
+            where.append("p.movie_id = ?")
+            params.append(movie_id)
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        order_sql = f"{_ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
+        mention_filter = sort == "engagement"
+        fetch_limit = TOP_POSTS_MENTION_SCAN if mention_filter else limit
+        fetch_offset = 0 if mention_filter else offset
+
+        rows = await d1_query(
+            f"""
+            SELECT
+                p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
+                p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
+                p.posted_at, p.scraped_at, p.keyword_match,
+                k.keyword, m.title AS movie_title
+            FROM posts p
+            LEFT JOIN keywords k ON k.id = p.keyword_id
+            LEFT JOIN movies m ON m.id = p.movie_id
+            {where_sql}
+            ORDER BY {order_sql}
+            LIMIT ? OFFSET ?
+            """,
+            [*params, fetch_limit, fetch_offset],
+        )
+        hydrated = _hydrate_post_rows(rows)
+        if mention_filter:
+            matched = [row for row in hydrated if post_mentions_movie(row.get("content"), row.get("movie_title"))]
+            return matched[offset : offset + limit], len(matched)
+
+        count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
+        total = (count_rows[0]["total"] if count_rows else 0) or 0
+        return hydrated, total
+
+    async def list_posts_cursor(
+        self,
+        *,
+        platform: str | None = None,
+        sort: str = "recent",
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Keyset-paginated equivalent of list_posts, for sort="recent"
+        only (engagement sort's expression can't be used as a keyset
+        column without a generated/indexed copy of it - not worth adding
+        until this method is actually load-bearing). `cursor` is the
+        opaque "<scraped_at>|<id>" of the last row from the previous page;
+        None starts from the top. No total count - keyset pagination
+        trades "page N of M" for O(limit) cost per page regardless of how
+        deep you go, which is the whole point.
+
+        Not wired into GET /stats/posts yet - see this repo's own commit
+        message / the conversation that introduced it: at today's ~70k
+        posts, list_posts' OFFSET is still cheap (now that
+        idx_posts_platform_scraped_at exists) and the dashboard's numbered
+        pager is a real, deliberately-kept UX. This exists so switching is
+        a route change, not a rewrite, once row counts actually justify
+        giving up page numbers."""
+        if sort != "recent":
+            raise ValueError("list_posts_cursor only supports sort='recent'")
+        await _ensure_post_indexes()
+
+        where = []
+        params: list[Any] = []
+        if platform:
+            where.append("p.platform = ?")
+            params.append(platform)
+        if cursor:
+            cursor_scraped_at, _, cursor_id = cursor.partition("|")
+            where.append("(p.scraped_at < ? OR (p.scraped_at = ? AND p.id < ?))")
+            params += [cursor_scraped_at, cursor_scraped_at, cursor_id]
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+        rows = await d1_query(
+            f"""
+            SELECT
+                p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
+                p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
+                p.posted_at, p.scraped_at, p.keyword_match,
+                k.keyword, m.title AS movie_title
+            FROM posts p
+            LEFT JOIN keywords k ON k.id = p.keyword_id
+            LEFT JOIN movies m ON m.id = p.movie_id
+            {where_sql}
+            ORDER BY p.scraped_at DESC, p.id DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+        )
+        hydrated = _hydrate_post_rows(rows)
+        next_cursor = f"{hydrated[-1]['scraped_at']}|{hydrated[-1]['id']}" if len(hydrated) == limit else None
+        return hydrated, next_cursor
+
+    async def list_posts_needing_comments(
+        self, *, platform: str, keyword_id: str, top_n: int = 100
+    ) -> list[dict[str, Any]]:
+        """Of this keyword's own top `top_n` posts by engagement (the exact
+        same ranking as list_posts(sort="engagement") above), the ones with
+        zero comments stored yet - backs the daily "top comments" sweep (see
+        scheduler.py's _top_comments_tick). Ranks first, *then* filters for
+        zero comments (a CTE, not a single WHERE) - filtering first would let a
+        101st/150th-ranked post with no comments crowd out an actual top-100
+        post that merely already has some, which isn't "of the top 100, which
+        still need comments" any more.
+
+        A post already swept on some earlier day isn't queued again just
+        because it's still sitting in the keyword's top 100 - only ones that
+        are new to it (or never got comments the first time) are - so a
+        keyword whose top 100 barely reshuffles day to day doesn't keep
+        re-spending the account/proxy pool on posts it already fetched
+        comments for. Same movie-title / hashtag gate as the dashboard's
+        top-100 list (post_mentions_movie)."""
+        await _ensure_post_indexes()
+        rows = await d1_query(
+            f"""
+            SELECT p.id, p.external_id, p.url, p.content, m.title AS movie_title,
+                   COALESCE(c.n, 0) AS comment_n
+            FROM posts p
+            LEFT JOIN movies m ON m.id = p.movie_id
+            LEFT JOIN (SELECT post_id, COUNT(*) AS n FROM comments GROUP BY post_id) c ON c.post_id = p.id
+            WHERE p.platform = ? AND p.keyword_id = ?
+            ORDER BY {_ENGAGEMENT_SCORE_SQL} DESC
+            LIMIT ?
+            """,
+            [platform, keyword_id, TOP_POSTS_MENTION_SCAN],
+        )
+        mentioned = [row for row in (rows or []) if post_mentions_movie(row.get("content"), row.get("movie_title"))]
+        return [
+            {"id": row["id"], "external_id": row["external_id"], "url": row["url"]}
+            for row in mentioned[:top_n]
+            if not row.get("comment_n")
+        ]
+
+    async def get_post_by_external_id(self, platform: str, external_id: str) -> dict[str, Any] | None:
+        """One post by (platform, external_id) - the id spider-hub's comment
+        payloads carry (see app/workers/ingest_consumer/main.py's
+        handle_comment), as opposed to get_post's D1-internal id."""
+        await _ensure_post_indexes()
+        rows = await d1_query(
+            "SELECT id, platform, external_id, url FROM posts WHERE platform = ? AND external_id = ?",
+            [platform, external_id],
+        )
+        return rows[0] if rows else None
+
+    async def get_post(self, post_id: str) -> dict[str, Any] | None:
+        """One post by its D1 id (not external_id) - used by the "fetch
+        comments for this post" trigger (see app/api/routes/facebook.py) to
+        resolve the platform's own post id + url spider-hub's bootstrap/spider
+        needs, from the D1 id the dashboard actually has on hand (see
+        app/schemas/stats.py's Post.id)."""
+        rows = await d1_query("SELECT id, platform, external_id, url FROM posts WHERE id = ?", [post_id])
+        return rows[0] if rows else None
+
+    async def persist_dropped_post(
+        self, *, platform: str, reason: str, payload: dict[str, Any], keyword_id: str | None = None
+    ) -> None:
+        """Archives a raw Kafka payload that the ingest consumer dropped before
+        it ever reached persist_post (unregistered platform mapper, missing/
+        unknown keyword_id - see app/workers/ingest_consumer/main.py's
+        handle_post). persist_post's own `raw_json` column already covers
+        "reprocess after fixing a mapper bug" for posts that DID get persisted;
+        this covers the posts that never got that far at all - once the
+        underlying issue is fixed (mapper registered, keyword corrected),
+        these rows are the only way to recover that data without re-scraping
+        it, which may not even be possible later (the post could be deleted by
+        then, or the crawl window long gone). Best-effort like every other
+        write here - a failure must not mask the drop itself, already logged/
+        alerted by the caller regardless of whether this archive succeeds."""
+        if not _configured():
+            return
+        await d1_query(
+            "INSERT INTO dropped_posts (id, platform, reason, keyword_id, raw_json, dropped_at) VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                f"dropped_{uuid.uuid4()}",
+                platform,
+                reason,
+                keyword_id,
+                json.dumps(payload),
+                datetime.now(tz=timezone.utc).isoformat(),
+            ],
+        )
+
+    async def persist_post(
+        self,
+        *,
+        movie_id: str,
+        keyword_id: str,
+        keyword: str,
+        platform: str,
+        draft: PostDraft,
+        ai_relevant: bool | None = None,
+    ) -> bool:
+        """Upsert one scraped post (any registered platform) straight into
+        cinemark-scraper's own `posts` table (+ an engagement snapshot on
+        change) - ported from its src/jobs/persist-post.ts so both the
+        Worker's own scrapers and this Kafka-fed path write through the exact
+        same logic. `draft` is already normalized by the platform's mapper
+        (see app/services/platforms.py) - this function has no
+        platform-specific field knowledge of its own.
+
+        `ai_relevant`, when given (see app/kira/relevance.py), is Kira's
+        synonym/context-aware verdict and is used for keyword_match instead of
+        the exact-substring contains_keyword check below - callers pass None
+        to fall back to the substring check (Kira not configured, or the call
+        failed) rather than blocking ingestion on an LLM hiccup."""
+        if not _configured() or platform not in registered_platforms():
+            return False
+        await _ensure_post_indexes()
+
+        external_id = draft.get("external_id")
+        if not external_id:
+            return False
+
+        content = draft.get("content")
+
+        # Junk filter: too-short content (a bare reaction/emoji has no real
+        # signal to analyze) - skip entirely. Does NOT filter on keyword_match:
+        # a real commenter writing an abbreviation, an unaccented Vietnamese
+        # spelling, or the movie's English name would never literally contain
+        # the configured keyword phrase, so gating storage on that match would
+        # silently drop real posts. keyword_match is still computed and stored
+        # below as a flag for callers to filter on if they choose to, same as
+        # before - it's just not a reason to skip storing the post outright.
+        if not content or len(content.strip()) < MIN_CONTENT_LENGTH:
+            logger.info("post_skipped_junk", platform=platform, external_id=external_id, reason="content_too_short")
+            # Intentional skip, not a write failure - True so handle_post's
+            # `if not ok` doesn't archive this to dropped_posts as
+            # "d1_write_failed" and count it toward the drop-alert threshold.
+            return True
+        is_keyword_match = ai_relevant if ai_relevant is not None else contains_keyword(content, keyword)
+
+        scraped_at = datetime.now(tz=timezone.utc).isoformat()
+        media_json = json.dumps(draft.get("media") or {})
+        raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
+        engagement = {field: draft.get(field) or 0 for field in ENGAGEMENT_FIELDS}
+        # D1 stores booleans as SQLite integers (0/1) - pass an int, not a JSON
+        # bool, so the HTTP API binds it as the same type Drizzle's
+        # integer(..., {mode: "boolean"}) column expects. Can legitimately be 0
+        # - see this function's own docstring for why a non-match still gets
+        # stored instead of skipped.
+        keyword_match = int(is_keyword_match)
+
+        existing_rows = await d1_query(
+            "SELECT id, like_count, reply_count, repost_count, quote_count, reshare_count, view_count "
+            "FROM posts WHERE platform = ? AND external_id = ?",
+            [platform, external_id],
+        )
+        existing = existing_rows[0] if existing_rows else None
+
+        if existing is None:
+            post_id = f"post_{uuid.uuid4()}"
+            inserted = await d1_query(
+                """
+                INSERT INTO posts (
+                    id, movie_id, keyword_id, platform, external_id, url, author, content, media_json,
+                    like_count, reply_count, repost_count, quote_count, reshare_count, view_count,
+                    posted_at, scraped_at, raw_json, keyword_match
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    post_id,
+                    movie_id,
+                    keyword_id,
+                    platform,
+                    external_id,
+                    draft.get("url"),
+                    draft.get("author"),
+                    draft.get("content"),
+                    media_json,
+                    engagement["like_count"],
+                    engagement["reply_count"],
+                    engagement["repost_count"],
+                    engagement["quote_count"],
+                    engagement["reshare_count"],
+                    engagement["view_count"],
+                    draft.get("posted_at"),
+                    scraped_at,
+                    raw_json,
+                    keyword_match,
+                ],
+            )
+            if inserted is None:
+                # Insert failed (race with another message for the same
+                # external_id, D1 outage, ...) - the post row doesn't exist,
+                # so a snapshot referencing post_id here would be an orphan.
+                # Log and stop; the next re-scrape of this post will retry
+                # the whole upsert from scratch.
+                logger.warning("d1_post_insert_failed", platform=platform, external_id=external_id)
+                return False
+            await d1_query(
+                "INSERT INTO post_engagement_snapshots "
+                "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
+            )
+            from app.services.stats_summary import record_post
+
+            await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
+            return True
+
+        post_id = existing["id"]
+        changed = any(existing.get(field) != engagement[field] for field in ENGAGEMENT_FIELDS)
+
+        updated = await d1_query(
+            """
+            UPDATE posts SET
+                url = ?, author = ?, content = ?, media_json = ?,
+                like_count = ?, reply_count = ?, repost_count = ?, quote_count = ?, reshare_count = ?, view_count = ?,
+                posted_at = ?, scraped_at = ?, raw_json = ?, keyword_match = ?
+            WHERE id = ?
+            """,
+            [
+                draft.get("url"),
+                draft.get("author"),
+                draft.get("content"),
+                media_json,
+                engagement["like_count"],
+                engagement["reply_count"],
+                engagement["repost_count"],
+                engagement["quote_count"],
+                engagement["reshare_count"],
+                engagement["view_count"],
+                draft.get("posted_at"),
+                scraped_at,
+                raw_json,
+                keyword_match,
+                post_id,
+            ],
+        )
+        if updated is None:
+            # UPDATE failed (D1 outage, ...) - post_id still refers to a real,
+            # pre-existing row (unlike the insert branch above), so nothing's
+            # orphaned, but the engagement numbers below would reflect this
+            # message's payload, not what's actually stored. Skip the snapshot;
+            # the next re-scrape retries the whole upsert.
+            logger.warning("d1_post_update_failed", platform=platform, external_id=external_id, post_id=post_id)
+            return False
+        if changed:
+            await d1_query(
+                "INSERT INTO post_engagement_snapshots "
+                "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
+            )
+        from app.services.stats_summary import record_post
+
+        await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
+        return True
+
+
+post_repo = PostRepository()
+
+
+# --- backward-compatible free functions (see module docstring) -----------
+
+
+async def list_posts(**kwargs: Any) -> tuple[list[dict[str, Any]], int]:
+    return await post_repo.list_posts(**kwargs)
+
+
+async def list_posts_needing_comments(**kwargs: Any) -> list[dict[str, Any]]:
+    return await post_repo.list_posts_needing_comments(**kwargs)
+
+
+async def get_post_by_external_id(platform: str, external_id: str) -> dict[str, Any] | None:
+    return await post_repo.get_post_by_external_id(platform, external_id)
+
+
+async def get_post(post_id: str) -> dict[str, Any] | None:
+    return await post_repo.get_post(post_id)
+
+
+async def persist_dropped_post(**kwargs: Any) -> None:
+    await post_repo.persist_dropped_post(**kwargs)
+
+
+async def persist_post(**kwargs: Any) -> bool:
+    return await post_repo.persist_post(**kwargs)

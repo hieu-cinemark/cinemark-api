@@ -1,10 +1,16 @@
-"""Read-only reference for the cron jobs that drive this pipeline - they
-live scattered across a crontab (spider-hub's scripts/refresh_token.sh),
-another crontab (cinemark-api's scripts/trigger_scheduled_crawl.sh), and
-cinemark-scraper's own Cloudflare Cron Triggers (wrangler.toml) - nothing
-here is stored in a database, so this is just a static list plus, where a
-local log file exists, that file's last-modified time as a "last run"
-signal. Not editable from here - see each job's `source` to change it."""
+"""Read-only reference for the few jobs still driven by a plain OS crontab
+(spider-hub's scripts/refresh_token.sh) - nothing here is stored in a
+database, so this is just a static list plus, where a local log file
+exists, that file's last-modified time as a "last run" signal. Not editable
+from here - see each job's `source` to change it.
+
+Platform crawl scheduling (Facebook/Threads/TikTok - previously a mix of
+cinemark-api's own crontab and cinemark-scraper's Cloudflare Cron Triggers,
+none of it editable without a deploy) moved to app/services/scheduler.py,
+an in-process daily scheduler driven by the dashboard's "Crawl schedule"
+card (GET/PUT /settings/crawl-schedule) - that one's a real DB-backed,
+dashboard-editable resource, not a fixed list like this file, so it isn't
+listed here."""
 
 from __future__ import annotations
 
@@ -39,21 +45,10 @@ async def cron_jobs() -> list[CronJob]:
             last_run_at=_mtime(refresh_token_log),
         ),
         CronJob(
-            name="Scheduled crawl trigger",
+            name="Account health / volume anomaly / AI topic reports",
             schedule="every 6h (0 */6 * * *)",
             source="cinemark-api/scripts/trigger_scheduled_crawl.sh",
-            description="Publishes crawl_requests for every enabled Facebook keyword via POST /facebook/run.",
-        ),
-        CronJob(
-            name="Threads scrape",
-            schedule="every 6h at :30 (30 */6 * * *)",
-            source="cinemark-scraper Worker - Cloudflare Cron Trigger (wrangler.toml)",
-            description="runScrapeJob(db, env, 'cron', { platform: 'threads' }) inside the Worker's scheduled() handler.",
-        ),
-        CronJob(
-            name="TikTok scrape",
-            schedule="every 8h (0 */8 * * *)",
-            source="cinemark-scraper Worker - Cloudflare Cron Trigger (wrangler.toml)",
-            description="runScrapeJob(db, env, 'cron', { platform: 'tiktok' }) inside the Worker's scheduled() handler.",
+            description="No longer triggers crawls (see app/services/scheduler.py) - just the account health "
+            "check (every cycle), volume-anomaly check (hour 18), and AI topic report regeneration (hour 20).",
         ),
     ]

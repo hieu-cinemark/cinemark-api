@@ -7,6 +7,32 @@ class PlatformStat(BaseModel):
     platform: str
     count: int
     last_scraped_at: str | None = None
+    count_today: int = 0
+    count_prev: int = 0
+
+
+class RelatedHashtag(BaseModel):
+    id: str = ""
+    title: str
+    count: int = 0
+    bfs_depth: int = 1
+
+
+class KeywordVolume(BaseModel):
+    keyword_id: str
+    movie_id: str = ""
+    keyword: str
+    platform: str
+    enabled: bool
+    movie_title: str | None = None
+    posts_total: int = 0
+    posts_today: int = 0
+    posts_prev: int = 0
+    comments_total: int = 0
+    comments_today: int = 0
+    comments_prev: int = 0
+    last_scraped_at: str | None = None
+    related_hashtags: list[RelatedHashtag] = []
 
 
 class TimeseriesPoint(BaseModel):
@@ -56,6 +82,9 @@ class Comment(BaseModel):
     author_profile_picture: str | None = None
     reactions_count: int
     replies_count: int
+    parent_external_id: str | None = None
+    parent_message: str | None = None
+    parent_author_name: str | None = None
     posted_at: str | None = None
     scraped_at: str
 

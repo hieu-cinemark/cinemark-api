@@ -14,7 +14,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Absolute path so uvicorn/ingest started from another cwd still read
+    # this repo's .env (a relative ".env" would miss an explicit DB_MODE).
+    model_config = SettingsConfigDict(
+        env_file=str(_REPO_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     environment: str = "development"  # development | production
     log_level: str = "INFO"
@@ -47,13 +53,15 @@ class Settings(BaseSettings):
 
     # "local" points app.services.d1's d1_query() at a local SQLite file
     # instead of Cloudflare's HTTP query API - no daily D1 row-read quota
-    # for local dev/testing. Defaults to cinemark-be's already-existing
-    # local mirror of this exact database (same CLOUDFLARE_D1_DATABASE_ID,
-    # see cinemark-be/scripts/pull-local-db.js) rather than maintaining a
-    # second copy - refresh it from there (`npm run db:pull-local` in
-    # cinemark-be) when local data goes stale.
-    db_mode: str = "remote"  # "remote" | "local"
-    local_db_path: str = str(_REPO_ROOT.parent / "cinemark-be" / ".local-db" / "scraper.sqlite")
+    # for local dev/testing. This used to default to a mirror maintained by
+    # a sibling cinemark-be repo (scripts/pull-local-db.js) - that repo no
+    # longer exists in this workspace, so the mirror now lives here instead
+    # (see scripts/pull_local_db.py, this repo's own replacement). Refresh
+    # it with `python -m scripts.pull_local_db` when local data goes stale
+    # (a full clone - every table, every row - fresh from the real D1 every
+    # run; safe to re-run anytime, but spends real D1 read quota each time).
+    db_mode: str = "remote"  # "remote" | "local" — remote is Cloudflare D1
+    local_db_path: str = str(_REPO_ROOT / ".local-db" / "scraper.sqlite")
 
     # Log files the dashboard's /logs routes tail - both processes are
     # plain text files written by structlog's ConsoleRenderer (see
@@ -70,6 +78,22 @@ class Settings(BaseSettings):
     # Settings page. None (not an error) if unset - GET/POST/PATCH/DELETE
     # on /settings/* just 502 instead of the app failing to boot.
     database_url: str | None = None
+
+    # Kira (kiraai.vn) LLM classifier. Runtime on/off and model/prompts
+    # live in the dashboard Settings AI tab (ai_settings table). These env
+    # vars still supply credentials and the initial enabled seed when the
+    # table row is first created. Primary use now: relevance + topic/
+    # narrative reports. Per-comment sentiment defaults to PhoBERT below.
+    kira_enabled: bool = False
+    kira_api_key: str | None = None
+    kira_base_url: str | None = None
+
+    # Comment sentiment backend: "phobert" (local HTTP, default), "kira",
+    # or "auto" (PhoBERT then Kira fallback). serve.py in the sibling
+    # phobert-classifier repo listens on phobert_url.
+    sentiment_backend: str = "phobert"
+    phobert_url: str = "http://127.0.0.1:8090"
+    phobert_timeout_seconds: float = 5.0
 
     @property
     def cors_origins_list(self) -> list[str]:
