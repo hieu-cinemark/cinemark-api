@@ -162,12 +162,71 @@ def contains_keyword(content: str | None, keyword: str | None) -> bool:
     return True
 
 
+# Playable video / permalinks cannot go in an <img>. Older TikTok rows
+# stored playAddr as media_url and left cover_url only on raw_json.
+_VIDEO_URL_HINTS = (
+    ".mp4",
+    ".m3u8",
+    "/video/tos/",
+    "webapp-prime.tiktok.com",
+    "facebook.com/reel/",
+    "facebook.com/watch",
+    "facebook.com/share/v",
+    "facebook.com/video",
+    "tiktok.com/@",
+    "threads.com/@",
+    "threads.net/@",
+)
+_IMAGE_URL_HINTS = (
+    "fbcdn.net",
+    "cdninstagram.com",
+    "tiktokcdn",
+    "byteicdn",
+    "ibyteimg",
+    "byteimg.com",
+    "muscdn.com",
+    "scontent",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+)
+
+
+def _is_preview_image_url(url: Any) -> bool:
+    if not isinstance(url, str) or not url.startswith("http"):
+        return False
+    lower = url.lower()
+    if any(hint in lower for hint in _VIDEO_URL_HINTS):
+        return False
+    return any(hint in lower for hint in _IMAGE_URL_HINTS)
+
+
 def _hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     out = rows or []
     for row in out:
         media = json.loads(row.pop("media_json") or "{}")
+        raw_cover = row.pop("raw_cover_url", None)
         row["media_type"] = media.get("media_type")
-        row["media_url"] = media.get("media_url")
+        candidates = (
+            media.get("cover_url"),
+            raw_cover,
+            media.get("thumbnail_url"),
+            media.get("media_url"),
+        )
+        row["media_url"] = next((url for url in candidates if _is_preview_image_url(url)), None)
+        quoted = media.get("quoted") if isinstance(media.get("quoted"), dict) else None
+        row["quoted"] = (
+            {
+                "author": quoted.get("author"),
+                "content": quoted.get("content"),
+                "url": quoted.get("url"),
+                "media_url": quoted.get("media_url") if _is_preview_image_url(quoted.get("media_url")) else None,
+            }
+            if quoted
+            else None
+        )
     return out
 
 
@@ -224,6 +283,7 @@ class PostRepository:
             f"""
             SELECT
                 p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
+                json_extract(p.raw_json, '$.cover_url') AS raw_cover_url,
                 p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
                 p.posted_at, p.scraped_at, p.keyword_match,
                 k.keyword, m.title AS movie_title
@@ -288,6 +348,7 @@ class PostRepository:
             f"""
             SELECT
                 p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
+                json_extract(p.raw_json, '$.cover_url') AS raw_cover_url,
                 p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
                 p.posted_at, p.scraped_at, p.keyword_match,
                 k.keyword, m.title AS movie_title

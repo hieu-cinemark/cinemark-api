@@ -18,7 +18,7 @@ from fastapi import APIRouter, Query
 from app.core.errors import NotFoundError, UpstreamError
 from app.core.logging import get_logger
 from app.schemas.scraper import JobStatus, RunCommentsResponse, RunScraperRequest, RunScraperResponse, StopScraperResponse
-from app.services.crawl_jobs import get_running_job, is_platform_draining, request_stop
+from app.services.crawl_jobs import cancel_job, get_running_job, is_platform_draining, request_stop
 from app.services.d1 import get_enabled_keywords, get_keyword, get_post
 from app.services.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 
@@ -88,6 +88,12 @@ def build_run_route(router: APIRouter, platform: str) -> None:
     async def stop_scraper() -> StopScraperResponse:
         stopped = await request_stop(platform)
         logger.info("scraper_stop_requested", platform=platform, stopped=stopped)
+        return StopScraperResponse(stopped=stopped)
+
+    @router.post("/jobs/{run_id}/stop", response_model=StopScraperResponse)
+    async def stop_job(run_id: str) -> StopScraperResponse:
+        stopped = await cancel_job(platform, run_id)
+        logger.info("scraper_job_stop_requested", platform=platform, run_id=run_id, stopped=stopped)
         return StopScraperResponse(stopped=stopped)
 
 

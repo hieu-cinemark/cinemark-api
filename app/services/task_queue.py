@@ -69,6 +69,27 @@ async def clear_pending(platform: str) -> None:
     await client.delete(_pending_key(platform))
 
 
+async def remove_pending(platform: str, run_id: str) -> bool:
+    """Removes just one still-queued item by its run_id, for the per-row
+    Stop button (see crawl_jobs.cancel_job) - unlike clear_pending, every
+    other queued item for this platform is left alone. This item was only
+    ever a dashboard-side "shown as waiting" marker (see enqueue_published);
+    it was never itself consumed off a Kafka topic, so removing it from
+    this Redis list is enough - there's nothing on the spider-hub side
+    that still needs to be told to skip it."""
+    client = get_redis_client()
+    raw_items = await client.lrange(_pending_key(platform), 0, -1)
+    for raw in raw_items or []:
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if item.get("id") == run_id:
+            removed = await client.lrem(_pending_key(platform), 1, raw)
+            return removed > 0
+    return False
+
+
 async def list_pending(platform: str) -> list[dict[str, Any]]:
     client = get_redis_client()
     raw_items = await client.lrange(_pending_key(platform), 0, -1)

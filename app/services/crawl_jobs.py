@@ -12,7 +12,7 @@ import json
 from typing import Any
 
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.services.task_queue import clear_pending
+from app.services.task_queue import clear_pending, remove_pending
 
 # How long a stop flag stays armed - covers spider-hub's consumer being
 # briefly down/slow to notice it, without leaving a stale flag around
@@ -72,6 +72,38 @@ async def request_stop(platform: str) -> bool:
             "1",
             ex=STOP_FLAG_TTL_SECONDS,
         )
+    return True
+
+
+async def cancel_job(platform: str, run_id: str) -> bool:
+    """Stops exactly one job - the dashboard's per-row Stop button.
+    Deliberately does NOT touch bfs_drain/comments_drain/platform_drain or
+    call clear_pending: those are request_stop's "Stop All" behavior, and
+    reusing them here was the actual bug (see JobsPageView.tsx's original
+    per-row Stop wiring) - clicking Stop on one row silently canceled the
+    running job AND wiped every other platform's queued item too.
+
+    Arms the precise crawl_job_cancel:<run_id> flag either way (same key
+    request_stop already sets for its own running-job case) -
+    crawl_request_consumer.py's _handle_request now checks this for every
+    Kafka message *before* starting it, not just mid-flight via
+    _run_subprocess's own polling, so it works whether run_id is still
+    queued or already running. remove_pending is just for instant dashboard
+    feedback on a still-queued row (it would otherwise sit there until the
+    consumer reaches and skips it) - every other queued item for the
+    platform is left untouched and runs normally."""
+    if not run_id:
+        return False
+
+    was_queued = await remove_pending(platform, run_id)
+    job = await get_running_job(platform)
+    was_running = job is not None and job.get("run_id") == run_id
+
+    if not was_queued and not was_running:
+        return False
+
+    client = get_redis_client()
+    await client.set(f"{REDIS_KEY_PREFIX}crawl_job_cancel:{run_id}", "1", ex=STOP_FLAG_TTL_SECONDS)
     return True
 
 

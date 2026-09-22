@@ -78,8 +78,11 @@ async def post_comments(post_id: str) -> list[Comment]:
 async def comments(
     platform: str | None = None,
     movie_id: str | None = None,
+    keyword_id: str | None = None,
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> CommentPage:
-    rows, total = await comment_repo.list_all_comments(platform=platform, movie_id=movie_id, limit=limit, offset=offset)
+    rows, total = await comment_repo.list_all_comments(
+        platform=platform, movie_id=movie_id, keyword_id=keyword_id, limit=limit, offset=offset
+    )
     return CommentPage(items=[CommentWithPost(**row) for row in rows], total=total, limit=limit, offset=offset)

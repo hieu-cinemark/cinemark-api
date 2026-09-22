@@ -111,7 +111,13 @@ class CommentRepository:
         return rows or []
 
     async def list_all_comments(
-        self, *, platform: str | None = None, movie_id: str | None = None, limit: int = 50, offset: int = 0
+        self,
+        *,
+        platform: str | None = None,
+        movie_id: str | None = None,
+        keyword_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
         """Paginated comment feed across every post (most recently collected
         first), joined to its parent post for display - backs a dedicated
@@ -127,6 +133,9 @@ class CommentRepository:
         if movie_id:
             where.append("p.movie_id = ?")
             params.append(movie_id)
+        if keyword_id:
+            where.append("p.keyword_id = ?")
+            params.append(keyword_id)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
         count_rows = await d1_query(
@@ -141,12 +150,14 @@ class CommentRepository:
                 c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
                 c.parent_external_id,
                 parent.message AS parent_message, parent.author_name AS parent_author_name,
-                p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title
+                p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title,
+                k.keyword AS keyword
             FROM comments c
             LEFT JOIN comments parent
                 ON parent.post_id = c.post_id AND parent.external_id = c.parent_external_id
             LEFT JOIN posts p ON p.id = c.post_id
             LEFT JOIN movies m ON m.id = p.movie_id
+            LEFT JOIN keywords k ON k.id = p.keyword_id
             {where_sql}
             ORDER BY c.scraped_at DESC
             LIMIT ? OFFSET ?

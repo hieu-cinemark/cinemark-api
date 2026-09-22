@@ -41,6 +41,13 @@ class TimeseriesPoint(BaseModel):
     count: int
 
 
+class QuotedPost(BaseModel):
+    author: str | None = None
+    content: str | None = None
+    url: str | None = None
+    media_url: str | None = None
+
+
 class Post(BaseModel):
     id: str
     platform: str
@@ -61,6 +68,7 @@ class Post(BaseModel):
     keyword_match: bool
     keyword: str | None = None
     movie_title: str | None = None
+    quoted: QuotedPost | None = None
 
 
 class PostPage(BaseModel):
@@ -94,6 +102,7 @@ class CommentWithPost(Comment):
     post_url: str | None = None
     post_author: str | None = None
     movie_title: str | None = None
+    keyword: str | None = None
 
 
 class CommentPage(BaseModel):

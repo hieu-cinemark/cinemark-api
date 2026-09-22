@@ -27,6 +27,18 @@ from typing import Any, Callable
 PostDraft = dict[str, Any]
 
 
+def _quoted_media(payload: dict[str, Any]) -> dict[str, Any] | None:
+    quoted = payload.get("quoted")
+    if not isinstance(quoted, dict):
+        return None
+    out = {
+        key: quoted.get(key)
+        for key in ("author", "content", "url", "media_url")
+        if quoted.get(key)
+    }
+    return out or None
+
+
 def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
     """spider-hub's FacebookPostItem field names -> PostDraft. Same mapping
     cinemark-scraper's own facebook.ts scraper uses (reactions = likes,
@@ -41,7 +53,9 @@ def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
         "media": {
             "media_type": payload.get("media_type"),
             "media_url": payload.get("media_url"),
+            "cover_url": payload.get("cover_url"),
             "duration_seconds": payload.get("duration_seconds"),
+            **({"quoted": quoted} if (quoted := _quoted_media(payload)) else {}),
         },
         "like_count": payload.get("reactions_count") or 0,
         "reply_count": payload.get("comments_count") or 0,
@@ -68,6 +82,8 @@ def _map_threads_post(payload: dict[str, Any]) -> PostDraft:
         "media": {
             "media_type": payload.get("media_type"),
             "media_url": payload.get("media_url"),
+            "cover_url": payload.get("cover_url"),
+            **({"quoted": quoted} if (quoted := _quoted_media(payload)) else {}),
         },
         "like_count": payload.get("like_count") or 0,
         "reply_count": payload.get("reply_count") or 0,
@@ -97,6 +113,8 @@ def _map_tiktok_post(payload: dict[str, Any]) -> PostDraft:
         "media": {
             "media_type": "video",
             "media_url": payload.get("play_url"),
+            "cover_url": payload.get("cover_url"),
+            "play_url": payload.get("play_url"),
             "duration_seconds": payload.get("duration"),
         },
         "like_count": payload.get("like_count") or 0,
