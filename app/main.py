@@ -75,7 +75,21 @@ async def on_startup() -> None:
     except Exception as exc:
         logger.warning("crawl_schedule_seed_failed", error=str(exc))
     scheduler.start()
+    asyncio.create_task(_build_tab_filter_indexes())
     logger.info("app_started")
+
+
+async def _build_tab_filter_indexes() -> None:
+    from app.repositories.d1 import comments as comments_repo
+    from app.repositories.d1 import posts as posts_repo
+
+    # Let the first dashboard queries land before we occupy D1 with CREATE INDEX.
+    await asyncio.sleep(8)
+    try:
+        await posts_repo.ensure_tab_filter_indexes()
+        await comments_repo.ensure_tab_filter_indexes()
+    except Exception as exc:
+        logger.warning("tab_filter_indexes_failed", error=str(exc) or repr(exc))
 
 
 @app.on_event("shutdown")

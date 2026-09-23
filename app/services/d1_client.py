@@ -154,7 +154,11 @@ async def d1_query(
             )
     except httpx.HTTPError as exc:
         if not quiet:
-            logger.warning("d1_request_failed", error=str(exc))
+            logger.warning(
+                "d1_request_failed",
+                error=str(exc) or repr(exc),
+                error_type=type(exc).__name__,
+            )
         return None
 
     if resp.status_code >= 400:
