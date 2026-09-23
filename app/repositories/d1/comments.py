@@ -44,6 +44,10 @@ _COMMENT_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_comments_platform_external_id ON comments(platform, external_id)",
 )
 
+_TAB_FILTER_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_comments_sentiment_scraped_at ON comments(sentiment, scraped_at DESC)",
+)
+
 _comment_indexes_ready = False
 _comment_indexes_lock = asyncio.Lock()
 
@@ -58,6 +62,13 @@ async def _ensure_comment_indexes() -> None:
         for sql in _COMMENT_INDEXES:
             await d1_query(sql, quiet=True)
         _comment_indexes_ready = True
+
+
+async def ensure_tab_filter_indexes() -> None:
+    """CREATE INDEX for CommentsReview sentiment tabs. Startup background
+    task - see posts.ensure_tab_filter_indexes."""
+    for sql in _TAB_FILTER_INDEXES:
+        await d1_query(sql, quiet=True, timeout=90.0)
 
 
 async def _ensure_comments_parent_column() -> None:
@@ -116,6 +127,7 @@ class CommentRepository:
         platform: str | None = None,
         movie_id: str | None = None,
         keyword_id: str | None = None,
+        sentiment: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -136,19 +148,17 @@ class CommentRepository:
         if keyword_id:
             where.append("p.keyword_id = ?")
             params.append(keyword_id)
+        if sentiment:
+            where.append("c.sentiment = ?")
+            params.append(sentiment)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-
-        count_rows = await d1_query(
-            f"SELECT COUNT(*) AS total FROM comments c LEFT JOIN posts p ON p.id = c.post_id {where_sql}", params
-        )
-        total = (count_rows[0]["total"] if count_rows else 0) or 0
 
         rows = await d1_query(
             f"""
             SELECT
                 c.id, c.post_id, c.platform, c.external_id, c.message, c.author_name, c.author_id, c.author_url,
                 c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
-                c.parent_external_id,
+                c.parent_external_id, c.sentiment,
                 parent.message AS parent_message, parent.author_name AS parent_author_name,
                 p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title,
                 k.keyword AS keyword
@@ -163,8 +173,83 @@ class CommentRepository:
             LIMIT ? OFFSET ?
             """,
             [*params, limit, offset],
+            timeout=20.0 if sentiment else 10.0,
         )
-        return rows or [], total
+        items = rows or []
+        if sentiment and not movie_id and not keyword_id:
+            n = len(items)
+            total = offset + n + (limit if n == limit else 0)
+        else:
+            count_rows = await d1_query(
+                f"SELECT COUNT(*) AS total FROM comments c LEFT JOIN posts p ON p.id = c.post_id {where_sql}", params
+            )
+            total = (count_rows[0]["total"] if count_rows else 0) or 0
+        return items, total
+
+    async def list_all_comments_cursor(
+        self,
+        *,
+        platform: str | None = None,
+        movie_id: str | None = None,
+        keyword_id: str | None = None,
+        sentiment: str | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Keyset-paginated equivalent of list_all_comments - see
+        posts.py's list_posts_cursor for the full rationale (same OFFSET+
+        JOIN slowdown confirmed live on this table's own parent/post/
+        movie/keyword joins). `cursor` is the opaque "<scraped_at>|<id>"
+        of the last row from the previous page; None starts from the top.
+        No total - see list_posts_cursor's own comment on why that's the
+        point, not a gap."""
+        await _ensure_comments_parent_column()
+        await _ensure_comment_indexes()
+        where = []
+        params: list[Any] = []
+        if platform:
+            where.append("c.platform = ?")
+            params.append(platform)
+        if movie_id:
+            where.append("p.movie_id = ?")
+            params.append(movie_id)
+        if keyword_id:
+            where.append("p.keyword_id = ?")
+            params.append(keyword_id)
+        if sentiment:
+            where.append("c.sentiment = ?")
+            params.append(sentiment)
+        if cursor:
+            cursor_scraped_at, _, cursor_id = cursor.partition("|")
+            where.append("(c.scraped_at < ? OR (c.scraped_at = ? AND c.id < ?))")
+            params += [cursor_scraped_at, cursor_scraped_at, cursor_id]
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+
+        rows = await d1_query(
+            f"""
+            SELECT
+                c.id, c.post_id, c.platform, c.external_id, c.message, c.author_name, c.author_id, c.author_url,
+                c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
+                c.parent_external_id, c.sentiment,
+                parent.message AS parent_message, parent.author_name AS parent_author_name,
+                p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title,
+                k.keyword AS keyword
+            FROM comments c
+            LEFT JOIN comments parent
+                ON parent.post_id = c.post_id AND parent.external_id = c.parent_external_id
+            LEFT JOIN posts p ON p.id = c.post_id
+            LEFT JOIN movies m ON m.id = p.movie_id
+            LEFT JOIN keywords k ON k.id = p.keyword_id
+            {where_sql}
+            ORDER BY c.scraped_at DESC, c.id DESC
+            LIMIT ?
+            """,
+            [*params, limit],
+            timeout=20.0 if sentiment else 10.0,
+        )
+        items = rows or []
+        next_cursor = f"{items[-1]['scraped_at']}|{items[-1]['id']}" if len(items) == limit else None
+        return items, next_cursor
 
     async def persist_comment(
         self, *, post_id: str, platform: str, draft: CommentDraft, sentiment: str | None = None
@@ -287,6 +372,10 @@ async def list_comments(post_id: str) -> list[dict[str, Any]]:
 
 async def list_all_comments(**kwargs: Any) -> tuple[list[dict[str, Any]], int]:
     return await comment_repo.list_all_comments(**kwargs)
+
+
+async def list_all_comments_cursor(**kwargs: Any) -> tuple[list[dict[str, Any]], str | None]:
+    return await comment_repo.list_all_comments_cursor(**kwargs)
 
 
 async def persist_comment(**kwargs: Any) -> bool:

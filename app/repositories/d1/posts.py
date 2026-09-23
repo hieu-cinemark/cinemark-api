@@ -44,10 +44,6 @@ _ENGAGEMENT_SCORE_SQL = "(p.like_count + p.reply_count + p.repost_count + p.quot
 # the movie title "Anh Hùng".
 _HASHTAG_STRIP = re.compile(r"[\s._-]+")
 
-# Top-posts view ranks by engagement first, then keeps only posts that
-# mention the movie (full title or #TitleWithoutSpaces). Scanning this
-# many highest-engagement rows is enough for the dashboard cap of 100.
-TOP_POSTS_MENTION_SCAN = 5000
 
 
 # --- indexes -------------------------------------------------------------
@@ -87,6 +83,14 @@ _POST_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_posts_platform_external_id ON posts(platform, external_id)",
 )
 
+# Built once in the background (see ensure_tab_filter_indexes) - never
+# from list_posts. CREATE INDEX on the live posts table via D1 HTTP can
+# exceed the 10s query timeout and, while it runs, starve every other
+# dashboard query (the tab-switch failures logged as d1_request_failed).
+_TAB_FILTER_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_posts_keyword_match_scraped_at ON posts(keyword_match, scraped_at DESC)",
+)
+
 _post_indexes_ready = False
 _post_indexes_lock = asyncio.Lock()
 
@@ -101,6 +105,13 @@ async def _ensure_post_indexes() -> None:
         for sql in _POST_INDEXES:
             await d1_query(sql, quiet=True)
         _post_indexes_ready = True
+
+
+async def ensure_tab_filter_indexes() -> None:
+    """CREATE INDEX for PostsReview related/unrelated tabs. Safe to call
+    from app startup as a background task - IF NOT EXISTS, 90s timeout."""
+    for sql in _TAB_FILTER_INDEXES:
+        await d1_query(sql, quiet=True, timeout=90.0)
 
 
 def post_mentions_movie(content: str | None, title: str | None) -> bool:
@@ -241,6 +252,7 @@ class PostRepository:
         platform: str | None = None,
         keyword_id: str | None = None,
         movie_id: str | None = None,
+        keyword_match: bool | None = None,
         sort: str = "recent",
         limit: int = 50,
         offset: int = 0,
@@ -258,9 +270,16 @@ class PostRepository:
         sort="engagement": highest-interaction first (see
         _ENGAGEMENT_SCORE_SQL) - e.g. keyword_id + sort="engagement" +
         limit=100 is the dashboard's "top 100 posts for this keyword" view.
-        That view only keeps posts whose text mentions the movie title in
-        full or as a hashtag (see post_mentions_movie) so a high-engagement
-        off-topic hit from the keyword crawl does not occupy the list."""
+        That view only keeps posts already AI-labeled relevance_label=
+        'related' (see phobert-classifier/label_posts_relevance.py) so a
+        high-engagement off-topic hit from the keyword crawl does not
+        occupy the list - a real classifier call, not the old
+        post_mentions_movie substring/hashtag heuristic still used below
+        by list_posts_needing_comments (which this intentionally no
+        longer matches - ask if that one should switch too). Trade-off:
+        a post not yet swept by that batch script (relevance_label still
+        NULL) is invisible here until it runs, unlike the old heuristic
+        which needed no batch job at all."""
         await _ensure_post_indexes()
         where = []
         params: list[Any] = []
@@ -273,11 +292,13 @@ class PostRepository:
         if movie_id:
             where.append("p.movie_id = ?")
             params.append(movie_id)
+        if keyword_match is not None:
+            where.append("p.keyword_match = ?")
+            params.append(1 if keyword_match else 0)
+        if sort == "engagement":
+            where.append("p.relevance_label = 'related'")
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         order_sql = f"{_ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
-        mention_filter = sort == "engagement"
-        fetch_limit = TOP_POSTS_MENTION_SCAN if mention_filter else limit
-        fetch_offset = 0 if mention_filter else offset
 
         rows = await d1_query(
             f"""
@@ -294,21 +315,32 @@ class PostRepository:
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
-            [*params, fetch_limit, fetch_offset],
+            [*params, limit, offset],
+            timeout=20.0 if keyword_match is not None else 10.0,
         )
         hydrated = _hydrate_post_rows(rows)
-        if mention_filter:
-            matched = [row for row in hydrated if post_mentions_movie(row.get("content"), row.get("movie_title"))]
-            return matched[offset : offset + limit], len(matched)
+        if sort == "engagement":
+            return hydrated, len(hydrated)
 
-        count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
-        total = (count_rows[0]["total"] if count_rows else 0) or 0
+        # Filtered tabs: skip COUNT(*) - it's a full scan until the
+        # keyword_match index exists, and it was timing out D1 (~10s) on
+        # every tab click. Approximate "there's another page" from the
+        # page size instead.
+        if keyword_match is None:
+            count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
+            total = (count_rows[0]["total"] if count_rows else 0) or 0
+        else:
+            n = len(hydrated)
+            total = offset + n + (limit if n == limit else 0)
         return hydrated, total
 
     async def list_posts_cursor(
         self,
         *,
         platform: str | None = None,
+        keyword_id: str | None = None,
+        movie_id: str | None = None,
+        keyword_match: bool | None = None,
         sort: str = "recent",
         cursor: str | None = None,
         limit: int = 50,
@@ -319,16 +351,19 @@ class PostRepository:
         until this method is actually load-bearing). `cursor` is the
         opaque "<scraped_at>|<id>" of the last row from the previous page;
         None starts from the top. No total count - keyset pagination
-        trades "page N of M" for O(limit) cost per page regardless of how
+        trades "page N of M" (and, not incidentally, the approximate/
+        sometimes-wrong total list_posts' keyword_match branch reports -
+        see its own comment) for O(limit) cost per page regardless of how
         deep you go, which is the whole point.
 
-        Not wired into GET /stats/posts yet - see this repo's own commit
-        message / the conversation that introduced it: at today's ~70k
-        posts, list_posts' OFFSET is still cheap (now that
-        idx_posts_platform_scraped_at exists) and the dashboard's numbered
-        pager is a real, deliberately-kept UX. This exists so switching is
-        a route change, not a rewrite, once row counts actually justify
-        giving up page numbers."""
+        Now wired into GET /stats/posts (see stats.py) - list_posts' own
+        OFFSET, confirmed live once posts crossed ~100k, gets *slower with
+        depth* specifically when combined with the keyword/movie LEFT
+        JOINs (flat ~0.1s regardless of offset with the JOINs removed,
+        vs. up to several seconds at a 90k offset with them) - D1 isn't
+        pushing the LIMIT/OFFSET below the join. Keyset sidesteps this
+        entirely: the WHERE seek bounds the scan before the join ever
+        runs, so it doesn't matter how deep `cursor` points."""
         if sort != "recent":
             raise ValueError("list_posts_cursor only supports sort='recent'")
         await _ensure_post_indexes()
@@ -338,6 +373,15 @@ class PostRepository:
         if platform:
             where.append("p.platform = ?")
             params.append(platform)
+        if keyword_id:
+            where.append("p.keyword_id = ?")
+            params.append(keyword_id)
+        if movie_id:
+            where.append("p.movie_id = ?")
+            params.append(movie_id)
+        if keyword_match is not None:
+            where.append("p.keyword_match = ?")
+            params.append(1 if keyword_match else 0)
         if cursor:
             cursor_scraped_at, _, cursor_id = cursor.partition("|")
             where.append("(p.scraped_at < ? OR (p.scraped_at = ? AND p.id < ?))")
@@ -360,6 +404,7 @@ class PostRepository:
             LIMIT ?
             """,
             [*params, limit],
+            timeout=20.0 if keyword_match is not None else 10.0,
         )
         hydrated = _hydrate_post_rows(rows)
         next_cursor = f"{hydrated[-1]['scraped_at']}|{hydrated[-1]['id']}" if len(hydrated) == limit else None
@@ -382,26 +427,28 @@ class PostRepository:
         are new to it (or never got comments the first time) are - so a
         keyword whose top 100 barely reshuffles day to day doesn't keep
         re-spending the account/proxy pool on posts it already fetched
-        comments for. Same movie-title / hashtag gate as the dashboard's
-        top-100 list (post_mentions_movie)."""
+        comments for. Same relevance_label='related' gate as the
+        dashboard's top-100 list now uses (list_posts sort="engagement") -
+        this used to filter by post_mentions_movie instead and had quietly
+        drifted from that method when it switched; same AI-labeled-post
+        caveat applies (a post not yet swept by label_posts_relevance.py's
+        batch run is invisible here too)."""
         await _ensure_post_indexes()
         rows = await d1_query(
             f"""
-            SELECT p.id, p.external_id, p.url, p.content, m.title AS movie_title,
+            SELECT p.id, p.external_id, p.url,
                    COALESCE(c.n, 0) AS comment_n
             FROM posts p
-            LEFT JOIN movies m ON m.id = p.movie_id
             LEFT JOIN (SELECT post_id, COUNT(*) AS n FROM comments GROUP BY post_id) c ON c.post_id = p.id
-            WHERE p.platform = ? AND p.keyword_id = ?
+            WHERE p.platform = ? AND p.keyword_id = ? AND p.relevance_label = 'related'
             ORDER BY {_ENGAGEMENT_SCORE_SQL} DESC
             LIMIT ?
             """,
-            [platform, keyword_id, TOP_POSTS_MENTION_SCAN],
+            [platform, keyword_id, top_n],
         )
-        mentioned = [row for row in (rows or []) if post_mentions_movie(row.get("content"), row.get("movie_title"))]
         return [
             {"id": row["id"], "external_id": row["external_id"], "url": row["url"]}
-            for row in mentioned[:top_n]
+            for row in (rows or [])
             if not row.get("comment_n")
         ]
 

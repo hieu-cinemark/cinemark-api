@@ -57,15 +57,39 @@ async def posts(
     platform: str | None = None,
     keyword_id: str | None = None,
     movie_id: str | None = None,
+    keyword_match: bool | None = Query(default=None),
     sort: str = Query(default="recent"),
+    cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> PostPage:
-    order = "engagement" if sort == "engagement" else "recent"
-    rows, total = await post_repo.list_posts(
-        platform=platform, keyword_id=keyword_id, movie_id=movie_id, sort=order, limit=limit, offset=offset
+    # sort="engagement" (top-N by keyword/movie) has no numbered pager on
+    # the frontend and isn't keyset-eligible (see list_posts_cursor's own
+    # docstring) - keeps using list_posts' offset path, always offset=0
+    # in practice (useTopPostsByKeyword/useTopPostsByMovie fetch one
+    # fixed-size batch, never paginate further).
+    if sort == "engagement":
+        rows, _total = await post_repo.list_posts(
+            platform=platform,
+            keyword_id=keyword_id,
+            movie_id=movie_id,
+            keyword_match=keyword_match,
+            sort="engagement",
+            limit=limit,
+            offset=offset,
+        )
+        return PostPage(items=[Post(**row) for row in rows])
+
+    rows, next_cursor = await post_repo.list_posts_cursor(
+        platform=platform,
+        keyword_id=keyword_id,
+        movie_id=movie_id,
+        keyword_match=keyword_match,
+        sort="recent",
+        cursor=cursor,
+        limit=limit,
     )
-    return PostPage(items=[Post(**row) for row in rows], total=total, limit=limit, offset=offset)
+    return PostPage(items=[Post(**row) for row in rows], nextCursor=next_cursor)
 
 
 @router.get("/posts/{post_id}/comments", response_model=list[Comment])
@@ -79,10 +103,12 @@ async def comments(
     platform: str | None = None,
     movie_id: str | None = None,
     keyword_id: str | None = None,
+    sentiment: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
 ) -> CommentPage:
-    rows, total = await comment_repo.list_all_comments(
-        platform=platform, movie_id=movie_id, keyword_id=keyword_id, limit=limit, offset=offset
+    label = sentiment if sentiment in {"positive", "negative", "neutral"} else None
+    rows, next_cursor = await comment_repo.list_all_comments_cursor(
+        platform=platform, movie_id=movie_id, keyword_id=keyword_id, sentiment=label, cursor=cursor, limit=limit
     )
-    return CommentPage(items=[CommentWithPost(**row) for row in rows], total=total, limit=limit, offset=offset)
+    return CommentPage(items=[CommentWithPost(**row) for row in rows], nextCursor=next_cursor)

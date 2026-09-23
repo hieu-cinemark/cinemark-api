@@ -72,10 +72,14 @@ class Post(BaseModel):
 
 
 class PostPage(BaseModel):
+    """Keyset-paginated - no `total`/`offset` (see PostRepository.
+    list_posts_cursor's own docstring for why: OFFSET+JOIN degrades with
+    depth on D1 once a table gets large, and a numbered pager needs an
+    exact total anyway - `nextCursor` is the opaque page-2 token; None
+    means this was the last page."""
+
     items: list[Post]
-    total: int
-    limit: int
-    offset: int
+    nextCursor: str | None = None
 
 
 class Comment(BaseModel):
@@ -95,6 +99,7 @@ class Comment(BaseModel):
     parent_author_name: str | None = None
     posted_at: str | None = None
     scraped_at: str
+    sentiment: str | None = None
 
 
 class CommentWithPost(Comment):
@@ -106,7 +111,7 @@ class CommentWithPost(Comment):
 
 
 class CommentPage(BaseModel):
+    """Keyset-paginated - see PostPage's own docstring."""
+
     items: list[CommentWithPost]
-    total: int
-    limit: int
-    offset: int
+    nextCursor: str | None = None
