@@ -342,16 +342,27 @@ REPORT_COMMENT_SAMPLE_SIZE = 400
 
 async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMENT_SAMPLE_SIZE) -> list[dict[str, Any]]:
     """Engagement-ranked sample of this movie's already-sentiment-classified
-    comments, for the topic-clustering Kira call in
+    comments, for the topic-clustering Bee call in
     scripts/generate_social_topic_reports.py - NOT used for the overall
     sentiment percentages (see get_movie_sentiment_counts, which counts
-    every classified comment, not just this capped sample)."""
+    every classified comment, not just this capped sample).
+
+    Only comments under a post the PhoBERT model confidently marked
+    relevance_label='related' - a keyword-matched post that isn't actually
+    about the movie (see app/repositories/d1/posts.py's own top-100 filter,
+    same predicate) would otherwise let its off-topic comments dilute the
+    topic clustering and the sentiment split just as much as it used to
+    dilute the top-100 list. Confirmed live before this fix: some movies
+    had 25-66% of their "classified comments" sitting under such posts."""
     rows = await d1_query(
         """
-        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment
+        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment,
+               c.author_name, c.author_url, c.author_profile_picture,
+               p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform
         FROM comments c
         JOIN posts p ON p.id = c.post_id
-        WHERE p.movie_id = ? AND c.sentiment IS NOT NULL AND c.message IS NOT NULL
+        WHERE p.movie_id = ? AND p.relevance_label = 'related'
+          AND c.sentiment IS NOT NULL AND c.message IS NOT NULL
         ORDER BY c.reactions_count DESC, c.scraped_at DESC
         LIMIT ?
         """,
@@ -365,13 +376,18 @@ async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
     sentiment label - the ground truth for the report's overall_sentiment
     percentages (computed by the caller via plain division, not estimated
     by an LLM), over the FULL population, not just the capped sample fed
-    to the topic-clustering call."""
+    to the topic-clustering call.
+
+    Same p.relevance_label='related' gate as get_comment_sample_for_movie
+    above, for the same reason - the percentages must come from the same
+    on-topic population the sample was drawn from, not a larger one that
+    still includes off-topic posts' comments."""
     rows = await d1_query(
         """
         SELECT c.sentiment, COUNT(*) AS count
         FROM comments c
         JOIN posts p ON p.id = c.post_id
-        WHERE p.movie_id = ? AND c.sentiment IS NOT NULL
+        WHERE p.movie_id = ? AND p.relevance_label = 'related' AND c.sentiment IS NOT NULL
         GROUP BY c.sentiment
         """,
         [movie_id],

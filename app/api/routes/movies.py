@@ -11,7 +11,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
-from app.services.d1 import create_movie, disable_movie, list_movies, update_movie
+from app.services.d1 import MIN_COMMENTS_FOR_REPORT, create_movie, disable_movie, list_movies, update_movie
+from app.services.social_topic import generate_report_for_movie, get_movie_for_report
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 
@@ -95,3 +96,25 @@ async def delete(movie_id: str) -> dict[str, bool]:
     if result is False:
         raise NotFoundError("Movie not found")
     return {"ok": True}
+
+
+@router.post("/{movie_id}/generate-report")
+async def generate_report(movie_id: str) -> dict[str, str]:
+    """Manual "Tạo report" trigger (see spider-hub-dashboard's MoviesTable) -
+    runs the exact same per-movie logic as scripts/
+    generate_social_topic_reports.py's daily sweep, for one movie, on
+    demand. Synchronous (two sequential Bee calls - confirmed live the
+    topics-clustering call alone can take 2+ minutes on a movie with a
+    large comment sample) - a manually-triggered admin action with its
+    own loading spinner, not worth a background-job queue for."""
+    movie = await get_movie_for_report(movie_id)
+    if movie is None:
+        raise NotFoundError("Movie not found")
+    result = await generate_report_for_movie(movie)
+    if result == "insufficient_data":
+        raise ValidationError(
+            f"Chưa đủ bình luận đã phân loại cảm xúc để tạo report (cần tối thiểu {MIN_COMMENTS_FOR_REPORT})."
+        )
+    if result in ("topics_failed", "upsert_failed"):
+        raise UpstreamError("Không tạo được report - thử lại sau.")
+    return {"status": result}

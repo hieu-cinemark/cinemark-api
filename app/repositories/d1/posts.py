@@ -510,6 +510,8 @@ class PostRepository:
         platform: str,
         draft: PostDraft,
         ai_relevant: bool | None = None,
+        relevance_label: str | None = None,
+        relevance_confidence: float | None = None,
     ) -> bool:
         """Upsert one scraped post (any registered platform) straight into
         cinemark-scraper's own `posts` table (+ an engagement snapshot on
@@ -519,11 +521,20 @@ class PostRepository:
         (see app/services/platforms.py) - this function has no
         platform-specific field knowledge of its own.
 
-        `ai_relevant`, when given (see app/kira/relevance.py), is Kira's
-        synonym/context-aware verdict and is used for keyword_match instead of
-        the exact-substring contains_keyword check below - callers pass None
-        to fall back to the substring check (Kira not configured, or the call
-        failed) rather than blocking ingestion on an LLM hiccup."""
+        `ai_relevant`, when given (see app/services/relevance_phobert.py),
+        is the PhoBERT model's confident (non-"uncertain") verdict and is
+        used for keyword_match instead of the exact-substring
+        contains_keyword check below - callers pass None to fall back to
+        the substring check (PhoBERT not configured, or the call failed)
+        rather than blocking ingestion on a classifier hiccup.
+
+        `relevance_label`/`relevance_confidence`, when given, are that same
+        classification stored straight onto the row at ingest time (the
+        3-bucket related/not_related/uncertain scheme, not the boolean
+        keyword_match) - previously only ever set later by a batch sweep
+        (phobert-classifier/label_posts_relevance.py), leaving every post
+        NULL until the next run; a post classified live no longer needs
+        that batch pass to show up in relevance-filtered views."""
         if not _configured() or platform not in registered_platforms():
             return False
         await _ensure_post_indexes()
@@ -570,13 +581,15 @@ class PostRepository:
 
         if existing is None:
             post_id = f"post_{uuid.uuid4()}"
+            relevance_labeled_at = scraped_at if relevance_label is not None else None
             inserted = await d1_query(
                 """
                 INSERT INTO posts (
                     id, movie_id, keyword_id, platform, external_id, url, author, content, media_json,
                     like_count, reply_count, repost_count, quote_count, reshare_count, view_count,
-                    posted_at, scraped_at, raw_json, keyword_match
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    posted_at, scraped_at, raw_json, keyword_match,
+                    relevance_label, relevance_confidence, relevance_labeled_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     post_id,
@@ -598,6 +611,9 @@ class PostRepository:
                     scraped_at,
                     raw_json,
                     keyword_match,
+                    relevance_label,
+                    relevance_confidence,
+                    relevance_labeled_at,
                 ],
             )
             if inserted is None:
@@ -622,12 +638,22 @@ class PostRepository:
         post_id = existing["id"]
         changed = any(existing.get(field) != engagement[field] for field in ENGAGEMENT_FIELDS)
 
+        # relevance_* use COALESCE(?, column) rather than a plain overwrite:
+        # this branch re-runs on every re-scrape of an already-existing post
+        # (engagement-only updates), and content unchanged means the same
+        # contains_keyword/classify path as before, which can legitimately
+        # be None here (substring match alone decided it, no PhoBERT call
+        # made) - a plain overwrite would null out a real label a batch
+        # sweep (or an earlier ingest classification) already set.
         updated = await d1_query(
             """
             UPDATE posts SET
                 url = ?, author = ?, content = ?, media_json = ?,
                 like_count = ?, reply_count = ?, repost_count = ?, quote_count = ?, reshare_count = ?, view_count = ?,
-                posted_at = ?, scraped_at = ?, raw_json = ?, keyword_match = ?
+                posted_at = ?, scraped_at = ?, raw_json = ?, keyword_match = ?,
+                relevance_label = COALESCE(?, relevance_label),
+                relevance_confidence = COALESCE(?, relevance_confidence),
+                relevance_labeled_at = COALESCE(?, relevance_labeled_at)
             WHERE id = ?
             """,
             [
@@ -645,6 +671,9 @@ class PostRepository:
                 scraped_at,
                 raw_json,
                 keyword_match,
+                relevance_label,
+                relevance_confidence,
+                scraped_at if relevance_label is not None else None,
                 post_id,
             ],
         )

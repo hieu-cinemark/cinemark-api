@@ -45,8 +45,8 @@ from app.services.d1 import (
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.services.relevance_phobert import classify_post_relevance
 from app.services.telegram import send_telegram_message
-from app.kira.relevance import classify_relevance
 
 logger = get_logger(__name__)
 
@@ -137,38 +137,46 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     draft = mapper(payload)
-    # The free substring check first - only spend a Kira call (rate-limited,
-    # see app/kira/relevance.py) on posts it actually misses (no literal
-    # keyword/synonym/abbreviation match) rather than classifying every
-    # single post regardless of whether the cheap check already found one.
+    # The free substring check first - only spend a PhoBERT call on posts
+    # it actually misses (no literal keyword/synonym/abbreviation match)
+    # rather than classifying every single post regardless of whether the
+    # cheap check already found one.
     ai_relevant = None
+    relevance_label = None
+    relevance_confidence = None
     if not contains_keyword(draft.get("content"), keyword["keyword"]):
-        relevance = await classify_relevance(keyword["keyword"], draft, keyword_row=keyword)
+        relevance = await classify_post_relevance(draft.get("content"), keyword.get("movie_title"), keyword["keyword"])
         if relevance:
-            ai_relevant = relevance.get("relevant")
-            # Kira actually ran and confidently said this post isn't about
-            # the movie (not "uncertain" - see prompt.py's FIELD RULES,
-            # which maps both "irrelevant" and "uncertain" to relevant=false,
-            # so classification is checked directly rather than relying on
-            # the boolean alone) - drop it instead of storing it with
-            # keyword_match=0 like before, which never actually kept garbage
-            # out of the posts table. A free-tier Kira hiccup/rate-limit
-            # (relevance is None, see classify_relevance's own docstring)
-            # must NOT drop anything - only a real "irrelevant" verdict
-            # does, so ingestion never silently loses a real post just
-            # because the free model had a bad moment.
-            if relevance.get("classification") == "irrelevant":
+            relevance_label = relevance["label"]
+            relevance_confidence = relevance["confidence"]
+            if relevance_label == "related":
+                ai_relevant = True
+            elif relevance_label == "not_related":
+                # A confident (not "uncertain" - see
+                # app/services/relevance_phobert.py's own confidence
+                # threshold) verdict that this post isn't about the movie -
+                # drop it instead of storing it with keyword_match=0 like
+                # before, which never actually kept garbage out of the
+                # posts table. A PhoBERT outage/misconfig (relevance is
+                # None) must NOT drop anything - only a confident
+                # "not_related" does, so ingestion never silently loses a
+                # real post just because the local model had a bad moment.
                 logger.info(
                     "post_dropped_irrelevant",
                     platform=platform,
                     post_id=post_id,
                     keyword_id=keyword_id,
-                    reason=relevance.get("reason"),
+                    confidence=relevance_confidence,
                 )
                 await persist_dropped_post(
-                    platform=platform, reason="kira_irrelevant", payload=payload, keyword_id=keyword_id
+                    platform=platform, reason="phobert_irrelevant", payload=payload, keyword_id=keyword_id
                 )
                 return
+            # "uncertain": ai_relevant stays None (falls back to the
+            # substring check below, which we already know is False here)
+            # - relevance_label/confidence are still stored, so this post
+            # doesn't need label_posts_relevance.py's batch sweep to pick
+            # it up later; it's already been classified, just inconclusively.
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
@@ -176,6 +184,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         platform=platform,
         draft=draft,
         ai_relevant=ai_relevant,
+        relevance_label=relevance_label,
+        relevance_confidence=relevance_confidence,
     )
     if not ok:
         await _note_drop(platform, "d1_write_failed", post_id=post_id)

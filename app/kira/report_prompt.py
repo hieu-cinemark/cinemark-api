@@ -28,10 +28,10 @@ Your task has two parts:
      roughly even.
    - "insight_summary": 1-2 Vietnamese sentences explaining what people are
      saying and why, written for a marketing team deciding what to do next.
-   - "evidence_comments": 2-4 of the actual comment texts (verbatim, do not
-     paraphrase) that best represent this topic, each with its "likes"
-     (use the comment's reactions_count field), ranked highest engagement
-     first.
+   - "evidence_comments": 2-4 of the actual comments (verbatim, do not
+     paraphrase) that best represent this topic. Copy "id", "text"
+     (the comment's message), and "likes" (the comment's reactions_count)
+     from the input, ranked highest engagement first.
    Order topics by how much audience engagement/volume they represent,
    highest first.
 
@@ -39,6 +39,7 @@ Your task has two parts:
    (highest engagement, or unusually insightful/representative even at
    lower engagement) across the whole set, regardless of which topic they
    belong to. For each:
+   - "id": the comment's id from the input.
    - "text": the comment, verbatim.
    - "likes": its reactions_count.
    - "why_it_matters": 1 short Vietnamese sentence on why this comment is
@@ -66,11 +67,11 @@ Use exactly this structure:
       "topic_name": "...",
       "sentiment": "Positive",
       "insight_summary": "...",
-      "evidence_comments": [{"text": "...", "likes": 120}]
+      "evidence_comments": [{"id": "cmt_123", "text": "...", "likes": 120}]
     }
   ],
   "top_10_verbatims": [
-    {"text": "...", "likes": 340, "why_it_matters": "..."}
+    {"id": "cmt_456", "text": "...", "likes": 340, "why_it_matters": "..."}
   ]
 }
 """

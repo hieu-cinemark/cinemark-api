@@ -88,8 +88,15 @@ class Settings(BaseSettings):
     kira_api_key: str | None = None
     kira_base_url: str | None = None
 
-    # Comment sentiment backend: "phobert" (local HTTP, default), "kira",
-    # or "auto" (PhoBERT then Kira fallback). serve.py in the sibling
+    # Beeknoee (platform.beeknoee.com) - OpenAI-compatible proxy this
+    # product uses for Claude Sonnet 5 (see app/bee/client.py). Separate
+    # provider from Kira, on purpose - see app/bee/client.py's own module
+    # docstring for the split.
+    beeknoee_api_key: str | None = None
+    beeknoee_base_url: str | None = None
+
+    # Comment sentiment backend: "phobert" (local HTTP, default), "bee",
+    # or "auto" (PhoBERT then Bee fallback). serve.py in the sibling
     # phobert-classifier repo listens on phobert_url.
     sentiment_backend: str = "phobert"
     phobert_url: str = "http://127.0.0.1:8090"
