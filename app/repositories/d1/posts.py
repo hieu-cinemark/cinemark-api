@@ -173,6 +173,83 @@ def contains_keyword(content: str | None, keyword: str | None) -> bool:
     return True
 
 
+_HASHTAG_TOKEN_RE = re.compile(r"#(\w+)", re.UNICODE)
+_VIETNAMESE_COMBINING_MARKS = ("̛", "̣", "̉")  # horn (ư/ơ), dot-below, hook-above tones
+
+
+def _looks_vietnamese(text: str) -> bool:
+    """Cheap language signal, not a real detector: đ, plus the combining
+    horn (ư/ơ) and dot-below/hook-above tone marks (NFD-decomposed) are, in
+    practice, essentially unique to Vietnamese among the languages that
+    actually turn up in this crawl data - grave/acute/tilde alone are
+    shared with Spanish/French/Portuguese so aren't used here on their
+    own. Used only as movie_hashtag_present's tie-breaker for its weaker
+    signal (an exact but short/ambiguous hashtag token, no literal title
+    anywhere) - a real Vietnamese sentence of any normal length almost
+    always has at least one of these; genuinely unrelated foreign-language
+    content sharing that same short hashtag by coincidence won't."""
+    if "đ" in text.lower():
+        return True
+    decomposed = unicodedata.normalize("NFD", text)
+    return any(mark in decomposed for mark in _VIETNAMESE_COMBINING_MARKS)
+
+
+def movie_hashtag_present(content: str | None, movie_title: str | None, keyword: str | None) -> bool:
+    """Stricter companion to post_mentions_movie/contains_keyword, for
+    callers that want to trust relevance_label='related' (an AI or
+    substring verdict - see persist_post's own docstring: keyword_match is
+    just a mirror of relevance_label whenever the AI was actually invoked,
+    NOT independent corroborating evidence) only when the post text itself
+    also, independently, names this movie.
+
+    True when EITHER post_mentions_movie's own check passes (the literal
+    title, or its space-stripped hashtag form, appearing verbatim) OR the
+    post contains a whole hashtag TOKEN whose folded form (see
+    _fold_for_keyword_match - diacritics/case/whitespace-insensitive)
+    exactly equals the movie's own folded title or configured keyword.
+
+    Whole-token equality on purpose, not substring containment like
+    contains_keyword: a short/generic folded keyword or title (e.g. "Mẹ
+    Mìn" folds to "memin") can coincidentally be a SUBSTRING of a
+    completely unrelated longer hashtag (confirmed live 2026-09-24: a
+    Mexican snack brand's "#botanasmemin"/"#echatelabotanaconbotanasmemin"
+    posts were scoring 99%+ "related" to the movie "Mẹ Mìn" purely off that
+    coincidence, both via the AI classifier and the substring check it
+    falls back to). Comparing whole tokens for exact equality still
+    recognizes a real "#memin" tag while rejecting "#botanasmemin" - they
+    fold to different strings, not just different substrings.
+
+    Trade-off, accepted on purpose (see callers' own docstrings): a
+    genuinely related post that uses neither the literal title nor a
+    title-equal hashtag - just an actor's name, a compound tag like
+    "#PhimMeMin", or a nickname - won't pass this either. That's the point
+    for the callers using this (a "top 100" list and the daily comments
+    sweep) - fewer, more precisely on-topic results over exhaustive
+    recall.
+
+    A short/generic exact hashtag (this function's whole reason to exist
+    over contains_keyword's substring check) can still be a real word or
+    name in some OTHER language, used by content with nothing to do with
+    this movie at all - confirmed live 2026-09-24: "#memin" is also an
+    existing nickname/cultural reference in Spanish (a classic Mexican
+    comic character), so funny-cat-video and meme posts using that exact
+    tag were passing too, not just the "#botanasmemin"-style substring
+    collision this function's token-equality check was built for. Once the
+    literal-title branch above has already failed, _looks_vietnamese(content)
+    is required too - a coincidental foreign-language tag match alone is no
+    longer enough."""
+    if not content:
+        return False
+    if post_mentions_movie(content, movie_title):
+        return True
+    folded_targets = {_fold_for_keyword_match(t) for t in (movie_title, keyword) if t}
+    folded_targets.discard("")
+    if not folded_targets:
+        return False
+    tags = {_fold_for_keyword_match(tag) for tag in _HASHTAG_TOKEN_RE.findall(content)}
+    return bool(tags & folded_targets) and _looks_vietnamese(content)
+
+
 # Playable video / permalinks cannot go in an <img>. Older TikTok rows
 # stored playAddr as media_url and left cover_url only on raw_json.
 _VIDEO_URL_HINTS = (
@@ -270,16 +347,21 @@ class PostRepository:
         sort="engagement": highest-interaction first (see
         _ENGAGEMENT_SCORE_SQL) - e.g. keyword_id + sort="engagement" +
         limit=100 is the dashboard's "top 100 posts for this keyword" view.
-        That view only keeps posts already AI-labeled relevance_label=
-        'related' (see phobert-classifier/label_posts_relevance.py) so a
-        high-engagement off-topic hit from the keyword crawl does not
-        occupy the list - a real classifier call, not the old
-        post_mentions_movie substring/hashtag heuristic still used below
-        by list_posts_needing_comments (which this intentionally no
-        longer matches - ask if that one should switch too). Trade-off:
-        a post not yet swept by that batch script (relevance_label still
-        NULL) is invisible here until it runs, unlike the old heuristic
-        which needed no batch job at all."""
+        That view requires relevance_label='related' (see
+        phobert-classifier/label_posts_relevance.py) AND
+        movie_hashtag_present's own, independent check - relevance_label
+        alone isn't a second opinion the way it looks: persist_post stores
+        keyword_match as a straight mirror of the AI verdict whenever the
+        AI was actually invoked (see its own docstring), so relying on
+        relevance_label alone was really trusting the AI once, not twice.
+        Confirmed live 2026-09-24: a Mexican snack brand's posts scored
+        99%+ "related" to the movie "Mẹ Mìn" purely because its own hashtag
+        folds to the same short string as the movie's - see
+        movie_hashtag_present's own docstring for the fix. Over-fetches
+        (_ENGAGEMENT_OVERFETCH below) since this second filter runs in
+        Python, then trims back to `limit` - a post not yet AI-labeled, or
+        with no matching hashtag/title mention at all, won't occupy a slot
+        even at high engagement."""
         await _ensure_post_indexes()
         where = []
         params: list[Any] = []
@@ -299,6 +381,11 @@ class PostRepository:
             where.append("p.relevance_label = 'related'")
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         order_sql = f"{_ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
+        # movie_hashtag_present runs in Python after the fetch and rejects
+        # some rows relevance_label='related' alone would have let through
+        # - ask for more than `limit` up front so trimming back down to it
+        # after filtering doesn't leave a short/empty page.
+        sql_limit = max(limit * 4, limit + 100) if sort == "engagement" else limit
 
         rows = await d1_query(
             f"""
@@ -315,11 +402,14 @@ class PostRepository:
             ORDER BY {order_sql}
             LIMIT ? OFFSET ?
             """,
-            [*params, limit, offset],
+            [*params, sql_limit, offset],
             timeout=20.0 if keyword_match is not None else 10.0,
         )
         hydrated = _hydrate_post_rows(rows)
         if sort == "engagement":
+            hydrated = [
+                row for row in hydrated if movie_hashtag_present(row.get("content"), row.get("movie_title"), row.get("keyword"))
+            ][:limit]
             return hydrated, len(hydrated)
 
         # Filtered tabs: skip COUNT(*) - it's a full scan until the
@@ -427,30 +517,38 @@ class PostRepository:
         are new to it (or never got comments the first time) are - so a
         keyword whose top 100 barely reshuffles day to day doesn't keep
         re-spending the account/proxy pool on posts it already fetched
-        comments for. Same relevance_label='related' gate as the
-        dashboard's top-100 list now uses (list_posts sort="engagement") -
-        this used to filter by post_mentions_movie instead and had quietly
-        drifted from that method when it switched; same AI-labeled-post
-        caveat applies (a post not yet swept by label_posts_relevance.py's
-        batch run is invisible here too)."""
+        comments for. Same relevance_label='related' + movie_hashtag_present
+        gate as the dashboard's top-100 list (list_posts sort="engagement")
+        - see that method's own docstring and movie_hashtag_present's for
+        why relevance_label alone isn't independent corroboration; same
+        AI-labeled-post caveat applies (a post not yet swept by
+        label_posts_relevance.py's batch run is invisible here too)."""
         await _ensure_post_indexes()
+        overfetch = max(top_n * 4, top_n + 100)
         rows = await d1_query(
             f"""
-            SELECT p.id, p.external_id, p.url,
+            SELECT p.id, p.external_id, p.url, p.content, k.keyword, m.title AS movie_title,
                    COALESCE(c.n, 0) AS comment_n
             FROM posts p
+            LEFT JOIN keywords k ON k.id = p.keyword_id
+            LEFT JOIN movies m ON m.id = p.movie_id
             LEFT JOIN (SELECT post_id, COUNT(*) AS n FROM comments GROUP BY post_id) c ON c.post_id = p.id
             WHERE p.platform = ? AND p.keyword_id = ? AND p.relevance_label = 'related'
             ORDER BY {_ENGAGEMENT_SCORE_SQL} DESC
             LIMIT ?
             """,
-            [platform, keyword_id, top_n],
+            [platform, keyword_id, overfetch],
         )
-        return [
-            {"id": row["id"], "external_id": row["external_id"], "url": row["url"]}
-            for row in (rows or [])
-            if not row.get("comment_n")
-        ]
+        selected: list[dict[str, Any]] = []
+        for row in rows or []:
+            if row.get("comment_n"):
+                continue
+            if not movie_hashtag_present(row.get("content"), row.get("movie_title"), row.get("keyword")):
+                continue
+            selected.append({"id": row["id"], "external_id": row["external_id"], "url": row["url"]})
+            if len(selected) >= top_n:
+                break
+        return selected
 
     async def get_post_by_external_id(self, platform: str, external_id: str) -> dict[str, Any] | None:
         """One post by (platform, external_id) - the id spider-hub's comment

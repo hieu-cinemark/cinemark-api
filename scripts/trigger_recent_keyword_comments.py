@@ -89,7 +89,7 @@ async def main(num_keywords: int, top_n: int) -> None:
             queued = 0
             for post in posts:
                 ok = await publish_comments_crawl_request(
-                    platform=kw["platform"], post_external_id=post["external_id"], post_url=post["url"]
+                    platform=kw["platform"], post_external_id=post["external_id"], post_url=post["url"], bypass_drain=False
                 )
                 if ok:
                     queued += 1

@@ -50,6 +50,7 @@ from app.repositories.d1.posts import (
     get_post_by_external_id,
     list_posts,
     list_posts_needing_comments,
+    movie_hashtag_present,
     persist_dropped_post,
     persist_post,
     post_mentions_movie,
@@ -80,6 +81,7 @@ __all_reexports__ = (
     get_post_by_external_id,
     list_posts,
     list_posts_needing_comments,
+    movie_hashtag_present,
     persist_dropped_post,
     persist_post,
     post_mentions_movie,
@@ -347,28 +349,52 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
     sentiment percentages (see get_movie_sentiment_counts, which counts
     every classified comment, not just this capped sample).
 
-    Only comments under a post the PhoBERT model confidently marked
-    relevance_label='related' - a keyword-matched post that isn't actually
-    about the movie (see app/repositories/d1/posts.py's own top-100 filter,
-    same predicate) would otherwise let its off-topic comments dilute the
-    topic clustering and the sentiment split just as much as it used to
-    dilute the top-100 list. Confirmed live before this fix: some movies
-    had 25-66% of their "classified comments" sitting under such posts."""
+    Only comments under a post that's BOTH relevance_label='related' AND
+    passes movie_hashtag_present (see app/repositories/d1/posts.py's own
+    top-100 filter, same two-signal gate, same reasoning: relevance_label
+    alone is just a mirror of the AI verdict at ingest time, not
+    independent corroboration - persist_post's own docstring). Without
+    movie_hashtag_present too, a keyword-matched post that isn't actually
+    about the movie would let its off-topic comments dilute the topic
+    clustering and the sentiment split just as much as it used to dilute
+    the top-100 list. Confirmed live before the relevance_label-only fix:
+    some movies had 25-66% of their "classified comments" sitting under
+    such posts; confirmed live 2026-09-24 that relevance_label alone still
+    wasn't enough on its own (the "Huyết Thống" report needed deleting and
+    regenerating after this second gate was added - see
+    movie_hashtag_present's own docstring for the exact incident).
+
+    Over-fetches (movie_hashtag_present runs in Python, after the fetch)
+    then trims back to `limit` - same shape as list_posts(sort=
+    "engagement")."""
+    movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
+    movie_title = movie_rows[0]["title"] if movie_rows else None
+
+    overfetch = max(limit * 2, limit + 200)
     rows = await d1_query(
         """
         SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment,
                c.author_name, c.author_url, c.author_profile_picture,
-               p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform
+               p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform,
+               k.keyword AS post_keyword
         FROM comments c
         JOIN posts p ON p.id = c.post_id
+        LEFT JOIN keywords k ON k.id = p.keyword_id
         WHERE p.movie_id = ? AND p.relevance_label = 'related'
           AND c.sentiment IS NOT NULL AND c.message IS NOT NULL
         ORDER BY c.reactions_count DESC, c.scraped_at DESC
         LIMIT ?
         """,
-        [movie_id, limit],
+        [movie_id, overfetch],
     )
-    return rows or []
+    selected: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not movie_hashtag_present(row.get("post_content"), movie_title, row.pop("post_keyword", None)):
+            continue
+        selected.append(row)
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:

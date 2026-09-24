@@ -18,7 +18,8 @@ import uuid
 from datetime import date
 from typing import Any
 
-from aiokafka import AIOKafkaProducer
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
+from aiokafka.admin import AIOKafkaAdminClient
 from aiokafka.errors import KafkaError
 
 from app.core.config import settings
@@ -31,6 +32,21 @@ logger = get_logger(__name__)
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
 
 _producer: AIOKafkaProducer | None = None
+
+# Every (label, topic, consumer group) actually consumed anywhere in this
+# system - spider-hub's crawl_request_consumer.py (PLATFORM_CONSUMER_GROUPS,
+# one group per platform all reading the same crawl_requests topic) and
+# cinemark-api's own app/workers/ingest_consumer/main.py
+# (CONSUMER_GROUP_POSTS/COMMENTS). Kept here rather than derived, since this
+# is the one place that cares about every consumer in the pipeline, both
+# repos at once - see get_consumer_lag() below.
+CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
+    ("facebook", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.facebook"),
+    ("threads", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.threads"),
+    ("tiktok", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.tiktok"),
+    ("ingest_posts", "raw_posts", "cinemark-api.ingest.posts"),
+    ("ingest_comments", "raw_comments", "cinemark-api.ingest.comments"),
+)
 
 # producer.start() only raises KafkaError for a *refused* connection - a
 # broker that's up but not responding (overloaded host, coordinator
@@ -154,7 +170,12 @@ async def publish_channel_videos_request(
 
 
 async def publish_comments_crawl_request(
-    *, platform: str, post_external_id: str, post_url: str, max_pages: int = DEFAULT_COMMENTS_MAX_PAGES
+    *,
+    platform: str,
+    post_external_id: str,
+    post_url: str,
+    max_pages: int = DEFAULT_COMMENTS_MAX_PAGES,
+    bypass_drain: bool = True,
 ) -> bool:
     """Publishes a type="comments" request, tagged for crawl_request_consumer.py's
     _run_comments_spider (spider-hub) to run that platform's comments
@@ -165,36 +186,54 @@ async def publish_comments_crawl_request(
     dropped on the consumer side. post_url is needed too, not just
     post_external_id: spider-hub bootstraps its comments-query cache
     (shared across every post for that account) from a real post URL the
-    first time it's missing/expired, not from a bare numeric id."""
+    first time it's missing/expired, not from a bare numeric id.
+
+    bypass_drain=True (the default) is for a one-off dashboard trigger -
+    "fetch comments for this one post" - so an unrelated earlier Stop
+    elsewhere doesn't silently swallow it (see publish_action_request's own
+    docstring). Callers that publish MANY of these at once on purpose - the
+    daily comments-sweep schedule (app/services/scheduler.py's
+    _trigger_comments_platform) and the manual bulk backfill
+    (scripts/trigger_recent_keyword_comments.py) - pass bypass_drain=False
+    instead, so that backlog is exactly what a platform's Stop button
+    cancels. Confirmed live 2026-09-24: with every comments request
+    hardcoded bypass_drain=True, a stuck/slow tiktok comments backlog
+    (500+ deep) had no way to be cancelled through the app at all - Stop
+    armed the drain flags but every queued message ignored them by design."""
     run_id = str(uuid.uuid4())
     return await publish_action_request(
         platform,
         "comments",
         {"post_id": post_external_id, "post_url": post_url, "max_pages": max_pages, "run_id": run_id},
+        bypass_drain=bypass_drain,
     )
 
 
-async def publish_action_request(platform: str, action: str, payload: dict[str, Any]) -> bool:
+async def publish_action_request(
+    platform: str, action: str, payload: dict[str, Any], *, bypass_drain: bool | None = None
+) -> bool:
     """Publishes a generic action request to the crawl_requests topic, tagged
     with type=action so crawl_request_consumer.py can handle it. Used for
-    account checks and token refreshes."""
+    account checks, token refreshes, and comments crawls.
+
+    bypass_drain=None (the default) keeps the original behavior: True for
+    every action except refresh_token/cookie_import, so a one-off targeted
+    request survives an unrelated earlier Stop still within its TTL rather
+    than being silently skipped - clearing drain here instead would wipe
+    bfs_drain/comments_drain/platform_drain for the WHOLE platform, which
+    would just as silently un-block any real backlog a Stop was meant to
+    hold back. Pass bypass_drain explicitly (see
+    publish_comments_crawl_request's own docstring) when the caller
+    publishes many of these at once and DOES want a platform's Stop button
+    able to cancel them - see crawl_request_consumer.py's _handle_request on
+    the spider-hub side for where this flag is actually read."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", platform=platform)
         return False
     key = str(uuid.uuid4())
     value: dict[str, Any] = {"type": action, "platform": platform, **payload}
-    # Unlike publish_crawl_request (a bulk platform crawl - the same kind of
-    # work Stop blocks, so clearing drain there is correct), these actions
-    # are one-off targeted requests. Calling clear_drain(platform) here would
-    # wipe bfs_drain/comments_drain/platform_drain for the WHOLE platform,
-    # silently un-blocking any still-queued backlog left over from a Stop.
-    # Tag just this message to skip the drain check for itself instead - see
-    # crawl_request_consumer.py's _handle_request on the spider-hub side.
-    # refresh_token/cookie_import are already exempt there by type, so they
-    # don't need the tag (and must keep drain armed for everything else -
-    # Stop mid-refresh still uses run_id-scoped cancellation).
     if action not in ("refresh_token", "cookie_import"):
-        value["bypass_drain"] = True
+        value["bypass_drain"] = True if bypass_drain is None else bypass_drain
     try:
         await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{action}:{platform}:{key}", value=value)
     except KafkaError as exc:
@@ -271,3 +310,77 @@ async def publish_restore_session_request(platform: str, account_key: str, run_i
         platform, "refresh_token", {"account_key": account_key, "run_id": run_id}
     )
     return run_id if ok else None
+
+
+async def get_consumer_lag() -> list[dict[str, Any]]:
+    """Real backlog per CONSUMER_GROUPS entry: that topic's current end
+    offset (high watermark) minus the group's last *committed* offset,
+    summed across partitions - straight from the broker, not app state.
+
+    This is deliberately a different number from task_queue's own "queued"
+    count (a Redis list cinemark-api pushes to on publish and spider-hub
+    pops from on start_task) - that one tracks individual job bookkeeping
+    and can get stuck forever if a consumer never gets to call start_task
+    for some entry (see the incident that motivated this function: a
+    kafka-python consumer group stuck mid-rebalance for hours left ~168
+    tiktok comments requests orphaned in Redis while the topic's own real
+    lag for that group was 578 and climbing). This number can't get stuck
+    that way - it's recomputed from the broker every call.
+
+    Uses only read-only admin RPCs (list_consumer_group_offsets) and a
+    consumer with group_id=None (never joins a group, just asks the broker
+    for the topic's high watermark) - this can never trigger a rebalance on
+    any of the real consumer groups it's reporting on."""
+    admin = AIOKafkaAdminClient(bootstrap_servers=settings.kafka_bootstrap_servers)
+    consumer = AIOKafkaConsumer(bootstrap_servers=settings.kafka_bootstrap_servers, group_id=None)
+    try:
+        await admin.start()
+    except Exception as exc:
+        logger.warning("kafka_lag_admin_connect_failed", error=str(exc))
+        return [
+            {"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "broker_unreachable"}
+            for label, topic, group_id in CONSUMER_GROUPS
+        ]
+    try:
+        await consumer.start()
+    except Exception as exc:
+        logger.warning("kafka_lag_consumer_connect_failed", error=str(exc))
+        await admin.close()
+        return [
+            {"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "broker_unreachable"}
+            for label, topic, group_id in CONSUMER_GROUPS
+        ]
+
+    results: list[dict[str, Any]] = []
+    try:
+        topics = sorted({topic for _, topic, _ in CONSUMER_GROUPS})
+        described = await admin.describe_topics(topics)
+        partitions_by_topic: dict[str, list[int]] = {}
+        for entry in described:
+            name = entry["topic"] if isinstance(entry, dict) else entry.topic
+            parts = entry["partitions"] if isinstance(entry, dict) else entry.partitions
+            partitions_by_topic[name] = [p["partition"] if isinstance(p, dict) else p.partition for p in parts]
+
+        for label, topic, group_id in CONSUMER_GROUPS:
+            partitions = partitions_by_topic.get(topic)
+            if not partitions:
+                results.append({"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "topic_not_found"})
+                continue
+            try:
+                tps = [TopicPartition(topic, p) for p in partitions]
+                end_offsets = await consumer.end_offsets(tps)
+                committed = await admin.list_consumer_group_offsets(group_id, partitions=tps)
+                lag = 0
+                for tp in tps:
+                    end = end_offsets.get(tp, 0)
+                    meta = committed.get(tp)
+                    committed_offset = meta.offset if meta and meta.offset >= 0 else 0
+                    lag += max(0, end - committed_offset)
+                results.append({"label": label, "topic": topic, "group_id": group_id, "lag": lag, "error": None})
+            except Exception as exc:
+                logger.warning("kafka_lag_query_failed", label=label, topic=topic, group_id=group_id, error=str(exc))
+                results.append({"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": str(exc)})
+    finally:
+        await consumer.stop()
+        await admin.close()
+    return results

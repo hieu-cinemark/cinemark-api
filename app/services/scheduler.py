@@ -133,7 +133,7 @@ async def _trigger_comments_platform(platform: str, *, top_n: int) -> None:
             if not post.get("url"):
                 continue
             ok = await publish_comments_crawl_request(
-                platform=platform, post_external_id=post["external_id"], post_url=post["url"]
+                platform=platform, post_external_id=post["external_id"], post_url=post["url"], bypass_drain=False
             )
             if ok:
                 published += 1
