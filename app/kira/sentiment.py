@@ -55,7 +55,7 @@ async def _classify_phobert(message: str) -> str | None:
 
 
 async def _classify_bee(message: str) -> str | None:
-    if not bee_is_configured():
+    if not await bee_is_configured():
         return None
     prompt = SENTIMENT_DATA_PROMPT.format(message=message)
     try:

@@ -1,35 +1,21 @@
-"""Shared low-level Kira call primitive - retry/backoff/concurrency-limiting
-wrapper around KiraAI.complete(), used by every classifier in app/kira/
-so they share ONE process-scoped rate-limit budget and one KiraResponse
-shape (see app.kira.base)."""
+"""Kira-task policy layer over the shared app.ai_client: per-task enabled
+toggle + system-prompt overrides (ai_settings table in Supabase), on top
+of the provider-agnostic HTTP/retry/concurrency machinery in
+app.ai_client. Every classifier in app/kira/ goes through call_kira() so
+they share one enabled/prompts read and one retry budget."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-import random
-import re
 import time
 from typing import Any
 
-import openai
-
-from app.core.config import settings
+from app.ai_client import call_ai, invalidate_provider_cache, parse_json_response
 from app.core.logging import get_logger
-from app.kira.base import KiraResponse, get_kira_ai, reset_kira_ai
-from app.kira.defaults import DEFAULT_KIRA_MODEL, default_system_prompts
+from app.kira.defaults import default_system_prompts
+
+__all__ = ["call_kira", "invalidate_ai_runtime_cache", "kira_is_enabled", "load_ai_runtime", "parse_json_response"]
 
 logger = get_logger(__name__)
-
-JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE | re.MULTILINE)
-
-# Env default when the ai_settings row has never been saved. Dashboard
-# Settings is the runtime switch (see kira_is_enabled).
-KIRA_ENABLED = settings.kira_enabled
-
-KIRA_CONCURRENCY = asyncio.Semaphore(2)
-_MAX_RATE_LIMIT_RETRIES = 3
-_RETRY_BASE_SECONDS = 2.0
 
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
 _AI_CFG_TTL_SECONDS = 5.0
@@ -46,25 +32,21 @@ def _normalize_prompts(raw: object) -> dict[str, str]:
 
 
 async def load_ai_runtime() -> dict[str, Any]:
-    """enabled/model/prompts from Postgres, falling back to env + code
-    defaults if DATABASE_URL is missing or the table isn't there yet."""
+    """enabled + per-task prompt overrides from Supabase's ai_settings row,
+    falling back to disabled/no-overrides if the table isn't there yet.
+    Provider credentials/model are a separate concern - see
+    app.ai_client.load_provider()."""
     global _ai_cfg_cache
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
         return _ai_cfg_cache[1]
-    cfg: dict[str, Any] = {
-        "enabled": bool(settings.kira_enabled),
-        "model": DEFAULT_KIRA_MODEL,
-        "prompts": {},
-        "updated_at": None,
-    }
+    cfg: dict[str, Any] = {"enabled": False, "prompts": {}, "updated_at": None}
     try:
         from app.services.platform_config_db import get_ai_settings
 
         row = await get_ai_settings()
         cfg = {
             "enabled": bool(row.get("enabled")),
-            "model": (row.get("model") or DEFAULT_KIRA_MODEL).strip() or DEFAULT_KIRA_MODEL,
             "prompts": _normalize_prompts(row.get("prompts")),
             "updated_at": row.get("updated_at"),
         }
@@ -77,7 +59,7 @@ async def load_ai_runtime() -> dict[str, Any]:
 def invalidate_ai_runtime_cache() -> None:
     global _ai_cfg_cache
     _ai_cfg_cache = None
-    reset_kira_ai()
+    invalidate_provider_cache("kira")
 
 
 async def kira_is_enabled() -> bool:
@@ -102,54 +84,22 @@ async def call_kira(
     force: bool = False,
     task: str = "chat",
     platform: str | None = None,
-    extra: dict[str, Any] | None = None,
 ) -> str:
-    """Runs KiraAI.complete() off the event loop. Retries 429s. force=True
-    is for operator-triggered Settings import. Returns the message content
-    string; the structured KiraResponse is always logged."""
+    """Runs one Kira chat completion via app.ai_client.call_ai(). force=True
+    is for operator-triggered Settings import (works even while ingest
+    classifiers are toggled off). Raises on disabled/misconfigured/
+    provider errors - every caller here already catches broadly and fails
+    open (see e.g. app/kira/relevance.py)."""
     cfg = await load_ai_runtime()
     if not cfg["enabled"] and not force:
         raise RuntimeError("kira_temporarily_disabled")
     resolved = resolve_system_prompt(task, system_prompt, cfg["prompts"])
-    model = cfg["model"]
-    async with KIRA_CONCURRENCY:
-        for attempt in range(1, _MAX_RATE_LIMIT_RETRIES + 1):
-            try:
-                def _invoke() -> KiraResponse:
-                    return get_kira_ai(model).complete(
-                        task=task,
-                        user_prompt=user_prompt,
-                        system_prompt=resolved,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        platform=platform,
-                        extra=extra,
-                    )
-
-                result = await asyncio.to_thread(_invoke)
-                return result.content
-            except openai.RateLimitError:
-                if attempt == _MAX_RATE_LIMIT_RETRIES:
-                    logger.error(
-                        "kira_call_failed",
-                        task=task,
-                        model=model,
-                        platform=platform,
-                        error="rate_limited",
-                        attempts=attempt,
-                    )
-                    raise
-                delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
-                logger.warning("kira_rate_limited_retrying", attempt=attempt, delay_seconds=round(delay, 1), task=task)
-                await asyncio.sleep(delay)
-            except Exception as exc:
-                logger.error("kira_call_failed", task=task, model=model, platform=platform, error=str(exc))
-                raise
-
-
-def parse_json_response(response: str) -> dict | list:
-    """Strips a Markdown code fence if the model wrapped its JSON answer in
-    one despite instructions not to, then json.loads()s it. Raises on
-    anything malformed - callers should catch broadly and fail open."""
-    cleaned = JSON_FENCE_RE.sub("", response.strip())
-    return json.loads(cleaned)
+    return await call_ai(
+        provider="kira",
+        task=task,
+        system_prompt=resolved,
+        user_prompt=user_prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        platform=platform,
+    )

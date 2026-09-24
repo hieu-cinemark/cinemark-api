@@ -223,3 +223,11 @@ PLATFORM_COMMENT_MAPPERS: dict[str, Callable[[dict[str, Any]], CommentDraft]] = 
 
 def get_comment_mapper(platform: str) -> Callable[[dict[str, Any]], CommentDraft] | None:
     return PLATFORM_COMMENT_MAPPERS.get(platform)
+
+
+# Platforms spider-hub actually has a comments spider for (see its own
+# COMMENTS_SPIDER_BY_PLATFORM in crawl_request_consumer.py) - same set as
+# PLATFORM_COMMENT_MAPPERS' keys, named separately since call sites like
+# app/services/scheduler.py's comment-crawl schedule care about "can this
+# platform's comments be crawled at all", not the mapper itself.
+COMMENT_CRAWL_PLATFORMS: set[str] = set(PLATFORM_COMMENT_MAPPERS.keys())

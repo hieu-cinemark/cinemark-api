@@ -19,8 +19,12 @@ from app.schemas.settings import (
     AccountOut,
     AccountSetProxy,
     AccountUpdate,
+    AiProviderOut,
+    AiProviderUpdate,
     AiSettingsOut,
     AiSettingsUpdate,
+    CommentScheduleOut,
+    CommentScheduleUpdate,
     CrawlScheduleOut,
     CrawlScheduleUpdate,
     FilterKeywordCreate,
@@ -248,10 +252,24 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
     return CrawlScheduleOut(**row)
 
 
-def _ai_settings_out(row: dict) -> AiSettingsOut:
-    from app.core.config import settings as app_settings
-    from app.kira.defaults import AI_PROMPT_TASKS, default_system_prompts
+@router.get("/comment-schedule", response_model=list[CommentScheduleOut])
+async def list_comment_schedule() -> list[CommentScheduleOut]:
+    rows = await db.list_comment_crawl_schedules()
+    return [CommentScheduleOut(**row) for row in rows]
 
+
+@router.put("/comment-schedule/{platform}", response_model=CommentScheduleOut)
+async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) -> CommentScheduleOut:
+    """Upsert - a platform has no row here until its comments sweep is
+    first saved, same as /crawl-schedule/{platform} above."""
+    row = await db.upsert_comment_crawl_schedule(platform, run_time=payload.run_time, enabled=payload.enabled, top_n=payload.top_n)
+    return CommentScheduleOut(**row)
+
+
+async def _ai_settings_out(row: dict) -> AiSettingsOut:
+    from app.kira.defaults import AI_PROMPT_TASKS, DEFAULT_KIRA_MODEL, default_system_prompts
+
+    provider = await db.get_ai_provider("kira")
     defaults = default_system_prompts()
     stored = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
     prompts = []
@@ -267,8 +285,8 @@ def _ai_settings_out(row: dict) -> AiSettingsOut:
         )
     return AiSettingsOut(
         enabled=bool(row.get("enabled")),
-        model=str(row.get("model") or "qwen3.8-flash"),
-        configured=bool(app_settings.kira_api_key and app_settings.kira_base_url),
+        model=str((provider or {}).get("model") or DEFAULT_KIRA_MODEL),
+        configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
         prompts=prompts,
         updated_at=row.get("updated_at"),
     )
@@ -277,20 +295,62 @@ def _ai_settings_out(row: dict) -> AiSettingsOut:
 @router.get("/ai", response_model=AiSettingsOut)
 async def get_ai_settings() -> AiSettingsOut:
     row = await db.get_ai_settings()
-    return _ai_settings_out(row)
+    return await _ai_settings_out(row)
 
 
 @router.put("/ai", response_model=AiSettingsOut)
 async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
+    from app.ai_client import invalidate_provider_cache
     from app.kira.client import invalidate_ai_runtime_cache
     from app.kira.defaults import AI_PROMPT_TASKS
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
-    row = await db.upsert_ai_settings(enabled=payload.enabled, model=payload.model.strip(), prompts=prompts)
+    row = await db.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
+
+    existing_provider = await db.get_ai_provider("kira")
+    await db.upsert_ai_provider(
+        "kira",
+        base_url=(existing_provider or {}).get("base_url") or "",
+        api_key=None,
+        model=payload.model.strip(),
+    )
+    invalidate_provider_cache("kira")
     invalidate_ai_runtime_cache()
     logger.info("ai_settings_updated", enabled=payload.enabled, model=payload.model.strip(), prompt_tasks=sorted(prompts))
-    return _ai_settings_out(row)
+    return await _ai_settings_out(row)
+
+
+def _ai_provider_out(row: dict) -> AiProviderOut:
+    return AiProviderOut(
+        key=row["key"],
+        base_url=row.get("base_url") or "",
+        api_key_set=bool(row.get("api_key")),
+        model=row.get("model") or "",
+        updated_at=row.get("updated_at"),
+    )
+
+
+@router.get("/ai/providers", response_model=list[AiProviderOut])
+async def list_ai_providers() -> list[AiProviderOut]:
+    """Every configured LLM provider ({key, base_url, model} - api_key is
+    never returned, only whether one is set). See app/ai_client.py."""
+    rows = await db.list_ai_providers()
+    return [_ai_provider_out(row) for row in rows]
+
+
+@router.put("/ai/providers/{key}", response_model=AiProviderOut)
+async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
+    """Upsert - `key` doesn't have to already exist, so a new provider can
+    be added from here with no code/schema change. api_key omitted or
+    blank keeps whatever secret is already stored."""
+    from app.ai_client import invalidate_provider_cache
+
+    api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
+    row = await db.upsert_ai_provider(key, base_url=payload.base_url.strip(), api_key=api_key, model=payload.model.strip())
+    invalidate_provider_cache(key)
+    logger.info("ai_provider_updated", key=key, base_url=payload.base_url.strip(), model=payload.model.strip())
+    return _ai_provider_out(row)
 
 
 @router.post("/import/parse", response_model=ImportParseResponse)

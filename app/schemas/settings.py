@@ -150,6 +150,24 @@ class CrawlScheduleUpdate(BaseModel):
     nurture_after: bool = False
 
 
+class CommentScheduleOut(BaseModel):
+    platform: str
+    run_time: str
+    enabled: bool
+    top_n: int
+    last_triggered_date: date | None = None
+    updated_at: datetime
+
+
+class CommentScheduleUpdate(BaseModel):
+    run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    enabled: bool = True
+    # Per enabled keyword, how many of its top-engagement posts to check for
+    # missing comments each run - see app/services/d1.py's
+    # list_posts_needing_comments.
+    top_n: int = Field(default=100, ge=1, le=500)
+
+
 # --- AI-assisted account/proxy import - see app/kira/import_parser.py ---
 
 
@@ -205,8 +223,8 @@ class AiPromptOut(BaseModel):
 class AiSettingsOut(BaseModel):
     enabled: bool
     model: str
-    # Whether KIRA_API_KEY + KIRA_BASE_URL are present - the dashboard
-    # toggle cannot call the provider without these.
+    # Whether the "kira" row in ai_providers has both base_url and api_key
+    # set - the dashboard toggle cannot call the provider without these.
     configured: bool
     prompts: list[AiPromptOut]
     updated_at: datetime | None = None
@@ -216,6 +234,23 @@ class AiSettingsUpdate(BaseModel):
     enabled: bool
     model: str = Field(min_length=1, max_length=120)
     prompts: dict[str, str] = Field(default_factory=dict)
+
+
+class AiProviderOut(BaseModel):
+    key: str
+    base_url: str
+    # Whether a secret is stored - the raw api_key is never returned.
+    api_key_set: bool
+    model: str
+    updated_at: datetime | None = None
+
+
+class AiProviderUpdate(BaseModel):
+    base_url: str = Field(min_length=1, max_length=500)
+    # None/blank keeps whatever secret is already stored, so the dashboard
+    # can change base_url/model without resending the key every time.
+    api_key: str | None = Field(default=None, max_length=500)
+    model: str = Field(min_length=1, max_length=120)
 
 
 class CronJob(BaseModel):

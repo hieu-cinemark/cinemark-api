@@ -1,3 +1,4 @@
-from app.kira.base import KiraAI, KiraResponse, get_kira_ai, reset_kira_ai
-
-__all__ = ["KiraAI", "KiraResponse", "get_kira_ai", "reset_kira_ai"]
+"""Kira-task policy: per-task enabled toggle + system-prompt overrides
+(app/kira/client.py) plus the classifiers built on top (relevance,
+sentiment's Bee fallback, report, import_parser). The actual HTTP client,
+retry/backoff and credentials live in app.ai_client, shared with app/bee/."""

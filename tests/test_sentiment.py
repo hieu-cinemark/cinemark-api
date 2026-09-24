@@ -78,7 +78,7 @@ async def test_bee_backend_parses_json() -> None:
     with (
         patch("app.kira.sentiment.settings") as mock_settings,
         patch("app.kira.sentiment.call_bee", AsyncMock(return_value='{"sentiment": "negative"}')),
-        patch("app.kira.sentiment.bee_is_configured", return_value=True),
+        patch("app.kira.sentiment.bee_is_configured", AsyncMock(return_value=True)),
     ):
         mock_settings.sentiment_backend = "bee"
         result = await classify_sentiment("Kịch bản dở quá, xem phí tiền vé")
@@ -103,7 +103,7 @@ async def test_bee_malformed_json_returns_none() -> None:
     with (
         patch("app.kira.sentiment.settings") as mock_settings,
         patch("app.kira.sentiment.call_bee", AsyncMock(return_value="not json at all")),
-        patch("app.kira.sentiment.bee_is_configured", return_value=True),
+        patch("app.kira.sentiment.bee_is_configured", AsyncMock(return_value=True)),
     ):
         mock_settings.sentiment_backend = "bee"
         result = await classify_sentiment("Không biết nên khen hay chê phim này luôn")
@@ -118,7 +118,7 @@ async def test_bee_rate_limit_returns_none() -> None:
     with (
         patch("app.kira.sentiment.settings") as mock_settings,
         patch("app.kira.sentiment.call_bee", AsyncMock(side_effect=raise_rate_limit)),
-        patch("app.kira.sentiment.bee_is_configured", return_value=True),
+        patch("app.kira.sentiment.bee_is_configured", AsyncMock(return_value=True)),
     ):
         mock_settings.sentiment_backend = "bee"
         result = await classify_sentiment("Diễn viên đóng đạt lắm, ủng hộ phim Việt")

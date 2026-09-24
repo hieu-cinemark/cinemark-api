@@ -79,21 +79,16 @@ class Settings(BaseSettings):
     # on /settings/* just 502 instead of the app failing to boot.
     database_url: str | None = None
 
-    # Kira (kiraai.vn) LLM classifier. Runtime on/off and model/prompts
-    # live in the dashboard Settings AI tab (ai_settings table). These env
-    # vars still supply credentials and the initial enabled seed when the
-    # table row is first created. Primary use now: relevance + topic/
-    # narrative reports. Per-comment sentiment defaults to PhoBERT below.
+    # Kira (kiraai.vn) LLM classifier. Runtime on/off and per-task prompts
+    # live in the dashboard Settings AI tab (ai_settings table in
+    # Supabase) - this env var only supplies the initial enabled seed when
+    # that table row is first created. Credentials (base_url/api_key) and
+    # the model, for Kira and every other provider (e.g. Beeknoee), live
+    # in Supabase's ai_providers table instead - see app/ai_client.py and
+    # app/services/platform_config_db.py. Primary use now: relevance +
+    # topic/narrative reports. Per-comment sentiment defaults to PhoBERT
+    # below.
     kira_enabled: bool = False
-    kira_api_key: str | None = None
-    kira_base_url: str | None = None
-
-    # Beeknoee (platform.beeknoee.com) - OpenAI-compatible proxy this
-    # product uses for Claude Sonnet 5 (see app/bee/client.py). Separate
-    # provider from Kira, on purpose - see app/bee/client.py's own module
-    # docstring for the split.
-    beeknoee_api_key: str | None = None
-    beeknoee_base_url: str | None = None
 
     # Comment sentiment backend: "phobert" (local HTTP, default), "bee",
     # or "auto" (PhoBERT then Bee fallback). serve.py in the sibling

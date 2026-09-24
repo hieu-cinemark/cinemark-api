@@ -26,7 +26,7 @@ from app.core.logging import get_logger
 from app.core.middleware import RequestContextMiddleware
 from app.services import platform_config_db, refresh_tracker, scheduler
 from app.services.kafka import start_kafka_producer, stop_kafka_producer
-from app.services.platforms import registered_platforms
+from app.services.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
 
 logger = get_logger(__name__)
 
@@ -74,6 +74,13 @@ async def on_startup() -> None:
         )
     except Exception as exc:
         logger.warning("crawl_schedule_seed_failed", error=str(exc))
+    try:
+        await asyncio.wait_for(
+            platform_config_db.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS),
+            timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.warning("comment_crawl_schedule_seed_failed", error=str(exc))
     scheduler.start()
     asyncio.create_task(_build_tab_filter_indexes())
     logger.info("app_started")

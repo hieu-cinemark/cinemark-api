@@ -466,6 +466,98 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
         await conn.commit()
 
 
+# --- comment crawl schedule ---------------------------------------------
+# comment_crawl_schedules: per-platform daily "top comments sweep" time -
+# separate from crawl_schedules (posts) above since a platform's comments
+# sweep runs on its own cadence, independent of when that platform's post
+# crawl runs. At its run_time, for each of that platform's enabled
+# keywords, queues a comments crawl (app/services/kafka.py's
+# publish_comments_crawl_request) for the keyword's top `top_n`-by-
+# engagement posts that still have zero comments stored
+# (app/services/d1.py's list_posts_needing_comments) - see
+# app/services/scheduler.py's _comments_tick, the exact same poll/fire/
+# last_triggered_date-guard shape as _tick uses for crawl_schedules.
+
+COMMENT_SCHEDULE_COLUMNS = "platform, run_time, enabled, top_n, last_triggered_date, updated_at"
+
+_comment_schedule_ready = False
+
+
+async def _ensure_comment_crawl_schedules_table() -> None:
+    global _comment_schedule_ready
+    if _comment_schedule_ready:
+        return
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS comment_crawl_schedules (
+                platform text PRIMARY KEY,
+                run_time text NOT NULL DEFAULT '08:00',
+                enabled boolean NOT NULL DEFAULT false,
+                top_n integer NOT NULL DEFAULT 100,
+                last_triggered_date date,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.commit()
+    _comment_schedule_ready = True
+
+
+async def list_comment_crawl_schedules() -> list[dict[str, Any]]:
+    await _ensure_comment_crawl_schedules_table()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(f"SELECT {COMMENT_SCHEDULE_COLUMNS} FROM comment_crawl_schedules ORDER BY platform")
+        return await cur.fetchall()
+
+
+async def ensure_default_comment_crawl_schedules(platforms: set[str]) -> None:
+    """Same rationale as ensure_default_crawl_schedules above - a platform
+    with no row here just never appears in _comments_tick's loop, with
+    nothing surfacing the gap. ON CONFLICT DO NOTHING so a platform an
+    operator has already configured (or deliberately disabled) is never
+    touched."""
+    await _ensure_comment_crawl_schedules_table()
+    async with await _connect() as conn, conn.cursor() as cur:
+        for platform in platforms:
+            await cur.execute(
+                "INSERT INTO comment_crawl_schedules (platform) VALUES (%s) ON CONFLICT (platform) DO NOTHING",
+                (platform,),
+            )
+        await conn.commit()
+
+
+async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled: bool, top_n: int) -> dict[str, Any]:
+    """Dashboard-facing write - ON CONFLICT so the dashboard doesn't need to
+    know whether this platform's row already exists yet."""
+    await _ensure_comment_crawl_schedules_table()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            f"""
+            INSERT INTO comment_crawl_schedules (platform, run_time, enabled, top_n)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (platform) DO UPDATE SET
+                run_time = EXCLUDED.run_time, enabled = EXCLUDED.enabled, top_n = EXCLUDED.top_n, updated_at = now()
+            RETURNING {COMMENT_SCHEDULE_COLUMNS}
+            """,
+            (platform, run_time, enabled, top_n),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]
+
+
+async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: str) -> None:
+    """scheduler.py's own re-entrancy guard write - see
+    comment_crawl_schedules.last_triggered_date's column comment above."""
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE comment_crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
+            (triggered_date, platform),
+        )
+        await conn.commit()
+
+
 # --- AI settings -------------------------------------------------------
 # Singleton row (id=1): model + per-task system prompts the dashboard
 # Settings AI tab edits. Read on every Kira call (short-cached in
@@ -512,24 +604,113 @@ async def get_ai_settings() -> dict[str, Any]:
     return row or {"id": 1, "enabled": False, "model": "qwen3.8-flash", "prompts": {}, "updated_at": None}
 
 
-async def upsert_ai_settings(*, enabled: bool, model: str, prompts: dict[str, str]) -> dict[str, Any]:
+async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[str, Any]:
+    """Model is no longer written here - see ai_providers below, which owns
+    base_url/api_key/model per provider. The ai_settings.model column is
+    left alone (untouched on conflict) rather than dropped, so this isn't a
+    destructive schema change; nothing reads it anymore."""
     from psycopg.types.json import Json
 
     await _ensure_ai_settings_table()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""
-            INSERT INTO ai_settings (id, enabled, model, prompts)
-            VALUES (1, %s, %s, %s)
+            INSERT INTO ai_settings (id, enabled, prompts)
+            VALUES (1, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 enabled = EXCLUDED.enabled,
-                model = EXCLUDED.model,
                 prompts = EXCLUDED.prompts,
                 updated_at = now()
             RETURNING {AI_SETTINGS_COLUMNS}
             """,
-            (enabled, model, Json(prompts)),
+            (enabled, Json(prompts)),
         )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]
+
+
+# --- AI provider credentials --------------------------------------------
+# One row per LLM provider (key = "kira", "bee", ... - add a new provider
+# by inserting a new row, no schema change needed): base_url/api_key/model
+# used to build that provider's OpenAI-compatible client (see
+# app/ai_client.py). Used to be KIRA_API_KEY/KIRA_BASE_URL/
+# BEEKNOEE_API_KEY/BEEKNOEE_BASE_URL env vars - moved here (see
+# scripts/migrate_ai_provider_credentials.py) so a key can be rotated or a
+# new provider added from the dashboard without a redeploy.
+
+AI_PROVIDER_COLUMNS = "key, base_url, api_key, model, updated_at"
+
+_ai_providers_ready = False
+
+
+async def _ensure_ai_providers_table() -> None:
+    global _ai_providers_ready
+    if _ai_providers_ready:
+        return
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_providers (
+                key text PRIMARY KEY,
+                base_url text NOT NULL DEFAULT '',
+                api_key text NOT NULL DEFAULT '',
+                model text NOT NULL DEFAULT '',
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.commit()
+    _ai_providers_ready = True
+
+
+async def list_ai_providers() -> list[dict[str, Any]]:
+    await _ensure_ai_providers_table()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(f"SELECT {AI_PROVIDER_COLUMNS} FROM ai_providers ORDER BY key")
+        return await cur.fetchall()
+
+
+async def get_ai_provider(key: str) -> dict[str, Any] | None:
+    await _ensure_ai_providers_table()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(f"SELECT {AI_PROVIDER_COLUMNS} FROM ai_providers WHERE key = %s", (key,))
+        return await cur.fetchone()
+
+
+async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, model: str) -> dict[str, Any]:
+    """api_key=None keeps whatever secret is already stored - lets the
+    dashboard change base_url/model without having to resend the secret
+    every time."""
+    await _ensure_ai_providers_table()
+    async with await _connect() as conn, conn.cursor() as cur:
+        if api_key is None:
+            await cur.execute(
+                f"""
+                INSERT INTO ai_providers (key, base_url, model)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    base_url = EXCLUDED.base_url,
+                    model = EXCLUDED.model,
+                    updated_at = now()
+                RETURNING {AI_PROVIDER_COLUMNS}
+                """,
+                (key, base_url, model),
+            )
+        else:
+            await cur.execute(
+                f"""
+                INSERT INTO ai_providers (key, base_url, api_key, model)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    base_url = EXCLUDED.base_url,
+                    api_key = EXCLUDED.api_key,
+                    model = EXCLUDED.model,
+                    updated_at = now()
+                RETURNING {AI_PROVIDER_COLUMNS}
+                """,
+                (key, base_url, api_key, model),
+            )
         row = await cur.fetchone()
         await conn.commit()
     return row  # type: ignore[return-value]
