@@ -13,7 +13,14 @@ from app.ai_client import call_ai, invalidate_provider_cache, parse_json_respons
 from app.core.logging import get_logger
 from app.kira.defaults import default_system_prompts
 
-__all__ = ["call_kira", "invalidate_ai_runtime_cache", "kira_is_enabled", "load_ai_runtime", "parse_json_response"]
+__all__ = [
+    "active_report_provider",
+    "call_kira",
+    "invalidate_ai_runtime_cache",
+    "kira_is_enabled",
+    "load_ai_runtime",
+    "parse_json_response",
+]
 
 logger = get_logger(__name__)
 
@@ -40,7 +47,7 @@ async def load_ai_runtime() -> dict[str, Any]:
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
         return _ai_cfg_cache[1]
-    cfg: dict[str, Any] = {"enabled": False, "prompts": {}, "updated_at": None}
+    cfg: dict[str, Any] = {"enabled": False, "prompts": {}, "active_report_provider": "bee", "updated_at": None}
     try:
         from app.services.platform_config_db import get_ai_settings
 
@@ -48,12 +55,23 @@ async def load_ai_runtime() -> dict[str, Any]:
         cfg = {
             "enabled": bool(row.get("enabled")),
             "prompts": _normalize_prompts(row.get("prompts")),
+            "active_report_provider": (row.get("active_report_provider") or "bee").strip().lower(),
             "updated_at": row.get("updated_at"),
         }
     except Exception as exc:
         logger.warning("ai_settings_load_failed", error=str(exc))
     _ai_cfg_cache = (now, cfg)
     return cfg
+
+
+async def active_report_provider() -> str:
+    """"kira" or "bee" - which provider app/bee/report.py's
+    generate_topics_and_verbatims/generate_narrative should call, switchable
+    from the dashboard's AI settings tab without touching ai_providers'
+    own credentials. Defaults to "bee" (report generation's original,
+    still-supported provider) if unset/unrecognized."""
+    value = (await load_ai_runtime())["active_report_provider"]
+    return value if value in ("kira", "bee") else "bee"
 
 
 def invalidate_ai_runtime_cache() -> None:

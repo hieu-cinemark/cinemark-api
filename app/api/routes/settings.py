@@ -288,6 +288,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
         model=str((provider or {}).get("model") or DEFAULT_KIRA_MODEL),
         configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
         prompts=prompts,
+        active_report_provider=str(row.get("active_report_provider") or "bee"),
         updated_at=row.get("updated_at"),
     )
 
@@ -306,7 +307,9 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
-    row = await db.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
+    row = await db.upsert_ai_settings(
+        enabled=payload.enabled, prompts=prompts, active_report_provider=payload.active_report_provider
+    )
 
     existing_provider = await db.get_ai_provider("kira")
     await db.upsert_ai_provider(

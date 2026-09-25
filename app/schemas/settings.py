@@ -227,6 +227,11 @@ class AiSettingsOut(BaseModel):
     # set - the dashboard toggle cannot call the provider without these.
     configured: bool
     prompts: list[AiPromptOut]
+    # Which provider app/bee/report.py's social-topic-report generation
+    # calls - "kira" or "bee", independent of `enabled` above (that gate is
+    # ingest-time classifiers only; report generation is an
+    # operator/schedule-triggered action, same category as Settings import).
+    active_report_provider: str
     updated_at: datetime | None = None
 
 
@@ -234,6 +239,7 @@ class AiSettingsUpdate(BaseModel):
     enabled: bool
     model: str = Field(min_length=1, max_length=120)
     prompts: dict[str, str] = Field(default_factory=dict)
+    active_report_provider: str = Field(default="bee", pattern="^(kira|bee)$")
 
 
 class AiProviderOut(BaseModel):

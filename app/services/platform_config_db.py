@@ -563,7 +563,7 @@ async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: s
 # Settings AI tab edits. Read on every Kira call (short-cached in
 # app.kira.client) so a save applies without restarting ingest/spider-hub.
 
-AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, updated_at"
+AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, updated_at"
 
 _ai_settings_ready = False
 
@@ -584,6 +584,18 @@ async def _ensure_ai_settings_table() -> None:
             )
             """
         )
+        # Added 2026-09-25 to an already-existing table in production, so a
+        # bare CREATE TABLE IF NOT EXISTS above wouldn't retroactively add
+        # it - which provider (app/bee/report.py's call_bee vs call_kira)
+        # generates social_topic_reports, switchable from the dashboard
+        # without touching ai_providers' own credentials (see
+        # app/bee/report.py's own docstring for why this exists: Kira sat
+        # essentially idle in production - the only real per-call-volume
+        # LLM task left was report generation, which was hardcoded to Bee).
+        await cur.execute(
+            "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider "
+            "text NOT NULL DEFAULT 'bee'"
+        )
         await cur.execute(
             """
             INSERT INTO ai_settings (id, enabled, model, prompts)
@@ -601,10 +613,17 @@ async def get_ai_settings() -> dict[str, Any]:
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_SETTINGS_COLUMNS} FROM ai_settings WHERE id = 1")
         row = await cur.fetchone()
-    return row or {"id": 1, "enabled": False, "model": "qwen3.8-flash", "prompts": {}, "updated_at": None}
+    return row or {
+        "id": 1,
+        "enabled": False,
+        "model": "qwen3.8-flash",
+        "prompts": {},
+        "active_report_provider": "bee",
+        "updated_at": None,
+    }
 
 
-async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[str, Any]:
+async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_report_provider: str) -> dict[str, Any]:
     """Model is no longer written here - see ai_providers below, which owns
     base_url/api_key/model per provider. The ai_settings.model column is
     left alone (untouched on conflict) rather than dropped, so this isn't a
@@ -615,15 +634,16 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""
-            INSERT INTO ai_settings (id, enabled, prompts)
-            VALUES (1, %s, %s)
+            INSERT INTO ai_settings (id, enabled, prompts, active_report_provider)
+            VALUES (1, %s, %s, %s)
             ON CONFLICT (id) DO UPDATE SET
                 enabled = EXCLUDED.enabled,
                 prompts = EXCLUDED.prompts,
+                active_report_provider = EXCLUDED.active_report_provider,
                 updated_at = now()
             RETURNING {AI_SETTINGS_COLUMNS}
             """,
-            (enabled, Json(prompts)),
+            (enabled, Json(prompts), active_report_provider),
         )
         row = await cur.fetchone()
         await conn.commit()

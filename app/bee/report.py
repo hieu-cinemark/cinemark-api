@@ -1,17 +1,29 @@
-"""Bee (Claude Sonnet 5) calls behind scripts/generate_social_topic_reports.py
-- same two-call split and same prompts as app/kira/report.py used to run
-this on Kira (see app/kira/report_prompt.py's own module docstring for why
-split into two calls); only the provider underneath changed. Both are
-fail-open (return None on any error), same convention as every classifier
-in this codebase - the caller decides what "no report this run" means."""
+"""LLM calls behind scripts/generate_social_topic_reports.py - same
+two-call split and same prompts either provider runs (see
+app/kira/report_prompt.py's own module docstring for why split into two
+calls). Both are fail-open (return None on any error), same convention as
+every classifier in this codebase - the caller decides what "no report
+this run" means.
+
+Provider (Kira or Bee) is switchable from the dashboard's AI settings tab
+(app/kira/client.py's active_report_provider(), default "bee") rather than
+hardcoded - added 2026-09-25 when report generation turned out to be the
+only real per-call-volume LLM task left in this product (relevance and
+sentiment both moved to local PhoBERT - see app/services/relevance_phobert.py
+and app/kira/sentiment.py's own docstrings), so it's worth being able to
+point at either provider's budget without a code change. call_kira's own
+force=True bypasses the separate ingest-classifiers enabled toggle, same
+as app/kira/import_parser.py's own operator-triggered calls - picking
+"kira" here is its own explicit enable signal, independent of that switch."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from app.bee.client import call_bee, parse_json_response
+from app.bee.client import call_bee
 from app.core.logging import get_logger
+from app.kira.client import active_report_provider, call_kira, parse_json_response
 from app.kira.report_prompt import (
     NARRATIVE_DATA_PROMPT,
     NARRATIVE_SYSTEM_PROMPT,
@@ -20,6 +32,26 @@ from app.kira.report_prompt import (
 )
 
 logger = get_logger(__name__)
+
+
+async def _call_report_llm(*, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> str:
+    provider = await active_report_provider()
+    if provider == "kira":
+        return await call_kira(
+            task=task,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            force=True,
+        )
+    return await call_bee(
+        task=task,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
 
 
 async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -44,16 +76,19 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
         # supports a much larger output window, so there's real headroom to
         # spend here rather than trimming the prompt/shape instead.
         #
-        # temperature=0.3, not call_bee's own 0.0 default: confirmed live
-        # that Beeknoee caches by (model, messages, temperature) but NOT
-        # max_tokens - the very first (truncated, max_tokens=8000) call
-        # against this exact prompt at temperature=0 got cached, and every
-        # later retry at temperature=0 kept replaying that same truncated
-        # response verbatim regardless of how high max_tokens was raised
-        # afterward. A non-zero temperature avoids re-poisoning that cache
-        # for any prompt this ever happens to again - also just a more
-        # natural choice for a writing task than strict determinism.
-        response = await call_bee(
+        # temperature=0.3, not 0.0: confirmed live that Beeknoee caches by
+        # (model, messages, temperature) but NOT max_tokens - the very
+        # first (truncated, max_tokens=8000) call against this exact
+        # prompt at temperature=0 got cached, and every later retry at
+        # temperature=0 kept replaying that same truncated response
+        # verbatim regardless of how high max_tokens was raised afterward.
+        # A non-zero temperature avoids re-poisoning that cache for any
+        # prompt this ever happens to again - also just a more natural
+        # choice for a writing task than strict determinism. Kept the same
+        # when the active provider is Kira instead - no evidence yet that
+        # its backend lacks the same caching behavior, and a non-zero
+        # temperature is a reasonable default for this task either way.
+        response = await _call_report_llm(
             task="topics",
             system_prompt=TOPICS_SYSTEM_PROMPT,
             user_prompt=prompt,
@@ -65,7 +100,7 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
             raise ValueError(f"unexpected topics shape: {json.dumps(parsed)[:200]!r}")
         return parsed
     except Exception as exc:
-        logger.warning("bee_topics_failed", movie_title=movie_title, error=str(exc))
+        logger.warning("report_topics_failed", movie_title=movie_title, error=str(exc))
         return None
 
 
@@ -87,7 +122,7 @@ async def generate_narrative(
         # temperature=0). max_tokens bumped from the old Kira budget for
         # the same reasoning-tokens-eat-the-budget headroom reason too,
         # though this shorter prompt hasn't been observed to need it yet.
-        response = await call_bee(
+        response = await _call_report_llm(
             task="narrative",
             system_prompt=NARRATIVE_SYSTEM_PROMPT,
             user_prompt=prompt,
@@ -100,5 +135,5 @@ async def generate_narrative(
             raise ValueError(f"unexpected narrative shape: {json.dumps(parsed)[:200]!r}")
         return analysis.strip()
     except Exception as exc:
-        logger.warning("bee_narrative_failed", movie_title=movie_title, error=str(exc))
+        logger.warning("report_narrative_failed", movie_title=movie_title, error=str(exc))
         return None

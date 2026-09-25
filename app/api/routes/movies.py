@@ -12,7 +12,8 @@ from pydantic import BaseModel, Field
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.services.d1 import MIN_COMMENTS_FOR_REPORT, create_movie, disable_movie, list_movies, update_movie
-from app.services.social_topic import generate_report_for_movie, get_movie_for_report
+from app.services.report_queue import enqueue_report_job, get_report_job
+from app.services.social_topic import get_movie_for_report
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 
@@ -103,18 +104,32 @@ async def generate_report(movie_id: str) -> dict[str, str]:
     """Manual "Tạo report" trigger (see spider-hub-dashboard's MoviesTable) -
     runs the exact same per-movie logic as scripts/
     generate_social_topic_reports.py's daily sweep, for one movie, on
-    demand. Synchronous (two sequential Bee calls - confirmed live the
-    topics-clustering call alone can take 2+ minutes on a movie with a
-    large comment sample) - a manually-triggered admin action with its
-    own loading spinner, not worth a background-job queue for."""
+    demand. Enqueues and returns immediately (see app.services.
+    report_queue) rather than running the two sequential Bee/Kira calls
+    in the request handler - confirmed live the topics-clustering call
+    alone can take 2+ minutes, during which the dashboard used to disable
+    every OTHER movie's "Tạo report" button too. GET .../generate-report
+    is how the dashboard polls for the queued/running/done/failed result."""
     movie = await get_movie_for_report(movie_id)
     if movie is None:
         raise NotFoundError("Movie not found")
-    result = await generate_report_for_movie(movie)
-    if result == "insufficient_data":
-        raise ValidationError(
-            f"Chưa đủ bình luận đã phân loại cảm xúc để tạo report (cần tối thiểu {MIN_COMMENTS_FOR_REPORT})."
-        )
-    if result in ("topics_failed", "upsert_failed"):
-        raise UpstreamError("Không tạo được report - thử lại sau.")
-    return {"status": result}
+    job = await enqueue_report_job(movie_id)
+    return {"status": job["status"]}
+
+
+@router.get("/{movie_id}/generate-report")
+async def get_generate_report_status(movie_id: str) -> dict[str, str | None]:
+    """Polled by the dashboard after a POST above - see report_queue's own
+    docstring for why this is in-memory (one uvicorn worker) rather than
+    the Redis-backed pattern crawl_jobs.py uses for spider-hub's own jobs."""
+    job = get_report_job(movie_id)
+    if job is None:
+        return {"status": "not_found", "error": None}
+    status = job["status"]
+    error = None
+    if status == "failed":
+        if job.get("error") == "insufficient_data":
+            error = f"Chưa đủ bình luận đã phân loại cảm xúc để tạo report (cần tối thiểu {MIN_COMMENTS_FOR_REPORT})."
+        else:
+            error = "Không tạo được report - thử lại sau."
+    return {"status": status, "error": error}
