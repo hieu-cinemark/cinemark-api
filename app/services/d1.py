@@ -410,21 +410,41 @@ async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
     by an LLM), over the FULL population, not just the capped sample fed
     to the topic-clustering call.
 
-    Same p.relevance_label='related' gate as get_comment_sample_for_movie
-    above, for the same reason - the percentages must come from the same
-    on-topic population the sample was drawn from, not a larger one that
-    still includes off-topic posts' comments."""
+    Same relevance_label='related' AND movie_hashtag_present gate as
+    get_comment_sample_for_movie above, for the same reason - the
+    percentages must come from the same on-topic population the sample was
+    drawn from, not a larger one that still includes off-topic posts'
+    comments. relevance_label alone isn't independent corroboration (see
+    that function's own docstring); this one used to skip the second gate,
+    which is exactly why "Huyết Thống" (an ordinary-vocabulary movie title)
+    kept polluting its own sentiment percentages even after the post-list
+    and comment-sample views were fixed to filter it out - counting here
+    ran straight off the raw label, no re-check. Fetches every classified
+    comment (not just a capped sample, unlike get_comment_sample_for_movie)
+    since this needs the true population count, not a representative
+    sample - movie_hashtag_present then still runs in Python per row."""
+    movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
+    movie_title = movie_rows[0]["title"] if movie_rows else None
+
     rows = await d1_query(
         """
-        SELECT c.sentiment, COUNT(*) AS count
+        SELECT c.sentiment, p.content AS post_content, p.author AS post_author, p.platform,
+               k.keyword AS post_keyword
         FROM comments c
         JOIN posts p ON p.id = c.post_id
+        LEFT JOIN keywords k ON k.id = p.keyword_id
         WHERE p.movie_id = ? AND p.relevance_label = 'related' AND c.sentiment IS NOT NULL
-        GROUP BY c.sentiment
         """,
         [movie_id],
     )
-    return {row["sentiment"]: row["count"] for row in (rows or [])}
+    reputable = await reputable_authors()
+    counts: dict[str, int] = {}
+    for row in rows or []:
+        is_reputable = (row.get("platform"), row.get("post_author")) in reputable
+        if not movie_hashtag_present(row.get("post_content"), movie_title, row.get("post_keyword"), is_reputable_author=is_reputable):
+            continue
+        counts[row["sentiment"]] = counts.get(row["sentiment"], 0) + 1
+    return counts
 
 
 async def upsert_social_topic_report(
