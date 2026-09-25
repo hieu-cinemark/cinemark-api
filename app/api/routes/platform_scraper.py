@@ -106,7 +106,16 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
 
     @router.post("/posts/{post_id}/comments/run", response_model=RunCommentsResponse)
     async def run_comments(
-        post_id: str, max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=1, le=500)
+        post_id: str,
+        max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=1, le=500),
+        bypass_drain: bool = Query(
+            default=True,
+            description="True (default): a one-off single-post trigger the platform's Stop "
+            "button must not silently swallow. The dashboard's bulk row-selection action "
+            "passes false instead - see publish_comments_crawl_request's own docstring for "
+            "why publishing MANY of these at once needs to be cancellable, unlike a single "
+            "deliberate click.",
+        ),
     ) -> RunCommentsResponse:
         post = await get_post(post_id)
         if post is None:
@@ -124,7 +133,18 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
         # permanently never fetching comments for posts that actually have
         # them.
         published = await publish_comments_crawl_request(
-            platform=platform, post_external_id=post["external_id"], post_url=post["url"], max_pages=max_pages
+            platform=platform,
+            post_external_id=post["external_id"],
+            post_url=post["url"],
+            max_pages=max_pages,
+            bypass_drain=bypass_drain,
         )
-        logger.info("comments_run_triggered", platform=platform, post_id=post_id, max_pages=max_pages, published=published)
+        logger.info(
+            "comments_run_triggered",
+            platform=platform,
+            post_id=post_id,
+            max_pages=max_pages,
+            bypass_drain=bypass_drain,
+            published=published,
+        )
         return RunCommentsResponse(published=published)
