@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 *.log
 .local-db/
+# Generated output from scripts/, not source - e.g. label_posts_relevance_kira.py's own CSV.
+scripts/_*.csv
