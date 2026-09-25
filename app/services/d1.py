@@ -55,6 +55,7 @@ from app.repositories.d1.posts import (
     persist_post,
     post_mentions_movie,
     post_repo,
+    reputable_authors,
 )
 from app.services.d1_client import _configured, d1_query
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
@@ -85,6 +86,7 @@ __all_reexports__ = (
     persist_dropped_post,
     persist_post,
     post_mentions_movie,
+    reputable_authors,
 )
 
 
@@ -387,9 +389,13 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
         """,
         [movie_id, overfetch],
     )
+    reputable = await reputable_authors()
     selected: list[dict[str, Any]] = []
     for row in rows or []:
-        if not movie_hashtag_present(row.get("post_content"), movie_title, row.pop("post_keyword", None)):
+        is_reputable = (row.get("platform"), row.get("post_author")) in reputable
+        if not movie_hashtag_present(
+            row.get("post_content"), movie_title, row.pop("post_keyword", None), is_reputable_author=is_reputable
+        ):
             continue
         selected.append(row)
         if len(selected) >= limit:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import unicodedata
 import uuid
 from datetime import datetime, timezone
@@ -194,60 +195,135 @@ def _looks_vietnamese(text: str) -> bool:
     return any(mark in decomposed for mark in _VIETNAMESE_COMBINING_MARKS)
 
 
-def movie_hashtag_present(content: str | None, movie_title: str | None, keyword: str | None) -> bool:
+# --- author reputation ----------------------------------------------------
+# Corroborates movie_hashtag_present's weakest signal (a bare literal title
+# match with no hashtag backing it) for a movie whose title also happens to
+# be ordinary vocabulary - see that function's own module docstring for the
+# "Huyết Thống" incident this exists to close. An author's reputation is
+# built by scripts/build_author_reputation.py re-checking their own past
+# relevance_label='related' posts with movie_hashtag_present's STRONG
+# signals only (is_reputable_author defaults to False - see that param) -
+# never the weak signal this table is itself meant to corroborate, so there
+# is no circularity: reputation can only be earned via hashtag evidence.
+
+MIN_MOVIES_FOR_REPUTABLE_AUTHOR = 2
+_REPUTABLE_AUTHORS_TTL_SECONDS = 300.0
+
+_author_reputation_ready = False
+_reputable_authors_cache: tuple[float, set[tuple[str, str]]] | None = None
+
+
+async def ensure_author_reputation_table() -> None:
+    global _author_reputation_ready
+    if _author_reputation_ready:
+        return
+    await d1_query(
+        """
+        CREATE TABLE IF NOT EXISTS author_reputation (
+            platform text NOT NULL,
+            author text NOT NULL,
+            distinct_movies integer NOT NULL DEFAULT 0,
+            confirmed_posts integer NOT NULL DEFAULT 0,
+            updated_at text NOT NULL,
+            PRIMARY KEY (platform, author)
+        )
+        """,
+        quiet=True,
+    )
+    _author_reputation_ready = True
+
+
+async def reputable_authors() -> set[tuple[str, str]]:
+    """{(platform, author)} confirmed across >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR
+    distinct movies - cached in-process for _REPUTABLE_AUTHORS_TTL_SECONDS
+    (this table only changes when someone re-runs the build script, not
+    request-to-request, so a short cache avoids one extra D1 round trip per
+    call). Callers check `(platform, author) in reputable_authors()` and
+    pass the result as movie_hashtag_present's is_reputable_author."""
+    global _reputable_authors_cache
+    now = time.monotonic()
+    if _reputable_authors_cache is not None and now - _reputable_authors_cache[0] < _REPUTABLE_AUTHORS_TTL_SECONDS:
+        return _reputable_authors_cache[1]
+    await ensure_author_reputation_table()
+    rows = await d1_query(
+        "SELECT platform, author FROM author_reputation WHERE distinct_movies >= ?",
+        [MIN_MOVIES_FOR_REPUTABLE_AUTHOR],
+    )
+    result = {(r["platform"], r["author"]) for r in (rows or [])}
+    _reputable_authors_cache = (now, result)
+    return result
+
+
+def movie_hashtag_present(
+    content: str | None, movie_title: str | None, keyword: str | None, *, is_reputable_author: bool = False
+) -> bool:
     """Stricter companion to post_mentions_movie/contains_keyword, for
     callers that want to trust relevance_label='related' (an AI or
     substring verdict - see persist_post's own docstring: keyword_match is
     just a mirror of relevance_label whenever the AI was actually invoked,
     NOT independent corroborating evidence) only when the post text itself
-    also, independently, names this movie.
+    also, independently, names this movie. Three signals, strongest first:
 
-    True when EITHER post_mentions_movie's own check passes (the literal
-    title, or its space-stripped hashtag form, appearing verbatim) OR the
-    post contains a whole hashtag TOKEN whose folded form (see
-    _fold_for_keyword_match - diacritics/case/whitespace-insensitive)
-    exactly equals the movie's own folded title or configured keyword.
+    1. The movie title's space-stripped hashtag form (e.g. "#HoangHauCuoiCung"
+       for "Hoàng Hậu Cuối Cùng") appearing verbatim - deliberate hashtagging
+       of the WHOLE title, trusted regardless of who posted it.
 
-    Whole-token equality on purpose, not substring containment like
-    contains_keyword: a short/generic folded keyword or title (e.g. "Mẹ
-    Mìn" folds to "memin") can coincidentally be a SUBSTRING of a
-    completely unrelated longer hashtag (confirmed live 2026-09-24: a
-    Mexican snack brand's "#botanasmemin"/"#echatelabotanaconbotanasmemin"
-    posts were scoring 99%+ "related" to the movie "Mẹ Mìn" purely off that
-    coincidence, both via the AI classifier and the substring check it
-    falls back to). Comparing whole tokens for exact equality still
-    recognizes a real "#memin" tag while rejecting "#botanasmemin" - they
-    fold to different strings, not just different substrings.
+    2. A whole hashtag TOKEN whose folded form (see _fold_for_keyword_match -
+       diacritics/case/whitespace-insensitive) exactly equals the movie's own
+       folded title or configured keyword. Whole-token equality on purpose,
+       not substring containment like contains_keyword: a short/generic
+       folded keyword (e.g. "Mẹ Mìn" folds to "memin") can coincidentally be
+       a SUBSTRING of a completely unrelated longer hashtag (confirmed live
+       2026-09-24: a Mexican snack brand's
+       "#botanasmemin"/"#echatelabotanaconbotanasmemin" posts scored 99%+
+       "related" purely off that coincidence). Still needs
+       _looks_vietnamese(content) too: "#memin" is ALSO an existing
+       nickname/cultural reference in Spanish (a classic Mexican comic
+       character) sharing that exact token, not just a substring of it - see
+       that function's own docstring.
+
+    3. The bare literal title occurring anywhere in free-form prose, with no
+       hashtag backing it either way - reliable for an invented movie title
+       (essentially never occurs by coincidence), unreliable when the title
+       is also ordinary vocabulary. Confirmed live 2026-09-25: "Huyết Thống"
+       - literally "blood relation" in Vietnamese - matched a stranger's
+       unrelated family-conflict post on Threads at 99.9% "related"
+       confidence from BOTH the substring check and the AI classifier, since
+       the bare phrase carries no movie-specific signal on its own. Trusted
+       only when is_reputable_author is True (see reputable_authors) - the
+       account has its own independent track record of genuine movie
+       content across *other* titles too, via signals 1/2 above, never via
+       this same weak signal (no circularity). A first-time/one-off account
+       making this exact claim isn't enough evidence by itself.
 
     Trade-off, accepted on purpose (see callers' own docstrings): a
-    genuinely related post that uses neither the literal title nor a
-    title-equal hashtag - just an actor's name, a compound tag like
-    "#PhimMeMin", or a nickname - won't pass this either. That's the point
-    for the callers using this (a "top 100" list and the daily comments
-    sweep) - fewer, more precisely on-topic results over exhaustive
-    recall.
-
-    A short/generic exact hashtag (this function's whole reason to exist
-    over contains_keyword's substring check) can still be a real word or
-    name in some OTHER language, used by content with nothing to do with
-    this movie at all - confirmed live 2026-09-24: "#memin" is also an
-    existing nickname/cultural reference in Spanish (a classic Mexican
-    comic character), so funny-cat-video and meme posts using that exact
-    tag were passing too, not just the "#botanasmemin"-style substring
-    collision this function's token-equality check was built for. Once the
-    literal-title branch above has already failed, _looks_vietnamese(content)
-    is required too - a coincidental foreign-language tag match alone is no
-    longer enough."""
+    genuinely related post that uses neither the literal title, a
+    title-equal hashtag, nor comes from a reputable account - just an
+    actor's name, a compound tag like "#PhimMeMin", or a nickname - won't
+    pass this either. That's the point for the callers using this (a
+    "top 100" list, the daily comments sweep, and report generation) -
+    fewer, more precisely on-topic results over exhaustive recall."""
     if not content:
         return False
-    if post_mentions_movie(content, movie_title):
-        return True
+    text = content.casefold()
+    name = (movie_title or "").strip().casefold()
+
+    if len(name) >= 2:
+        compact = _HASHTAG_STRIP.sub("", name)
+        if len(compact) >= 2 and f"#{compact}" in _HASHTAG_STRIP.sub("", text):
+            return True
+
     folded_targets = {_fold_for_keyword_match(t) for t in (movie_title, keyword) if t}
     folded_targets.discard("")
-    if not folded_targets:
-        return False
-    tags = {_fold_for_keyword_match(tag) for tag in _HASHTAG_TOKEN_RE.findall(content)}
-    return bool(tags & folded_targets) and _looks_vietnamese(content)
+    if folded_targets:
+        tags = {_fold_for_keyword_match(tag) for tag in _HASHTAG_TOKEN_RE.findall(content)}
+        if (tags & folded_targets) and _looks_vietnamese(content):
+            return True
+
+    if len(name) >= 2 and name in text:
+        return is_reputable_author
+
+    return False
 
 
 # Playable video / permalinks cannot go in an <img>. Older TikTok rows
@@ -407,8 +483,16 @@ class PostRepository:
         )
         hydrated = _hydrate_post_rows(rows)
         if sort == "engagement":
+            reputable = await reputable_authors()
             hydrated = [
-                row for row in hydrated if movie_hashtag_present(row.get("content"), row.get("movie_title"), row.get("keyword"))
+                row
+                for row in hydrated
+                if movie_hashtag_present(
+                    row.get("content"),
+                    row.get("movie_title"),
+                    row.get("keyword"),
+                    is_reputable_author=(row.get("platform"), row.get("author")) in reputable,
+                )
             ][:limit]
             return hydrated, len(hydrated)
 
@@ -527,7 +611,7 @@ class PostRepository:
         overfetch = max(top_n * 4, top_n + 100)
         rows = await d1_query(
             f"""
-            SELECT p.id, p.external_id, p.url, p.content, k.keyword, m.title AS movie_title,
+            SELECT p.id, p.external_id, p.url, p.content, p.author, k.keyword, m.title AS movie_title,
                    COALESCE(c.n, 0) AS comment_n
             FROM posts p
             LEFT JOIN keywords k ON k.id = p.keyword_id
@@ -539,11 +623,17 @@ class PostRepository:
             """,
             [platform, keyword_id, overfetch],
         )
+        reputable = await reputable_authors()
         selected: list[dict[str, Any]] = []
         for row in rows or []:
             if row.get("comment_n"):
                 continue
-            if not movie_hashtag_present(row.get("content"), row.get("movie_title"), row.get("keyword")):
+            if not movie_hashtag_present(
+                row.get("content"),
+                row.get("movie_title"),
+                row.get("keyword"),
+                is_reputable_author=(platform, row.get("author")) in reputable,
+            ):
                 continue
             selected.append({"id": row["id"], "external_id": row["external_id"], "url": row["url"]})
             if len(selected) >= top_n:
