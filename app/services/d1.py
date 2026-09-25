@@ -344,9 +344,67 @@ MIN_COMMENTS_FOR_REPORT = 15
 REPORT_COMMENT_SAMPLE_SIZE = 400
 
 
+_SENTIMENT_BUCKETS = ("positive", "negative", "neutral")
+
+
+def _normalize_comment_text(message: str) -> str:
+    """Collapses a comment down to a dedup key - lowercased, whitespace-
+    collapsed. Catches exact/near-exact copy-paste (spam farms, bot rings
+    reposting the same line under many posts) without the cost/complexity
+    of real fuzzy matching - see get_comment_sample_for_movie's own
+    docstring for why this matters for a sample an LLM treats as
+    representative."""
+    return " ".join(message.split()).casefold()
+
+
+def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    """Picks `limit` rows out of by_sentiment (already engagement-ranked
+    within each bucket) preserving each bucket's real share of the
+    candidate pool, not just whichever bucket happens to have the
+    loudest/most-liked comments. See get_comment_sample_for_movie's own
+    docstring for why a pure top-N-by-engagement sample was skewing the
+    topic-clustering/narrative call."""
+    total = sum(len(rows) for rows in by_sentiment.values())
+    if total <= limit:
+        combined = [row for rows in by_sentiment.values() for row in rows]
+        combined.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
+        return combined
+
+    # Largest-remainder method: exact real-proportion quotas would rarely
+    # be whole numbers, so floor each bucket's share, then hand out the
+    # few leftover slots to whichever buckets had the biggest fractional
+    # remainder - keeps sum(quotas) == limit exactly.
+    raw_quotas = {k: (len(v) / total) * limit for k, v in by_sentiment.items()}
+    quotas = {k: int(q) for k, q in raw_quotas.items()}
+    remainder = limit - sum(quotas.values())
+    for k in sorted(by_sentiment, key=lambda k: raw_quotas[k] - quotas[k], reverse=True)[:remainder]:
+        quotas[k] += 1
+
+    selected: list[dict[str, Any]] = []
+    shortfall = 0
+    for k, rows in by_sentiment.items():
+        take = min(quotas[k], len(rows))
+        selected.extend(rows[:take])
+        shortfall += quotas[k] - take
+
+    if shortfall > 0:
+        # A bucket came up short of its quota (too little real signal in
+        # that sentiment) - backfill from whichever candidates weren't
+        # already taken, still ranked by engagement, so the sample still
+        # ends up exactly `limit` long whenever enough candidates exist
+        # anywhere across buckets.
+        taken_ids = {row["id"] for row in selected}
+        leftover = [row for rows in by_sentiment.values() for row in rows if row["id"] not in taken_ids]
+        leftover.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
+        selected.extend(leftover[:shortfall])
+
+    selected.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
+    return selected
+
+
 async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMENT_SAMPLE_SIZE) -> list[dict[str, Any]]:
-    """Engagement-ranked sample of this movie's already-sentiment-classified
-    comments, for the topic-clustering Bee call in
+    """Sentiment-stratified, deduped sample of this movie's already-
+    classified comments, for the topic-clustering Bee/Kira call in
     scripts/generate_social_topic_reports.py - NOT used for the overall
     sentiment percentages (see get_movie_sentiment_counts, which counts
     every classified comment, not just this capped sample).
@@ -366,13 +424,27 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
     regenerating after this second gate was added - see
     movie_hashtag_present's own docstring for the exact incident).
 
-    Over-fetches (movie_hashtag_present runs in Python, after the fetch)
-    then trims back to `limit` - same shape as list_posts(sort=
-    "engagement")."""
+    Two more accuracy gaps closed 2026-09-25, after the above: a pure
+    top-N-by-engagement sample (i) let exact/near-exact duplicate text
+    (bot rings, copy-paste spam threads - these tend to carry inflated or
+    coordinated like counts) occupy multiple slots as if they were
+    independent opinions, and (ii) could be dominated entirely by one
+    viral sentiment (e.g. a single very-liked positive thread), crowding
+    out negative/neutral comments that are proportionally real but
+    individually less-liked. Now: dedupe by normalized text first (keeping
+    the highest-engagement instance, since rows already arrive engagement-
+    ranked), then sample each sentiment bucket in proportion to its real
+    share of the deduped candidate pool (see _stratified_sample), not just
+    whichever bucket's comments happen to be loudest.
+
+    Over-fetches well past `limit` (movie_hashtag_present + dedup both run
+    in Python, after the fetch, and shrink the pool further) - same shape
+    as list_posts(sort="engagement"), just a wider margin since two filters
+    now sit between the raw fetch and the final sample instead of one."""
     movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
     movie_title = movie_rows[0]["title"] if movie_rows else None
 
-    overfetch = max(limit * 2, limit + 200)
+    overfetch = max(limit * 6, limit + 1000)
     rows = await d1_query(
         """
         SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment,
@@ -390,17 +462,24 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
         [movie_id, overfetch],
     )
     reputable = await reputable_authors()
-    selected: list[dict[str, Any]] = []
+    seen_texts: set[str] = set()
+    by_sentiment: dict[str, list[dict[str, Any]]] = {k: [] for k in _SENTIMENT_BUCKETS}
     for row in rows or []:
         is_reputable = (row.get("platform"), row.get("post_author")) in reputable
         if not movie_hashtag_present(
             row.get("post_content"), movie_title, row.pop("post_keyword", None), is_reputable_author=is_reputable
         ):
             continue
-        selected.append(row)
-        if len(selected) >= limit:
-            break
-    return selected
+        sentiment = row.get("sentiment")
+        if sentiment not in by_sentiment:
+            continue
+        normalized = _normalize_comment_text(row.get("message") or "")
+        if not normalized or normalized in seen_texts:
+            continue
+        seen_texts.add(normalized)
+        by_sentiment[sentiment].append(row)
+
+    return _stratified_sample(by_sentiment, limit)
 
 
 async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
