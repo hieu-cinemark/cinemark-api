@@ -85,16 +85,15 @@ class Settings(BaseSettings):
     # the model, for Kira and every other provider (e.g. Beeknoee), live
     # in Supabase's ai_providers table instead - see app/ai_client.py and
     # app/services/platform_config_db.py. Primary use now: relevance +
-    # topic/narrative reports. Per-comment sentiment defaults to PhoBERT
-    # below.
+    # topic/narrative reports. Per-comment sentiment is Bee.
     kira_enabled: bool = False
 
-    # Comment sentiment backend: "phobert" (local HTTP, default), "bee",
-    # or "auto" (PhoBERT then Bee fallback). serve.py in the sibling
-    # phobert-classifier repo listens on phobert_url.
-    sentiment_backend: str = "phobert"
-    phobert_url: str = "http://127.0.0.1:8090"
-    phobert_timeout_seconds: float = 5.0
+    # Kira is the post-relevance classifier at ingest (app/kira/post_relevance.py):
+    # at most this many calls per UTC day (~950 tokens each against Kira's
+    # 10M/day quota, leaving room for Kira's other tasks); past it, posts
+    # fall back to the keyword substring check. 0 turns Kira off for posts.
+    # Comment sentiment is Bee (app/kira/sentiment.py) - no local model.
+    kira_post_relevance_daily_cap: int = 9000
 
     @property
     def cors_origins_list(self) -> list[str]:

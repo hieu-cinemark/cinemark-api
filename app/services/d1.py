@@ -44,6 +44,7 @@ from app.repositories.d1.comments import (
 from app.repositories.d1.posts import (
     ENGAGEMENT_FIELDS,
     MIN_CONTENT_LENGTH,
+    RELEVANT_POST_SQL,
     PostRepository,
     contains_keyword,
     get_post,
@@ -446,7 +447,7 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
 
     overfetch = max(limit * 6, limit + 1000)
     rows = await d1_query(
-        """
+        f"""
         SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment,
                c.author_name, c.author_url, c.author_profile_picture,
                p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform,
@@ -454,7 +455,7 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
         FROM comments c
         JOIN posts p ON p.id = c.post_id
         LEFT JOIN keywords k ON k.id = p.keyword_id
-        WHERE p.movie_id = ? AND p.relevance_label = 'related'
+        WHERE p.movie_id = ? AND {RELEVANT_POST_SQL}
           AND c.sentiment IS NOT NULL AND c.message IS NOT NULL
         ORDER BY c.reactions_count DESC, c.scraped_at DESC
         LIMIT ?
@@ -506,13 +507,13 @@ async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
     movie_title = movie_rows[0]["title"] if movie_rows else None
 
     rows = await d1_query(
-        """
+        f"""
         SELECT c.sentiment, p.content AS post_content, p.author AS post_author, p.platform,
                k.keyword AS post_keyword
         FROM comments c
         JOIN posts p ON p.id = c.post_id
         LEFT JOIN keywords k ON k.id = p.keyword_id
-        WHERE p.movie_id = ? AND p.relevance_label = 'related' AND c.sentiment IS NOT NULL
+        WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND c.sentiment IS NOT NULL
         """,
         [movie_id],
     )

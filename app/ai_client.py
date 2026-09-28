@@ -15,6 +15,7 @@ and one structured log shape per call."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import random
 import re
@@ -36,6 +37,12 @@ _CONTENT_LOG_CHARS = 4000
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
 _PROVIDER_CACHE_TTL_SECONDS = 5.0
+
+# Token usage of the most recent call_ai() in the current asyncio task -
+# read right after awaiting call_ai() by callers that need to meter spend
+# against a budget (e.g. a batch labeling script).
+# A ContextVar so concurrent tasks each see their own call's usage.
+last_call_usage: contextvars.ContextVar[AIUsage | None] = contextvars.ContextVar("last_call_usage", default=None)
 
 
 def _preview(text: str, limit: int) -> str:
@@ -256,6 +263,7 @@ async def call_ai(
                     platform=platform,
                 )
                 logger.info("ai_call_finished", **result.as_log_fields())
+                last_call_usage.set(usage)
                 return content
             except openai.RateLimitError:
                 if attempt == _MAX_RATE_LIMIT_RETRIES:

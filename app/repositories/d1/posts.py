@@ -45,6 +45,17 @@ _ENGAGEMENT_SCORE_SQL = "(p.like_count + p.reply_count + p.repost_count + p.quot
 # the movie title "Anh Hùng".
 _HASHTAG_STRIP = re.compile(r"[\s._-]+")
 
+# "This post counts as about its movie" for report/top-list/comment-sweep
+# queries. relevance_label is only written when a classifier actually ran:
+# a post admitted by the ingest substring shortcut (its text contains the
+# keyword, e.g. every post found via a movie's own hashtag) keeps a NULL
+# label with keyword_match=1. Requiring relevance_label='related' alone
+# silently excluded all of those - confirmed 2026-09-28 on "SCOTTY: GIẢI
+# CỨU HOÀNG THƯỢNG": 115 sentiment-classified comments, every one under a
+# NULL-labeled post, so its report said "not enough comments". A label a
+# classifier or rule did write (not_related/uncertain) still wins.
+RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NULL AND p.keyword_match > 0))"
+
 
 
 # --- indexes -------------------------------------------------------------
@@ -186,6 +197,12 @@ _HASHTAG_TOKEN_RE = re.compile(r"#(\w+)", re.UNICODE)
 _VIETNAMESE_COMBINING_MARKS = ("̛", "̣", "̉")  # horn (ư/ơ), dot-below, hook-above tones
 
 
+def _tag_form(text: str) -> str:
+    """Folded (see _fold_for_keyword_match) with every non-alphanumeric
+    character removed - the shape a hashtag token has."""
+    return re.sub(r"[\W_]+", "", _fold_for_keyword_match(text))
+
+
 def _looks_vietnamese(text: str) -> bool:
     """Cheap language signal, not a real detector: đ, plus the combining
     horn (ư/ơ) and dot-below/hook-above tone marks (NFD-decomposed) are, in
@@ -321,10 +338,15 @@ def movie_hashtag_present(
         if len(compact) >= 2 and f"#{compact}" in _HASHTAG_STRIP.sub("", text):
             return True
 
-    folded_targets = {_fold_for_keyword_match(t) for t in (movie_title, keyword) if t}
+    # _tag_form, not bare _fold_for_keyword_match: a hashtag token is
+    # extracted without its "#" and can't contain punctuation, so the
+    # targets must drop both too - otherwise a hashtag-type keyword
+    # ("#ScottyGiaiCuuHoangThuong" -> "#scotty...") or a title with
+    # punctuation ("SCOTTY: GIẢI CỨU..." -> "scotty:...") never matches.
+    folded_targets = {_tag_form(t) for t in (movie_title, keyword) if t}
     folded_targets.discard("")
     if folded_targets:
-        tags = {_fold_for_keyword_match(tag) for tag in _HASHTAG_TOKEN_RE.findall(content)}
+        tags = {_tag_form(tag) for tag in _HASHTAG_TOKEN_RE.findall(content)}
         if (tags & folded_targets) and _looks_vietnamese(content):
             return True
 
@@ -431,8 +453,8 @@ class PostRepository:
         sort="engagement": highest-interaction first (see
         _ENGAGEMENT_SCORE_SQL) - e.g. keyword_id + sort="engagement" +
         limit=100 is the dashboard's "top 100 posts for this keyword" view.
-        That view requires relevance_label='related' (see
-        phobert-classifier/label_posts_relevance.py) AND
+        That view requires relevance_label='related' (set at ingest, see
+        app/kira/post_relevance.py) AND
         movie_hashtag_present's own, independent check - relevance_label
         alone isn't a second opinion the way it looks: persist_post stores
         keyword_match as a straight mirror of the AI verdict whenever the
@@ -462,7 +484,7 @@ class PostRepository:
             where.append("p.keyword_match = ?")
             params.append(1 if keyword_match else 0)
         if sort == "engagement":
-            where.append("p.relevance_label = 'related'")
+            where.append(RELEVANT_POST_SQL)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         order_sql = f"{_ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
         # movie_hashtag_present runs in Python after the fetch and rejects
@@ -625,7 +647,7 @@ class PostRepository:
             LEFT JOIN keywords k ON k.id = p.keyword_id
             LEFT JOIN movies m ON m.id = p.movie_id
             LEFT JOIN (SELECT post_id, COUNT(*) AS n FROM comments GROUP BY post_id) c ON c.post_id = p.id
-            WHERE p.platform = ? AND p.keyword_id = ? AND p.relevance_label = 'related'
+            WHERE p.platform = ? AND p.keyword_id = ? AND {RELEVANT_POST_SQL}
             ORDER BY {_ENGAGEMENT_SCORE_SQL} DESC
             LIMIT ?
             """,
@@ -717,20 +739,18 @@ class PostRepository:
         (see app/services/platforms.py) - this function has no
         platform-specific field knowledge of its own.
 
-        `ai_relevant`, when given (see app/services/relevance_phobert.py),
-        is the PhoBERT model's confident (non-"uncertain") verdict and is
-        used for keyword_match instead of the exact-substring
-        contains_keyword check below - callers pass None to fall back to
-        the substring check (PhoBERT not configured, or the call failed)
-        rather than blocking ingestion on a classifier hiccup.
+        `ai_relevant`, when given (see app/kira/post_relevance.py), is
+        Kira's "related" verdict and is used for keyword_match instead of
+        the exact-substring contains_keyword check below - callers pass None
+        to fall back to the substring check (Kira uncertain, off, over its
+        daily cap, or the call failed) rather than blocking ingestion on a
+        classifier hiccup.
 
         `relevance_label`/`relevance_confidence`, when given, are that same
         classification stored straight onto the row at ingest time (the
         3-bucket related/not_related/uncertain scheme, not the boolean
-        keyword_match) - previously only ever set later by a batch sweep
-        (phobert-classifier/label_posts_relevance.py), leaving every post
-        NULL until the next run; a post classified live no longer needs
-        that batch pass to show up in relevance-filtered views."""
+        keyword_match) - set live, so a post shows up in relevance-filtered
+        views without waiting for any batch pass."""
         if not _configured() or platform not in registered_platforms():
             return False
         await _ensure_post_indexes()
@@ -838,7 +858,7 @@ class PostRepository:
         # this branch re-runs on every re-scrape of an already-existing post
         # (engagement-only updates), and content unchanged means the same
         # contains_keyword/classify path as before, which can legitimately
-        # be None here (substring match alone decided it, no PhoBERT call
+        # be None here (substring match alone decided it, no Kira verdict
         # made) - a plain overwrite would null out a real label a batch
         # sweep (or an earlier ingest classification) already set.
         updated = await d1_query(

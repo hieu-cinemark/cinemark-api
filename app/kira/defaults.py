@@ -5,6 +5,7 @@ system message."""
 
 from __future__ import annotations
 
+from app.kira.post_relevance_prompt import POST_RELEVANCE_SYSTEM_PROMPT
 from app.kira.prompt import SYSTEM_PROMPT as RELEVANCE_SYSTEM_PROMPT
 from app.kira.report_prompt import NARRATIVE_SYSTEM_PROMPT, TOPICS_SYSTEM_PROMPT
 from app.kira.sentiment_prompt import SENTIMENT_SYSTEM_PROMPT
@@ -65,6 +66,7 @@ exactly: none
 # KiraResponse. Crawl-side tasks use the same keys in spider-hub.
 AI_PROMPT_TASKS: tuple[str, ...] = (
     "relevance",
+    "post_relevance",
     "sentiment",
     "topics",
     "narrative",
@@ -82,6 +84,7 @@ def default_system_prompts() -> dict[str, str]:
     imports = default_import_system_prompts()
     return {
         "relevance": RELEVANCE_SYSTEM_PROMPT.strip(),
+        "post_relevance": POST_RELEVANCE_SYSTEM_PROMPT,
         "sentiment": SENTIMENT_SYSTEM_PROMPT.strip(),
         "topics": TOPICS_SYSTEM_PROMPT.strip(),
         "narrative": NARRATIVE_SYSTEM_PROMPT.strip(),

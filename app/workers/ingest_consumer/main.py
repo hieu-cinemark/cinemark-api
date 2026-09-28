@@ -20,13 +20,14 @@ _POST_MESSAGE_CONCURRENCY / _COMMENT_MESSAGE_CONCURRENCY) instead of one at
 a time, since each message is now a couple of D1 HTTP round trips rather
 than a local DB write.
 
-Comment sentiment is classified out-of-band, not inline here anymore - see
-handle_comment's own comment and scripts/backfill_comment_sentiment.py."""
+Comment sentiment is classified out-of-band, not inline: a third task,
+sentiment_sweep.sweep_forever(), labels new comments in Bee batches."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import defaultdict, deque
 from typing import Any
 
@@ -35,8 +36,10 @@ from aiokafka.errors import KafkaError
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.kira.post_relevance import classify_post_relevance_kira
 from app.services.d1 import (
     contains_keyword,
+    d1_query,
     get_keyword,
     get_post_by_external_id,
     persist_comment,
@@ -45,8 +48,9 @@ from app.services.d1 import (
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.services.relevance_phobert import classify_post_relevance
+from app.services.relevance_rules import foreign_language_reason, mentions_other_film
 from app.services.telegram import send_telegram_message
+from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
 
@@ -65,10 +69,9 @@ CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
 _POST_MESSAGE_CONCURRENCY = 8
-# Comments no longer call Kira inline (see handle_comment's own comment) -
-# each one is now just a mapper call + one D1 write, cheap enough that a
-# higher concurrency actually gets used instead of mostly waiting on Kira's
-# global 2-slot semaphore the way it effectively did before.
+# Comments make no AI call inline (sentiment is sentiment_sweep.py's job) -
+# each one is just a mapper call + one D1 write, cheap enough that a
+# higher concurrency actually gets used.
 _COMMENT_MESSAGE_CONCURRENCY = 24
 
 # A burst of silent drops (unregistered platform mapper, malformed
@@ -91,6 +94,32 @@ _DROP_ALERT_TEXT = {
     "unknown_keyword_id": "posts referencing an unknown/disabled keyword_id",
     "d1_write_failed": "D1 write failed (see app/services/d1.py for details)",
 }
+
+
+# Tracked films (titles for relevance_rules.mentions_other_film, facts for
+# Kira's prompt) - a small table that changes when someone adds a film, so a
+# short cache is enough.
+_TRACKED_MOVIES_TTL_SECONDS = 300.0
+_tracked_movies_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+
+
+async def _tracked_movies() -> dict[str, dict[str, Any]]:
+    global _tracked_movies_cache
+    now = time.monotonic()
+    if _tracked_movies_cache is not None and now - _tracked_movies_cache[0] < _TRACKED_MOVIES_TTL_SECONDS:
+        return _tracked_movies_cache[1]
+    try:
+        rows = await d1_query('SELECT id, title, director, "cast", distributor, released_at FROM movies', quiet=True) or []
+    except Exception as exc:  # noqa: BLE001 - the rules/Kira just sit out this round
+        logger.warning("tracked_movies_load_failed", error=exc)
+        return _tracked_movies_cache[1] if _tracked_movies_cache else {}
+    movies = {r["id"]: r for r in rows if r.get("title")}
+    _tracked_movies_cache = (now, movies)
+    return movies
+
+
+async def _tracked_titles() -> list[str]:
+    return [m["title"] for m in (await _tracked_movies()).values()]
 
 
 async def _note_drop(platform: str, reason: str, **context: Any) -> None:
@@ -137,46 +166,66 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     draft = mapper(payload)
-    # The free substring check first - only spend a PhoBERT call on posts
-    # it actually misses (no literal keyword/synonym/abbreviation match)
-    # rather than classifying every single post regardless of whether the
-    # cheap check already found one.
+
+    # Rules first, before the keyword shortcut below can admit the post
+    # (see app/services/relevance_rules.py for the measured cases). Dropped
+    # posts are archived like Kira's, so a rule mistake is recoverable
+    # via scripts/replay_dropped_posts.py.
+    foreign = foreign_language_reason(draft.get("content"), payload.get("text_language"))
+    if foreign:
+        logger.info("post_dropped_foreign_language", platform=platform, post_id=post_id, keyword_id=keyword_id, rule=foreign)
+        await persist_dropped_post(platform=platform, reason="non_vietnamese", payload=payload, keyword_id=keyword_id)
+        return
+
+    # Kira classifies every post that survived the rules. The keyword
+    # substring check is only the fallback when Kira gives no verdict -
+    # turned off on the dashboard, over settings.kira_post_relevance_daily_cap,
+    # or failed - so an outage never drops or hides posts it would have kept.
     ai_relevant = None
     relevance_label = None
     relevance_confidence = None
-    if not contains_keyword(draft.get("content"), keyword["keyword"]):
-        relevance = await classify_post_relevance(draft.get("content"), keyword.get("movie_title"), keyword["keyword"])
-        if relevance:
-            relevance_label = relevance["label"]
-            relevance_confidence = relevance["confidence"]
-            if relevance_label == "related":
-                ai_relevant = True
-            elif relevance_label == "not_related":
-                # A confident (not "uncertain" - see
-                # app/services/relevance_phobert.py's own confidence
-                # threshold) verdict that this post isn't about the movie -
-                # drop it instead of storing it with keyword_match=0 like
-                # before, which never actually kept garbage out of the
-                # posts table. A PhoBERT outage/misconfig (relevance is
-                # None) must NOT drop anything - only a confident
-                # "not_related" does, so ingestion never silently loses a
-                # real post just because the local model had a bad moment.
-                logger.info(
-                    "post_dropped_irrelevant",
-                    platform=platform,
-                    post_id=post_id,
-                    keyword_id=keyword_id,
-                    confidence=relevance_confidence,
-                )
-                await persist_dropped_post(
-                    platform=platform, reason="phobert_irrelevant", payload=payload, keyword_id=keyword_id
-                )
-                return
-            # "uncertain": ai_relevant stays None (falls back to the
-            # substring check below, which we already know is False here)
-            # - relevance_label/confidence are still stored, so this post
-            # doesn't need label_posts_relevance.py's batch sweep to pick
-            # it up later; it's already been classified, just inconclusively.
+    has_keyword = contains_keyword(draft.get("content"), keyword["keyword"])
+    if not has_keyword:
+        other_film = mentions_other_film(
+            draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
+        )
+        if other_film:
+            # Names another tracked film and never this one - no need to pay
+            # for a Kira call to confirm it.
+            logger.info("post_dropped_other_film", platform=platform, post_id=post_id, keyword_id=keyword_id, other_film=other_film)
+            await persist_dropped_post(platform=platform, reason="other_film", payload=payload, keyword_id=keyword_id)
+            return
+
+    movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
+    verdict = await classify_post_relevance_kira(
+        content=draft.get("content"),
+        movie=movie,
+        keyword=keyword["keyword"],
+        platform=platform,
+        other_titles=await _tracked_titles(),
+    )
+    if verdict is not None:
+        relevance_label = verdict["label"]
+        relevance_confidence = verdict["confidence"]
+        if relevance_label == "related":
+            ai_relevant = True
+        elif relevance_label == "not_related":
+            # Archived, not deleted: scripts/replay_dropped_posts.py can
+            # restore a post Kira got wrong.
+            logger.info(
+                "post_dropped_irrelevant",
+                platform=platform,
+                post_id=post_id,
+                keyword_id=keyword_id,
+                has_keyword=has_keyword,
+                confidence=relevance_confidence,
+                reason=verdict["reason"],
+            )
+            await persist_dropped_post(platform=platform, reason="kira_irrelevant", payload=payload, keyword_id=keyword_id)
+            return
+        # "uncertain" (e.g. hashtag-only captions): ai_relevant stays None,
+        # so persist_post falls back to the keyword substring check, and the
+        # label is stored so the post is visibly unresolved.
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
@@ -219,27 +268,13 @@ async def handle_comment(payload: dict[str, Any]) -> None:
         return
 
     draft = mapper(payload)
-    # PhoBERT is local/fast (HTTP to phobert-classifier/serve.py), so
-    # classifying inline is fine again - unlike the old Kira path that
-    # shared a process-wide concurrency=2 semaphore with post relevance
-    # and stalled ingest under comment floods. Fail-open: None on any
-    # error, comment still persists; backfill_comment_sentiment.py can
-    # fill gaps later.
-    from app.kira.sentiment import classify_sentiment
-
-    sentiment = await classify_sentiment(draft.get("message"))
-    ok = await persist_comment(
-        post_id=post["id"], platform=platform, draft=draft, sentiment=sentiment
-    )
+    # Sentiment stays NULL here - sentiment_sweep.py classifies new
+    # comments in Bee batches within a minute or two.
+    ok = await persist_comment(post_id=post["id"], platform=platform, draft=draft, sentiment=None)
     if not ok:
         logger.warning("d1_comment_persist_failed", platform=platform, post_id=external_post_id)
         return
-    logger.info(
-        "comment_persisted",
-        platform=platform,
-        post_id=external_post_id,
-        sentiment=sentiment,
-    )
+    logger.info("comment_persisted", platform=platform, post_id=external_post_id)
 
 
 class _OffsetTracker:
@@ -398,7 +433,8 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
 
 
 async def run() -> None:
-    """Runs both topics' consumer loops concurrently in this one process.
+    """Runs both topics' consumer loops, plus the comment-sentiment sweep,
+    concurrently in this one process.
     Same "cancel the survivor and re-raise" shape as spider-hub's own
     crawl_request_consumer.py run() (see that module's own docstring for
     the full rationale) - if either loop exits unexpectedly, the other is
@@ -410,6 +446,7 @@ async def run() -> None:
         asyncio.create_task(
             _run_topic_consumer(RAW_COMMENTS_TOPIC, CONSUMER_GROUP_COMMENTS, _COMMENT_MESSAGE_CONCURRENCY), name="comments"
         ),
+        asyncio.create_task(sweep_forever(), name="sentiment_sweep"),
     }
     try:
         done, pending = await asyncio.wait(loops, return_when=asyncio.FIRST_COMPLETED)

@@ -260,10 +260,9 @@ class CommentRepository:
         reactions/replies count).
 
         `sentiment` is the AI-classified label ("positive"/"negative"/"neutral")
-        from app.kira.sentiment.classify_sentiment() (PhoBERT by default; Kira
-        optional), already resolved by the
+        from app.kira.sentiment.classify_sentiment() (Bee), already resolved by the
         caller before this is invoked - None means either classification wasn't
-        attempted (message too short) or the Kira call failed, and just leaves
+        attempted (message too short) or the Bee call failed, and just leaves
         the column NULL rather than blocking the upsert."""
         if not _configured():
             return False

@@ -7,11 +7,10 @@ this run" means.
 
 Provider (Kira or Bee) is switchable from the dashboard's AI settings tab
 (app/kira/client.py's active_report_provider(), default "bee") rather than
-hardcoded - added 2026-09-25 when report generation turned out to be the
-only real per-call-volume LLM task left in this product (relevance and
-sentiment both moved to local PhoBERT - see app/services/relevance_phobert.py
-and app/kira/sentiment.py's own docstrings), so it's worth being able to
-point at either provider's budget without a code change. call_kira's own
+hardcoded - added 2026-09-25, so report generation can be pointed at
+either provider's budget without a code change (post relevance is Kira,
+app/kira/post_relevance.py; comment sentiment is batched Bee,
+app/kira/sentiment.py). call_kira's own
 force=True bypasses the separate ingest-classifiers enabled toggle, same
 as app/kira/import_parser.py's own operator-triggered calls - picking
 "kira" here is its own explicit enable signal, independent of that switch."""
@@ -92,7 +91,7 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
             task="topics",
             system_prompt=TOPICS_SYSTEM_PROMPT,
             user_prompt=prompt,
-            max_tokens=32000,
+            max_tokens=45000,
             temperature=0.3,
         )
         parsed = parse_json_response(response)

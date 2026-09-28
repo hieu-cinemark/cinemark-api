@@ -7,11 +7,10 @@ outage/rate-limit can't starve Kira or vice versa).
 
 Kira still owns relevance*/import-parsing/general tasks; Bee owns comment
 topic-clustering + report narrative (app/bee/report.py) and is the
-sentiment fallback when PhoBERT is down (app/kira/sentiment.py).
+comment sentiment classifier (app/kira/sentiment.py).
 
-* per-post relevance at ingest time no longer goes through either
-provider - see app/services/relevance_phobert.py, which replaced the old
-Kira call there with the already-trained local PhoBERT model.
+* per-post relevance at ingest time is Kira's job - see
+app/kira/post_relevance.py.
 """
 
 from __future__ import annotations
