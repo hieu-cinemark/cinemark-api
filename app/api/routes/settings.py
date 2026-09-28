@@ -5,9 +5,11 @@ config. Read-only elsewhere; this is the only place that writes them."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
-
+import re
 import time
+
+from fastapi import APIRouter, Query
+from pydantic import ValidationError as PydanticValidationError
 
 from pyotp import TOTP
 
@@ -36,8 +38,13 @@ from app.schemas.settings import (
     ImportParseResponse,
     NurtureRequest,
     NurtureResponse,
+    KNOWN_PROXY_PROVIDERS,
     ProxyCreate,
     ProxyOut,
+    ProxyProviderOut,
+    ProxyProviderUpdate,
+    ProxySettings,
+    ProxySettingsOut,
     ProxyUpdate,
     TotpCodeResponse,
 )
@@ -204,6 +211,77 @@ async def update_proxy(proxy_id: int, payload: ProxyUpdate) -> ProxyOut:
 async def delete_proxy(proxy_id: int) -> dict[str, bool]:
     await db.delete_proxy(proxy_id)
     return {"ok": True}
+
+
+def _proxy_settings_out(row: dict) -> ProxySettingsOut:
+    # Unknown/stale keys are dropped; a stored value that no longer passes
+    # validation (e.g. bounds tightened later) falls back to its default
+    # rather than 500ing the whole Settings page.
+    stored = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    merged = ProxySettings().model_dump()
+    for key, value in stored.items():
+        if key not in merged:
+            continue
+        try:
+            merged[key] = getattr(ProxySettings.model_validate({key: value}), key)
+        except PydanticValidationError:
+            logger.warning("proxy_setting_invalid_stored_value", key=key)
+    return ProxySettingsOut(values=ProxySettings(**merged), defaults=ProxySettings(), updated_at=row.get("updated_at"))
+
+
+@router.get("/proxy", response_model=ProxySettingsOut)
+async def get_proxy_settings() -> ProxySettingsOut:
+    """Proxy behavior tunables spider-hub reads (pinning, cooldown, health
+    check, vendor API pacing, requeue backoff, TikTok synthetic attempts)."""
+    return _proxy_settings_out(await db.get_proxy_settings())
+
+
+@router.put("/proxy", response_model=ProxySettingsOut)
+async def set_proxy_settings(payload: ProxySettings) -> ProxySettingsOut:
+    if payload.cooldown_base_minutes > payload.cooldown_max_minutes:
+        raise ValidationError("cooldown_base_minutes must not exceed cooldown_max_minutes")
+    if payload.exhausted_backoff_base_seconds > payload.exhausted_backoff_max_seconds:
+        raise ValidationError("exhausted_backoff_base_seconds must not exceed exhausted_backoff_max_seconds")
+    row = await db.upsert_proxy_settings(payload.model_dump())
+    logger.info("proxy_settings_updated", **payload.model_dump())
+    return _proxy_settings_out(row)
+
+
+def _proxy_provider_out(key: str, row: dict | None) -> ProxyProviderOut:
+    known = KNOWN_PROXY_PROVIDERS.get(key, {})
+    return ProxyProviderOut(
+        key=key,
+        api_url=(row or {}).get("api_url") or known.get("api_url", ""),
+        token_set=bool((row or {}).get("token")),
+        ip_allowlist=bool(row["ip_allowlist"]) if row is not None else bool(known.get("ip_allowlist")),
+        in_db=row is not None,
+        legacy_env_var=known.get("legacy_env_var"),
+        updated_at=(row or {}).get("updated_at"),
+    )
+
+
+@router.get("/proxy/providers", response_model=list[ProxyProviderOut])
+async def list_proxy_providers() -> list[ProxyProviderOut]:
+    """Rotating-proxy vendor plans - DB rows plus the known plans that
+    don't have one yet (spider-hub still reads those tokens from .env).
+    Tokens are never returned, only whether one is stored."""
+    rows = {row["key"]: row for row in await db.list_proxy_providers()}
+    keys = sorted(set(rows) | set(KNOWN_PROXY_PROVIDERS))
+    return [_proxy_provider_out(key, rows.get(key)) for key in keys]
+
+
+@router.put("/proxy/providers/{key}", response_model=ProxyProviderOut)
+async def set_proxy_provider(key: str, payload: ProxyProviderUpdate) -> ProxyProviderOut:
+    """Upsert - a new provider key can be added from here. token omitted or
+    blank keeps whatever token is already stored."""
+    if not re.fullmatch(r"[a-z0-9_]{1,64}", key):
+        raise ValidationError("provider key must be 1-64 chars of a-z, 0-9, _")
+    token = payload.token.strip() if payload.token and payload.token.strip() else None
+    row = await db.upsert_proxy_provider(
+        key, api_url=payload.api_url.strip(), token=token, ip_allowlist=payload.ip_allowlist
+    )
+    logger.info("proxy_provider_updated", key=key, api_url=payload.api_url.strip(), token_changed=token is not None)
+    return _proxy_provider_out(key, row)
 
 
 @router.get("/filter-keywords", response_model=list[FilterKeywordOut])

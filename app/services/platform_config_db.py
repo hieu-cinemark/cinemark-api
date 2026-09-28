@@ -734,3 +734,111 @@ async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, mo
         row = await cur.fetchone()
         await conn.commit()
     return row  # type: ignore[return-value]
+
+
+# --- Proxy behavior settings ---------------------------------------------
+# proxy_settings: singleton jsonb of tunables (see app/schemas/settings.py's
+# ProxySettings for keys/defaults/bounds). proxy_providers: one row per
+# rotating-proxy vendor plan (API URL + token + ip_allowlist mode). Both
+# read by spider-hub's social_crawler/services/proxy_settings.py (cached
+# 60s there, so a save here applies to running crawlers within a minute).
+
+_proxy_settings_ready = False
+
+
+async def _ensure_proxy_settings_tables() -> None:
+    global _proxy_settings_ready
+    if _proxy_settings_ready:
+        return
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proxy_settings (
+                id integer PRIMARY KEY CHECK (id = 1),
+                settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS proxy_providers (
+                key text PRIMARY KEY,
+                api_url text NOT NULL DEFAULT '',
+                token text NOT NULL DEFAULT '',
+                ip_allowlist boolean NOT NULL DEFAULT false,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.commit()
+    _proxy_settings_ready = True
+
+
+async def get_proxy_settings() -> dict[str, Any]:
+    """{"settings": {...stored keys only...}, "updated_at": ...} - merging
+    over defaults is the schema's job (ProxySettings)."""
+    await _ensure_proxy_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT settings, updated_at FROM proxy_settings WHERE id = 1")
+        row = await cur.fetchone()
+    return row or {"settings": {}, "updated_at": None}
+
+
+async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
+    from psycopg.types.json import Json
+
+    await _ensure_proxy_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO proxy_settings (id, settings) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_at = now()
+            RETURNING settings, updated_at
+            """,
+            (Json(values),),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]
+
+
+PROXY_PROVIDER_COLUMNS = "key, api_url, token, ip_allowlist, updated_at"
+
+
+async def list_proxy_providers() -> list[dict[str, Any]]:
+    await _ensure_proxy_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(f"SELECT {PROXY_PROVIDER_COLUMNS} FROM proxy_providers ORDER BY key")
+        return await cur.fetchall()
+
+
+async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None, ip_allowlist: bool) -> dict[str, Any]:
+    """token=None keeps whatever token is already stored (same contract as
+    upsert_ai_provider's api_key)."""
+    await _ensure_proxy_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        if token is None:
+            await cur.execute(
+                f"""
+                INSERT INTO proxy_providers (key, api_url, ip_allowlist) VALUES (%s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    api_url = EXCLUDED.api_url, ip_allowlist = EXCLUDED.ip_allowlist, updated_at = now()
+                RETURNING {PROXY_PROVIDER_COLUMNS}
+                """,
+                (key, api_url, ip_allowlist),
+            )
+        else:
+            await cur.execute(
+                f"""
+                INSERT INTO proxy_providers (key, api_url, token, ip_allowlist) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (key) DO UPDATE SET
+                    api_url = EXCLUDED.api_url, token = EXCLUDED.token,
+                    ip_allowlist = EXCLUDED.ip_allowlist, updated_at = now()
+                RETURNING {PROXY_PROVIDER_COLUMNS}
+                """,
+                (key, api_url, token, ip_allowlist),
+            )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]

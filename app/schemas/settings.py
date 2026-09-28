@@ -265,3 +265,81 @@ class CronJob(BaseModel):
     source: str
     description: str
     last_run_at: datetime | None = None
+
+
+# --- Proxy behavior -----------------------------------------------------
+# Mirrors spider-hub's social_crawler/services/proxy_settings.py DEFAULTS -
+# the field defaults below ARE the fallback values spider-hub uses when a
+# key is absent, so keep the two in sync when adding a key. Stored as one
+# jsonb object in the proxy_settings singleton row (see
+# platform_config_db.get_proxy_settings).
+
+
+class ProxySettings(BaseModel):
+    # Sticky pinning (services/pool.py)
+    repin_after_consecutive_failures: int = Field(default=5, ge=1, le=100)
+    # Circuit-breaker cooldown: base * 2^failures, capped (services/db.py)
+    cooldown_base_minutes: float = Field(default=5.0, gt=0, le=240)
+    cooldown_max_minutes: float = Field(default=120.0, gt=0, le=10080)
+    # proxy_health_check.py (cron, every 5 min)
+    health_check_ping_url: str = Field(
+        default="https://www.google.com/generate_204", min_length=8, max_length=500, pattern=r"^https?://"
+    )
+    health_check_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    health_check_alert_after_failures: int = Field(default=2, ge=1, le=100)
+    health_check_streak_ttl_hours: float = Field(default=6.0, gt=0, le=168)
+    # Rotating-lease vendor API (services/proxy_provider.py)
+    provider_request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    provider_min_get_new_interval_seconds: float = Field(default=60.0, ge=0, le=3600)
+    provider_max_cooldown_wait_seconds: float = Field(default=120.0, ge=0, le=3600)
+    # crawl_request_consumer.py - requeue backoff when a platform's whole proxy pool is down
+    exhausted_backoff_base_seconds: float = Field(default=30.0, gt=0, le=3600)
+    exhausted_backoff_growth_factor: float = Field(default=2.0, ge=1, le=10)
+    exhausted_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86400)
+    exhausted_max_requeues: int = Field(default=3, ge=0, le=100)
+    # TikTok synthetic guest identities (spiders/tiktok/client.py)
+    tiktok_synthetic_provider: str = Field(default="proxiestrust_tiktok_us", min_length=1, max_length=64)
+    tiktok_hashtag_max_attempts: int = Field(default=8, ge=1, le=50)
+    tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
+
+
+class ProxySettingsOut(BaseModel):
+    values: ProxySettings
+    defaults: ProxySettings
+    updated_at: datetime | None = None
+
+
+# Vendor plans this project already uses. Listed even before they have a
+# proxy_providers row, since spider-hub falls back to its own .env token
+# (PROXIESTRUST_API_TOKEN / PROXIESTRUST_TIKTOK_US_API_TOKEN) for them.
+KNOWN_PROXY_PROVIDERS: dict[str, dict[str, Any]] = {
+    "proxiestrust_default": {
+        "api_url": "https://proxiestrust.com/sp07api/get_new",
+        "ip_allowlist": False,
+        "legacy_env_var": "PROXIESTRUST_API_TOKEN",
+    },
+    "proxiestrust_tiktok_us": {
+        "api_url": "https://proxiestrust.com/sp07api/get_new",
+        "ip_allowlist": True,
+        "legacy_env_var": "PROXIESTRUST_TIKTOK_US_API_TOKEN",
+    },
+}
+
+
+class ProxyProviderOut(BaseModel):
+    key: str
+    api_url: str
+    # Whether a token is stored in the DB - the raw token is never returned.
+    token_set: bool
+    ip_allowlist: bool
+    # False = no DB row yet; spider-hub is using legacy_env_var from its .env.
+    in_db: bool
+    legacy_env_var: str | None = None
+    updated_at: datetime | None = None
+
+
+class ProxyProviderUpdate(BaseModel):
+    api_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
+    # None/blank keeps whatever token is already stored.
+    token: str | None = Field(default=None, max_length=500)
+    ip_allowlist: bool = False
