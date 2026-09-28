@@ -309,32 +309,12 @@ class ProxySettingsOut(BaseModel):
     updated_at: datetime | None = None
 
 
-# Vendor plans this project already uses. Listed even before they have a
-# proxy_providers row, since spider-hub falls back to its own .env token
-# (PROXIESTRUST_API_TOKEN / PROXIESTRUST_TIKTOK_US_API_TOKEN) for them.
-KNOWN_PROXY_PROVIDERS: dict[str, dict[str, Any]] = {
-    "proxiestrust_default": {
-        "api_url": "https://proxiestrust.com/sp07api/get_new",
-        "ip_allowlist": False,
-        "legacy_env_var": "PROXIESTRUST_API_TOKEN",
-    },
-    "proxiestrust_tiktok_us": {
-        "api_url": "https://proxiestrust.com/sp07api/get_new",
-        "ip_allowlist": True,
-        "legacy_env_var": "PROXIESTRUST_TIKTOK_US_API_TOKEN",
-    },
-}
-
-
 class ProxyProviderOut(BaseModel):
     key: str
     api_url: str
     # Whether a token is stored in the DB - the raw token is never returned.
     token_set: bool
     ip_allowlist: bool
-    # False = no DB row yet; spider-hub is using legacy_env_var from its .env.
-    in_db: bool
-    legacy_env_var: str | None = None
     updated_at: datetime | None = None
 
 

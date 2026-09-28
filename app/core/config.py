@@ -22,7 +22,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    environment: str = "development"  # development | production
     log_level: str = "INFO"
     log_format: str = "console"  # "console" (human-readable) | "json" (prod, machine-parseable)
 

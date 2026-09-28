@@ -38,7 +38,6 @@ from app.schemas.settings import (
     ImportParseResponse,
     NurtureRequest,
     NurtureResponse,
-    KNOWN_PROXY_PROVIDERS,
     ProxyCreate,
     ProxyOut,
     ProxyProviderOut,
@@ -247,27 +246,22 @@ async def set_proxy_settings(payload: ProxySettings) -> ProxySettingsOut:
     return _proxy_settings_out(row)
 
 
-def _proxy_provider_out(key: str, row: dict | None) -> ProxyProviderOut:
-    known = KNOWN_PROXY_PROVIDERS.get(key, {})
+def _proxy_provider_out(row: dict) -> ProxyProviderOut:
     return ProxyProviderOut(
-        key=key,
-        api_url=(row or {}).get("api_url") or known.get("api_url", ""),
-        token_set=bool((row or {}).get("token")),
-        ip_allowlist=bool(row["ip_allowlist"]) if row is not None else bool(known.get("ip_allowlist")),
-        in_db=row is not None,
-        legacy_env_var=known.get("legacy_env_var"),
-        updated_at=(row or {}).get("updated_at"),
+        key=row["key"],
+        api_url=row.get("api_url") or "",
+        token_set=bool(row.get("token")),
+        ip_allowlist=bool(row["ip_allowlist"]),
+        updated_at=row.get("updated_at"),
     )
 
 
 @router.get("/proxy/providers", response_model=list[ProxyProviderOut])
 async def list_proxy_providers() -> list[ProxyProviderOut]:
-    """Rotating-proxy vendor plans - DB rows plus the known plans that
-    don't have one yet (spider-hub still reads those tokens from .env).
-    Tokens are never returned, only whether one is stored."""
-    rows = {row["key"]: row for row in await db.list_proxy_providers()}
-    keys = sorted(set(rows) | set(KNOWN_PROXY_PROVIDERS))
-    return [_proxy_provider_out(key, rows.get(key)) for key in keys]
+    """Rotating-proxy vendor plans (proxy_providers rows) - the only place
+    spider-hub reads vendor tokens from. Tokens are never returned, only
+    whether one is stored."""
+    return [_proxy_provider_out(row) for row in await db.list_proxy_providers()]
 
 
 @router.put("/proxy/providers/{key}", response_model=ProxyProviderOut)
@@ -281,7 +275,7 @@ async def set_proxy_provider(key: str, payload: ProxyProviderUpdate) -> ProxyPro
         key, api_url=payload.api_url.strip(), token=token, ip_allowlist=payload.ip_allowlist
     )
     logger.info("proxy_provider_updated", key=key, api_url=payload.api_url.strip(), token_changed=token is not None)
-    return _proxy_provider_out(key, row)
+    return _proxy_provider_out(row)
 
 
 @router.get("/filter-keywords", response_model=list[FilterKeywordOut])
