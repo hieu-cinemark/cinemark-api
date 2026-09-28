@@ -92,10 +92,12 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        logger.warning("app_error", code=exc.code, message=exc.message, path=request.url.path)
+        logger.warning(
+            "app_error", error=exc.message, error_type=type(exc).__name__, error_code=exc.code, path=request.url.path
+        )
         return _error_response(exc.status_code, exc.code, exc.message)
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        logger.error("unhandled_error", error=str(exc), path=request.url.path, exc_info=exc)
+        logger.error("unhandled_error", error=exc, error_code="internal_error", path=request.url.path, exc_info=exc)
         return _error_response(500, "internal_error", "Something went wrong.")

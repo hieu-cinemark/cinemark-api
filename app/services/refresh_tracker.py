@@ -51,6 +51,9 @@ logger = get_logger(__name__)
 Status = Literal["idle", "running", "success", "failed"]
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+_RUN_ID_RE = re.compile(r"\brun_id=(\S+)")
+_SUCCESS_EVENTS = frozenset({"token_refresh_finished", "tiktok_identity_refreshed"})
+_FAILURE_EVENTS = frozenset({"token_refresh_failed"})
 _MAX_BUFFER_LINES = 500
 _POLL_INTERVAL_SECONDS = 0.3
 # Routine refreshes (saved session, auto-login) finish in well under a
@@ -67,6 +70,39 @@ _WATCH_TIMEOUT_SECONDS = 180
 # comfortably below how long even a slow routine refresh takes to produce
 # its first log line.
 _MIN_RUNNING_SECONDS_BEFORE_RESTART = 5.0
+
+
+def _parse_log_line(line: str) -> tuple[str, str | None, str | None] | None:
+    """(display text, run_id, event) for one spider-hub log line, in either
+    of its LOG_FORMATs (see spider-hub's social_crawler/logger.py): a JSON
+    object per line, or a console line with key=value fields and the event
+    name as the first token after "[level]". None for a blank line."""
+    if not line.strip():
+        return None
+    if line.lstrip().startswith("{"):
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            obj = None
+        if isinstance(obj, dict):
+            event = str(obj.get("event", ""))
+            run_id = obj.get("run_id")
+            details = " ".join(
+                f"{k}={v}" for k, v in obj.items() if k not in {"event", "timestamp", "level", "run_id", "service", "logger"}
+            )
+            display = f"{obj.get('timestamp', '')} [{obj.get('level', '')}] {event} {details}".strip()
+            return display, str(run_id) if run_id is not None else None, event
+    match = _RUN_ID_RE.search(line)
+    run_id = match.group(1).strip("'\"") if match else None
+    # Console shape: "<timestamp> [<level>  ] <event>   [<logger>] k=v ...".
+    # Older spider-hub builds prefixed the event with "[PLATFORM] [STATUS] ".
+    event = None
+    for token in line.split():
+        if token.startswith("[") or token.endswith("]") or token[0].isdigit():
+            continue
+        event = token
+        break
+    return line, run_id, event
 
 
 def _now_iso() -> str:
@@ -206,7 +242,6 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
     state = _state_for(platform)
     deadline = time.monotonic() + _WATCH_TIMEOUT_SECONDS
     offset = start_offset
-    run_id_marker = f"run_id={run_id}"
 
     try:
         while time.monotonic() < deadline:
@@ -234,24 +269,25 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
                     offset = f.tell()
 
                 for raw_line in chunk.splitlines():
-                    line = _ANSI_RE.sub("", raw_line)
-                    if not line.strip():
+                    parsed = _parse_log_line(_ANSI_RE.sub("", raw_line))
+                    if parsed is None:
                         continue
+                    line, line_run_id, event = parsed
                     # Skip anything that isn't tagged with this exact run's
                     # run_id - see module docstring for why a bare platform
                     # substring match let a concurrently-running different
                     # platform's own lines bleed into this panel.
-                    if run_id_marker not in line:
+                    if line_run_id != run_id:
                         continue
                     state.lines.append(line)
                     if len(state.lines) > _MAX_BUFFER_LINES:
                         state.lines = state.lines[-_MAX_BUFFER_LINES:]
                     _broadcast(platform, {"type": "line", "line": line})
 
-                    if "token_refresh_finished" in line or "tiktok_identity_refreshed" in line:
+                    if event in _SUCCESS_EVENTS:
                         _finish(platform, "success")
                         return
-                    if "token_refresh_failed" in line:
+                    if event in _FAILURE_EVENTS:
                         _finish(platform, "failed")
                         return
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
