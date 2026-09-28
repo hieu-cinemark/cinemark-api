@@ -90,6 +90,14 @@ _POST_INDEXES = (
 # dashboard query (the tab-switch failures logged as d1_request_failed).
 _TAB_FILTER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_posts_keyword_match_scraped_at ON posts(keyword_match, scraped_at DESC)",
+    # The cinemark Worker's /api/social/heat and /api/comparison/* all
+    # filter posts by movie_id IN (...) AND a posted_at range AND
+    # keyword_match > 0. With only the single-column movie_id index they
+    # read every post of the movie (22,932 rows to return 825 for the
+    # largest, measured 2026-09-28). Partial on keyword_match > 0 (~23% of
+    # posts) so the index holds only rows those queries can return; SQLite
+    # only uses it when the query repeats that exact condition.
+    "CREATE INDEX IF NOT EXISTS idx_posts_movie_matched_posted_at ON posts(movie_id, posted_at) WHERE keyword_match > 0",
 )
 
 _post_indexes_ready = False
