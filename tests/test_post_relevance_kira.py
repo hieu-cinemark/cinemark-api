@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -11,6 +12,7 @@ from app.core.config import settings
 from app.kira import post_relevance
 
 MOVIE = {"title": "Án Mạng Karaoke", "director": "X", "cast": "A, B", "released_at": "2026-10-02"}
+OTHER = ["Án Mạng Karaoke", "Án Mạng Xém Hoàn Hảo"]
 
 
 class _FakeRedis:
@@ -25,6 +27,11 @@ class _FakeRedis:
         return None
 
 
+@pytest.fixture(autouse=True)
+def fast_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(post_relevance, "BATCH_WINDOW_S", 0.05)
+
+
 @pytest.fixture
 def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
     redis = _FakeRedis()
@@ -34,61 +41,92 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
     return redis
 
 
-def _run(**kwargs):
-    defaults = {"content": "Và đây là Lan Trinh trong Án Mạng Xém Hoàn Hảo", "movie": MOVIE,
-                "keyword": "Án Mạng Karaoke", "platform": "threads",
-                "other_titles": ["Án Mạng Karaoke", "Án Mạng Xém Hoàn Hảo"]}  # fmt: skip
-    return asyncio.run(post_relevance.classify_post_relevance_kira(**{**defaults, **kwargs}))
+def _classify(content: str = "Và đây là Lan Trinh trong Án Mạng Xém Hoàn Hảo", **kwargs):
+    defaults = {"content": content, "movie": MOVIE, "keyword": "Án Mạng Karaoke", "platform": "threads", "other_titles": OTHER}
+    return post_relevance.classify_post_relevance_kira(**{**defaults, **kwargs})
 
 
-def _reply(monkeypatch: pytest.MonkeyPatch, reply: str | Exception, seen: list | None = None) -> None:
+def _reply_with(monkeypatch: pytest.MonkeyPatch, answer, seen: list | None = None) -> None:
+    """answer: an Exception, a raw string, or fn(post_count) -> results list."""
+
     async def fake_call_kira(**kwargs):
         if seen is not None:
             seen.append(kwargs)
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, str):
+            return answer
+        count = len(re.findall(r"^\[\d+\] TARGET FILM", kwargs["user_prompt"], flags=re.MULTILINE))
+        return json.dumps({"results": answer(count)})
 
     monkeypatch.setattr(post_relevance, "call_kira", fake_call_kira)
 
 
-def test_maps_kira_labels(monkeypatch, fake_redis) -> None:
+def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
     seen: list = []
-    _reply(monkeypatch, json.dumps({"classification": "irrelevant", "score": 0.05, "reason": "different film"}), seen)
-    result = _run()
-    assert result == {"label": "not_related", "confidence": 0.05, "reason": "different film"}
+    labels = ["irrelevant", "relevant", "uncertain"]
+    _reply_with(monkeypatch, lambda n: [{"i": i + 1, "classification": labels[i], "score": 0.1 * (i + 1), "reason": "r"} for i in range(n)], seen)
+
+    async def run():
+        return await asyncio.gather(*(_classify(f"bài {n}") for n in range(3)))
+
+    results = asyncio.run(run())
+    assert [r["label"] for r in results] == ["not_related", "related", "uncertain"]
+    assert len(seen) == 1
     call = seen[0]
     assert call["task"] == "post_relevance"
     assert "force" not in call  # respects the dashboard's Kira on/off toggle
-    assert "TARGET FILM: Án Mạng Karaoke" in call["user_prompt"]
-    assert "OTHER TRACKED FILMS (not the target): Án Mạng Xém Hoàn Hảo" in call["user_prompt"]
+    assert "[1] TARGET FILM: Án Mạng Karaoke" in call["user_prompt"]
+    assert "OTHER TRACKED FILMS (a post about one of these is not about its target): Án Mạng Xém Hoàn Hảo" in call["user_prompt"]
+    assert '"results"' in call["user_prompt"]
 
 
-def test_daily_cap_stops_calls(monkeypatch, fake_redis) -> None:
-    monkeypatch.setattr(settings, "kira_post_relevance_daily_cap", 2)
+def test_batches_split_at_batch_size(monkeypatch, fake_redis) -> None:
+    monkeypatch.setattr(post_relevance, "BATCH_SIZE", 2)
     seen: list = []
-    _reply(monkeypatch, json.dumps({"classification": "relevant", "score": 0.9}), seen)
-    results = [_run() for _ in range(3)]
-    assert [r["label"] if r else None for r in results] == ["related", "related", None]
-    assert len(seen) == 2
+    _reply_with(monkeypatch, lambda n: [{"i": i + 1, "classification": "relevant", "score": 0.9} for i in range(n)], seen)
+
+    async def run():
+        return await asyncio.gather(*(_classify(f"bài {n}") for n in range(5)))
+
+    assert all(r["label"] == "related" for r in asyncio.run(run()))
+    assert len(seen) == 3  # 2 + 2 + 1
+
+
+def test_missing_entry_fails_open_for_that_post_only(monkeypatch, fake_redis) -> None:
+    _reply_with(monkeypatch, lambda n: [{"i": 2, "classification": "relevant", "score": 0.8}, {"i": 1, "classification": "maybe"}])
+
+    async def run():
+        return await asyncio.gather(_classify("a"), _classify("b"))
+
+    first, second = asyncio.run(run())
+    assert first is None and second["label"] == "related"
+
+
+def test_daily_cap_counts_posts(monkeypatch, fake_redis) -> None:
+    monkeypatch.setattr(settings, "kira_post_relevance_daily_cap", 2)
+    _reply_with(monkeypatch, lambda n: [{"i": i + 1, "classification": "relevant", "score": 0.9} for i in range(n)])
+
+    async def run():
+        return await asyncio.gather(*(_classify(f"bài {n}") for n in range(3)))
+
+    assert sum(result is None for result in asyncio.run(run())) == 1
 
 
 def test_cap_zero_disables(monkeypatch, fake_redis) -> None:
     monkeypatch.setattr(settings, "kira_post_relevance_daily_cap", 0)
     seen: list = []
-    _reply(monkeypatch, "{}", seen)
-    assert _run() is None and seen == []
+    _reply_with(monkeypatch, "{}", seen)
+    assert asyncio.run(_classify()) is None and seen == []
 
 
-@pytest.mark.parametrize(
-    "reply", [RuntimeError("kira_temporarily_disabled"), "not json", '{"classification": "maybe"}']
-)
-def test_failures_fail_open(monkeypatch, fake_redis, reply) -> None:
-    _reply(monkeypatch, reply)
-    assert _run() is None
+@pytest.mark.parametrize("answer", [RuntimeError("kira_temporarily_disabled"), "not json", '{"classification": "relevant"}'])
+def test_failures_fail_open(monkeypatch, fake_redis, answer) -> None:
+    _reply_with(monkeypatch, answer)
+    assert asyncio.run(_classify()) is None
 
 
 def test_empty_content_skips_call(monkeypatch, fake_redis) -> None:
     seen: list = []
-    _reply(monkeypatch, "{}", seen)
-    assert _run(content="   ") is None and seen == []
+    _reply_with(monkeypatch, "{}", seen)
+    assert asyncio.run(_classify("   ")) is None and seen == []

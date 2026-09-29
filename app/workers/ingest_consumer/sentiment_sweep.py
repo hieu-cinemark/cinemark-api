@@ -88,7 +88,9 @@ async def classify_pending(
         raise RuntimeError("comment_sentiment_select_failed")
     rows = [row for row in rows if row["id"] not in exclude][:limit]
 
-    stats: Counter[str] = Counter(selected=len(rows))
+    # classified set up front: with no rows the loop never touches it, and
+    # the returned plain dict (unlike Counter) raises on a missing key.
+    stats: Counter[str] = Counter(selected=len(rows), classified=0)
     failed_ids: list[str] = []
     for start in range(0, len(rows), BATCH_SIZE):
         batch = rows[start : start + BATCH_SIZE]

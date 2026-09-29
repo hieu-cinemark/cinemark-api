@@ -68,7 +68,10 @@ CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
 # topic's entire retained backlog through Kira/D1 the moment this ships.
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
-_POST_MESSAGE_CONCURRENCY = 8
+# Each in-flight post mostly waits on its Kira verdict, which is batched
+# (app/kira/post_relevance.py: up to BATCH_SIZE posts per call, 3 calls in
+# flight) - enough concurrent posts to fill those batches.
+_POST_MESSAGE_CONCURRENCY = 24
 # Comments make no AI call inline (sentiment is sentiment_sweep.py's job) -
 # each one is just a mapper call + one D1 write, cheap enough that a
 # higher concurrency actually gets used.

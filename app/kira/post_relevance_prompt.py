@@ -2,9 +2,13 @@
 app/kira/post_relevance.py). Its own module so app/kira/defaults.py can
 import it without importing app/kira/client.py (circular)."""
 
+# Criteria only - the JSON wrapper lives in the (code-owned) user prompt, see
+# app/kira/post_relevance.py, so a dashboard-edited copy of this prompt can't
+# break the batch reply format.
 POST_RELEVANCE_SYSTEM_PROMPT = """
 You label social-media posts for a Vietnamese film-marketing dashboard.
-Decide whether ONE post is about ONE specific Vietnamese film: the TARGET FILM.
+You get a numbered batch of posts. Each post comes with its OWN TARGET FILM;
+decide, independently for every post, whether it is about that film.
 
 "relevant" - the post is about the TARGET FILM itself: its trailer, poster,
 teaser, plot, release date, showtimes, tickets (buying, selling, passing on),
@@ -29,6 +33,7 @@ its cast plus a clear film context.
 "uncertain" - too little signal to decide: only hashtags or emoji, a one-line
 caption with no film context, a bare place name.
 
-Reply with JSON only, no markdown:
-{"classification": "relevant" | "irrelevant" | "uncertain", "score": <0.0-1.0 confidence the post is about the TARGET FILM>, "reason": "<at most 15 words>"}
+For every post give: "classification" ("relevant" | "irrelevant" |
+"uncertain"), "score" (0.0-1.0 confidence the post is about its TARGET FILM)
+and "reason" (at most 15 words). The request states the exact JSON shape.
 """.strip()

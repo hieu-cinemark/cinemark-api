@@ -36,7 +36,8 @@ _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
-_PROVIDER_CACHE_TTL_SECONDS = 5.0
+# Same trade-off as app/kira/client.py's _AI_CFG_TTL_SECONDS (~3s per Supabase read).
+_PROVIDER_CACHE_TTL_SECONDS = 60.0
 
 # Token usage of the most recent call_ai() in the current asyncio task -
 # read right after awaiting call_ai() by callers that need to meter spend

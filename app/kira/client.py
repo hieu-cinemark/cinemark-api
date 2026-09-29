@@ -25,7 +25,10 @@ __all__ = [
 logger = get_logger(__name__)
 
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
-_AI_CFG_TTL_SECONDS = 5.0
+# Every read opens a fresh Supabase connection (~3s), so a short TTL made
+# almost every Kira/Bee call wait on it. The API process invalidates this on
+# save; other processes (the ingest consumer) pick changes up within a minute.
+_AI_CFG_TTL_SECONDS = 60.0
 
 
 def _normalize_prompts(raw: object) -> dict[str, str]:
