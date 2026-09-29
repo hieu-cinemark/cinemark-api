@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # Comment sentiment is Bee (app/kira/sentiment.py) - no local model.
     kira_post_relevance_daily_cap: int = 9000
 
+    # R2 data lake over the S3 API (app/services/lake.py) - a token scoped to
+    # the lake bucket only. Optional: only the lake writer and the lake
+    # backfill need them, and the writer refuses to start without them.
+    r2_endpoint: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    lake_bucket: str = "cinemark-lake"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]

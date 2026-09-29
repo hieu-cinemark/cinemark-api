@@ -46,6 +46,8 @@ CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("tiktok", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.tiktok"),
     ("ingest_posts", "raw_posts", "cinemark-api.ingest.posts"),
     ("ingest_comments", "raw_comments", "cinemark-api.ingest.comments"),
+    ("lake_posts", "raw_posts", "cinemark-api.lake"),
+    ("lake_comments", "raw_comments", "cinemark-api.lake"),
 )
 
 # producer.start() only raises KafkaError for a *refused* connection - a
@@ -384,3 +386,17 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
         await consumer.stop()
         await admin.close()
     return results
+
+
+INGEST_DECISIONS_TOPIC = "ingest_decisions"
+
+
+async def publish_ingest_decision(decision: dict[str, Any]) -> None:
+    """Fire-and-forget: one event per post the ingest consumer keeps or drops,
+    archived by the lake writer (replaces the D1 dropped_posts table)."""
+    if _producer is None:
+        return
+    try:
+        await _producer.send(INGEST_DECISIONS_TOPIC, value=decision, key=str(decision.get("post_id") or ""))
+    except KafkaError as exc:
+        logger.warning("ingest_decision_publish_failed", error=exc)

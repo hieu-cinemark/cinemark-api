@@ -1,0 +1,43 @@
+"""R2 data lake client (S3 API). Used by app/workers/lake_writer and the
+backfill scripts - the Worker-side MEDIA_BUCKET binding is a different
+bucket for user uploads."""
+
+from __future__ import annotations
+
+import aioboto3
+
+from app.core.config import settings
+
+_session = aioboto3.Session()
+
+
+def lake_configured() -> bool:
+    return bool(
+        settings.r2_endpoint and settings.r2_access_key_id and settings.r2_secret_access_key and settings.lake_bucket
+    )
+
+
+def _client():
+    return _session.client(
+        "s3",
+        endpoint_url=settings.r2_endpoint,
+        aws_access_key_id=settings.r2_access_key_id,
+        aws_secret_access_key=settings.r2_secret_access_key,
+        region_name="auto",
+    )
+
+
+async def put_object(key: str, body: bytes, content_type: str = "application/gzip") -> None:
+    # No ContentEncoding=gzip on purpose: HTTP clients (DuckDB included) would
+    # transparently gunzip it, then choke on reading the .gz a second time.
+    async with _client() as s3:
+        await s3.put_object(Bucket=settings.lake_bucket, Key=key, Body=body, ContentType=content_type)
+
+
+async def list_keys(prefix: str) -> list[str]:
+    keys: list[str] = []
+    async with _client() as s3:
+        paginator = s3.get_paginator("list_objects_v2")
+        async for page in paginator.paginate(Bucket=settings.lake_bucket, Prefix=prefix):
+            keys.extend(item["Key"] for item in page.get("Contents", []))
+    return keys

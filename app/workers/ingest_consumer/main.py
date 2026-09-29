@@ -29,6 +29,7 @@ import asyncio
 import json
 import time
 from collections import defaultdict, deque
+from datetime import UTC, datetime
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, TopicPartition
@@ -46,6 +47,7 @@ from app.services.d1 import (
     persist_dropped_post,
     persist_post,
 )
+from app.services.kafka import publish_ingest_decision, start_kafka_producer, stop_kafka_producer
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.relevance_rules import foreign_language_reason, mentions_other_film
@@ -64,8 +66,9 @@ CONSUMER_GROUP_POSTS = "cinemark-api.ingest.posts"
 CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
 # The single shared group these two replaced (see module docstring). Neither
 # new group id has any committed offset on its first-ever run, so without
-# migrating from here, auto_offset_reset="earliest" below would replay each
-# topic's entire retained backlog through Kira/D1 the moment this ships.
+# migrating from here they would start at the end of each topic
+# (auto_offset_reset="latest" below) and skip whatever the old group hadn't
+# processed yet.
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
 # Each in-flight post mostly waits on its Kira verdict, which is batched
@@ -143,29 +146,52 @@ async def _note_drop(platform: str, reason: str, **context: Any) -> None:
         )
 
 
+async def _decide(*, platform: str | None, post_id: Any, keyword_id: Any, decision: str, reason: str, **extra: Any) -> None:
+    """One event per post on the ingest_decisions topic - archived to the R2
+    lake by app/workers/lake_writer, so every keep/drop and why is on record."""
+    await publish_ingest_decision(
+        {
+            "post_id": post_id,
+            "platform": platform,
+            "keyword_id": keyword_id,
+            "decision": decision,
+            "reason": reason,
+            "decided_at": datetime.now(UTC).isoformat(),
+            **extra,
+        }
+    )
+
+
+async def _drop(*, platform: str | None, post_id: Any, reason: str, payload: dict[str, Any], keyword_id: Any = None, **extra: Any) -> None:
+    """Archives a dropped post in D1 (dropped_posts, still the replay source)
+    and records the decision for the lake."""
+    await persist_dropped_post(platform=platform, reason=reason, payload=payload, keyword_id=keyword_id)
+    await _decide(platform=platform, post_id=post_id, keyword_id=keyword_id, decision="dropped", reason=reason, **extra)
+
+
 async def handle_post(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
     post_id = payload.get("post_id")
-    
+
     mapper = get_post_mapper(platform)
     if mapper is None:
         logger.warning("post_unregistered_platform", platform=platform, post_id=post_id)
         await _note_drop(platform, "mapper", post_id=post_id)
-        await persist_dropped_post(platform=platform, reason="mapper", payload=payload)
+        await _drop(platform=platform, post_id=post_id, reason="mapper", payload=payload)
         return
 
     keyword_id = payload.get("keyword_id")
     if not keyword_id:
         logger.warning("post_missing_keyword_id", platform=platform, post_id=post_id)
         await _note_drop(platform, "missing_keyword_id", post_id=post_id)
-        await persist_dropped_post(platform=platform, reason="missing_keyword_id", payload=payload)
+        await _drop(platform=platform, post_id=post_id, reason="missing_keyword_id", payload=payload)
         return
 
     keyword = await get_keyword(keyword_id, platform=platform)
     if keyword is None:
         logger.warning("post_unknown_keyword_id", platform=platform, keyword_id=keyword_id, post_id=post_id)
         await _note_drop(platform, "unknown_keyword_id", post_id=post_id, keyword_id=keyword_id)
-        await persist_dropped_post(platform=platform, reason="unknown_keyword_id", payload=payload, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="unknown_keyword_id", payload=payload, keyword_id=keyword_id)
         return
 
     draft = mapper(payload)
@@ -177,7 +203,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     foreign = foreign_language_reason(draft.get("content"), payload.get("text_language"))
     if foreign:
         logger.info("post_dropped_foreign_language", platform=platform, post_id=post_id, keyword_id=keyword_id, rule=foreign)
-        await persist_dropped_post(platform=platform, reason="non_vietnamese", payload=payload, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", payload=payload, keyword_id=keyword_id, rule=foreign)
         return
 
     # Kira classifies every post that survived the rules. The keyword
@@ -196,7 +222,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
             # Names another tracked film and never this one - no need to pay
             # for a Kira call to confirm it.
             logger.info("post_dropped_other_film", platform=platform, post_id=post_id, keyword_id=keyword_id, other_film=other_film)
-            await persist_dropped_post(platform=platform, reason="other_film", payload=payload, keyword_id=keyword_id)
+            await _drop(
+                platform=platform, post_id=post_id, reason="other_film", payload=payload, keyword_id=keyword_id, other_film=other_film
+            )
             return
 
     movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
@@ -224,7 +252,15 @@ async def handle_post(payload: dict[str, Any]) -> None:
                 confidence=relevance_confidence,
                 reason=verdict["reason"],
             )
-            await persist_dropped_post(platform=platform, reason="kira_irrelevant", payload=payload, keyword_id=keyword_id)
+            await _drop(
+                platform=platform,
+                post_id=post_id,
+                reason="kira_irrelevant",
+                payload=payload,
+                keyword_id=keyword_id,
+                confidence=relevance_confidence,
+                kira_reason=verdict["reason"],
+            )
             return
         # "uncertain" (e.g. hashtag-only captions): ai_relevant stays None,
         # so persist_post falls back to the keyword substring check, and the
@@ -241,10 +277,20 @@ async def handle_post(payload: dict[str, Any]) -> None:
     )
     if not ok:
         await _note_drop(platform, "d1_write_failed", post_id=post_id)
-        await persist_dropped_post(platform=platform, reason="d1_write_failed", payload=payload, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", payload=payload, keyword_id=keyword_id)
         return
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
-
+    # kira_related / kira_uncertain, or no_verdict when Kira sat out (off,
+    # over the daily cap, failed) and the keyword check decided alone.
+    await _decide(
+        platform=platform,
+        post_id=post_id,
+        keyword_id=keyword_id,
+        decision="kept",
+        reason=f"kira_{relevance_label}" if relevance_label else "no_verdict",
+        confidence=relevance_confidence,
+        has_keyword=has_keyword,
+    )
 
 async def handle_comment(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
@@ -391,7 +437,12 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
         bootstrap_servers=settings.kafka_bootstrap_servers,
         group_id=group_id,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-        auto_offset_reset="earliest",
+        # A group with no usable committed offset starts at the END, not the
+        # start: on 2026-09-29 a Kafka restore made both groups lose their
+        # position and "earliest" re-queued ~264k already-ingested messages
+        # through Kira and D1. Skipping is the cheaper failure - if anything
+        # needs replaying, reset the group's offset by hand (or read the lake).
+        auto_offset_reset="latest",
         # Manual, per-message commit (see _OffsetTracker) instead of the
         # default timer-based auto-commit, which is decoupled from whether
         # a message's own concurrent task has actually finished.
@@ -444,6 +495,15 @@ async def run() -> None:
     cancelled and the process exits non-zero so systemd's Restart=on-
     failure brings both back, rather than leaving one topic's ingestion
     silently stopped forever while the process still looks "up"."""
+    # Before the loops: decisions published while it's down are silently skipped.
+    await start_kafka_producer()
+    try:
+        await _run_loops()
+    finally:
+        await stop_kafka_producer()
+
+
+async def _run_loops() -> None:
     loops = {
         asyncio.create_task(_run_topic_consumer(RAW_POSTS_TOPIC, CONSUMER_GROUP_POSTS, _POST_MESSAGE_CONCURRENCY), name="posts"),
         asyncio.create_task(
