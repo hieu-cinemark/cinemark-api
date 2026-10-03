@@ -5,12 +5,10 @@ client, retry/backoff and concurrency budget live there (shared shape
 with app/ai/kira.py, but Bee gets its own semaphore keyed separately, so a Bee
 outage/rate-limit can't starve Kira or vice versa).
 
-Kira still owns relevance*/import-parsing/general tasks; Bee owns comment
-topic-clustering + report narrative (app/ai/tasks/report.py) and is the
-comment sentiment classifier (app/ai/tasks/sentiment.py).
-
-* per-post relevance at ingest time is Kira's job - see
-app/ai/tasks/post_relevance.py.
+Bee only writes the social-topic reports (topic clustering + narrative,
+app/ai/tasks/report.py), with Kira as the fallback when a Bee call fails
+or comes back unusable. Every classifier - post relevance, comment
+sentiment, import parsing - runs on Kira.
 """
 
 from __future__ import annotations

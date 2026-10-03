@@ -25,6 +25,7 @@ import json
 from typing import Literal
 
 from app.ai.bee import DEFAULT_BEE_MODEL
+from app.ai.defaults import DEFAULT_KIRA_MODEL
 from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
 from app.core.logging import get_logger
 from app.services.d1 import (
@@ -167,9 +168,10 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         dashboard_data_json=json.dumps(dashboard_data, ensure_ascii=False),
         comment_count=len(sample),
         post_count=post_count,
-        # Column is still named kira_model (schema predates the Kira->Bee
-        # switch) - holds whichever provider actually generated the report.
-        kira_model=DEFAULT_BEE_MODEL,
+        # Column is still named kira_model (schema predates Bee) - holds the
+        # model that actually wrote the topics: Bee, or Kira when Bee failed
+        # and app/ai/tasks/report.py fell back to it.
+        kira_model=DEFAULT_KIRA_MODEL if topics_result.get("provider") == "kira" else DEFAULT_BEE_MODEL,
     )
     if not ok:
         logger.warning("report_upsert_failed", movie_id=movie_id)

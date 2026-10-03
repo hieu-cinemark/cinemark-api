@@ -68,6 +68,10 @@ FIELD RULES:
 other value, no combination, no explanation text mixed in.
 """
 
+# The output format is repeated here, in the user prompt, on purpose: the
+# system prompt can be replaced from the dashboard (ai_settings prompts), and
+# an override written for the old one-comment-per-call format must not break
+# the batch parser.
 SENTIMENT_DATA_PROMPT = """
 Classify the sentiment of each of the following {count} comments, left under
 movie-related posts.
@@ -75,5 +79,8 @@ movie-related posts.
 COMMENTS:
 {comments}
 
-Return ONLY valid JSON with exactly {count} entries in "results".
+Return ONLY valid JSON with exactly {count} entries in "results", one per
+comment, where "i" is the comment's number above:
+
+{{"results": [{{"i": 1, "sentiment": "positive"}}, {{"i": 2, "sentiment": "neutral"}}]}}
 """
