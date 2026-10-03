@@ -20,7 +20,7 @@ async def _main(dry_run: bool) -> dict | None:
     if dry_run:
         cfg = await resolve_cleanup_settings()
         return await purge_irrelevant_posts(dry_run=True, grace_hours=cfg["grace_hours"])
-    return await run_purge(triggered_by="script")
+    return await run_purge(triggered_by="manual")
 
 
 def main() -> None:
