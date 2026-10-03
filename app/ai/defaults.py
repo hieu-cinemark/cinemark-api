@@ -1,4 +1,5 @@
-"""Code-default Kira model + per-task system prompts. Settings can override
+"""Code-default per-task system prompts (model names live only in Supabase's
+ai_providers rows). Settings can override
 these (see app/services/platform_config_db.py's ai_settings row); an empty
 stored prompt falls back here so a wiped textarea never ships a blank
 system message."""
