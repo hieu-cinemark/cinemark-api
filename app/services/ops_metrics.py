@@ -46,11 +46,12 @@ async def _queue_counts() -> tuple[int, int]:
     running = 0
     queued = 0
     for platform in PLATFORMS:
-        if await is_platform_draining(platform):
-            continue
+        # Same rule as task_queue.snapshot: running jobs always count, and
+        # while draining only bypass_drain items are still really queued.
+        draining = await is_platform_draining(platform)
         if await get_running_job(platform):
             running += 1
-        queued += len(await list_pending(platform))
+        queued += sum(1 for item in await list_pending(platform) if not draining or item.get("bypass_drain"))
     return running, queued
 
 

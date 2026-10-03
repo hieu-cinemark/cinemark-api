@@ -46,6 +46,7 @@ def task_from_request(request: dict[str, Any]) -> dict[str, Any]:
         "label": task_label(request),
         "keyword_id": request.get("keyword_id"),
         "post_id": request.get("post_id"),
+        "bypass_drain": bool(request.get("bypass_drain")),
         "queued_at": int(time.time()),
         "status": "queued",
     }
@@ -120,8 +121,9 @@ async def snapshot() -> dict[str, list[dict[str, Any]]]:
     running: list[dict[str, Any]] = []
     queued: list[dict[str, Any]] = []
     for platform in PLATFORMS:
-        if await is_platform_draining(platform):
-            continue
+        # A running job is shown even while the platform drains after Stop:
+        # targeted triggers (nurture, comments) keep running through it.
+        draining = await is_platform_draining(platform)
         job = await get_running_job(platform)
         if job:
             running.append(
@@ -142,5 +144,7 @@ async def snapshot() -> dict[str, list[dict[str, Any]]]:
                     "status": "running",
                 }
             )
-        queued.extend(await list_pending(platform))
+        # Stop cleared the list; anything queued since then without
+        # bypass_drain will be skipped, so it isn't shown as waiting.
+        queued.extend(item for item in await list_pending(platform) if not draining or item.get("bypass_drain"))
     return {"running": running, "queued": queued, "history": await list_history()}

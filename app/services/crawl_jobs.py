@@ -9,6 +9,7 @@ consumer sets before a crawl and polls for while one is running."""
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
@@ -38,8 +39,9 @@ async def get_running_job(platform: str) -> dict[str, Any] | None:
 
 async def is_platform_draining(platform: str) -> bool:
     """True after Stop until TTL expires or a new Run clears the flags.
-    The subprocess may still be shutting down; the dashboard treats the
-    queue as already empty."""
+    Queued bulk work is skipped while this holds; targeted triggers
+    (bypass_drain) clicked after the Stop still run, and so does whatever
+    job is still finishing - the dashboard keeps showing both."""
     client = get_redis_client()
     return bool(await client.exists(f"{REDIS_KEY_PREFIX}platform_drain:{platform}"))
 
@@ -57,7 +59,9 @@ async def request_stop(platform: str) -> bool:
     client = get_redis_client()
     await client.set(f"{REDIS_KEY_PREFIX}bfs_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
     await client.set(f"{REDIS_KEY_PREFIX}comments_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
-    await client.set(f"{REDIS_KEY_PREFIX}platform_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
+    # The value is the Stop time: spider-hub skips bypass_drain messages
+    # published before it (see its crawl_request_consumer._handle_request).
+    await client.set(f"{REDIS_KEY_PREFIX}platform_drain:{platform}", str(time.time()), ex=BFS_DRAIN_TTL_SECONDS)
     await client.set(
         f"{REDIS_KEY_PREFIX}crawl_job_cancel_platform:{platform}",
         "1",

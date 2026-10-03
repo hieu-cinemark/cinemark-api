@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
@@ -252,6 +253,10 @@ async def publish_action_request(
     value: dict[str, Any] = {"type": action, "platform": platform, **payload}
     if action not in ("refresh_token", "cookie_import"):
         value["bypass_drain"] = True if bypass_drain is None else bypass_drain
+        # Lets the consumer drop a bypass_drain message that was already
+        # queued when Stop was clicked (crawl_jobs.request_stop stores the
+        # click time) while still running ones clicked after it.
+        value["published_at"] = time.time()
     try:
         await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{action}:{platform}:{key}", value=value)
     except KafkaError as exc:

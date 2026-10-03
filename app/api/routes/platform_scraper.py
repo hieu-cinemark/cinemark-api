@@ -15,12 +15,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query
 
+from app.clients.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 from app.core.errors import NotFoundError, UpstreamError
 from app.core.logging import get_logger
-from app.schemas.scraper import JobStatus, RunCommentsResponse, RunScraperRequest, RunScraperResponse, StopScraperResponse
-from app.services.crawl_jobs import cancel_job, get_running_job, is_platform_draining, request_stop
+from app.schemas.scraper import (
+    JobStatus,
+    RunCommentsResponse,
+    RunScraperRequest,
+    RunScraperResponse,
+    StopScraperResponse,
+)
+from app.services.crawl_jobs import cancel_job, get_running_job, request_stop
 from app.services.d1 import get_enabled_keywords, get_keyword, get_post
-from app.clients.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 
 logger = get_logger(__name__)
 
@@ -68,8 +74,8 @@ def build_run_route(router: APIRouter, platform: str) -> None:
 
     @router.get("/job-status", response_model=JobStatus)
     async def job_status() -> JobStatus:
-        if await is_platform_draining(platform):
-            return JobStatus(running=False)
+        # Not hidden while draining - a targeted trigger (nurture, comments)
+        # keeps running after Stop and must stay visible and stoppable.
         job = await get_running_job(platform)
         if job is None:
             return JobStatus(running=False)
