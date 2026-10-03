@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from app.ai.kira import call_kira, parse_json_response
 from app.core.logging import get_logger
-from app.kira.client import call_kira, parse_json_response
 
 logger = get_logger(__name__)
 

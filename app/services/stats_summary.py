@@ -19,9 +19,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.telegram import send_telegram_message
 from app.core.logging import get_logger
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.services.telegram import send_telegram_message
 
 logger = get_logger(__name__)
 

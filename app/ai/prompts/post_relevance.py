@@ -1,9 +1,9 @@
 """Default system prompt for the "post_relevance" task (see
-app/kira/post_relevance.py). Its own module so app/kira/defaults.py can
-import it without importing app/kira/client.py (circular)."""
+app/ai/tasks/post_relevance.py). Its own module so app/ai/defaults.py can
+import it without importing app/ai/kira.py (circular)."""
 
 # Criteria only - the JSON wrapper lives in the (code-owned) user prompt, see
-# app/kira/post_relevance.py, so a dashboard-edited copy of this prompt can't
+# app/ai/tasks/post_relevance.py, so a dashboard-edited copy of this prompt can't
 # break the batch reply format.
 POST_RELEVANCE_SYSTEM_PROMPT = """
 You label social-media posts for a Vietnamese film-marketing dashboard.

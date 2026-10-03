@@ -6,7 +6,7 @@ button) and the daily scheduler script publish through the same function,
 so a manual trigger and a scheduled one are indistinguishable downstream -
 one code path, one contract.
 
-Mirrors spider-hub's own social_crawler/services/kafka.py: fire-and-forget,
+Mirrors spider-hub's own social_crawler/clients/kafka.py: fire-and-forget,
 never blocks/fails the request over a Kafka outage - a crawl trigger that
 can't be published just doesn't run, logged, not a 500."""
 
@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -30,6 +30,17 @@ from app.services.task_queue import enqueue_published
 logger = get_logger(__name__)
 
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
+
+# Auto-login requests get their own topic rather than reusing
+# crawl_requests - spider-hub's auto_login/consumer.py has totally
+# different dispatch logic (one message = one Playwright relogin
+# attempt, not a "scrapy crawl" subprocess) and is owned by a
+# separate consumer group with separate concurrency settings. Reusing
+# crawl_requests would force auto_login/consumer.py to filter out the
+# much noisier crawl stream just to keep up. See
+# app/services/auto_login.py:publish_auto_login_request for the
+# producer side.
+AUTO_LOGIN_REQUESTS_TOPIC = "auto_login_requests"
 
 _producer: AIOKafkaProducer | None = None
 
@@ -48,6 +59,11 @@ CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("ingest_comments", "raw_comments", "cinemark-api.ingest.comments"),
     ("lake_posts", "raw_posts", "cinemark-api.lake"),
     ("lake_comments", "raw_comments", "cinemark-api.lake"),
+    # Auto-login requests have their own consumer group in spider-hub's
+    # auto_login/consumer.py - one per platform so a Facebook relogin
+    # backlog doesn't head-of-line-block Threads (and vice versa).
+    ("auto_login_facebook", AUTO_LOGIN_REQUESTS_TOPIC, "spider-hub.auto-login.facebook"),
+    ("auto_login_threads", AUTO_LOGIN_REQUESTS_TOPIC, "spider-hub.auto-login.threads"),
 )
 
 # producer.start() only raises KafkaError for a *refused* connection - a
@@ -244,6 +260,51 @@ async def publish_action_request(
     await enqueue_published(value)
     return True
 
+
+async def publish_auto_login_request(platform: str, account_id: str, *, dry_run: bool = False) -> bool:
+    """Publishes one auto-login request to AUTO_LOGIN_REQUESTS_TOPIC.
+    spider-hub's auto_login/consumer.py reads it and runs
+    social_crawler.auto_login's flow for exactly that account_id.
+
+    One message per account (rather than batching them) so a Kafka outage
+    mid-tick fails individual accounts instead of taking out an entire
+    platform's worth - and because each account triggers its own browser
+    anyway, the per-account publish overhead is negligible next to the
+    Playwright cost. Keys are account_id-typed so spider-hub can
+    coalesce repeat publishes of the same account within its consumer
+    if it ever needs to.
+
+    `dry_run=true` is honored by spider-hub's consumer: it logs the
+    "would have relogged_in this account" line and stamps nothing. Lets
+    an operator sanity-check the candidate list without any real
+    login firing - same idea as
+    scripts.relogin_facebook_accounts but driven from the dashboard
+    instead of a shell script.
+
+    Returns True on a successful publish, False on a Kafka outage -
+    the caller (auto_login.run_auto_login_tick) decides what to do
+    with a False (counts toward kafka_publish_failed, logged as a
+    warning, the run keeps going for the rest of the platform)."""
+    if _producer is None:
+        logger.warning("kafka_producer_not_started", platform=platform, kind="auto_login")
+        return False
+    key = f"{platform}:{account_id}"
+    value: dict[str, Any] = {
+        "type": "relogin",
+        "platform": platform,
+        "account_id": account_id,
+        "dry_run": dry_run,
+        "run_id": str(uuid.uuid4()),
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await _producer.send_and_wait(AUTO_LOGIN_REQUESTS_TOPIC, key=key, value=value)
+    except KafkaError as exc:
+        logger.warning("auto_login_request_publish_failed", error=str(exc), platform=platform, account_id=account_id)
+        return False
+    return True
+
+
 async def publish_tiktok_identity_reset(account_id: int) -> bool:
     """TikTok has no browser-bootstrap query/password flow to re-run like
     Facebook/Threads (see spider-hub's tiktok/auth/bootstrap.py) - a "reset
@@ -393,7 +454,9 @@ INGEST_DECISIONS_TOPIC = "ingest_decisions"
 
 async def publish_ingest_decision(decision: dict[str, Any]) -> None:
     """Fire-and-forget: one event per post the ingest consumer keeps or drops,
-    archived by the lake writer (replaces the D1 dropped_posts table)."""
+    archived by the lake writer (app/workers/lake_writer/main.py) under
+    bronze/entity=decisions/. Sole source of truth for any drop decision -
+    the old dropped_posts D1 table is gone."""
     if _producer is None:
         return
     try:

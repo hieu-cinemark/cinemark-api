@@ -79,10 +79,13 @@ def _run_local_query(sql: str, params: list[Any] | None) -> list[dict[str, Any]]
         # D1's HTTP API returns [] (not an error) for a successful INSERT/UPDATE/
         # DELETE with no rows to return - mirrored here so callers' `is None`
         # (failure) vs `[]`/rows (success) checks behave identically in both modes.
-        if cursor.description is None:
+        rows = [] if cursor.description is None else [dict(row) for row in cursor.fetchall()]
+        # Commit whenever the statement opened a write transaction - including
+        # DML that returns rows (DELETE/UPDATE ... RETURNING), which would
+        # otherwise hold the write lock and roll back when the process exits.
+        if conn.in_transaction:
             conn.commit()
-            return []
-        return [dict(row) for row in cursor.fetchall()]
+        return rows
 
 
 def _configured() -> bool:
@@ -107,17 +110,55 @@ async def _get_http_client() -> httpx.AsyncClient:
         return _http_client
 
 
+# Cloudflare error code 7429 = "D1 DB storage operation exceeded timeout
+# which caused object to be reset". The HTTP API surfaces this as a 429
+# with a JSON body whose `errors[0].code` is 7429; the storage object
+# stays in this 429-rejecting state for roughly 30-60s while Cloudflare
+# rebuilds the underlying handle. A naive caller (current behavior)
+# just returns None on the first 429 and the dashboard / scheduler
+# move on, but a scheduled job firing inside that window will keep
+# failing one request after another for the entire backoff duration -
+# exactly the cascade pattern that surfaced as
+# scheduled_crawl_firing -> d1_request_failed (429) in the operator's
+# log. Retrying with exponential backoff up to ~60s covers the full
+# backoff window without spinning the event loop longer than a normal
+# dashboard request should ever wait.
+_D1_STORAGE_BACKOFF_MAX_RETRIES = 4
+_D1_STORAGE_BACKOFF_BASE_SECONDS = 2.0
+_D1_STORAGE_BACKOFF_CAP_SECONDS = 30.0
+
+
+def _is_storage_backoff_response(status_code: int, body_text: str) -> bool:
+    """True if this 429 is the recoverable Cloudflare storage-backoff
+    case (code 7429) rather than a permanent auth/quota error. Matches
+    on the error code substring - the body shape is
+    '{"success":false,"errors":[{"code":7429,"message":"..."}]}' and
+    we don't want to parse the JSON just for this check."""
+    if status_code != 429:
+        return False
+    return "7429" in body_text
+
+
 async def d1_query(
     sql: str,
     params: list[Any] | None = None,
     *,
     quiet: bool = False,
     timeout: float = 10.0,
+    max_retries: int = _D1_STORAGE_BACKOFF_MAX_RETRIES,
 ) -> list[dict[str, Any]] | None:
     """Runs one SQL statement against the configured D1 database. Returns
     the result rows, or None if D1 isn't configured or the call failed.
     quiet=True skips failure logs (idempotent migrations that expect
-    'duplicate column' on already-migrated DBs)."""
+    'duplicate column' on already-migrated DBs).
+
+    On Cloudflare's D1 storage-backoff 429 (error code 7429), retries
+    with exponential backoff up to max_retries times - see
+    _D1_STORAGE_BACKOFF_MAX_RETRIES. The whole retry sequence is
+    bounded by ~60s of cumulative sleep so a single dashboard request
+    can't hang on a permanently-broken database; if every retry 429s
+    the function still returns None with one final warning log so the
+    caller can decide what to do."""
     if not _configured():
         return None
 
@@ -143,37 +184,67 @@ async def d1_query(
     )
     headers = {"Authorization": f"Bearer {settings.cloudflare_api_token}"}
 
-    try:
-        async with _remote_sem:
-            client = await _get_http_client()
-            resp = await client.post(
-                url,
-                headers=headers,
-                json={"sql": sql, "params": params or []},
-                timeout=timeout,
-            )
-    except httpx.HTTPError as exc:
-        if not quiet:
+    attempt = 0
+    while True:
+        try:
+            async with _remote_sem:
+                client = await _get_http_client()
+                resp = await client.post(
+                    url,
+                    headers=headers,
+                    json={"sql": sql, "params": params or []},
+                    timeout=timeout,
+                )
+        except httpx.HTTPError as exc:
+            if not quiet:
+                logger.warning(
+                    "d1_request_failed",
+                    error=str(exc) or repr(exc),
+                    error_type=type(exc).__name__,
+                    attempt=attempt,
+                )
+            return None
+
+        # Storage-backoff 429: retry with backoff, not a hard fail.
+        # This is the ONLY 429 we retry - a real rate-limit (no 7429
+        # code in the body) or an auth/quota 4xx still surfaces to
+        # the caller as None so the existing failure-handling paths
+        # stay unchanged.
+        if resp.status_code == 429 and _is_storage_backoff_response(resp.status_code, resp.text):
+            attempt += 1
+            if attempt > max_retries:
+                if not quiet:
+                    logger.warning(
+                        "d1_storage_backoff_retries_exhausted",
+                        status=resp.status_code,
+                        body=resp.text[:500],
+                        attempts=attempt - 1,
+                    )
+                return None
+            sleep_seconds = min(_D1_STORAGE_BACKOFF_CAP_SECONDS, _D1_STORAGE_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
             logger.warning(
-                "d1_request_failed",
-                error=str(exc) or repr(exc),
-                error_type=type(exc).__name__,
+                "d1_storage_backoff_retry",
+                status=resp.status_code,
+                body=resp.text[:200],
+                attempt=attempt,
+                sleep_seconds=sleep_seconds,
             )
-        return None
+            await asyncio.sleep(sleep_seconds)
+            continue
 
-    if resp.status_code >= 400:
-        if not quiet:
-            logger.warning("d1_request_failed", status=resp.status_code, body=resp.text[:500])
-        return None
+        if resp.status_code >= 400:
+            if not quiet:
+                logger.warning("d1_request_failed", status=resp.status_code, body=resp.text[:500])
+            return None
 
-    data = resp.json()
-    if not data.get("success"):
-        if not quiet:
-            logger.warning("d1_query_failed", errors=data.get("errors"))
-        return None
+        data = resp.json()
+        if not data.get("success"):
+            if not quiet:
+                logger.warning("d1_query_failed", errors=data.get("errors"))
+            return None
 
-    results = data.get("result") or []
-    return results[0].get("results", []) if results else []
+        results = data.get("result") or []
+        return results[0].get("results", []) if results else []
 
 
 def _as_int(value: Any) -> int:

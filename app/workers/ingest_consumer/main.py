@@ -1,5 +1,5 @@
 """Reads scraped posts and comments off Kafka (published by spider-hub's
-spiders - see social_crawler/services/kafka.py there) and mirrors them into
+spiders - see social_crawler/clients/kafka.py there) and mirrors them into
 D1 (see app/services/d1.py). Runs as its own long-lived process, separate
 from the FastAPI app:
 
@@ -35,23 +35,22 @@ from typing import Any
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 
+from app.ai.tasks.post_relevance import classify_post_relevance_kira
+from app.clients.kafka import publish_ingest_decision, start_kafka_producer, stop_kafka_producer
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.telegram import send_telegram_message
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.kira.post_relevance import classify_post_relevance_kira
 from app.services.d1 import (
     contains_keyword,
     d1_query,
     get_keyword,
     get_post_by_external_id,
     persist_comment,
-    persist_dropped_post,
     persist_post,
 )
-from app.services.kafka import publish_ingest_decision, start_kafka_producer, stop_kafka_producer
 from app.services.platforms import get_comment_mapper, get_post_mapper
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.relevance_rules import foreign_language_reason, mentions_other_film
-from app.services.telegram import send_telegram_message
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
@@ -72,7 +71,7 @@ CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
 # Each in-flight post mostly waits on its Kira verdict, which is batched
-# (app/kira/post_relevance.py: up to BATCH_SIZE posts per call, 3 calls in
+# (app/ai/tasks/post_relevance.py: up to BATCH_SIZE posts per call, 3 calls in
 # flight) - enough concurrent posts to fill those batches.
 _POST_MESSAGE_CONCURRENCY = 24
 # Comments make no AI call inline (sentiment is sentiment_sweep.py's job) -
@@ -162,10 +161,13 @@ async def _decide(*, platform: str | None, post_id: Any, keyword_id: Any, decisi
     )
 
 
-async def _drop(*, platform: str | None, post_id: Any, reason: str, payload: dict[str, Any], keyword_id: Any = None, **extra: Any) -> None:
-    """Archives a dropped post in D1 (dropped_posts, still the replay source)
-    and records the decision for the lake."""
-    await persist_dropped_post(platform=platform, reason=reason, payload=payload, keyword_id=keyword_id)
+async def _drop(*, platform: str | None, post_id: Any, reason: str, keyword_id: Any = None, **extra: Any) -> None:
+    """Records the drop decision on the ingest_decisions topic. Nothing is
+    archived in D1 any more: the lake writer (app/workers/lake_writer/main.py)
+    keeps the raw payload from raw_posts under bronze/entity=posts/ and this
+    decision under bronze/entity=decisions/ - replay joins the two on
+    post_id. Drops from before the lake (D1's old dropped_posts table) are
+    archived in R2 under backfill/entity=dropped_posts/."""
     await _decide(platform=platform, post_id=post_id, keyword_id=keyword_id, decision="dropped", reason=reason, **extra)
 
 
@@ -177,33 +179,34 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if mapper is None:
         logger.warning("post_unregistered_platform", platform=platform, post_id=post_id)
         await _note_drop(platform, "mapper", post_id=post_id)
-        await _drop(platform=platform, post_id=post_id, reason="mapper", payload=payload)
+        await _drop(platform=platform, post_id=post_id, reason="mapper")
         return
 
     keyword_id = payload.get("keyword_id")
     if not keyword_id:
         logger.warning("post_missing_keyword_id", platform=platform, post_id=post_id)
         await _note_drop(platform, "missing_keyword_id", post_id=post_id)
-        await _drop(platform=platform, post_id=post_id, reason="missing_keyword_id", payload=payload)
+        await _drop(platform=platform, post_id=post_id, reason="missing_keyword_id")
         return
 
     keyword = await get_keyword(keyword_id, platform=platform)
     if keyword is None:
         logger.warning("post_unknown_keyword_id", platform=platform, keyword_id=keyword_id, post_id=post_id)
         await _note_drop(platform, "unknown_keyword_id", post_id=post_id, keyword_id=keyword_id)
-        await _drop(platform=platform, post_id=post_id, reason="unknown_keyword_id", payload=payload, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="unknown_keyword_id", keyword_id=keyword_id)
         return
 
     draft = mapper(payload)
 
     # Rules first, before the keyword shortcut below can admit the post
-    # (see app/services/relevance_rules.py for the measured cases). Dropped
-    # posts are archived like Kira's, so a rule mistake is recoverable
-    # via scripts/replay_dropped_posts.py.
+    # (see app/services/relevance_rules.py for the measured cases). Every
+    # rule drop flows through _drop() and ends up in the lake's
+    # bronze/entity=decisions/ stream, so a rule mistake is recoverable by
+    # replaying the corresponding ingest_decisions NDJSON file.
     foreign = foreign_language_reason(draft.get("content"), payload.get("text_language"))
     if foreign:
         logger.info("post_dropped_foreign_language", platform=platform, post_id=post_id, keyword_id=keyword_id, rule=foreign)
-        await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", payload=payload, keyword_id=keyword_id, rule=foreign)
+        await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=foreign)
         return
 
     # Kira classifies every post that survived the rules. The keyword
@@ -223,7 +226,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             # for a Kira call to confirm it.
             logger.info("post_dropped_other_film", platform=platform, post_id=post_id, keyword_id=keyword_id, other_film=other_film)
             await _drop(
-                platform=platform, post_id=post_id, reason="other_film", payload=payload, keyword_id=keyword_id, other_film=other_film
+                platform=platform, post_id=post_id, reason="other_film", keyword_id=keyword_id, other_film=other_film
             )
             return
 
@@ -241,8 +244,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
         if relevance_label == "related":
             ai_relevant = True
         elif relevance_label == "not_related":
-            # Archived, not deleted: scripts/replay_dropped_posts.py can
-            # restore a post Kira got wrong.
+            # Decision is recorded via _drop() -> ingest_decisions topic ->
+            # lake (bronze/entity=decisions/). Recover a mislabel by
+            # replaying the lake NDJSON, not D1.
             logger.info(
                 "post_dropped_irrelevant",
                 platform=platform,
@@ -256,7 +260,6 @@ async def handle_post(payload: dict[str, Any]) -> None:
                 platform=platform,
                 post_id=post_id,
                 reason="kira_irrelevant",
-                payload=payload,
                 keyword_id=keyword_id,
                 confidence=relevance_confidence,
                 kira_reason=verdict["reason"],
@@ -277,7 +280,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     )
     if not ok:
         await _note_drop(platform, "d1_write_failed", post_id=post_id)
-        await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", payload=payload, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
         return
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
     # kira_related / kira_uncertain, or no_verdict when Kira sat out (off,
@@ -298,11 +301,11 @@ async def handle_comment(payload: dict[str, Any]) -> None:
 
     mapper = get_comment_mapper(platform)
     if mapper is None:
-        # No persist_dropped_post-style archive for comments (unlike
-        # handle_post) - comments are supplementary to the post they belong
-        # to, which is already durably stored/re-fetchable by post_id, so
-        # losing an unregistered-platform comment isn't the same kind of
-        # unrecoverable loss a whole dropped post would be.
+        # No archive for unregistered-platform comments: the parent post
+        # (which carries the comment's content context) is already durably
+        # stored and re-fetchable by post_id, so losing an unknown-platform
+        # comment isn't the kind of unrecoverable loss a whole dropped post
+        # would be.
         logger.warning("comment_unregistered_platform", platform=platform, post_id=external_post_id)
         return
 

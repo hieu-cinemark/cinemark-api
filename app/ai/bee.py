@@ -1,21 +1,21 @@
 """Beeknoee (platform.beeknoee.com) LLM client - an OpenAI-compatible
 proxy this product uses for Claude Sonnet 5. Thin, provider-specific
-facade over app.ai_client.call_ai(provider="bee", ...): the actual HTTP
+facade over app.ai.client.call_ai(provider="bee", ...): the actual HTTP
 client, retry/backoff and concurrency budget live there (shared shape
-with app/kira/, but Bee gets its own semaphore keyed separately, so a Bee
+with app/ai/kira.py, but Bee gets its own semaphore keyed separately, so a Bee
 outage/rate-limit can't starve Kira or vice versa).
 
 Kira still owns relevance*/import-parsing/general tasks; Bee owns comment
-topic-clustering + report narrative (app/bee/report.py) and is the
-comment sentiment classifier (app/kira/sentiment.py).
+topic-clustering + report narrative (app/ai/tasks/report.py) and is the
+comment sentiment classifier (app/ai/tasks/sentiment.py).
 
 * per-post relevance at ingest time is Kira's job - see
-app/kira/post_relevance.py.
+app/ai/tasks/post_relevance.py.
 """
 
 from __future__ import annotations
 
-from app.ai_client import call_ai, is_provider_configured, parse_json_response
+from app.ai.client import call_ai, is_provider_configured, parse_json_response
 
 __all__ = ["DEFAULT_BEE_MODEL", "bee_is_configured", "call_bee", "parse_json_response"]
 

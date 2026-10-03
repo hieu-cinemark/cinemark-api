@@ -28,15 +28,15 @@ import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from app.clients.kafka import publish_cookie_import_request, publish_restore_session_request
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.errors import NoSavedSessionError, NotFoundError
 from app.core.logging import get_logger
 from app.schemas.scraper import ImportCookiesRequest, RestoreSessionRequest, TokenStatus, TriggerTokenRefreshResponse
 from app.services import refresh_tracker
-from app.services.kafka import publish_cookie_import_request, publish_restore_session_request
 from app.services.platform_config_db import get_account
 from app.services.platform_token import account_key as _account_key
 from app.services.platform_token import get_token_status
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 
 logger = get_logger(__name__)
 

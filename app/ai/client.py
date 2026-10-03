@@ -4,11 +4,11 @@ Supabase's ai_providers table (see app/services/platform_config_db.py) -
 loaded and cached here, instead of env vars, so a key can be rotated or a
 new provider added from the dashboard without a redeploy.
 
-app/kira/client.py and app/bee/client.py are thin, provider-specific
+app/ai/kira.py and app/ai/bee.py are thin, provider-specific
 facades over call_ai() below: they keep each provider's own policy (Kira's
 enabled-toggle + per-task prompt overrides live in ai_settings; Bee has
 neither). This module owns what used to be duplicated between
-app/kira/base.py's KiraAI class and app/bee/client.py - building the
+the old KiraAI and Bee clients - building the
 OpenAI client, retry/backoff on 429s, one concurrency budget per provider,
 and one structured log shape per call."""
 
@@ -36,7 +36,7 @@ _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
-# Same trade-off as app/kira/client.py's _AI_CFG_TTL_SECONDS (~3s per Supabase read).
+# Same trade-off as app/ai/kira.py's _AI_CFG_TTL_SECONDS (~3s per Supabase read).
 _PROVIDER_CACHE_TTL_SECONDS = 60.0
 
 # Token usage of the most recent call_ai() in the current asyncio task -
@@ -124,7 +124,7 @@ async def load_provider(key: str) -> ProviderConfig | None:
     """Reads {key, base_url, api_key, model} from ai_providers (Supabase),
     cached for a few seconds. None if the row doesn't exist yet or is
     missing base_url/api_key - callers treat that as "not configured",
-    same fail-open convention as everything else in app/kira and app/bee."""
+    same fail-open convention as everything else in app/ai."""
     now = time.monotonic()
     cached = _provider_cache.get(key)
     if cached is not None and now - cached[0] < _PROVIDER_CACHE_TTL_SECONDS:

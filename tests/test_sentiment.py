@@ -1,4 +1,4 @@
-"""Exercises app/kira/sentiment.py's batched Bee classifier and its
+"""Exercises app/ai/tasks/sentiment.py's batched Bee classifier and its
 fail-open contract: classify_sentiments must never raise - a Bee outage, a
 malformed or partial reply, or a too-short comment all just come back as
 None for the affected comments."""
@@ -9,8 +9,8 @@ import json
 import re
 from unittest.mock import AsyncMock, patch
 
-from app.kira import sentiment
-from app.kira.sentiment import classify_sentiment, classify_sentiments
+from app.ai.tasks import sentiment
+from app.ai.tasks.sentiment import classify_sentiment, classify_sentiments
 
 LONG = "Phim này hay quá, xem xong muốn coi lại lần nữa"
 
@@ -22,8 +22,8 @@ def _reply(*labels: str) -> str:
 def _bee(reply: str | Exception):
     call = AsyncMock(side_effect=reply) if isinstance(reply, Exception) else AsyncMock(return_value=reply)
     return (
-        patch("app.kira.sentiment.call_bee", call),
-        patch("app.kira.sentiment.bee_is_configured", AsyncMock(return_value=True)),
+        patch("app.ai.tasks.sentiment.call_bee", call),
+        patch("app.ai.tasks.sentiment.bee_is_configured", AsyncMock(return_value=True)),
     )
 
 
@@ -46,8 +46,8 @@ async def test_splits_into_batches_of_batch_size() -> None:
 
     with (
         patch.object(sentiment, "BATCH_SIZE", 3),
-        patch("app.kira.sentiment.call_bee", fake_call_bee),
-        patch("app.kira.sentiment.bee_is_configured", AsyncMock(return_value=True)),
+        patch("app.ai.tasks.sentiment.call_bee", fake_call_bee),
+        patch("app.ai.tasks.sentiment.bee_is_configured", AsyncMock(return_value=True)),
     ):
         result = await classify_sentiments([f"{LONG} {n}" for n in range(7)])
     assert len(calls) == 3  # 3 + 3 + 1
@@ -62,8 +62,8 @@ async def test_partial_reply_leaves_missing_as_none() -> None:
 
 async def test_not_configured_returns_none_without_calling() -> None:
     with (
-        patch("app.kira.sentiment.call_bee", AsyncMock()) as mock_call,
-        patch("app.kira.sentiment.bee_is_configured", AsyncMock(return_value=False)),
+        patch("app.ai.tasks.sentiment.call_bee", AsyncMock()) as mock_call,
+        patch("app.ai.tasks.sentiment.bee_is_configured", AsyncMock(return_value=False)),
     ):
         assert await classify_sentiments([LONG]) == [None]
     mock_call.assert_not_awaited()

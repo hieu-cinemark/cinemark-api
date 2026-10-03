@@ -16,7 +16,7 @@ this docstring assumed a single global queue and called this safe without
 run_id plumbing - it wasn't, once per-platform concurrency landed) let a
 concurrently-running *different* platform's own log lines bleed into
 whichever platform's panel happened to be open. run_id is generated once
-per triggered refresh (app/services/kafka.py's publish_cookie_import_request
+per triggered refresh (app/clients/kafka.py's publish_cookie_import_request
 - the only trigger left, see app/api/routes/token_refresh.py's own docstring
 for why there's no separate standalone "refresh now" anymore) and threaded
 all the way through: passed to the spider-hub subprocess as
@@ -42,9 +42,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 
 logger = get_logger(__name__)
 

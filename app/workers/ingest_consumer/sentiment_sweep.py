@@ -2,12 +2,12 @@
 
 handle_comment persists comments with sentiment NULL; this loop picks up
 the recent unclassified ones every SWEEP_INTERVAL_SECONDS and classifies
-them through Bee in batches (app/kira/sentiment.py), so a comment gets its
+them through Bee in batches (app/ai/tasks/sentiment.py), so a comment gets its
 label within a minute or two instead of stalling Kafka ingest on a ~14s
 Bee call per comment.
 
 Bee calls run one batch at a time, leaving the second slot of Bee's
-2-call concurrency budget (app/ai_client.py) free for report writing.
+2-call concurrency budget (app/ai/client.py) free for report writing.
 A Redis lock keeps two running consumers from classifying the same rows.
 
 scripts/backfill_comment_sentiment.py reuses classify_pending() for the
@@ -21,10 +21,10 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.ai.tasks.sentiment import BATCH_SIZE, classify_sentiments
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
-from app.kira.sentiment import BATCH_SIZE, classify_sentiments
 from app.services.d1 import MIN_CONTENT_LENGTH, d1_query
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 
 logger = get_logger(__name__)
 

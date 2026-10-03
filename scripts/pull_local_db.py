@@ -12,8 +12,7 @@ seeded movies/keywords, this is a genuine full clone (the dashboard's
 Tổng quan/Bài viết pages read through the same DB_MODE switch, so a partial
 mirror made them look like almost all historical data had vanished).
 Fetches each table in LIMIT/OFFSET pages (see _PAGE_SIZE) rather than one
-giant SELECT *, since a few of these tables (posts, dropped_posts,
-post_engagement_snapshots - each in the five digits, some rows carrying a
+giant SELECT *, since a few of these tables (posts, post_engagement_snapshots - each in the five digits, some rows carrying a
 sizeable raw_json blob) risk exceeding D1's own per-query response-size
 cap in a single unpaged request.
 

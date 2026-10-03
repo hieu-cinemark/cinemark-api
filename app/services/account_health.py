@@ -25,15 +25,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.platform_token import get_token_status
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 
 
 async def _check_tiktok(account_id: str) -> str:
     # Mirrors the key client.py writes in spider-hub
     # (tiktok_block_streak:<device_id>, where device_id is stored in
     # platform_accounts.account_id for platform='tiktok' - see
-    # social_crawler/services/db.py's docstring for that column reuse). The
+    # social_crawler/db/accounts.py's update_tiktok_identity for that column reuse). The
     # key only exists once a block has actually happened (client.py's first
     # INCR creates it), so its mere presence is enough - no need to read the
     # count itself.

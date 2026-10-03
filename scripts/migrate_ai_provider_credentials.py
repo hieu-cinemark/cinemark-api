@@ -1,7 +1,7 @@
 """One-time migration: copies Kira/Bee credentials from .env
 (KIRA_BASE_URL/KIRA_API_KEY, BEEKNOEE_BASE_URL/BEEKNOEE_API_KEY) plus the
 currently-effective model into the new ai_providers Supabase table (see
-app/services/platform_config_db.py), so app/ai_client.py can load them
+app/services/platform_config_db.py), so app/ai/client.py can load them
 from there instead of env vars. Safe to re-run - upserts by key.
 
 Reads .env directly (not app.core.config.Settings, which no longer
@@ -22,8 +22,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
-from app.bee.client import DEFAULT_BEE_MODEL
-from app.kira.defaults import DEFAULT_KIRA_MODEL
+from app.ai.bee import DEFAULT_BEE_MODEL
+from app.ai.defaults import DEFAULT_KIRA_MODEL
 from app.services.platform_config_db import get_ai_provider, get_ai_settings, upsert_ai_provider
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"

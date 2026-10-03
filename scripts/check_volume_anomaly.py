@@ -15,9 +15,9 @@ import statistics
 from collections import defaultdict
 from datetime import date
 
+from app.clients.telegram import send_telegram_message
 from app.core.logging import get_logger
 from app.services.d1 import get_post_timeseries
-from app.services.telegram import send_telegram_message
 
 logger = get_logger(__name__)
 

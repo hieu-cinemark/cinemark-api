@@ -20,12 +20,12 @@ from app.api.routes.settings import router as settings_router
 from app.api.routes.stats import router as stats_router
 from app.api.routes.threads import router as threads_router
 from app.api.routes.tiktok import router as tiktok_router
+from app.clients.kafka import start_kafka_producer, stop_kafka_producer
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import get_logger
 from app.core.middleware import RequestContextMiddleware
 from app.services import platform_config_db, refresh_tracker, scheduler
-from app.services.kafka import start_kafka_producer, stop_kafka_producer
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
 
 logger = get_logger(__name__)
@@ -99,8 +99,16 @@ async def _build_tab_filter_indexes() -> None:
         logger.warning("tab_filter_indexes_failed", error=str(exc) or repr(exc))
 
 
+_SHUTDOWN_STEP_TIMEOUT_SECONDS = 5
+
+
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
+    # The Kafka flush is bounded: unbounded, it left `uvicorn --reload`
+    # stuck mid-restart (port closed, new worker never started) on 2026-09-30.
     refresh_tracker.shutdown()
     scheduler.stop()
-    await stop_kafka_producer()
+    try:
+        await asyncio.wait_for(stop_kafka_producer(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning("shutdown_step_timeout", step="kafka_producer")

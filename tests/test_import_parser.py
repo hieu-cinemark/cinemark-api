@@ -1,4 +1,4 @@
-from app.kira.import_parser import parse_delimited
+from app.ai.tasks.import_parser import parse_delimited
 
 
 def test_pipe_format_one_line_per_account():

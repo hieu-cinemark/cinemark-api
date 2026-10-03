@@ -20,7 +20,7 @@ from app.core.logging import get_logger
 from app.schemas.scraper import JobStatus, RunCommentsResponse, RunScraperRequest, RunScraperResponse, StopScraperResponse
 from app.services.crawl_jobs import cancel_job, get_running_job, is_platform_draining, request_stop
 from app.services.d1 import get_enabled_keywords, get_keyword, get_post
-from app.services.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
+from app.clients.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 
 logger = get_logger(__name__)
 

@@ -1,4 +1,4 @@
-"""app/kira/post_relevance.py with Kira and Redis stubbed out."""
+"""app/ai/tasks/post_relevance.py with Kira and Redis stubbed out."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import re
 
 import pytest
 
+from app.ai.tasks import post_relevance
 from app.core.config import settings
-from app.kira import post_relevance
 
 MOVIE = {"title": "Án Mạng Karaoke", "director": "X", "cast": "A, B", "released_at": "2026-10-02"}
 OTHER = ["Án Mạng Karaoke", "Án Mạng Xém Hoàn Hảo"]
@@ -35,7 +35,7 @@ def fast_batches(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
     redis = _FakeRedis()
-    import app.services.redis as redis_module
+    import app.clients.redis as redis_module
 
     monkeypatch.setattr(redis_module, "get_redis_client", lambda: redis)
     return redis

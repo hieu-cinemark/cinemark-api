@@ -5,17 +5,18 @@ config. Read-only elsewhere; this is the only place that writes them."""
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 
 from fastapi import APIRouter, Query
 from pydantic import ValidationError as PydanticValidationError
-
 from pyotp import TOTP
 
+from app.ai.tasks.import_parser import parse_import
+from app.clients.kafka import publish_nurture_request, publish_tiktok_identity_reset
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.kira.import_parser import parse_import
 from app.schemas.settings import (
     AccountCreate,
     AccountOut,
@@ -25,6 +26,14 @@ from app.schemas.settings import (
     AiProviderUpdate,
     AiSettingsOut,
     AiSettingsUpdate,
+    AutoLoginRunHistoryEntry,
+    AutoLoginSettings,
+    AutoLoginSettingsOut,
+    AutoLoginSettingsUpdate,
+    CleanupRunHistoryEntry,
+    CleanupSettings,
+    CleanupSettingsOut,
+    CleanupSettingsUpdate,
     CommentScheduleOut,
     CommentScheduleUpdate,
     CrawlScheduleOut,
@@ -47,13 +56,18 @@ from app.schemas.settings import (
     ProxyUpdate,
     TotpCodeResponse,
 )
+from app.services import auto_login as auto_login_svc
 from app.services import platform_config_db as db
 from app.services.account_health import evaluate_account_health
-from app.services.kafka import publish_nurture_request, publish_tiktok_identity_reset
 from app.services.platform_token import account_key as _account_key
+from app.services.scheduler import purge_in_progress, run_purge_now
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+# Strong refs for fire-and-forget tasks - the event loop only keeps weak
+# ones, so an unreferenced task can be garbage-collected mid-run.
+_background_tasks: set[asyncio.Task] = set()
 
 
 @router.get("/accounts", response_model=list[AccountOut])
@@ -175,7 +189,7 @@ async def set_account_proxy(account_id: int, payload: AccountSetProxy) -> Accoun
 async def reset_tiktok_cookies(account_id: int) -> dict[str, bool]:
     """Triggers spider-hub's headless TikTok identity re-capture
     (device_id/odinId) for this one account row - see
-    app/services/kafka.py's publish_tiktok_identity_reset. TikTok-only:
+    app/clients/kafka.py's publish_tiktok_identity_reset. TikTok-only:
     Facebook/Threads use the platform-wide token_refresh routes instead
     (see app/api/routes/token_refresh.py), which re-run their own
     password/2FA browser-bootstrap flow rather than targeting one row."""
@@ -339,7 +353,7 @@ async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) ->
 
 
 async def _ai_settings_out(row: dict) -> AiSettingsOut:
-    from app.kira.defaults import AI_PROMPT_TASKS, DEFAULT_KIRA_MODEL, default_system_prompts
+    from app.ai.defaults import AI_PROMPT_TASKS, DEFAULT_KIRA_MODEL, default_system_prompts
 
     provider = await db.get_ai_provider("kira")
     defaults = default_system_prompts()
@@ -373,9 +387,9 @@ async def get_ai_settings() -> AiSettingsOut:
 
 @router.put("/ai", response_model=AiSettingsOut)
 async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
-    from app.ai_client import invalidate_provider_cache
-    from app.kira.client import invalidate_ai_runtime_cache
-    from app.kira.defaults import AI_PROMPT_TASKS
+    from app.ai.client import invalidate_provider_cache
+    from app.ai.defaults import AI_PROMPT_TASKS
+    from app.ai.kira import invalidate_ai_runtime_cache
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
@@ -409,7 +423,7 @@ def _ai_provider_out(row: dict) -> AiProviderOut:
 @router.get("/ai/providers", response_model=list[AiProviderOut])
 async def list_ai_providers() -> list[AiProviderOut]:
     """Every configured LLM provider ({key, base_url, model} - api_key is
-    never returned, only whether one is set). See app/ai_client.py."""
+    never returned, only whether one is set). See app/ai/client.py."""
     rows = await db.list_ai_providers()
     return [_ai_provider_out(row) for row in rows]
 
@@ -419,7 +433,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     """Upsert - `key` doesn't have to already exist, so a new provider can
     be added from here with no code/schema change. api_key omitted or
     blank keeps whatever secret is already stored."""
-    from app.ai_client import invalidate_provider_cache
+    from app.ai.client import invalidate_provider_cache
 
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
     row = await db.upsert_ai_provider(key, base_url=payload.base_url.strip(), api_key=api_key, model=payload.model.strip())
@@ -430,7 +444,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
 
 @router.post("/import/parse", response_model=ImportParseResponse)
 async def import_parse(payload: ImportParseRequest) -> ImportParseResponse:
-    """Step 1 of the AI-assisted bulk import (see app/kira/import_parser.py)
+    """Step 1 of the AI-assisted bulk import (see app/ai/tasks/import_parser.py)
     - turns freeform pasted account/proxy data into structured candidate
     rows for the dashboard to show as an editable preview. Never writes to
     the DB itself; see /import/commit below for that."""
@@ -470,3 +484,169 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
             logger.warning("import_commit_row_failed", target=payload.target, error=str(exc))
             failed += 1
     return ImportCommitResponse(created=created, failed=failed)
+
+
+# --- Irrelevant-post cleanup (app/services/cleanup.py) ---
+# Same shape as /settings/proxy: stored values merged over schema defaults
+# so a row from before a new field was added (or with a missing key) just
+# gets the default for that key instead of 500ing the page.
+
+
+def _cleanup_settings_out(row: dict, *, last_run: dict | None) -> CleanupSettingsOut:
+    stored = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    defaults = CleanupSettings()
+    merged: dict = defaults.model_dump()
+    for key, value in stored.items():
+        if key not in merged:
+            continue
+        try:
+            merged[key] = getattr(CleanupSettings.model_validate({key: value}), key)
+        except PydanticValidationError:
+            logger.warning("cleanup_setting_invalid_stored_value", key=key)
+    return CleanupSettingsOut(
+        values=CleanupSettings(**merged),
+        defaults=defaults,
+        last_run_at=(last_run or {}).get("started_at") if last_run else None,
+        last_run_summary=last_run,
+        running=purge_in_progress(),
+        updated_at=row.get("updated_at"),
+    )
+
+
+@router.get("/cleanup", response_model=CleanupSettingsOut)
+async def get_cleanup_route() -> CleanupSettingsOut:
+    """Effective knobs (dashboard-stored values over env defaults), the most
+    recent run's row from cleanup_run_history, and whether a run is
+    currently in flight (the dashboard uses that to disable its Run-now
+    button and show "Running…")."""
+    row = await db.get_cleanup_settings()
+    history = await db.list_cleanup_run_history(limit=1)
+    return _cleanup_settings_out(row, last_run=history[0] if history else None)
+
+
+@router.put("/cleanup", response_model=CleanupSettingsOut)
+async def set_cleanup_route(payload: CleanupSettingsUpdate) -> CleanupSettingsOut:
+    """Partial update - keys absent from the payload keep their previously
+    stored value. Same as the proxy-settings PUT: no need to re-send every
+    field just to flip the toggle."""
+    allowed = {"run_time", "enabled", "grace_hours"}
+    set_fields = set(payload.model_fields_set) & allowed
+    values_to_write = {key: getattr(payload, key) for key in set_fields}
+    row = await db.upsert_cleanup_settings(values_to_write)
+    logger.info("cleanup_settings_updated", **values_to_write)
+    history = await db.list_cleanup_run_history(limit=1)
+    return _cleanup_settings_out(row, last_run=history[0] if history else None)
+
+
+@router.post("/cleanup/run", response_model=dict)
+async def run_cleanup_route() -> dict:
+    """Manual trigger from the dashboard. Returns immediately with
+    {"started": True/False}; the actual purge runs in the background task
+    the scheduler also uses, so the operator can navigate away without
+    cancelling it. `started: false` means a previous run is still in
+    flight - the dashboard should show that, not retry."""
+    started = await run_purge_now()
+    return {"started": started}
+
+
+@router.get("/cleanup/history", response_model=list[CleanupRunHistoryEntry])
+async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]:
+    """Most-recent-first list of cleanup_run_history rows, capped by `limit`
+    (default 20). Each entry's counts are the actual DELETE RETURNING ids
+    from cleanup.py - the same numbers logged as
+    `irrelevant_purge_done telegram=True`."""
+    rows = await db.list_cleanup_run_history(limit=limit)
+    return [CleanupRunHistoryEntry(**row) for row in rows]
+
+
+# --- Auto-login scheduler (app/services/auto_login.py) ---
+# Same shape as /cleanup: GET shows effective settings over defaults +
+# running flag + last_run_at; PUT is a partial update (the dashboard's
+# toggle UI just sends `{enabled: true}`); POST /run kicks a one-off
+# tick and returns whether a run actually started (False if another
+# tick is mid-flight). /history exposes the recent runs.
+
+
+@router.get("/auto-login", response_model=AutoLoginSettingsOut)
+async def get_auto_login_route() -> AutoLoginSettingsOut:
+    """Effective knobs (dashboard-stored values over env defaults) plus
+    the running flag (so the dashboard can grey out "Run now" while a
+    tick is in flight) and the most-recent run's started_at."""
+    return await auto_login_svc.get_auto_login_settings_out()
+
+
+@router.put("/auto-login", response_model=AutoLoginSettingsOut)
+async def set_auto_login_route(payload: AutoLoginSettingsUpdate) -> AutoLoginSettingsOut:
+    """Partial update - keys absent from the payload keep their previously
+    stored value. Same as the cleanup/proxy PUTs: no need to re-send
+    every field just to flip the toggle.
+
+    Validates via the schema BEFORE writing - a bad interval_seconds
+    (e.g. <60) or an unknown platform name should bounce here, not
+    blow up the scheduler loop later.
+    """
+    # Build the post-merge view first so a single bad key 400s with a
+    # useful message rather than writing half a payload. Same approach
+    # as /cleanup - schema_update_settings_update's PutRecord pattern.
+    set_fields = set(payload.model_fields_set) & set(AutoLoginSettings().model_dump().keys())
+    if not set_fields:
+        # Nothing to update - just return current state.
+        return await auto_login_svc.get_auto_login_settings_out()
+    values_to_write = {key: getattr(payload, key) for key in set_fields}
+    # Validate the would-be merged values against the schema to catch
+    # constraint failures before they reach Supabase. Resolve the
+    # current settings, overlay the partial, and Pydantic-validate
+    # the result.
+    merged = (await auto_login_svc.resolve_auto_login_settings()).model_dump()
+    merged.update(values_to_write)
+    AutoLoginSettings(**merged)  # raises ValidationError if invalid
+    await db.upsert_auto_login_settings(values_to_write)
+    logger.info("auto_login_settings_updated", **values_to_write)
+    return await auto_login_svc.get_auto_login_settings_out()
+
+
+@router.post("/auto-login/run", response_model=dict)
+async def run_auto_login_route() -> dict:
+    """Manual trigger from the dashboard's "Run now" button. Returns
+    `{"started": True/False}` immediately; the actual tick runs as a
+    background asyncio task so the operator can navigate away without
+    cancelling it. `started: false` means a previous tick is still
+    in flight (the dashboard should show "running..." rather than
+    retry)."""
+    started = await _kick_auto_login_tick(triggered_by="manual")
+    return {"started": started}
+
+
+async def _kick_auto_login_tick(*, triggered_by: str) -> bool:
+    """Schedules run_auto_login_tick as a fire-and-forget asyncio task,
+    returns True if a task was actually scheduled. Returns False if
+    another tick is already in flight (the in-flight guard inside
+    run_auto_login_tick is the real mutex; this helper just makes
+    the "schedule vs skip" decision eagerly so the HTTP response
+    is meaningful to the dashboard).
+
+    Mirrors the same fire-and-forget shape scheduler.py applies to its
+    crawl/comment/auto_login tasks - a slow Kafka publish for one
+    account shouldn't block the API request that asked for the run
+    in the first place. Errors inside the tick are caught and
+    persisted to auto_login_run_history.error; nothing bubbles up
+    to the HTTP layer.
+    """
+    if auto_login_svc.is_auto_login_in_flight():
+        return False
+    # force=True: an explicit "Run now" runs even while the schedule is
+    # switched off - otherwise the tick returns -1 without doing anything.
+    task = asyncio.create_task(auto_login_svc.run_auto_login_tick(triggered_by=triggered_by, force=True))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return True
+
+
+@router.get("/auto-login/history", response_model=list[AutoLoginRunHistoryEntry])
+async def auto_login_history_route(limit: int = 20) -> list[AutoLoginRunHistoryEntry]:
+    """Most-recent-first list of auto_login_run_history rows, capped
+    by `limit` (default 20). Each row's `kafka_published` /
+    `kafka_publish_failed` columns tell the operator how many of the
+    attempted accounts actually made it to spider-hub (vs. were
+    dropped by a Kafka outage mid-tick)."""
+    return await auto_login_svc.list_auto_login_history(limit=limit)

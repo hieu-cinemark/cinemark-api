@@ -2,18 +2,18 @@
 additive counterpart to scripts/push_local_data_to_remote.py's own posts
 push. Written for 2026-09-22: after that earlier push, remote has posts
 local never had (remote keeps whatever was pushed; local's own crawl
-meanwhile keeps generating comments/dropped_posts remote doesn't have
-yet - see that day's dropped_posts/posts count check). This brings
+meanwhile keeps generating comments remote doesn't have
+yet - see that day's posts count check). This brings
 local's *posts* table back to parity with remote without touching
-comments/dropped_posts (local is already ahead there - nothing to pull)
+comments (local is already ahead there - nothing to pull)
 and without the destructive drop-and-recreate scripts/pull_local_db.py
-does (that would also wipe local-only comments/dropped_posts rows not
+does (that would also wipe local-only comment rows not
 yet pushed to remote, and isn't safe to run while a server/consumer holds
 this local db file open - see that script's own docstring). This script
 only ever INSERTs (OR IGNORE) into the existing local tables, so it's
 safe to run alongside an active DB_MODE=local server/consumer - WAL mode
 already lets a reader/writer proceed against the last-committed snapshot
-(see app/services/d1_client.py's _get_local_conn comment).
+(see app/clients/d1.py's _get_local_conn comment).
 
 Movie/keyword ids can differ between local and remote for the same
 logical row (a local-only movie/keyword created under DB_MODE=local
@@ -108,7 +108,7 @@ async def pull_new_posts() -> None:
     if not local_path.exists():
         raise RuntimeError(f"No local mirror at {local_path} - nothing to pull into.")
 
-    # timeout=30 + WAL, same as app/services/d1_client.py's _get_local_conn -
+    # timeout=30 + WAL, same as app/clients/d1.py's _get_local_conn -
     # a running ingest/crawl consumer may hold this file open concurrently.
     local_conn = sqlite3.connect(local_path, timeout=30.0)
     local_conn.execute("PRAGMA journal_mode=WAL")

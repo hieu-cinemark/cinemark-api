@@ -1,7 +1,7 @@
-"""Kira-task policy layer over the shared app.ai_client: per-task enabled
+"""Kira-task policy layer over the shared app.ai.client: per-task enabled
 toggle + system-prompt overrides (ai_settings table in Supabase), on top
 of the provider-agnostic HTTP/retry/concurrency machinery in
-app.ai_client. Every classifier in app/kira/ goes through call_kira() so
+app.ai.client. Every classifier in app/ai/ goes through call_kira() so
 they share one enabled/prompts read and one retry budget."""
 
 from __future__ import annotations
@@ -9,9 +9,9 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.ai_client import call_ai, invalidate_provider_cache, parse_json_response
+from app.ai.client import call_ai, invalidate_provider_cache, parse_json_response
+from app.ai.defaults import default_system_prompts
 from app.core.logging import get_logger
-from app.kira.defaults import default_system_prompts
 
 __all__ = [
     "active_report_provider",
@@ -45,7 +45,7 @@ async def load_ai_runtime() -> dict[str, Any]:
     """enabled + per-task prompt overrides from Supabase's ai_settings row,
     falling back to disabled/no-overrides if the table isn't there yet.
     Provider credentials/model are a separate concern - see
-    app.ai_client.load_provider()."""
+    app.ai.client.load_provider()."""
     global _ai_cfg_cache
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
@@ -68,7 +68,7 @@ async def load_ai_runtime() -> dict[str, Any]:
 
 
 async def active_report_provider() -> str:
-    """"kira" or "bee" - which provider app/bee/report.py's
+    """"kira" or "bee" - which provider app/ai/tasks/report.py's
     generate_topics_and_verbatims/generate_narrative should call, switchable
     from the dashboard's AI settings tab without touching ai_providers'
     own credentials. Defaults to "bee" (report generation's original,
@@ -106,11 +106,11 @@ async def call_kira(
     task: str = "chat",
     platform: str | None = None,
 ) -> str:
-    """Runs one Kira chat completion via app.ai_client.call_ai(). force=True
+    """Runs one Kira chat completion via app.ai.client.call_ai(). force=True
     is for operator-triggered Settings import (works even while ingest
     classifiers are toggled off). Raises on disabled/misconfigured/
     provider errors - every caller here already catches broadly and fails
-    open (see e.g. app/kira/relevance.py)."""
+    open (see e.g. app/ai/tasks/post_relevance.py)."""
     cfg = await load_ai_runtime()
     if not cfg["enabled"] and not force:
         raise RuntimeError("kira_temporarily_disabled")

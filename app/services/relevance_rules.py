@@ -19,8 +19,9 @@ attributed to Án Mạng Karaoke). Both have cheap, checkable signals:
 
 Every tracked film is Vietnamese; a relevant post about one is in
 Vietnamese (with or without diacritics) in practice. A dropped post is
-archived to dropped_posts (reason = the rule name), so a false positive
-here is recoverable with scripts/replay_dropped_posts.py.
+archived via the ingest_decisions Kafka topic (-> lake writer, under
+bronze/entity=decisions/), so a false positive here is replayable from
+the lake's NDJSON files rather than a now-deleted D1 table.
 """
 
 from __future__ import annotations

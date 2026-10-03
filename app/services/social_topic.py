@@ -24,8 +24,8 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from app.bee.client import DEFAULT_BEE_MODEL
-from app.bee.report import generate_narrative, generate_topics_and_verbatims
+from app.ai.bee import DEFAULT_BEE_MODEL
+from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
 from app.core.logging import get_logger
 from app.services.d1 import (
     MIN_COMMENTS_FOR_REPORT,

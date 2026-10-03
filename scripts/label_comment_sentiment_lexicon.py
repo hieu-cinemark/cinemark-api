@@ -1,5 +1,5 @@
 """Bulk-label comments.sentiment via the lexicon in
-app/kira/sentiment_lexicon.py (no Kira calls).
+app/services/sentiment_lexicon.py (no Kira calls).
 
 Usage:
     python -m scripts.label_comment_sentiment_lexicon
@@ -14,8 +14,8 @@ import asyncio
 from collections import Counter
 
 from app.core.logging import get_logger
-from app.kira.sentiment_lexicon import classify_sentiment_lexicon
 from app.services.d1 import MIN_CONTENT_LENGTH, d1_query
+from app.services.sentiment_lexicon import classify_sentiment_lexicon
 
 logger = get_logger(__name__)
 

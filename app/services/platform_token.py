@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 
 _DEFAULT_ACCOUNT_KEY = "default"
 

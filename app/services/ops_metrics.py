@@ -15,7 +15,7 @@ import sys
 import time
 from typing import Any
 
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.task_queue import PLATFORMS, list_history, list_pending
 
 SAMPLES_KEY = f"{REDIS_KEY_PREFIX}ops_metrics_samples"

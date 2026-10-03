@@ -1,7 +1,7 @@
 """Single shared Redis client for this service - same instance spider-hub's
-own RedisCache connects to (see social_crawler/services/redis.py there),
+own RedisCache connects to (see social_crawler/clients/redis.py there),
 read-only from this side. Module-level singleton, same pattern as
-app/services/kafka.py's `_producer`, so every caller (currently just
+app/clients/kafka.py's `_producer`, so every caller (currently just
 platform_token.py, but any future one too) reuses one connection pool
 instead of each opening its own."""
 

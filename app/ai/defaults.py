@@ -5,10 +5,10 @@ system message."""
 
 from __future__ import annotations
 
-from app.kira.post_relevance_prompt import POST_RELEVANCE_SYSTEM_PROMPT
-from app.kira.prompt import SYSTEM_PROMPT as RELEVANCE_SYSTEM_PROMPT
-from app.kira.report_prompt import NARRATIVE_SYSTEM_PROMPT, TOPICS_SYSTEM_PROMPT
-from app.kira.sentiment_prompt import SENTIMENT_SYSTEM_PROMPT
+from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
+from app.ai.prompts.relevance import SYSTEM_PROMPT as RELEVANCE_SYSTEM_PROMPT
+from app.ai.prompts.report import NARRATIVE_SYSTEM_PROMPT, TOPICS_SYSTEM_PROMPT
+from app.ai.prompts.sentiment import SENTIMENT_SYSTEM_PROMPT
 
 DEFAULT_KIRA_MODEL = "qwen3.8-flash"
 
@@ -79,7 +79,7 @@ AI_PROMPT_TASKS: tuple[str, ...] = (
 
 
 def default_system_prompts() -> dict[str, str]:
-    from app.kira.import_parser import default_import_system_prompts
+    from app.ai.tasks.import_parser import default_import_system_prompts
 
     imports = default_import_system_prompts()
     return {

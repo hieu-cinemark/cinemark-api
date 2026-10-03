@@ -10,7 +10,7 @@ import json
 import time
 from typing import Any
 
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 
 PLATFORMS = ("facebook", "threads", "tiktok")
 HISTORY_LIMIT = 200

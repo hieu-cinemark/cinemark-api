@@ -74,7 +74,7 @@ async def posts_to_trigger(platform: str, keyword_id: str, top_n: int) -> list[d
 
 
 async def main(num_keywords: int, top_n: int) -> None:
-    from app.services.kafka import publish_comments_crawl_request, start_kafka_producer, stop_kafka_producer
+    from app.clients.kafka import publish_comments_crawl_request, start_kafka_producer, stop_kafka_producer
 
     keywords = await recent_enabled_keywords(num_keywords)
     print(f"Recent enabled keywords: {len(keywords)}")

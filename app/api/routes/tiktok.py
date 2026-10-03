@@ -14,9 +14,9 @@ from fastapi import APIRouter
 from app.api.routes.keywords import build_keyword_routes
 from app.api.routes.platform_scraper import build_comments_run_route, build_run_route
 from app.api.routes.token_refresh import build_token_refresh_routes
+from app.clients.kafka import publish_channel_videos_request
 from app.core.logging import get_logger
 from app.schemas.scraper import RunChannelVideosRequest, RunChannelVideosResponse
-from app.services.kafka import publish_channel_videos_request
 
 logger = get_logger(__name__)
 

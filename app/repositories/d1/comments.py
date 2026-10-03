@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from app.services.d1_client import d1_query, _configured
+from app.clients.d1 import d1_query, _configured
 from app.services.platforms import CommentDraft
 
 # Above this many rows, list_comments stops returning more - an admin
@@ -260,7 +260,7 @@ class CommentRepository:
         reactions/replies count).
 
         `sentiment` is the AI-classified label ("positive"/"negative"/"neutral")
-        from app.kira.sentiment.classify_sentiment() (Bee), already resolved by the
+        from app.ai.tasks.sentiment.classify_sentiment() (Bee), already resolved by the
         caller before this is invoked - None means either classification wasn't
         attempted (message too short) or the Bee call failed, and just leaves
         the column NULL rather than blocking the upsert."""

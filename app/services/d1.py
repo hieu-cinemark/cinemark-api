@@ -8,7 +8,7 @@ crawl triggered from here (get_enabled_keywords/get_keyword) and the post it
 produces (persist_post) share the exact same movie_id/keyword_id space, no
 ID-mapping layer needed.
 
-The HTTP-vs-local transport (d1_query) now lives in app/services/d1_client.py,
+The HTTP-vs-local transport (d1_query) now lives in app/clients/d1.py,
 and posts/comments' own queries live in app/repositories/d1/{posts,comments}.py
 - both re-exported below so existing `from app.services.d1 import
 persist_post` etc. call sites don't need to change. This module keeps the
@@ -33,6 +33,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.clients.d1 import _configured, d1_query
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.comments import (
     CommentRepository,
@@ -52,14 +54,11 @@ from app.repositories.d1.posts import (
     list_posts,
     list_posts_needing_comments,
     movie_hashtag_present,
-    persist_dropped_post,
     persist_post,
     post_mentions_movie,
     post_repo,
     reputable_authors,
 )
-from app.services.d1_client import _configured, d1_query
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
 
 logger = get_logger(__name__)
 
@@ -84,7 +83,6 @@ __all_reexports__ = (
     list_posts,
     list_posts_needing_comments,
     movie_hashtag_present,
-    persist_dropped_post,
     persist_post,
     post_mentions_movie,
     reputable_authors,

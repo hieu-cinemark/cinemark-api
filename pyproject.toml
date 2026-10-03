@@ -7,3 +7,6 @@ quote-style = "double"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Bare `pytest` doesn't put the repo root on sys.path - tests that import
+# scripts/ (test_check_account_health.py, ...) need it.
+pythonpath = ["."]

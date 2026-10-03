@@ -1,4 +1,4 @@
-"""Comment sentiment classification - Beeknoee (see app/bee/client.py).
+"""Comment sentiment classification - Beeknoee (see app/ai/bee.py).
 
 Batched: one Bee call classifies up to BATCH_SIZE comments. Per comment,
 Bee's fixed cost (system prompt, ~14s latency, a slot in its 2-call
@@ -8,7 +8,7 @@ call each could not keep up with a busy crawl day (~22k comments).
 Called from the ingest consumer's background sweep
 (app/workers/ingest_consumer/sentiment_sweep.py) and
 scripts/backfill_comment_sentiment.py - never inline per comment.
-(Post relevance is Kira's job - app/kira/post_relevance.py.)
+(Post relevance is Kira's job - app/ai/tasks/post_relevance.py.)
 
 Fail-open: a failed call leaves that batch's results None, so the comment
 simply stays unclassified until the next sweep.
@@ -16,9 +16,9 @@ simply stays unclassified until the next sweep.
 
 from __future__ import annotations
 
-from app.bee.client import bee_is_configured, call_bee, parse_json_response
+from app.ai.bee import bee_is_configured, call_bee, parse_json_response
+from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
 from app.core.logging import get_logger
-from app.kira.sentiment_prompt import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
 from app.services.d1 import MIN_CONTENT_LENGTH
 
 logger = get_logger(__name__)

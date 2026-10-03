@@ -1,14 +1,23 @@
-"""Everything that reads/writes D1's `posts` table (+ its
-post_engagement_snapshots/dropped_posts siblings) - the same rows
-cinemark-scraper's Worker owns (see api/schema/scraper.ts there). Pulled out
-of the old app/services/d1.py monolith so this table's query patterns,
-pagination, and indexes live in one place instead of being mixed in with
+"""Everything that reads/writes D1's `posts` table (+
+post_engagement_snapshots sibling) - the same rows cinemark-scraper's
+Worker owns (see api/schema/scraper.ts there). Pulled out of the old
+app/services/d1.py monolith so this table's query patterns, pagination,
+and indexes live in one place instead of being mixed in with
 movies/keywords/comments.
 
 app/services/d1.py still re-exports every name below (persist_post,
 list_posts, ...) so existing `from app.services.d1 import persist_post`
 call sites (ingest_consumer, scripts, tests) don't need to change - only
-new code needs to reach for `post_repo` directly."""
+new code needs to reach for `post_repo` directly.
+
+The old `dropped_posts` table used to live in this repo (see git history)
+to archive raw Kafka payloads dropped at ingest before they reached
+persist_post (unregistered mapper, missing/unknown keyword_id). The
+ingest_consumer now writes those drops to the `ingest_decisions` Kafka
+topic (see app/clients/kafka.py:publish_ingest_decision) instead, and
+the lake writer (app/workers/lake_writer/main.py) archives the entire
+stream to R2 under bronze/entity=decisions/. Replay any historical drop
+from there, not from D1."""
 
 from __future__ import annotations
 
@@ -22,7 +31,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.logging import get_logger
-from app.services.d1_client import d1_query, _configured
+from app.clients.d1 import d1_query, _configured
 from app.services.platforms import PostDraft, registered_platforms
 
 logger = get_logger(__name__)
@@ -177,7 +186,7 @@ def contains_keyword(content: str | None, keyword: str | None) -> bool:
     """Exact-substring keyword_match check. Public (not just persist_post's
     own fallback) so callers - see app/workers/ingest_consumer/main.py's
     handle_post - can check this cheap/free match first and only spend a
-    Kira call (see app/kira/relevance.py) on the posts it actually misses,
+    Kira call (see app/ai/tasks/post_relevance.py) on the posts it actually misses,
     instead of classifying every single post regardless of whether the
     free check already found a match."""
     if not content or not keyword:
@@ -454,7 +463,7 @@ class PostRepository:
         _ENGAGEMENT_SCORE_SQL) - e.g. keyword_id + sort="engagement" +
         limit=100 is the dashboard's "top 100 posts for this keyword" view.
         That view requires relevance_label='related' (set at ingest, see
-        app/kira/post_relevance.py) AND
+        app/ai/tasks/post_relevance.py) AND
         movie_hashtag_present's own, independent check - relevance_label
         alone isn't a second opinion the way it looks: persist_post stores
         keyword_match as a straight mirror of the AI verdict whenever the
@@ -690,35 +699,6 @@ class PostRepository:
         rows = await d1_query("SELECT id, platform, external_id, url FROM posts WHERE id = ?", [post_id])
         return rows[0] if rows else None
 
-    async def persist_dropped_post(
-        self, *, platform: str, reason: str, payload: dict[str, Any], keyword_id: str | None = None
-    ) -> None:
-        """Archives a raw Kafka payload that the ingest consumer dropped before
-        it ever reached persist_post (unregistered platform mapper, missing/
-        unknown keyword_id - see app/workers/ingest_consumer/main.py's
-        handle_post). persist_post's own `raw_json` column already covers
-        "reprocess after fixing a mapper bug" for posts that DID get persisted;
-        this covers the posts that never got that far at all - once the
-        underlying issue is fixed (mapper registered, keyword corrected),
-        these rows are the only way to recover that data without re-scraping
-        it, which may not even be possible later (the post could be deleted by
-        then, or the crawl window long gone). Best-effort like every other
-        write here - a failure must not mask the drop itself, already logged/
-        alerted by the caller regardless of whether this archive succeeds."""
-        if not _configured():
-            return
-        await d1_query(
-            "INSERT INTO dropped_posts (id, platform, reason, keyword_id, raw_json, dropped_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                f"dropped_{uuid.uuid4()}",
-                platform,
-                reason,
-                keyword_id,
-                json.dumps(payload),
-                datetime.now(tz=timezone.utc).isoformat(),
-            ],
-        )
-
     async def persist_post(
         self,
         *,
@@ -739,7 +719,7 @@ class PostRepository:
         (see app/services/platforms.py) - this function has no
         platform-specific field knowledge of its own.
 
-        `ai_relevant`, when given (see app/kira/post_relevance.py), is
+        `ai_relevant`, when given (see app/ai/tasks/post_relevance.py), is
         Kira's "related" verdict and is used for keyword_match instead of
         the exact-substring contains_keyword check below - callers pass None
         to fall back to the substring check (Kira uncertain, off, over its
@@ -772,8 +752,8 @@ class PostRepository:
         if not content or len(content.strip()) < MIN_CONTENT_LENGTH:
             logger.info("post_skipped_junk", platform=platform, external_id=external_id, reason="content_too_short")
             # Intentional skip, not a write failure - True so handle_post's
-            # `if not ok` doesn't archive this to dropped_posts as
-            # "d1_write_failed" and count it toward the drop-alert threshold.
+            # `if not ok` doesn't fire the drop-alert counter (the counter
+            # is fed by the ingest_decisions Kafka stream, not D1).
             return True
         is_keyword_match = ai_relevant if ai_relevant is not None else contains_keyword(content, keyword)
 
@@ -934,10 +914,6 @@ async def get_post_by_external_id(platform: str, external_id: str) -> dict[str, 
 
 async def get_post(post_id: str) -> dict[str, Any] | None:
     return await post_repo.get_post(post_id)
-
-
-async def persist_dropped_post(**kwargs: Any) -> None:
-    await post_repo.persist_dropped_post(**kwargs)
 
 
 async def persist_post(**kwargs: Any) -> bool:

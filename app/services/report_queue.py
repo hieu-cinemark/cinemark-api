@@ -18,7 +18,7 @@ API ever runs multiple workers/replicas, this needs to move to Redis
 (same shape as crawl_jobs.py) - a status GET landing on the "wrong"
 worker would otherwise show stale/missing state.
 
-No explicit concurrency cap here - app.ai_client's own per-provider
+No explicit concurrency cap here - app.ai.client's own per-provider
 semaphore (asyncio.Semaphore(2), see call_ai) already bounds how many
 Bee/Kira calls run at once; enqueuing more movies than that just means
 the extra ones sit inside generate_report_for_movie awaiting that

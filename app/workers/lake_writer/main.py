@@ -23,9 +23,9 @@ from typing import Any
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.structs import ConsumerRecord
 
+from app.clients.lake import lake_configured, put_object
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.lake import lake_configured, put_object
 
 logger = get_logger(__name__)
 

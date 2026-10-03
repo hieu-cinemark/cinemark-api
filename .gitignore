@@ -8,3 +8,6 @@ __pycache__/
 .local-db/
 # Generated output from scripts/, not source - e.g. label_posts_relevance_kira.py's own CSV.
 scripts/_*.csv
+
+# Local D1 table exports taken before pushing data to remote - data, not source.
+.pre-push-backup/

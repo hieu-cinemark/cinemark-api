@@ -23,12 +23,12 @@ class AccountOut(BaseModel):
     updated_at: datetime
     last_checked_at: datetime | None = None
     last_check_status: str | None = None
-    # AI-generated diagnosis (see spider-hub's services/kira.
+    # AI-generated diagnosis (see spider-hub's clients/kira.
     # diagnose_account_failure) whenever this account gets hard-disabled -
     # cleared back to null on the next successful login.
     last_check_note: str | None = None
     # Pool / circuit-breaker + sticky proxy pinning - written by spider-hub
-    # (services/pool.py, services/db.py), read-only here (see
+    # (services/pool.py, db/accounts.py), read-only here (see
     # platform_config_db.ACCOUNT_CREATE_COLUMNS, which excludes them).
     # pool_status is "active" | "checkpoint" (see db.record_account_outcome)
     # - distinct from last_check_status above. Optional despite the column
@@ -79,7 +79,7 @@ class ProxyOut(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
-    # Pool / circuit-breaker - written by spider-hub (services/db.py),
+    # Pool / circuit-breaker - written by spider-hub (db/proxies.py),
     # read-only here. pool_status is "active" | "degraded". Optional for
     # the same not-yet-migrated/NULL-tolerance reason as AccountOut above.
     pool_status: str | None = "active"
@@ -168,7 +168,7 @@ class CommentScheduleUpdate(BaseModel):
     top_n: int = Field(default=100, ge=1, le=500)
 
 
-# --- AI-assisted account/proxy import - see app/kira/import_parser.py ---
+# --- AI-assisted account/proxy import - see app/ai/tasks/import_parser.py ---
 
 
 class ImportParseRequest(BaseModel):
@@ -227,7 +227,7 @@ class AiSettingsOut(BaseModel):
     # set - the dashboard toggle cannot call the provider without these.
     configured: bool
     prompts: list[AiPromptOut]
-    # Which provider app/bee/report.py's social-topic-report generation
+    # Which provider app/ai/tasks/report.py's social-topic-report generation
     # calls - "kira" or "bee", independent of `enabled` above (that gate is
     # ingest-time classifiers only; report generation is an
     # operator/schedule-triggered action, same category as Settings import).
@@ -268,7 +268,7 @@ class CronJob(BaseModel):
 
 
 # --- Proxy behavior -----------------------------------------------------
-# Mirrors spider-hub's social_crawler/services/proxy_settings.py DEFAULTS -
+# Mirrors spider-hub's social_crawler/db/proxy_settings.py DEFAULTS -
 # the field defaults below ARE the fallback values spider-hub uses when a
 # key is absent, so keep the two in sync when adding a key. Stored as one
 # jsonb object in the proxy_settings singleton row (see
@@ -278,7 +278,7 @@ class CronJob(BaseModel):
 class ProxySettings(BaseModel):
     # Sticky pinning (services/pool.py)
     repin_after_consecutive_failures: int = Field(default=5, ge=1, le=100)
-    # Circuit-breaker cooldown: base * 2^failures, capped (services/db.py)
+    # Circuit-breaker cooldown: base * 2^failures, capped (db/proxies.py)
     cooldown_base_minutes: float = Field(default=5.0, gt=0, le=240)
     cooldown_max_minutes: float = Field(default=120.0, gt=0, le=10080)
     # proxy_health_check.py (cron, every 5 min)
@@ -323,3 +323,132 @@ class ProxyProviderUpdate(BaseModel):
     # None/blank keeps whatever token is already stored.
     token: str | None = Field(default=None, max_length=500)
     ip_allowlist: bool = False
+
+
+# --- Irrelevant-post cleanup (app/services/cleanup.py) ---
+# Dashboard-editable knobs for the daily purge of posts labelled not_related
+# plus their comments/snapshots. Mirrors the same singleton-row pattern as
+# ProxySettings (see platform_config_db.get_cleanup_settings). Defaults
+# match the env fallbacks in app/core/config.py so an unset DB row behaves
+# the same as the pre-dashboard config.
+#
+# Historical note: dropped_posts rows were also purged here until the lake
+# writer took over archiving every drop decision via the ingest_decisions
+# Kafka topic (see app/clients/kafka.py:publish_ingest_decision +
+# app/workers/lake_writer/main.py). The retention_days knob is gone for
+# that reason - there's nothing left in D1 to age out.
+
+CLEANUP_REASONS_LABEL = "irrelevant_post_purge"
+
+
+class CleanupSettings(BaseModel):
+    # "HH:MM", 24h, Asia/Ho_Chi_Minh (see app/services/scheduler.py's TIMEZONE).
+    run_time: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    enabled: bool = True
+    # Posts are kept this long after being labelled not_related before being
+    # eligible for deletion - gives a classifier regression a chance to be
+    # caught before its bad labels disappear.
+    grace_hours: int = Field(default=24, ge=0, le=720)
+
+
+class CleanupSettingsOut(BaseModel):
+    values: CleanupSettings
+    defaults: CleanupSettings
+    last_run_at: datetime | None = None
+    last_run_summary: dict[str, Any] | None = None
+    running: bool = False
+    updated_at: datetime | None = None
+
+
+class CleanupSettingsUpdate(BaseModel):
+    run_time: str | None = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    enabled: bool | None = None
+    grace_hours: int | None = Field(default=None, ge=0, le=720)
+
+
+class CleanupRunHistoryEntry(BaseModel):
+    started_at: datetime
+    finished_at: datetime | None = None
+    dry_run: bool
+    triggered_by: Literal["schedule", "manual"]
+    posts_deleted: int = 0
+    comments_deleted: int = 0
+    snapshots_deleted: int = 0
+    batches: int = 0
+    remaining_posts: int | None = None
+    error: str | None = None
+
+
+# --- Auto-login scheduler (app/services/auto_login.py) ---
+# Dashboard-editable knobs for the hourly auto-login scheduler. One
+# singleton row in auto_login_settings (mirrors ProxySettings /
+# CleanupSettings pattern - see platform_config_db.get_auto_login_settings
+# for the storage side). Defaults match the env fallbacks
+# spider-hub/services/auto_login_scheduler.py uses, so a fresh deploy
+# with AUTO_LOGIN_ENABLED=true env + the new dashboard setting on
+# behaves identically whether the scheduler runs in spider-hub or
+# cinemark-api.
+#
+# `platforms` is the list of platforms to iterate each tick; the
+# spider-hub consumer keys its consumer group on this list (one
+# group per platform) so a Facebook relogin backlog doesn't head-of-
+# line block Threads (and vice versa). `dry_run` is honored by both
+# the producer (we still publish the Kafka message, tagged dry_run,
+# so the consumer can log "would have relogged_in this" and stamp
+# nothing) and the consumer (no actual Playwright launches).
+# `telegram_alert` mirrors the same option in
+# CleanupSettings - opt-in since the original auto-login is
+# opt-in itself.
+
+
+class AutoLoginSettings(BaseModel):
+    enabled: bool = False
+    interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    platforms: list[Literal["facebook", "threads"]] = Field(default_factory=lambda: ["facebook", "threads"])
+    dry_run: bool = False
+    # Skip accounts whose last_checked_at is newer than this many
+    # seconds - prevents the scheduler from hammering an account that
+    # check_facebook_cookies.py just marked dead and that hasn't had
+    # time for any transient blip to clear. Default 0 = no cooldown,
+    # process every "dead" account every tick (the original behavior).
+    min_age_seconds: int = Field(default=0, ge=0, le=3600)
+    telegram_alert: bool = True
+
+
+class AutoLoginSettingsOut(BaseModel):
+    values: AutoLoginSettings
+    defaults: AutoLoginSettings
+    running: bool = False
+    last_run_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class AutoLoginSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    interval_seconds: int | None = Field(default=None, ge=60, le=86400)
+    platforms: list[Literal["facebook", "threads"]] | None = None
+    dry_run: bool | None = None
+    min_age_seconds: int | None = Field(default=None, ge=0, le=3600)
+    telegram_alert: bool | None = None
+
+
+class AutoLoginRunHistoryEntry(BaseModel):
+    started_at: datetime
+    finished_at: datetime | None = None
+    triggered_by: Literal["schedule", "manual"]
+    dry_run: bool
+    interval_seconds: int
+    platforms: list[str]
+    # JSON blob from auto_login_run_history.per_platform. Shape:
+    # { "<platform>": { "attempted": N, "relogged_in": N, ... } }
+    # The dashboard renders this as a small per-platform breakdown
+    # under each history row.
+    per_platform: dict[str, Any] = Field(default_factory=dict)
+    total_attempted: int = 0
+    total_relogged_in: int = 0
+    total_needs_human: int = 0
+    total_failed: int = 0
+    total_error: int = 0
+    kafka_published: int = 0
+    kafka_publish_failed: int = 0
+    error: str | None = None

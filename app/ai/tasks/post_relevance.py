@@ -32,10 +32,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.ai.kira import call_kira, parse_json_response
+from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.kira.client import call_kira, parse_json_response
-from app.kira.post_relevance_prompt import POST_RELEVANCE_SYSTEM_PROMPT
 
 logger = get_logger(__name__)
 
@@ -43,7 +43,7 @@ TASK = "post_relevance"
 MAX_CONTENT_CHARS = 1500
 BATCH_SIZE = 10
 BATCH_WINDOW_S = 1.5
-# Batches waiting on Kira at once; Kira's own semaphore (app/ai_client.py)
+# Batches waiting on Kira at once; Kira's own semaphore (app/ai/client.py)
 # runs 2, a third keeps the next one ready.
 MAX_BATCHES_IN_FLIGHT = 3
 _LABELS = {"relevant": "related", "irrelevant": "not_related", "uncertain": "uncertain"}
@@ -190,7 +190,7 @@ async def _within_daily_cap() -> bool:
     cap = settings.kira_post_relevance_daily_cap
     if cap <= 0:
         return False
-    from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+    from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 
     key = f"{REDIS_KEY_PREFIX}kira_post_relevance:{datetime.now(tz=UTC):%Y-%m-%d}"
     try:

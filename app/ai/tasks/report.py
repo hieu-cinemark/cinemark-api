@@ -1,18 +1,18 @@
 """LLM calls behind scripts/generate_social_topic_reports.py - same
 two-call split and same prompts either provider runs (see
-app/kira/report_prompt.py's own module docstring for why split into two
+app/ai/prompts/report.py's own module docstring for why split into two
 calls). Both are fail-open (return None on any error), same convention as
 every classifier in this codebase - the caller decides what "no report
 this run" means.
 
 Provider (Kira or Bee) is switchable from the dashboard's AI settings tab
-(app/kira/client.py's active_report_provider(), default "bee") rather than
+(app/ai/kira.py's active_report_provider(), default "bee") rather than
 hardcoded - added 2026-09-25, so report generation can be pointed at
 either provider's budget without a code change (post relevance is Kira,
-app/kira/post_relevance.py; comment sentiment is batched Bee,
-app/kira/sentiment.py). call_kira's own
+app/ai/tasks/post_relevance.py; comment sentiment is batched Bee,
+app/ai/tasks/sentiment.py). call_kira's own
 force=True bypasses the separate ingest-classifiers enabled toggle, same
-as app/kira/import_parser.py's own operator-triggered calls - picking
+as app/ai/tasks/import_parser.py's own operator-triggered calls - picking
 "kira" here is its own explicit enable signal, independent of that switch."""
 
 from __future__ import annotations
@@ -20,15 +20,15 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.bee.client import call_bee
-from app.core.logging import get_logger
-from app.kira.client import active_report_provider, call_kira, parse_json_response
-from app.kira.report_prompt import (
+from app.ai.bee import call_bee
+from app.ai.kira import active_report_provider, call_kira, parse_json_response
+from app.ai.prompts.report import (
     NARRATIVE_DATA_PROMPT,
     NARRATIVE_SYSTEM_PROMPT,
     TOPICS_DATA_PROMPT,
     TOPICS_SYSTEM_PROMPT,
 )
+from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 

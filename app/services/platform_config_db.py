@@ -1,6 +1,6 @@
 """Async Postgres client (Supabase) for the platform_accounts /
 platform_proxies tables - same tables spider-hub's own
-social_crawler/services/db.py reads from (see that module there for the
+social_crawler/db/ package reads from (see its __init__.py there for the
 full rationale: these change too often for env vars + process restarts to
 be worth it). This side has read AND write access, backing the dashboard's
 Settings page; spider-hub only ever reads.
@@ -27,7 +27,7 @@ ACCOUNT_COLUMNS = (
     "id, platform, account_id, password, totp_secret, cookie, token, email, email_password, "
     "enabled, created_at, updated_at, last_checked_at, last_check_status, last_check_note, "
     # Pool / circuit-breaker + sticky proxy pinning columns - written by
-    # spider-hub's services/pool.py & services/db.py, read-only from this
+    # spider-hub's services/pool.py & db/ package, read-only from this
     # side (system-written, never part of the account form) - see
     # ACCOUNT_CREATE_COLUMNS below, which deliberately excludes them. The
     # raw column is just "status" - aliased to pool_status so it can't be
@@ -92,7 +92,18 @@ async def _connect() -> psycopg.AsyncConnection[Any]:
     if not settings.database_url:
         raise UpstreamError("DATABASE_URL is not configured on cinemark-api")
     try:
-        return await psycopg.AsyncConnection.connect(settings.database_url, row_factory=dict_row, connect_timeout=5)
+        # Keepalives make a socket left over from a previous network (laptop
+        # changed Wi-Fi / woke from sleep) fail within ~1 min instead of
+        # blocking the awaiting query - and the scheduler loop - forever.
+        return await psycopg.AsyncConnection.connect(
+            settings.database_url,
+            row_factory=dict_row,
+            connect_timeout=5,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=3,
+        )
     except psycopg.Error as exc:
         logger.error("db_connect_failed", error=str(exc))
         raise UpstreamError("Could not connect to the settings database") from exc
@@ -471,7 +482,7 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
 # separate from crawl_schedules (posts) above since a platform's comments
 # sweep runs on its own cadence, independent of when that platform's post
 # crawl runs. At its run_time, for each of that platform's enabled
-# keywords, queues a comments crawl (app/services/kafka.py's
+# keywords, queues a comments crawl (app/clients/kafka.py's
 # publish_comments_crawl_request) for the keyword's top `top_n`-by-
 # engagement posts that still have zero comments stored
 # (app/services/d1.py's list_posts_needing_comments) - see
@@ -561,7 +572,7 @@ async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: s
 # --- AI settings -------------------------------------------------------
 # Singleton row (id=1): model + per-task system prompts the dashboard
 # Settings AI tab edits. Read on every Kira call (short-cached in
-# app.kira.client) so a save applies without restarting ingest/spider-hub.
+# app.ai.kira) so a save applies without restarting ingest/spider-hub.
 
 AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, updated_at"
 
@@ -586,10 +597,10 @@ async def _ensure_ai_settings_table() -> None:
         )
         # Added 2026-09-25 to an already-existing table in production, so a
         # bare CREATE TABLE IF NOT EXISTS above wouldn't retroactively add
-        # it - which provider (app/bee/report.py's call_bee vs call_kira)
+        # it - which provider (app/ai/tasks/report.py's call_bee vs call_kira)
         # generates social_topic_reports, switchable from the dashboard
         # without touching ai_providers' own credentials (see
-        # app/bee/report.py's own docstring for why this exists: Kira sat
+        # app/ai/tasks/report.py's own docstring for why this exists: Kira sat
         # essentially idle in production - the only real per-call-volume
         # LLM task left was report generation, which was hardcoded to Bee).
         await cur.execute(
@@ -654,7 +665,7 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_r
 # One row per LLM provider (key = "kira", "bee", ... - add a new provider
 # by inserting a new row, no schema change needed): base_url/api_key/model
 # used to build that provider's OpenAI-compatible client (see
-# app/ai_client.py). Used to be KIRA_API_KEY/KIRA_BASE_URL/
+# app/ai/client.py). Used to be KIRA_API_KEY/KIRA_BASE_URL/
 # BEEKNOEE_API_KEY/BEEKNOEE_BASE_URL env vars - moved here (see
 # scripts/migrate_ai_provider_credentials.py) so a key can be rotated or a
 # new provider added from the dashboard without a redeploy.
@@ -740,7 +751,7 @@ async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, mo
 # proxy_settings: singleton jsonb of tunables (see app/schemas/settings.py's
 # ProxySettings for keys/defaults/bounds). proxy_providers: one row per
 # rotating-proxy vendor plan (API URL + token + ip_allowlist mode). Both
-# read by spider-hub's social_crawler/services/proxy_settings.py (cached
+# read by spider-hub's social_crawler/db/proxy_settings.py (cached
 # 60s there, so a save here applies to running crawlers within a minute).
 
 _proxy_settings_ready = False
@@ -842,3 +853,370 @@ async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None, ip
         row = await cur.fetchone()
         await conn.commit()
     return row  # type: ignore[return-value]
+
+
+# cleanup_settings: singleton jsonb of dashboard-editable knobs for the
+# irrelevant-post purge (see app/services/cleanup.py + scheduler.py).
+# cleanup_run_history: append-only log of every run (scheduled or manually
+# triggered from /settings/cleanup/run) with its per-table delete counts +
+# remaining backlog - the same shape cleanup.py already returns in-memory,
+# just persisted so the dashboard can show "what happened last time" without
+# re-querying the API logs.
+
+_cleanup_settings_ready = False
+
+
+async def _ensure_cleanup_settings_tables() -> None:
+    global _cleanup_settings_ready
+    if _cleanup_settings_ready:
+        return
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cleanup_settings (
+                id integer PRIMARY KEY CHECK (id = 1),
+                settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cleanup_run_history (
+                id bigserial PRIMARY KEY,
+                started_at timestamptz NOT NULL DEFAULT now(),
+                finished_at timestamptz,
+                dry_run boolean NOT NULL DEFAULT false,
+                triggered_by text NOT NULL DEFAULT 'schedule',
+                posts_deleted integer NOT NULL DEFAULT 0,
+                comments_deleted integer NOT NULL DEFAULT 0,
+                snapshots_deleted integer NOT NULL DEFAULT 0,
+                batches integer NOT NULL DEFAULT 0,
+                remaining_posts integer,
+                error text
+            )
+            """
+        )
+        await cur.execute(
+            "CREATE INDEX IF NOT EXISTS cleanup_run_history_started_at_idx ON cleanup_run_history (started_at DESC)"
+        )
+    _cleanup_settings_ready = True
+
+
+async def get_cleanup_settings() -> dict[str, Any]:
+    """{"settings": {...stored keys only...}, "updated_at": ...} - merging
+    over CleanupSettings defaults is the schema's job."""
+    await _ensure_cleanup_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT settings, updated_at FROM cleanup_settings WHERE id = 1")
+        row = await cur.fetchone()
+    return row or {"settings": {}, "updated_at": None}
+
+
+async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """Only the keys present in `values` are written - missing keys keep
+    their previously-stored value. Lets PUT /settings/cleanup act as a
+    partial update instead of having to send every key."""
+    from psycopg.types.json import Json
+
+    await _ensure_cleanup_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT settings FROM cleanup_settings WHERE id = 1")
+        existing = await cur.fetchone()
+        merged: dict[str, Any] = dict((existing or {}).get("settings") or {})
+        for key, value in values.items():
+            if value is None:
+                continue
+            merged[key] = value
+        await cur.execute(
+            """
+            INSERT INTO cleanup_settings (id, settings) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_at = now()
+            RETURNING settings, updated_at
+            """,
+            (Json(merged),),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]
+
+
+async def record_cleanup_run_start(*, dry_run: bool, triggered_by: str) -> int:
+    await _ensure_cleanup_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO cleanup_run_history (dry_run, triggered_by) VALUES (%s, %s) RETURNING id",
+            (dry_run, triggered_by),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return int(row["id"])  # type: ignore[arg-type]
+
+
+async def record_cleanup_run_finish(
+    run_id: int,
+    *,
+    summary: dict[str, Any],
+    error: str | None = None,
+) -> None:
+    await _ensure_cleanup_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE cleanup_run_history SET
+                finished_at = now(),
+                posts_deleted = %s,
+                comments_deleted = %s,
+                snapshots_deleted = %s,
+                batches = %s,
+                remaining_posts = %s,
+                error = %s
+            WHERE id = %s
+            """,
+            (
+                int(summary.get("posts") or 0),
+                int(summary.get("comments") or 0),
+                int(summary.get("snapshots") or 0),
+                int(summary.get("batches") or 0),
+                summary.get("remaining_posts"),
+                error,
+                run_id,
+            ),
+        )
+        await conn.commit()
+
+
+async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
+    await _ensure_cleanup_settings_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT id, started_at, finished_at, dry_run, triggered_by,
+                   posts_deleted, comments_deleted, snapshots_deleted,
+                   batches, remaining_posts, error
+            FROM cleanup_run_history
+            ORDER BY started_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return await cur.fetchall()
+
+
+# auto_login_settings: singleton jsonb of dashboard-editable knobs for
+# the hourly auto-login scheduler (see app/services/auto_login.py +
+# spider-hub's auto_login/consumer.py). Mirrors the cleanup_settings
+# shape (id=1 singleton + JSON settings + updated_at) so PUT semantics
+# ("only keys in the payload change") are identical across the page.
+#
+# auto_login_run_history: append-only log of every tick the scheduler
+# or the manual /run endpoint fires - same pattern as
+# cleanup_run_history, but tracking which platforms were processed,
+# how many accounts were attempted per platform, how many came back as
+# relogged_in / needs_human / failed / error, and whether the
+# underlying scheduler actually published a request for each one
+# (Kafka publish failures are tracked separately - see schedule
+# settings' `telegram_alert` flag, matched against
+# auto_login.py's "auto_login_request_publish_failed" log line).
+
+_auto_login_settings_ready = False
+
+
+async def _ensure_auto_login_tables() -> None:
+    global _auto_login_settings_ready
+    if _auto_login_settings_ready:
+        return
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auto_login_settings (
+                id integer PRIMARY KEY CHECK (id = 1),
+                settings jsonb NOT NULL DEFAULT '{}'::jsonb,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auto_login_run_history (
+                id bigserial PRIMARY KEY,
+                started_at timestamptz NOT NULL DEFAULT now(),
+                finished_at timestamptz,
+                triggered_by text NOT NULL DEFAULT 'schedule',
+                dry_run boolean NOT NULL DEFAULT false,
+                -- Snapshot of the settings used for THIS run - captures
+                -- the operator's intent at tick-time, not whatever the
+                -- settings table currently says. Lets the dashboard
+                -- render "the last scheduled tick was a dry-run"
+                -- without having to dereference the settings row.
+                interval_seconds integer NOT NULL,
+                platforms text NOT NULL,
+                -- Per-platform attempted / by_status. JSONB so we don't
+                -- need a schema change to track a new outcome (Facebook
+                -- today, Threads adds `needs_2fa` tomorrow, ...).
+                per_platform jsonb NOT NULL DEFAULT '{}'::jsonb,
+                total_attempted integer NOT NULL DEFAULT 0,
+                total_relogged_in integer NOT NULL DEFAULT 0,
+                total_needs_human integer NOT NULL DEFAULT 0,
+                total_failed integer NOT NULL DEFAULT 0,
+                total_error integer NOT NULL DEFAULT 0,
+                kafka_published integer NOT NULL DEFAULT 0,
+                kafka_publish_failed integer NOT NULL DEFAULT 0,
+                error text
+            )
+            """
+        )
+        # The first version created total_relogged_in as boolean, which the
+        # integer sum in record_auto_login_run_finish can't be written into.
+        await cur.execute(
+            """
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'auto_login_run_history'
+                      AND column_name = 'total_relogged_in' AND data_type = 'boolean'
+                ) THEN
+                    ALTER TABLE auto_login_run_history ALTER COLUMN total_relogged_in DROP DEFAULT;
+                    ALTER TABLE auto_login_run_history
+                        ALTER COLUMN total_relogged_in TYPE integer USING total_relogged_in::integer;
+                    ALTER TABLE auto_login_run_history ALTER COLUMN total_relogged_in SET DEFAULT 0;
+                END IF;
+            END $$
+            """
+        )
+        await cur.execute(
+            "CREATE INDEX IF NOT EXISTS auto_login_run_history_started_at_idx ON auto_login_run_history (started_at DESC)"
+        )
+    _auto_login_settings_ready = True
+
+
+async def get_auto_login_settings() -> dict[str, Any]:
+    await _ensure_auto_login_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT settings, updated_at FROM auto_login_settings WHERE id = 1")
+        row = await cur.fetchone()
+    return row or {"settings": {}, "updated_at": None}
+
+
+async def upsert_auto_login_settings(values: dict[str, Any]) -> dict[str, Any]:
+    """Partial update: only the keys present in `values` are written;
+    missing keys keep their previously-stored value. Lets the
+    dashboard's PUT act as a toggle (just send `{enabled: true}`) or a
+    full edit (send every key) without one stomping the other."""
+    from psycopg.types.json import Json
+
+    await _ensure_auto_login_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT settings FROM auto_login_settings WHERE id = 1")
+        existing = await cur.fetchone()
+        merged: dict[str, Any] = dict((existing or {}).get("settings") or {})
+        for key, value in values.items():
+            if value is None:
+                continue
+            merged[key] = value
+        await cur.execute(
+            """
+            INSERT INTO auto_login_settings (id, settings) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_at = now()
+            RETURNING settings, updated_at
+            """,
+            (Json(merged),),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]
+
+
+async def record_auto_login_run_start(
+    *,
+    triggered_by: str,
+    dry_run: bool,
+    interval_seconds: int,
+    platforms: list[str],
+) -> int:
+    await _ensure_auto_login_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO auto_login_run_history
+                (triggered_by, dry_run, interval_seconds, platforms)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (triggered_by, dry_run, interval_seconds, ",".join(platforms)),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return int(row["id"])  # type: ignore[arg-type]
+
+
+async def record_auto_login_run_finish(
+    run_id: int,
+    *,
+    per_platform: dict[str, dict[str, int]],
+    kafka_published: int,
+    kafka_publish_failed: int,
+    error: str | None = None,
+) -> None:
+    """Writes the per-platform breakdown + Kafka publish counters +
+    optional error message. Same shape auto_login.py already returns
+    in-memory, just persisted so the dashboard's history table shows
+    "what happened last time" without re-querying the API logs."""
+    from psycopg.types.json import Json
+
+    total_attempted = sum(p.get("attempted", 0) for p in per_platform.values())
+    total_relogged_in = sum(p.get("relogged_in", 0) for p in per_platform.values())
+    total_needs_human = sum(p.get("needs_human", 0) for p in per_platform.values())
+    total_failed = sum(p.get("failed", 0) for p in per_platform.values())
+    total_error = sum(p.get("error", 0) for p in per_platform.values())
+    await _ensure_auto_login_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE auto_login_run_history SET
+                finished_at = now(),
+                per_platform = %s,
+                total_attempted = %s,
+                total_relogged_in = %s,
+                total_needs_human = %s,
+                total_failed = %s,
+                total_error = %s,
+                kafka_published = %s,
+                kafka_publish_failed = %s,
+                error = %s
+            WHERE id = %s
+            """,
+            (
+                Json(per_platform),
+                total_attempted,
+                total_relogged_in,
+                total_needs_human,
+                total_failed,
+                total_error,
+                kafka_published,
+                kafka_publish_failed,
+                error,
+                run_id,
+            ),
+        )
+        await conn.commit()
+
+
+async def list_auto_login_run_history(limit: int = 20) -> list[dict[str, Any]]:
+    await _ensure_auto_login_tables()
+    async with await _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT id, started_at, finished_at, triggered_by, dry_run,
+                   interval_seconds, platforms, per_platform,
+                   total_attempted, total_relogged_in, total_needs_human,
+                   total_failed, total_error,
+                   kafka_published, kafka_publish_failed, error
+            FROM auto_login_run_history
+            ORDER BY started_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return await cur.fetchall()

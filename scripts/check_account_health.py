@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import asyncio
 
+from app.clients.telegram import send_telegram_message
 from app.core.logging import get_logger
 from app.services.account_health import evaluate_account_health
 from app.services.platform_config_db import list_accounts, update_account_check_result
-from app.services.telegram import send_telegram_message
 
 logger = get_logger(__name__)
 

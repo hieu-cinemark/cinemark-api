@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from app.services.kafka import get_consumer_lag
+from app.clients.kafka import get_consumer_lag
 from app.services.task_queue import snapshot
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -53,7 +53,7 @@ class KafkaLagEntry(BaseModel):
 
 @router.get("/kafka-lag", response_model=list[KafkaLagEntry])
 async def kafka_lag() -> list[KafkaLagEntry]:
-    """Real, broker-computed backlog per consumer group (app.services.kafka.
+    """Real, broker-computed backlog per consumer group (app.clients.kafka.
     get_consumer_lag) - a different, ground-truth number from the `queued`
     array above, which is app-tracked bookkeeping in Redis that can get
     stuck if a consumer never gets to clear an entry (see that function's

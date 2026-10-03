@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.services.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.task_queue import clear_pending, remove_pending
 
 # How long a stop flag stays armed - covers spider-hub's consumer being

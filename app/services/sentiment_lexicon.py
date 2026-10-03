@@ -1,9 +1,9 @@
 """Lexicon-based 3-way sentiment for movie comments (positive/negative/neutral).
 
-Matches labels in app/kira/sentiment.py and the Social Topic dashboard.
+Matches labels in app/ai/tasks/sentiment.py and the Social Topic dashboard.
 Used for bulk backfill when Kira is unavailable or for fast heuristic
 labeling - see scripts/label_comment_sentiment_lexicon.py and
-app/kira/sentiment_lexicon.md.
+app/services/sentiment_lexicon.md.
 """
 
 from __future__ import annotations

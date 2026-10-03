@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     kafka_bootstrap_servers: str = "localhost:9092"
 
     # Same Redis instance spider-hub's RedisCache connects to (see
-    # social_crawler/services/redis.py there) - read-only from this side,
+    # social_crawler/clients/redis.py there) - read-only from this side,
     # just to report the Facebook session cache's status. Env var names
     # match spider-hub's for a shared .env to work.
     redis_host: str = "localhost"
@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     spider_hub_consumer_log_path: str = str(_REPO_ROOT.parent / "spider-hub" / "consumer.log")
     ingest_consumer_log_path: str = str(_REPO_ROOT / "ingest_consumer.log")
 
-    # Same Supabase Postgres instance spider-hub's services/db.py reads
+    # Same Supabase Postgres instance spider-hub's social_crawler/db/ reads
     # account/proxy config from (platform_accounts / platform_proxies
     # tables) - this side gets read/write access too, for the dashboard's
     # Settings page. None (not an error) if unset - GET/POST/PATCH/DELETE
@@ -83,19 +83,29 @@ class Settings(BaseSettings):
     # Supabase) - this env var only supplies the initial enabled seed when
     # that table row is first created. Credentials (base_url/api_key) and
     # the model, for Kira and every other provider (e.g. Beeknoee), live
-    # in Supabase's ai_providers table instead - see app/ai_client.py and
+    # in Supabase's ai_providers table instead - see app/ai/client.py and
     # app/services/platform_config_db.py. Primary use now: relevance +
     # topic/narrative reports. Per-comment sentiment is Bee.
     kira_enabled: bool = False
 
-    # Kira is the post-relevance classifier at ingest (app/kira/post_relevance.py):
+    # Kira is the post-relevance classifier at ingest (app/ai/tasks/post_relevance.py):
     # at most this many calls per UTC day (~950 tokens each against Kira's
     # 10M/day quota, leaving room for Kira's other tasks); past it, posts
     # fall back to the keyword substring check. 0 turns Kira off for posts.
-    # Comment sentiment is Bee (app/kira/sentiment.py) - no local model.
+    # Comment sentiment is Bee (app/ai/tasks/sentiment.py) - no local model.
     kira_post_relevance_daily_cap: int = 9000
 
-    # R2 data lake over the S3 API (app/services/lake.py) - a token scoped to
+    # Daily purge of irrelevant post data (app/services/cleanup.py), run by
+    # app/services/scheduler.py at irrelevant_post_purge_time (Asia/Ho_Chi_Minh).
+    # Posts labelled not_related are kept for the grace period first so a bad
+    # classifier run can still be spotted. Historical dropped_posts row
+    # retention is gone - the lake writer (app/workers/lake_writer/main.py)
+    # now archives every drop decision under bronze/entity=decisions/.
+    irrelevant_post_purge_enabled: bool = True
+    irrelevant_post_purge_time: str = "03:00"
+    irrelevant_post_grace_hours: int = 24
+
+    # R2 data lake over the S3 API (app/clients/lake.py) - a token scoped to
     # the lake bucket only. Optional: only the lake writer and the lake
     # backfill need them, and the writer refuses to start without them.
     r2_endpoint: str | None = None

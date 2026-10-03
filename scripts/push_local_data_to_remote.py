@@ -5,7 +5,7 @@ crawl batch ran, so every post/comment (and any keyword added via the
 dashboard meanwhile) landed only in .local-db/scraper.sqlite, invisible to
 production until pushed up.
 
-Scope (by request - dropped_posts/post_engagement_snapshots deliberately
+Scope (by request - post_engagement_snapshots deliberately
 left out, both are either disposable or regeneratable, not worth the extra
 D1 write quota):
   - keywords (and, as a hard FK prerequisite, any movies they need) that
@@ -184,7 +184,11 @@ async def _push_new_rows(
     )
 
     pushed = 0
+    stop_file = Path("/tmp/push_local_data_to_remote.STOP")
     for i in range(0, len(new_rows), batch_size):
+        if stop_file.exists():
+            logger.warning("push_stop_signal_received", table=table, pushed_so_far=pushed)
+            return pushed
         batch = new_rows[i : i + batch_size]
         pushed += await _insert_batch(d1_query, table, columns, batch, movie_remap, keyword_remap)
         logger.info("table_batch_pushed", table=table, pushed_so_far=pushed, of=len(new_rows))

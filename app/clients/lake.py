@@ -34,6 +34,13 @@ async def put_object(key: str, body: bytes, content_type: str = "application/gzi
         await s3.put_object(Bucket=settings.lake_bucket, Key=key, Body=body, ContentType=content_type)
 
 
+async def get_object(key: str) -> bytes:
+    async with _client() as s3:
+        response = await s3.get_object(Bucket=settings.lake_bucket, Key=key)
+        async with response["Body"] as body:
+            return await body.read()
+
+
 async def list_keys(prefix: str) -> list[str]:
     keys: list[str] = []
     async with _client() as s3:
