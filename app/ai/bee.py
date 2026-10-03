@@ -5,10 +5,10 @@ client, retry/backoff and concurrency budget live there (shared shape
 with app/ai/kira.py, but Bee gets its own semaphore keyed separately, so a Bee
 outage/rate-limit can't starve Kira or vice versa).
 
-Bee only writes the social-topic reports (topic clustering + narrative,
-app/ai/tasks/report.py), with Kira as the fallback when a Bee call fails
-or comes back unusable. Every classifier - post relevance, comment
-sentiment, import parsing - runs on Kira.
+Not used by default since 2026-10-03 (out of credit): reports and every
+classifier run on Kira. Bee only writes the social-topic reports again
+when the dashboard's report provider is set to "bee" (app/ai/tasks/
+report.py), with Kira as the fallback when a Bee call fails.
 """
 
 from __future__ import annotations

@@ -374,7 +374,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
         model=str((provider or {}).get("model") or DEFAULT_KIRA_MODEL),
         configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
         prompts=prompts,
-        active_report_provider=str(row.get("active_report_provider") or "bee"),
+        active_report_provider=str(row.get("active_report_provider") or "kira"),
         updated_at=row.get("updated_at"),
     )
 

@@ -589,7 +589,7 @@ async def _ensure_ai_settings_table() -> None:
             CREATE TABLE IF NOT EXISTS ai_settings (
                 id integer PRIMARY KEY CHECK (id = 1),
                 enabled boolean NOT NULL DEFAULT false,
-                model text NOT NULL DEFAULT 'qwen3.8-flash',
+                model text NOT NULL DEFAULT 'hy4',
                 prompts jsonb NOT NULL DEFAULT '{}'::jsonb,
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
@@ -605,7 +605,7 @@ async def _ensure_ai_settings_table() -> None:
         # LLM task left was report generation, which was hardcoded to Bee).
         await cur.execute(
             "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider "
-            "text NOT NULL DEFAULT 'bee'"
+            "text NOT NULL DEFAULT 'kira'"
         )
         await cur.execute(
             """
@@ -613,7 +613,7 @@ async def _ensure_ai_settings_table() -> None:
             VALUES (1, %s, %s, '{}'::jsonb)
             ON CONFLICT (id) DO NOTHING
             """,
-            (bool(settings.kira_enabled), "qwen3.8-flash"),
+            (bool(settings.kira_enabled), "hy4"),
         )
         await conn.commit()
     _ai_settings_ready = True
@@ -627,9 +627,9 @@ async def get_ai_settings() -> dict[str, Any]:
     return row or {
         "id": 1,
         "enabled": False,
-        "model": "qwen3.8-flash",
+        "model": "hy4",
         "prompts": {},
-        "active_report_provider": "bee",
+        "active_report_provider": "kira",
         "updated_at": None,
     }
 

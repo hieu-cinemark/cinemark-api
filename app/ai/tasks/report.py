@@ -5,11 +5,11 @@ calls). Both are fail-open (return None on any error), same convention as
 every classifier in this codebase - the caller decides what "no report
 this run" means.
 
-Reports are Beeknoee's only job (every classifier runs on Kira): Bee
-writes, and when a Bee call fails or returns something unusable (an
-error, a truncated or wrong-shaped JSON) the same prompt goes to Kira
-instead. The dashboard's AI settings tab can still point reports straight
-at Kira (app/ai/kira.py's active_report_provider(), default "bee").
+Kira writes reports by default (Bee ran out of credit on 2026-10-03);
+the dashboard's AI settings tab picks the provider (app/ai/kira.py's
+active_report_provider(), default "kira"). Picking "bee" makes Bee write
+first, and when a Bee call fails or returns something unusable (an error,
+a truncated or wrong-shaped JSON) the same prompt goes to Kira instead.
 call_kira's force=True bypasses the ingest-classifiers on/off switch, same
 as app/ai/tasks/import_parser.py's operator-triggered calls - a report run
 is its own explicit request."""
@@ -57,8 +57,8 @@ async def _call_provider(provider: str, *, task: str, system_prompt: str, user_p
 async def _generate(
     *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float, parse: Callable[[str], T]
 ) -> tuple[T, str]:
-    """Bee first, Kira as the fallback (just Kira when the dashboard points
-    reports at it). `parse` validates the response and raises when it's
+    """Just Kira by default; Bee first with Kira as the fallback when the
+    dashboard points reports at Bee. `parse` validates the response and raises when it's
     unusable, so a truncated/wrong-shaped answer falls back too, not only a
     failed call. Returns (parsed result, provider that produced it); raises
     the last error when every provider failed."""

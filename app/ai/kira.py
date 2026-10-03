@@ -50,7 +50,7 @@ async def load_ai_runtime() -> dict[str, Any]:
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
         return _ai_cfg_cache[1]
-    cfg: dict[str, Any] = {"enabled": False, "prompts": {}, "active_report_provider": "bee", "updated_at": None}
+    cfg: dict[str, Any] = {"enabled": False, "prompts": {}, "active_report_provider": "kira", "updated_at": None}
     try:
         from app.services.platform_config_db import get_ai_settings
 
@@ -58,7 +58,7 @@ async def load_ai_runtime() -> dict[str, Any]:
         cfg = {
             "enabled": bool(row.get("enabled")),
             "prompts": _normalize_prompts(row.get("prompts")),
-            "active_report_provider": (row.get("active_report_provider") or "bee").strip().lower(),
+            "active_report_provider": (row.get("active_report_provider") or "kira").strip().lower(),
             "updated_at": row.get("updated_at"),
         }
     except Exception as exc:
@@ -71,10 +71,11 @@ async def active_report_provider() -> str:
     """"kira" or "bee" - which provider app/ai/tasks/report.py's
     generate_topics_and_verbatims/generate_narrative should call, switchable
     from the dashboard's AI settings tab without touching ai_providers'
-    own credentials. Defaults to "bee" (report generation's original,
-    still-supported provider) if unset/unrecognized."""
+    own credentials. Defaults to "kira" if unset/unrecognized - Bee ran out
+    of credit on 2026-10-03; picking "bee" still works, with Kira as the
+    fallback."""
     value = (await load_ai_runtime())["active_report_provider"]
-    return value if value in ("kira", "bee") else "bee"
+    return value if value in ("kira", "bee") else "kira"
 
 
 def invalidate_ai_runtime_cache() -> None:

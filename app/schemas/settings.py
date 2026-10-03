@@ -239,7 +239,7 @@ class AiSettingsUpdate(BaseModel):
     enabled: bool
     model: str = Field(min_length=1, max_length=120)
     prompts: dict[str, str] = Field(default_factory=dict)
-    active_report_provider: str = Field(default="bee", pattern="^(kira|bee)$")
+    active_report_provider: str = Field(default="kira", pattern="^(kira|bee)$")
 
 
 class AiProviderOut(BaseModel):
