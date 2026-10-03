@@ -353,7 +353,7 @@ async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) ->
 
 
 async def _ai_settings_out(row: dict) -> AiSettingsOut:
-    from app.ai.defaults import AI_PROMPT_TASKS, DEFAULT_KIRA_MODEL, default_system_prompts
+    from app.ai.defaults import AI_PROMPT_TASKS, default_system_prompts
 
     provider = await db.get_ai_provider("kira")
     defaults = default_system_prompts()
@@ -371,7 +371,8 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
         )
     return AiSettingsOut(
         enabled=bool(row.get("enabled")),
-        model=str((provider or {}).get("model") or DEFAULT_KIRA_MODEL),
+        # Straight from ai_providers - empty means "not set yet", never a guess.
+        model=str((provider or {}).get("model") or ""),
         configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
         prompts=prompts,
         active_report_provider=str(row.get("active_report_provider") or "kira"),

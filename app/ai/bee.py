@@ -15,9 +15,7 @@ from __future__ import annotations
 
 from app.ai.client import call_ai, is_provider_configured, parse_json_response
 
-__all__ = ["DEFAULT_BEE_MODEL", "bee_is_configured", "call_bee", "parse_json_response"]
-
-DEFAULT_BEE_MODEL = "bee/claude-sonnet-5"
+__all__ = ["bee_is_configured", "call_bee", "parse_json_response"]
 
 
 async def bee_is_configured() -> bool:

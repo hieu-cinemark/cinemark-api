@@ -589,7 +589,7 @@ async def _ensure_ai_settings_table() -> None:
             CREATE TABLE IF NOT EXISTS ai_settings (
                 id integer PRIMARY KEY CHECK (id = 1),
                 enabled boolean NOT NULL DEFAULT false,
-                model text NOT NULL DEFAULT 'hy4',
+                model text NOT NULL DEFAULT '',
                 prompts jsonb NOT NULL DEFAULT '{}'::jsonb,
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
@@ -613,7 +613,7 @@ async def _ensure_ai_settings_table() -> None:
             VALUES (1, %s, %s, '{}'::jsonb)
             ON CONFLICT (id) DO NOTHING
             """,
-            (bool(settings.kira_enabled), "hy4"),
+            (bool(settings.kira_enabled), ""),
         )
         await conn.commit()
     _ai_settings_ready = True
@@ -627,7 +627,7 @@ async def get_ai_settings() -> dict[str, Any]:
     return row or {
         "id": 1,
         "enabled": False,
-        "model": "hy4",
+        "model": "",
         "prompts": {},
         "active_report_provider": "kira",
         "updated_at": None,

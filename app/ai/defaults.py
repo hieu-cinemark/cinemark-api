@@ -10,8 +10,6 @@ from app.ai.prompts.relevance import SYSTEM_PROMPT as RELEVANCE_SYSTEM_PROMPT
 from app.ai.prompts.report import NARRATIVE_SYSTEM_PROMPT, TOPICS_SYSTEM_PROMPT
 from app.ai.prompts.sentiment import SENTIMENT_SYSTEM_PROMPT
 
-DEFAULT_KIRA_MODEL = "qwen3.8-flash"
-
 _HASHTAG_BFS_PROMPT = """
 You are a hashtag relevance classifier for a TikTok content-discovery pipeline.
 
