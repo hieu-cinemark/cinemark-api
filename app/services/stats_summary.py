@@ -355,7 +355,11 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
 
 
 async def rebuild_from_source() -> dict[str, int]:
-    """Wipe + refill both rollup tables from posts/comments. One-shot."""
+    """Wipe + refill both rollup tables from posts/comments. Run by hand
+    (scripts/rebuild_stats_summaries.py) and after every irrelevant-post
+    purge that deleted rows (app/services/cleanup.py). The posts INSERTs
+    upsert because the ingest consumer can re-create a (day, platform) row
+    between the DELETE and the refill."""
     await ensure_stats_tables()
     # Full-table aggregates can exceed the default 10s D1 HTTP timeout.
     slow = 120.0
@@ -370,6 +374,9 @@ async def rebuild_from_source() -> dict[str, int]:
         FROM posts
         WHERE scraped_at IS NOT NULL AND length(scraped_at) >= 10
         GROUP BY substr(scraped_at, 1, 10), platform
+        ON CONFLICT(day, platform) DO UPDATE SET
+            posts = excluded.posts,
+            last_scraped_at = excluded.last_scraped_at
         """,
         timeout=slow,
     )
@@ -403,6 +410,9 @@ async def rebuild_from_source() -> dict[str, int]:
         FROM posts
         WHERE keyword_id IS NOT NULL AND scraped_at IS NOT NULL AND length(scraped_at) >= 10
         GROUP BY substr(scraped_at, 1, 10), keyword_id, platform
+        ON CONFLICT(day, keyword_id) DO UPDATE SET
+            posts = excluded.posts,
+            last_scraped_at = excluded.last_scraped_at
         """,
         timeout=slow,
     )

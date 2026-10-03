@@ -31,6 +31,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.services import platform_config_db as db
 from app.services.d1 import d1_query
+from app.services.stats_summary import rebuild_from_source
 
 logger = get_logger(__name__)
 
@@ -116,6 +117,18 @@ async def purge_irrelevant_posts(
         )
         totals["posts"] += len(await _run(f"DELETE FROM posts WHERE id IN ({id_list}) RETURNING id", []))
         totals["batches"] += 1
+
+    if totals["posts"]:
+        # The Overview page's totals come from the stats_*_daily rollups,
+        # which only ever count up on insert - without this they keep
+        # showing every deleted post/comment. The rows are already gone, so
+        # a failed rebuild is reported but doesn't fail the purge.
+        try:
+            await rebuild_from_source()
+            totals["stats_rebuilt"] = True
+        except Exception as exc:
+            totals["stats_rebuilt"] = False
+            logger.error("irrelevant_purge_stats_rebuild_failed", error=str(exc))
 
     backlog = await _run(f"SELECT count(*) AS n FROM posts WHERE {_ELIGIBLE}", [grace])
     totals["remaining_posts"] = backlog[0]["n"]
