@@ -119,6 +119,9 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
         # whatever model Kira was actually running. Sonnet 5 comfortably
         # supports a much larger output window, so there's real headroom to
         # spend here rather than trimming the prompt/shape instead.
+        # Raised to 150000 (2026-10-04) now that Kira writes reports - not yet
+        # confirmed that Kira's model accepts an output budget this large; if
+        # every topics call starts failing, lower it first.
         #
         # temperature=0.3, not 0.0: confirmed live that Beeknoee caches by
         # (model, messages, temperature) but NOT max_tokens - the very
@@ -136,7 +139,7 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
             task="topics",
             system_prompt=TOPICS_SYSTEM_PROMPT,
             user_prompt=prompt,
-            max_tokens=45000,
+            max_tokens=150000,
             temperature=0.3,
             parse=_parse_topics,
         )
