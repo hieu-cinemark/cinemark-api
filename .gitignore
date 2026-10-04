@@ -11,3 +11,6 @@ scripts/_*.csv
 
 # Local D1 table exports taken before pushing data to remote - data, not source.
 .pre-push-backup/
+
+# Local silver/gold output when trying the lake jobs out (scripts/build_silver.py --local).
+.lake-local/

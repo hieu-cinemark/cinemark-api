@@ -173,7 +173,10 @@ async def _drop(*, platform: str | None, post_id: Any, reason: str, keyword_id: 
 
 async def handle_post(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
-    post_id = payload.get("post_id")
+    # TikTok payloads carry the id as video_id - without the fallback every
+    # TikTok ingest decision went out with post_id=None and could never be
+    # joined back to its post in the lake (app/lake/silver.py).
+    post_id = payload.get("post_id") or payload.get("video_id")
 
     mapper = get_post_mapper(platform)
     if mapper is None:
