@@ -1,9 +1,8 @@
-"""Lexicon-based 3-way sentiment for movie comments (positive/negative/neutral).
+"""Phân loại cảm xúc 3 nhóm dựa trên từ điển cho comment phim (positive/negative/neutral).
 
-Matches labels in app/ai/tasks/sentiment.py and the Social Topic dashboard.
-Used for bulk backfill when Kira is unavailable or for fast heuristic
-labeling - see scripts/label_comment_sentiment_lexicon.py and
-app/services/sentiment_lexicon.md.
+Dùng cùng nhãn với app/ai/tasks/sentiment.py và dashboard Social Topic. Dùng để
+backfill hàng loạt khi Kira không dùng được hoặc để gắn nhãn nhanh theo heuristic -
+xem scripts/label_comment_sentiment_lexicon.py và app/services/sentiment_lexicon.md.
 """
 
 from __future__ import annotations
@@ -14,7 +13,7 @@ from app.services.d1 import MIN_CONTENT_LENGTH
 
 VALID_SENTIMENTS = frozenset({"positive", "negative", "neutral"})
 
-# Longer / more specific phrases first so "không xem" beats bare "xem".
+# Cụm dài / cụ thể hơn đặt trước để "không xem" thắng "xem" trơ trọi.
 _POSITIVE = (
     "ủng hộ phim",
     "ủng hộ",
@@ -138,8 +137,8 @@ _NEUTRAL_QUESTION = (
     "suất chiếu",
 )
 
-# Sarcasm / negation overrides: if these fire, prefer negative even with
-# positive lexicon hits (unless a stronger "không hay sao" style flip).
+# Ghi đè cho mỉa mai / phủ định: nếu khớp những cụm này thì ưu tiên negative kể cả khi
+# có từ tích cực (trừ khi có kiểu đảo nghĩa mạnh hơn như "không hay sao").
 _SARCASM_NEG = (
     "flop chắc",
     "chắc flop",
@@ -160,13 +159,13 @@ def _count_hits(text: str, phrases: tuple[str, ...]) -> int:
 
 
 def classify_sentiment_lexicon(message: str | None) -> str | None:
-    """Returns positive/negative/neutral, or None if message too short."""
+    """Trả về positive/negative/neutral, hoặc None nếu message quá ngắn."""
     if not message or len(message.strip()) < MIN_CONTENT_LENGTH:
         return None
 
     raw = message.strip()
     text = raw.lower()
-    # Normalize elongated vowels a bit: "hayyy" -> "hayy" still matches "hay"
+    # Chuẩn hoá bớt nguyên âm kéo dài: "hayyy" -> "hayy" vẫn khớp "hay"
     text_compact = re.sub(r"(.)\1{2,}", r"\1\1", text)
 
     if any(p in text_compact for p in _POSITIVE_FLIP):
@@ -178,7 +177,7 @@ def classify_sentiment_lexicon(message: str | None) -> str | None:
     neg = _count_hits(text_compact, _NEGATIVE)
     neu_q = _count_hits(text_compact, _NEUTRAL_QUESTION)
 
-    # Question-only info seeking with no opinion words.
+    # Chỉ hỏi thông tin, không có từ nào thể hiện ý kiến.
     if neu_q and pos == 0 and neg == 0:
         return "neutral"
 
@@ -187,9 +186,9 @@ def classify_sentiment_lexicon(message: str | None) -> str | None:
     if neg > pos:
         return "negative"
     if pos == neg and pos > 0:
-        # Tie with signals both ways — lean on trailing clause / "nhưng".
+        # Hoà nhau khi có tín hiệu cả hai phía — dựa vào vế cuối / "nhưng".
         if "nhưng" in text_compact or " nhưng " in f" {text_compact} ":
-            # After "nhưng" usually carries the stance.
+            # Phần sau "nhưng" thường mang quan điểm.
             after = text_compact.split("nhưng", 1)[-1]
             pos_a = _count_hits(after, _POSITIVE)
             neg_a = _count_hits(after, _NEGATIVE)
@@ -199,7 +198,7 @@ def classify_sentiment_lexicon(message: str | None) -> str | None:
                 return "positive"
         return "neutral"
 
-    # Emoji-only lean (weak).
+    # Nghiêng theo emoji khi chỉ có emoji (yếu).
     if any(e in raw for e in ("❤️", "😍", "🔥")) and neg == 0:
         return "positive"
     if "😂" in raw and pos == 0 and ("dở" in text_compact or "tệ" in text_compact or "flop" in text_compact):

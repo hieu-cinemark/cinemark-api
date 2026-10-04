@@ -1,7 +1,7 @@
-"""Per-table D1 repositories - see posts.py/comments.py. Each repository
-owns the raw SQL for one table (schema in cinemark-scraper/src/db/schema.ts)
-so app/services/d1.py doesn't have to; that module stays the transport
-(HTTP-vs-local d1_query) every repository calls through."""
+"""Repository D1 theo từng bảng - xem posts.py/comments.py. Mỗi repository giữ phần SQL
+thô của một bảng (schema ở cinemark-scraper/src/db/schema.ts) để app/services/d1.py
+không phải giữ; module đó chỉ còn là tầng truyền tải (d1_query qua HTTP hoặc local)
+mà mọi repository gọi qua."""
 
 from __future__ import annotations
 

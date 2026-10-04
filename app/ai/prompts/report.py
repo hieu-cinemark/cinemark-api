@@ -1,9 +1,8 @@
-# Two prompt pairs used by scripts/generate_social_topic_reports.py, split
-# into two separate Kira calls per movie per run rather than one combined
-# call - see that script's module docstring for why (large structured
-# output risks truncation on a reasoning model; isolating the small
-# narrative call means a narrative failure doesn't waste the topics/
-# verbatims work).
+# Hai cặp prompt dùng bởi scripts/generate_social_topic_reports.py, tách thành hai
+# lời gọi Kira riêng cho mỗi phim mỗi lần chạy thay vì gộp một lời gọi - xem
+# docstring module của script đó để biết lý do (đầu ra có cấu trúc lớn dễ bị cắt trên
+# model có reasoning; tách riêng lời gọi narrative nhỏ giúp narrative lỗi không làm
+# phí công phần topics/verbatims).
 
 TOPICS_SYSTEM_PROMPT = """
 You are an AI social-listening analyst summarizing audience comments about a

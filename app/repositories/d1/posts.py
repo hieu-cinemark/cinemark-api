@@ -1,23 +1,19 @@
-"""Everything that reads/writes D1's `posts` table (+
-post_engagement_snapshots sibling) - the same rows cinemark-scraper's
-Worker owns (see api/schema/scraper.ts there). Pulled out of the old
-app/services/d1.py monolith so this table's query patterns, pagination,
-and indexes live in one place instead of being mixed in with
-movies/keywords/comments.
+"""Mọi thứ đọc/ghi bảng `posts` của D1 (+ bảng anh em post_engagement_snapshots) -
+chính các dòng mà Worker của cinemark-scraper sở hữu (xem api/schema/scraper.ts bên
+đó). Tách ra từ khối d1.py lớn cũ trong app/services để các mẫu query, phân trang và
+index của bảng này nằm một chỗ thay vì trộn lẫn với movies/keywords/comments.
 
-app/services/d1.py still re-exports every name below (persist_post,
-list_posts, ...) so existing `from app.services.d1 import persist_post`
-call sites (ingest_consumer, scripts, tests) don't need to change - only
-new code needs to reach for `post_repo` directly.
+app/services/d1.py vẫn re-export mọi tên bên dưới (persist_post, list_posts, ...)
+để các chỗ gọi `from app.services.d1 import persist_post` hiện có (ingest_consumer,
+scripts, tests) không phải sửa - chỉ code mới mới cần dùng thẳng `post_repo`.
 
-The old `dropped_posts` table used to live in this repo (see git history)
-to archive raw Kafka payloads dropped at ingest before they reached
-persist_post (unregistered mapper, missing/unknown keyword_id). The
-ingest_consumer now writes those drops to the `ingest_decisions` Kafka
-topic (see app/clients/kafka.py:publish_ingest_decision) instead, and
-the lake writer (app/workers/lake_writer/main.py) archives the entire
-stream to R2 under bronze/entity=decisions/. Replay any historical drop
-from there, not from D1."""
+Bảng `dropped_posts` cũ từng nằm trong repo này (xem lịch sử git) để lưu payload
+Kafka thô bị loại lúc ingest trước khi tới persist_post (mapper chưa đăng ký,
+keyword_id thiếu/không biết). Giờ ingest_consumer ghi các bài bị loại đó lên topic
+Kafka `ingest_decisions` (xem app/clients/kafka.py:publish_ingest_decision), và lake
+writer (app/workers/lake_writer/main.py) lưu toàn bộ luồng đó lên R2 dưới
+bronze/entity=decisions/. Muốn phát lại một bài bị loại trong quá khứ thì lấy từ đó,
+không phải từ D1."""
 
 from __future__ import annotations
 
@@ -38,84 +34,76 @@ logger = get_logger(__name__)
 
 ENGAGEMENT_FIELDS = ("like_count", "reply_count", "repost_count", "quote_count", "reshare_count", "view_count")
 
-# Below this many characters (after trimming), a post's content is treated
-# as junk - a bare reaction/emoji/one-word comment with nothing to analyze.
-# Tune freely; this is a judgment call, not derived from anything.
+# Dưới số ký tự này (sau khi trim), nội dung bài bị coi là rác - một reaction/emoji/
+# comment một chữ trơ trọi, không có gì để phân tích. Chỉnh thoải mái; đây là con số
+# cảm tính, không suy ra từ đâu cả.
 MIN_CONTENT_LENGTH = 10
 
-#  Interactions only, deliberately excluding view_count: a view is a passive
-# impression, not a "tương tác" (interaction) - a big view count would
-# otherwise dominate the sort outright, since it's routinely 10-100x the
-# size of like/reply/repost/quote/reshare counts combined and would make
-# this look like a "most viewed" sort wearing an "engagement" label.
+# Chỉ tính tương tác, cố ý bỏ view_count: lượt xem là hiển thị thụ động, không phải
+# "tương tác" - nếu không, số lượt xem lớn sẽ áp đảo hoàn toàn thứ tự sắp xếp, vì nó
+# thường lớn gấp 10-100 lần tổng số like/reply/repost/quote/reshare cộng lại, biến
+# cách sắp xếp này thành "xem nhiều nhất" khoác nhãn "tương tác".
 _ENGAGEMENT_SCORE_SQL = "(p.like_count + p.reply_count + p.repost_count + p.quote_count + p.reshare_count)"
 
-# Spaces / punctuation stripped so "#Anh Hùng" and "#AnhHung" both match
-# the movie title "Anh Hùng".
+# Bỏ khoảng trắng / dấu câu để "#Anh Hùng" và "#AnhHung" đều khớp tên phim "Anh Hùng".
 _HASHTAG_STRIP = re.compile(r"[\s._-]+")
 
-# "This post counts as about its movie" for report/top-list/comment-sweep
-# queries. relevance_label is only written when a classifier actually ran:
-# a post admitted by the ingest substring shortcut (its text contains the
-# keyword, e.g. every post found via a movie's own hashtag) keeps a NULL
-# label with keyword_match=1. Requiring relevance_label='related' alone
-# silently excluded all of those - confirmed 2026-09-28 on "SCOTTY: GIẢI
-# CỨU HOÀNG THƯỢNG": 115 sentiment-classified comments, every one under a
-# NULL-labeled post, so its report said "not enough comments". A label a
-# classifier or rule did write (not_related/uncertain) still wins.
+# "Bài này được tính là nói về phim của nó" cho các query report/danh sách top/quét
+# comment. relevance_label chỉ được ghi khi bộ phân loại thực sự chạy: bài được nhận
+# qua lối tắt chuỗi con lúc ingest (nội dung chứa từ khoá, ví dụ mọi bài tìm được qua
+# chính hashtag của phim) giữ nhãn NULL với keyword_match=1. Chỉ đòi
+# relevance_label='related' thì đã âm thầm loại hết những bài đó - đã xác nhận
+# 2026-09-28 với "SCOTTY: GIẢI CỨU HOÀNG THƯỢNG": 115 comment đã phân loại cảm xúc,
+# tất cả đều nằm dưới bài có nhãn NULL, nên report của phim báo "không đủ comment".
+# Nhãn mà bộ phân loại hoặc quy tắc đã ghi (not_related/uncertain) vẫn được ưu tiên.
 RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NULL AND p.keyword_match > 0))"
 
 
-# --- indexes -------------------------------------------------------------
-# Every index below exists because a real query in this file (or
-# ingest_consumer's persist_post upsert-check) filters/sorts on exactly
-# those columns - see each comment for which one. None of this is
-# speculative: the table had zero indexes beyond the `id` primary key until
-# 2026-09-21 (verified via PRAGMA index_list against the local mirror),
-# meaning every one of these was previously a full table scan.
+# --- index ---------------------------------------------------------------
+# Mỗi index bên dưới tồn tại vì có một query thật trong file này (hoặc phần kiểm tra
+# upsert persist_post của ingest_consumer) lọc/sắp xếp đúng trên các cột đó - xem từng
+# comment để biết là query nào. Không có cái nào là phỏng đoán: tới 2026-09-21 bảng
+# này không có index nào ngoài khoá chính `id` (đã kiểm tra bằng PRAGMA index_list
+# trên bản sao local), nghĩa là trước đó mọi query này đều quét toàn bảng.
 _POST_INDEXES = (
-    # /stats/posts with no platform filter (the dashboard's default "All
-    # platforms" tab - see spider-hub-dashboard's PostsReview.tsx) sorts by
-    # scraped_at with no WHERE at all - the (platform, scraped_at) index
-    # below can't serve that (rows aren't globally scraped_at-ordered
-    # unless platform is also pinned), so this plain one covers it.
+    # /stats/posts không lọc nền tảng (tab mặc định "All platforms" của dashboard - xem
+    # PostsReview.tsx của spider-hub-dashboard) sắp xếp theo scraped_at mà không có WHERE
+    # nào - index (platform, scraped_at) bên dưới không phục vụ được (các dòng không được
+    # sắp theo scraped_at trên toàn cục trừ khi cố định cả platform), nên index đơn giản
+    # này phủ trường hợp đó.
     "CREATE INDEX IF NOT EXISTS idx_posts_scraped_at ON posts(scraped_at DESC)",
-    # /stats/posts?platform=X (a platform tab) - list_posts' WHERE
-    # platform = ? ORDER BY scraped_at DESC.
+    # /stats/posts?platform=X (một tab nền tảng) - WHERE platform = ? ORDER BY scraped_at
+    # DESC của list_posts.
     "CREATE INDEX IF NOT EXISTS idx_posts_platform_scraped_at ON posts(platform, scraped_at DESC)",
-    # Top posts by keyword (TopPostsModal / useTopPostsByKeyword) and the
-    # daily top-comments sweep (list_posts_needing_comments) both filter on
-    # keyword_id alone (a keyword already implies one platform, so this
-    # single column is selective enough without a composite).
+    # Top bài theo từ khoá (TopPostsModal / useTopPostsByKeyword) và lượt quét top comment
+    # hằng ngày (list_posts_needing_comments) đều chỉ lọc theo keyword_id (một từ khoá đã
+    # ngầm thuộc một nền tảng, nên một cột này đủ chọn lọc mà không cần index ghép).
     "CREATE INDEX IF NOT EXISTS idx_posts_keyword_id ON posts(keyword_id)",
-    # Top posts by movie (TopPostsModal / useTopPostsByMovie) filters on
-    # movie_id alone, same reasoning.
+    # Top bài theo phim (TopPostsModal / useTopPostsByMovie) chỉ lọc theo movie_id, cùng
+    # lý do.
     "CREATE INDEX IF NOT EXISTS idx_posts_movie_id ON posts(movie_id)",
-    # persist_post's own upsert-check (SELECT ... WHERE platform = ? AND
-    # external_id = ?) and get_post_by_external_id run on *every single*
-    # ingested post - by far the hottest query against this table. Not
-    # UNIQUE: the local mirror already has a handful of pre-existing
-    # (platform, external_id) duplicates from before this index existed
-    # (a persist_post race - see that function's own docstring assuming a
-    # unique index that never actually existed) - adding UNIQUE now would
-    # just fail to create. Deduping those is a separate, deliberate
-    # decision, not something to fold into an index migration.
+    # Phần kiểm tra upsert của persist_post (SELECT ... WHERE platform = ? AND
+    # external_id = ?) và get_post_by_external_id chạy trên *từng* bài được ingest - query
+    # nóng nhất trên bảng này, bỏ xa các query khác. Không UNIQUE: bản sao local đã có sẵn
+    # vài dòng trùng (platform, external_id) từ trước khi có index này (do race trong
+    # persist_post - xem docstring của hàm đó vốn giả định có một unique index chưa bao
+    # giờ thực sự tồn tại) - thêm UNIQUE bây giờ sẽ tạo không thành. Khử trùng những dòng
+    # đó là một quyết định riêng, có chủ đích, không gộp vào một lần migrate index.
     "CREATE INDEX IF NOT EXISTS idx_posts_platform_external_id ON posts(platform, external_id)",
 )
 
-# Built once in the background (see ensure_tab_filter_indexes) - never
-# from list_posts. CREATE INDEX on the live posts table via D1 HTTP can
-# exceed the 10s query timeout and, while it runs, starve every other
-# dashboard query (the tab-switch failures logged as d1_request_failed).
+# Dựng một lần ở nền (xem ensure_tab_filter_indexes) - không bao giờ từ list_posts.
+# CREATE INDEX trên bảng posts đang chạy qua D1 HTTP có thể vượt timeout query 10s và,
+# trong lúc chạy, bỏ đói mọi query dashboard khác (các lần chuyển tab bị lỗi được log
+# là d1_request_failed).
 _TAB_FILTER_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_posts_keyword_match_scraped_at ON posts(keyword_match, scraped_at DESC)",
-    # The cinemark Worker's /api/social/heat and /api/comparison/* all
-    # filter posts by movie_id IN (...) AND a posted_at range AND
-    # keyword_match > 0. With only the single-column movie_id index they
-    # read every post of the movie (22,932 rows to return 825 for the
-    # largest, measured 2026-09-28). Partial on keyword_match > 0 (~23% of
-    # posts) so the index holds only rows those queries can return; SQLite
-    # only uses it when the query repeats that exact condition.
+    # /api/social/heat và /api/comparison/* của Worker cinemark đều lọc bài theo
+    # movie_id IN (...) VÀ khoảng posted_at VÀ keyword_match > 0. Chỉ với index một cột
+    # movie_id thì chúng đọc mọi bài của phim (22.932 dòng để trả về 825 với phim lớn
+    # nhất, đo 2026-09-28). Index một phần trên keyword_match > 0 (khoảng 23% số bài) để
+    # index chỉ chứa những dòng các query đó có thể trả về; SQLite chỉ dùng nó khi query
+    # lặp lại đúng điều kiện đó.
     "CREATE INDEX IF NOT EXISTS idx_posts_movie_matched_posted_at ON posts(movie_id, posted_at) WHERE keyword_match > 0",
 )
 
@@ -136,15 +124,15 @@ async def _ensure_post_indexes() -> None:
 
 
 async def ensure_tab_filter_indexes() -> None:
-    """CREATE INDEX for PostsReview related/unrelated tabs. Safe to call
-    from app startup as a background task - IF NOT EXISTS, 90s timeout."""
+    """CREATE INDEX cho các tab related/unrelated của PostsReview. Gọi từ lúc app khởi động
+    dưới dạng task nền là an toàn - IF NOT EXISTS, timeout 90s."""
     for sql in _TAB_FILTER_INDEXES:
         await d1_query(sql, quiet=True, timeout=90.0)
 
 
 def post_mentions_movie(content: str | None, title: str | None) -> bool:
-    """True when the post text contains the movie's full title, or a
-    hashtag of that title with spaces stripped (#AnhHùng for "Anh Hùng")."""
+    """True khi nội dung bài chứa đầy đủ tên phim, hoặc hashtag của tên đó đã bỏ khoảng
+    trắng (#AnhHùng cho "Anh Hùng")."""
     if not content or not title:
         return False
     text = content.casefold()
@@ -161,10 +149,10 @@ def post_mentions_movie(content: str | None, title: str | None) -> bool:
 
 
 def _fold_for_keyword_match(text: str) -> str:
-    """Lowercase, strip Vietnamese diacritics, remove spaces - ported from
-    cinemark-scraper's src/lib/keyword-match.ts foldForKeywordMatch() so a
-    post ingested here agrees with how posts in the same table compute
-    keyword_match, whichever platform scraped it."""
+    """Chuyển chữ thường, bỏ dấu tiếng Việt, bỏ khoảng trắng - chuyển từ
+    foldForKeywordMatch() trong src/lib/keyword-match.ts của cinemark-scraper để bài
+    ingest ở đây tính keyword_match giống với các bài khác trong cùng bảng, bất kể nền
+    tảng nào crawl."""
     decomposed = unicodedata.normalize("NFD", text)
     without_marks = "".join(c for c in decomposed if not unicodedata.combining(c))
     without_dd = without_marks.replace("đ", "d").replace("Đ", "D")
@@ -172,9 +160,9 @@ def _fold_for_keyword_match(text: str) -> str:
 
 
 def _keyword_match_parts(keyword: str) -> list[str]:
-    """Normal keyword -> one phrase that must appear in full; `+`-joined
-    keyword -> every part must appear (any order) - mirrors
-    keywordMatchParts() in keyword-match.ts."""
+    """Từ khoá thường -> một cụm phải xuất hiện đầy đủ; từ khoá nối bằng `+` -> mọi phần
+    đều phải xuất hiện (thứ tự nào cũng được) - giống keywordMatchParts() trong
+    keyword-match.ts."""
     if "+" in keyword:
         return [part.strip() for part in keyword.split("+") if part.strip()]
     trimmed = keyword.strip()
@@ -182,12 +170,11 @@ def _keyword_match_parts(keyword: str) -> list[str]:
 
 
 def contains_keyword(content: str | None, keyword: str | None) -> bool:
-    """Exact-substring keyword_match check. Public (not just persist_post's
-    own fallback) so callers - see app/workers/ingest_consumer/main.py's
-    handle_post - can check this cheap/free match first and only spend a
-    Kira call (see app/ai/tasks/post_relevance.py) on the posts it actually misses,
-    instead of classifying every single post regardless of whether the
-    free check already found a match."""
+    """Kiểm tra keyword_match theo chuỗi con chính xác. Để public (không chỉ là phương án
+    dự phòng riêng của persist_post) để chỗ gọi - xem handle_post trong
+    app/workers/ingest_consumer/main.py - có thể kiểm tra lối khớp rẻ/miễn phí này trước
+    và chỉ tốn một lời gọi Kira (xem app/ai/tasks/post_relevance.py) cho những bài nó
+    thực sự bỏ sót, thay vì phân loại mọi bài bất kể kiểm tra miễn phí đã khớp hay chưa."""
     if not content or not keyword:
         return False
     haystack = _fold_for_keyword_match(content)
@@ -202,42 +189,40 @@ def contains_keyword(content: str | None, keyword: str | None) -> bool:
 
 
 _HASHTAG_TOKEN_RE = re.compile(r"#(\w+)", re.UNICODE)
-_VIETNAMESE_COMBINING_MARKS = ("̛", "̣", "̉")  # horn (ư/ơ), dot-below, hook-above tones
+_VIETNAMESE_COMBINING_MARKS = ("̛", "̣", "̉")  # dấu móc (ư/ơ), dấu nặng, dấu hỏi
 
 
 def _tag_form(text: str) -> str:
-    """Folded (see _fold_for_keyword_match) with every non-alphanumeric
-    character removed - the shape a hashtag token has."""
+    """Dạng đã fold (xem _fold_for_keyword_match) và bỏ mọi ký tự không phải chữ/số - đúng
+    dạng của một token hashtag."""
     return re.sub(r"[\W_]+", "", _fold_for_keyword_match(text))
 
 
 def _looks_vietnamese(text: str) -> bool:
-    """Cheap language signal, not a real detector: đ, plus the combining
-    horn (ư/ơ) and dot-below/hook-above tone marks (NFD-decomposed) are, in
-    practice, essentially unique to Vietnamese among the languages that
-    actually turn up in this crawl data - grave/acute/tilde alone are
-    shared with Spanish/French/Portuguese so aren't used here on their
-    own. Used only as movie_hashtag_present's tie-breaker for its weaker
-    signal (an exact but short/ambiguous hashtag token, no literal title
-    anywhere) - a real Vietnamese sentence of any normal length almost
-    always has at least one of these; genuinely unrelated foreign-language
-    content sharing that same short hashtag by coincidence won't."""
+    """Tín hiệu ngôn ngữ rẻ tiền, không phải bộ nhận diện thật: đ, cộng với dấu móc kết hợp
+    (ư/ơ) và dấu nặng/dấu hỏi (đã tách theo NFD), trên thực tế gần như chỉ có ở tiếng
+    Việt trong các ngôn ngữ thực sự xuất hiện trong dữ liệu crawl này - dấu huyền/sắc/ngã
+    đứng riêng thì trùng với tiếng Tây Ban Nha/Pháp/Bồ Đào Nha nên không dùng riêng ở
+    đây. Chỉ dùng làm tiêu chí phân xử cho tín hiệu yếu hơn của movie_hashtag_present
+    (token hashtag khớp chính xác nhưng ngắn/mơ hồ, không có tên phim nguyên văn ở đâu
+    cả) - một câu tiếng Việt thật có độ dài bình thường gần như luôn có ít nhất một dấu
+    này; nội dung tiếng nước ngoài thật sự không liên quan mà tình cờ dùng chung hashtag
+    ngắn đó thì không."""
     if "đ" in text.lower():
         return True
     decomposed = unicodedata.normalize("NFD", text)
     return any(mark in decomposed for mark in _VIETNAMESE_COMBINING_MARKS)
 
 
-# --- author reputation ----------------------------------------------------
-# Corroborates movie_hashtag_present's weakest signal (a bare literal title
-# match with no hashtag backing it) for a movie whose title also happens to
-# be ordinary vocabulary - see that function's own module docstring for the
-# "Huyết Thống" incident this exists to close. An author's reputation is
-# built by scripts/build_author_reputation.py re-checking their own past
-# relevance_label='related' posts with movie_hashtag_present's STRONG
-# signals only (is_reputable_author defaults to False - see that param) -
-# never the weak signal this table is itself meant to corroborate, so there
-# is no circularity: reputation can only be earned via hashtag evidence.
+# --- uy tín tác giả --------------------------------------------------------
+# Củng cố tín hiệu yếu nhất của movie_hashtag_present (chỉ khớp tên phim nguyên văn,
+# không có hashtag nào hỗ trợ) cho phim có tên cũng là từ vựng thông thường - xem
+# docstring của hàm đó về sự cố "Huyết Thống" mà phần này sinh ra để xử lý. Uy tín của
+# một tác giả được dựng bởi scripts/build_author_reputation.py bằng cách kiểm tra lại
+# các bài relevance_label='related' trước đây của chính họ chỉ với các tín hiệu MẠNH
+# của movie_hashtag_present (is_reputable_author mặc định False - xem tham số đó) -
+# không bao giờ dùng chính tín hiệu yếu mà bảng này dùng để củng cố, nên không có vòng
+# lặp: uy tín chỉ có được qua bằng chứng hashtag.
 
 MIN_MOVIES_FOR_REPUTABLE_AUTHOR = 2
 _REPUTABLE_AUTHORS_TTL_SECONDS = 300.0
@@ -267,12 +252,12 @@ async def ensure_author_reputation_table() -> None:
 
 
 async def reputable_authors() -> set[tuple[str, str]]:
-    """{(platform, author)} confirmed across >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR
-    distinct movies - cached in-process for _REPUTABLE_AUTHORS_TTL_SECONDS
-    (this table only changes when someone re-runs the build script, not
-    request-to-request, so a short cache avoids one extra D1 round trip per
-    call). Callers check `(platform, author) in reputable_authors()` and
-    pass the result as movie_hashtag_present's is_reputable_author."""
+    """Tập {(platform, author)} đã được xác nhận trên >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR
+    phim khác nhau - cache trong tiến trình _REPUTABLE_AUTHORS_TTL_SECONDS giây (bảng
+    này chỉ đổi khi có người chạy lại script dựng, không đổi giữa các request, nên cache
+    ngắn giúp tránh thêm một lượt gọi D1 mỗi lần). Chỗ gọi kiểm tra
+    `(platform, author) in reputable_authors()` rồi truyền kết quả làm
+    is_reputable_author của movie_hashtag_present."""
     global _reputable_authors_cache
     now = time.monotonic()
     if _reputable_authors_cache is not None and now - _reputable_authors_cache[0] < _REPUTABLE_AUTHORS_TTL_SECONDS:
@@ -290,52 +275,46 @@ async def reputable_authors() -> set[tuple[str, str]]:
 def movie_hashtag_present(
     content: str | None, movie_title: str | None, keyword: str | None, *, is_reputable_author: bool = False
 ) -> bool:
-    """Stricter companion to post_mentions_movie/contains_keyword, for
-    callers that want to trust relevance_label='related' (an AI or
-    substring verdict - see persist_post's own docstring: keyword_match is
-    just a mirror of relevance_label whenever the AI was actually invoked,
-    NOT independent corroborating evidence) only when the post text itself
-    also, independently, names this movie. Three signals, strongest first:
+    """Bản chặt hơn của post_mentions_movie/contains_keyword, cho các chỗ gọi chỉ muốn tin
+    relevance_label='related' (một phán quyết của AI hoặc chuỗi con - xem docstring của
+    persist_post: keyword_match chỉ là bản sao của relevance_label mỗi khi AI thực sự
+    được gọi, KHÔNG phải bằng chứng củng cố độc lập) khi chính nội dung bài cũng nêu tên
+    phim này một cách độc lập. Ba tín hiệu, mạnh nhất trước:
 
-    1. The movie title's space-stripped hashtag form (e.g. "#HoangHauCuoiCung"
-       for "Hoàng Hậu Cuối Cùng") appearing verbatim - deliberate hashtagging
-       of the WHOLE title, trusted regardless of who posted it.
+    1. Dạng hashtag bỏ khoảng trắng của tên phim (ví dụ "#HoangHauCuoiCung" cho "Hoàng
+       Hậu Cuối Cùng") xuất hiện nguyên văn - hashtag có chủ đích TOÀN BỘ tên phim, được
+       tin bất kể ai đăng.
 
-    2. A whole hashtag TOKEN whose folded form (see _fold_for_keyword_match -
-       diacritics/case/whitespace-insensitive) exactly equals the movie's own
-       folded title or configured keyword. Whole-token equality on purpose,
-       not substring containment like contains_keyword: a short/generic
-       folded keyword (e.g. "Mẹ Mìn" folds to "memin") can coincidentally be
-       a SUBSTRING of a completely unrelated longer hashtag (confirmed live
-       2026-09-24: a Mexican snack brand's
-       "#botanasmemin"/"#echatelabotanaconbotanasmemin" posts scored 99%+
-       "related" purely off that coincidence). Still needs
-       _looks_vietnamese(content) too: "#memin" is ALSO an existing
-       nickname/cultural reference in Spanish (a classic Mexican comic
-       character) sharing that exact token, not just a substring of it - see
-       that function's own docstring.
+    2. Một TOKEN hashtag nguyên vẹn có dạng fold (xem _fold_for_keyword_match - không
+       phân biệt dấu/hoa thường/khoảng trắng) bằng đúng tên phim hoặc từ khoá đã cấu hình
+       (cũng ở dạng fold). Cố ý so sánh nguyên token, không chứa chuỗi con như
+       contains_keyword: một từ khoá ngắn/chung chung sau khi fold (ví dụ "Mẹ Mìn" thành
+       "memin") có thể tình cờ là CHUỖI CON của một hashtag dài hơn hoàn toàn không liên
+       quan (đã xác nhận thực tế 2026-09-24: các bài
+       "#botanasmemin"/"#echatelabotanaconbotanasmemin" của một hãng snack Mexico đạt
+       99%+ "related" chỉ vì trùng hợp đó). Vẫn cần thêm _looks_vietnamese(content):
+       "#memin" CŨNG là một biệt danh/hình ảnh văn hoá có sẵn trong tiếng Tây Ban Nha
+       (một nhân vật truyện tranh Mexico kinh điển) dùng đúng token đó, chứ không chỉ là
+       chuỗi con - xem docstring của hàm đó.
 
-    3. The bare literal title occurring anywhere in free-form prose, with no
-       hashtag backing it either way - reliable for an invented movie title
-       (essentially never occurs by coincidence), unreliable when the title
-       is also ordinary vocabulary. Confirmed live 2026-09-25: "Huyết Thống"
-       - literally "blood relation" in Vietnamese - matched a stranger's
-       unrelated family-conflict post on Threads at 99.9% "related"
-       confidence from BOTH the substring check and the AI classifier, since
-       the bare phrase carries no movie-specific signal on its own. Trusted
-       only when is_reputable_author is True (see reputable_authors) - the
-       account has its own independent track record of genuine movie
-       content across *other* titles too, via signals 1/2 above, never via
-       this same weak signal (no circularity). A first-time/one-off account
-       making this exact claim isn't enough evidence by itself.
+    3. Tên phim nguyên văn xuất hiện ở bất cứ đâu trong văn bản tự do, không có hashtag
+       nào hỗ trợ - đáng tin với tên phim tự đặt (gần như không bao giờ tình cờ xuất
+       hiện), không đáng tin khi tên phim cũng là từ vựng thông thường. Đã xác nhận thực
+       tế 2026-09-25: "Huyết Thống" - nghĩa đen là quan hệ máu mủ - khớp với một bài về
+       mâu thuẫn gia đình không liên quan của một người lạ trên Threads với độ tin
+       "related" 99,9% từ CẢ kiểm tra chuỗi con lẫn bộ phân loại AI, vì cụm từ trơ trọi
+       đó tự nó không mang tín hiệu riêng nào về phim. Chỉ được tin khi
+       is_reputable_author là True (xem reputable_authors) - tài khoản có thành tích độc
+       lập về nội dung phim thật trên cả *các* phim khác, qua tín hiệu 1/2 ở trên, không
+       bao giờ qua chính tín hiệu yếu này (không có vòng lặp). Một tài khoản lần đầu/chỉ
+       đăng một lần mà có đúng khẳng định này thì tự nó chưa đủ bằng chứng.
 
-    Trade-off, accepted on purpose (see callers' own docstrings): a
-    genuinely related post that uses neither the literal title, a
-    title-equal hashtag, nor comes from a reputable account - just an
-    actor's name, a compound tag like "#PhimMeMin", or a nickname - won't
-    pass this either. That's the point for the callers using this (a
-    "top 100" list, the daily comments sweep, and report generation) -
-    fewer, more precisely on-topic results over exhaustive recall."""
+    Đánh đổi, chấp nhận có chủ đích (xem docstring của các chỗ gọi): một bài thật sự
+    liên quan mà không dùng tên phim nguyên văn, không có hashtag bằng tên phim, cũng
+    không đến từ tài khoản có uy tín - chỉ có tên diễn viên, một tag ghép như
+    "#PhimMeMin", hoặc biệt danh - cũng sẽ không qua được. Đó chính là mục đích với các
+    chỗ gọi dùng hàm này (danh sách "top 100", lượt quét comment hằng ngày và tạo
+    report) - ít kết quả hơn nhưng đúng chủ đề hơn, thay vì cố lấy cho đủ."""
     if not content:
         return False
     text = content.casefold()
@@ -346,11 +325,10 @@ def movie_hashtag_present(
         if len(compact) >= 2 and f"#{compact}" in _HASHTAG_STRIP.sub("", text):
             return True
 
-    # _tag_form, not bare _fold_for_keyword_match: a hashtag token is
-    # extracted without its "#" and can't contain punctuation, so the
-    # targets must drop both too - otherwise a hashtag-type keyword
-    # ("#ScottyGiaiCuuHoangThuong" -> "#scotty...") or a title with
-    # punctuation ("SCOTTY: GIẢI CỨU..." -> "scotty:...") never matches.
+    # Dùng _tag_form, không dùng _fold_for_keyword_match trần: token hashtag được tách ra
+    # không có "#" và không chứa dấu câu, nên đích so sánh cũng phải bỏ cả hai - nếu
+    # không, từ khoá dạng hashtag ("#ScottyGiaiCuuHoangThuong" -> "#scotty...") hoặc tên
+    # phim có dấu câu ("SCOTTY: GIẢI CỨU..." -> "scotty:...") sẽ không bao giờ khớp.
     folded_targets = {_tag_form(t) for t in (movie_title, keyword) if t}
     folded_targets.discard("")
     if folded_targets:
@@ -364,8 +342,8 @@ def movie_hashtag_present(
     return False
 
 
-# Playable video / permalinks cannot go in an <img>. Older TikTok rows
-# stored playAddr as media_url and left cover_url only on raw_json.
+# Video phát được / permalink không đặt vào <img> được. Các dòng TikTok cũ lưu playAddr
+# làm media_url và chỉ để cover_url trong raw_json.
 _VIDEO_URL_HINTS = (
     ".mp4",
     ".m3u8",
@@ -433,9 +411,9 @@ def _hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]
 
 
 class PostRepository:
-    """Owns every query against `posts`. One process-wide instance
-    (`post_repo` below) - no per-request state, so this is just a
-    namespace for the queries plus the lazy index-creation guard above."""
+    """Giữ mọi query trên `posts`. Một instance cho cả tiến trình (`post_repo` bên dưới) -
+    không có trạng thái theo request, nên đây chỉ là namespace cho các query cộng với cờ
+    chặn tạo index lười ở trên."""
 
     async def list_posts(
         self,
@@ -448,34 +426,28 @@ class PostRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Paginated post feed, joined to its movie/keyword for display -
-        backs the dashboard's "review posts" tab. Every filter is optional
-        and additive; passing none returns the whole table's most recent
-        page across every platform/movie. Returns (rows, total_count) so
-        the caller can render pagination without a second round trip.
+        """Feed bài phân trang, join với phim/từ khoá để hiển thị - phục vụ tab "xem lại bài"
+        của dashboard. Mọi bộ lọc đều không bắt buộc và cộng dồn; không truyền gì thì trả về
+        trang mới nhất của cả bảng trên mọi nền tảng/phim. Trả về (rows, total_count) để chỗ
+        gọi hiển thị phân trang mà không cần gọi thêm lượt nữa.
 
-        Offset pagination, not keyset: see list_posts_cursor below for why
-        this stays the live API for now despite that method existing.
+        Phân trang offset, không phải keyset: xem list_posts_cursor bên dưới để biết vì sao
+        hàm này hiện vẫn là API đang dùng dù đã có method kia.
 
-        sort="recent" (default): most recently scraped first, as always.
-        sort="engagement": highest-interaction first (see
-        _ENGAGEMENT_SCORE_SQL) - e.g. keyword_id + sort="engagement" +
-        limit=100 is the dashboard's "top 100 posts for this keyword" view.
-        That view requires relevance_label='related' (set at ingest, see
-        app/ai/tasks/post_relevance.py) AND
-        movie_hashtag_present's own, independent check - relevance_label
-        alone isn't a second opinion the way it looks: persist_post stores
-        keyword_match as a straight mirror of the AI verdict whenever the
-        AI was actually invoked (see its own docstring), so relying on
-        relevance_label alone was really trusting the AI once, not twice.
-        Confirmed live 2026-09-24: a Mexican snack brand's posts scored
-        99%+ "related" to the movie "Mẹ Mìn" purely because its own hashtag
-        folds to the same short string as the movie's - see
-        movie_hashtag_present's own docstring for the fix. Over-fetches
-        (_ENGAGEMENT_OVERFETCH below) since this second filter runs in
-        Python, then trims back to `limit` - a post not yet AI-labeled, or
-        with no matching hashtag/title mention at all, won't occupy a slot
-        even at high engagement."""
+        sort="recent" (mặc định): crawl gần nhất trước, như trước giờ. sort="engagement":
+        tương tác cao nhất trước (xem _ENGAGEMENT_SCORE_SQL) - ví dụ keyword_id +
+        sort="engagement" + limit=100 là màn hình "top 100 bài của từ khoá này" trên
+        dashboard. Màn hình đó đòi relevance_label='related' (đặt lúc ingest, xem
+        app/ai/tasks/post_relevance.py) VÀ kiểm tra độc lập của movie_hashtag_present -
+        riêng relevance_label không phải ý kiến thứ hai như vẻ ngoài: persist_post lưu
+        keyword_match như bản sao y nguyên phán quyết của AI mỗi khi AI thực sự được gọi (xem
+        docstring của nó), nên chỉ dựa vào relevance_label thực chất là tin AI một lần, không
+        phải hai lần. Đã xác nhận thực tế 2026-09-24: các bài của một hãng snack Mexico đạt
+        99%+ "related" với phim "Mẹ Mìn" chỉ vì hashtag của nó fold ra cùng một chuỗi ngắn
+        với tên phim - xem docstring của movie_hashtag_present cho cách sửa. Lấy dư
+        (_ENGAGEMENT_OVERFETCH bên dưới) vì bộ lọc thứ hai này chạy bằng Python, rồi cắt lại
+        còn `limit` - bài chưa được AI gắn nhãn, hoặc không có hashtag/tên phim khớp nào, sẽ
+        không chiếm chỗ dù tương tác cao."""
         await _ensure_post_indexes()
         where = []
         params: list[Any] = []
@@ -495,10 +467,9 @@ class PostRepository:
             where.append(RELEVANT_POST_SQL)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         order_sql = f"{_ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
-        # movie_hashtag_present runs in Python after the fetch and rejects
-        # some rows relevance_label='related' alone would have let through
-        # - ask for more than `limit` up front so trimming back down to it
-        # after filtering doesn't leave a short/empty page.
+        # movie_hashtag_present chạy bằng Python sau khi lấy dữ liệu và loại bỏ một số dòng mà
+        # riêng relevance_label='related' lẽ ra đã cho qua - nên lấy nhiều hơn `limit` ngay từ
+        # đầu để sau khi lọc rồi cắt lại thì trang không bị thiếu/rỗng.
         sql_limit = max(limit * 4, limit + 100) if sort == "engagement" else limit
 
         rows = await d1_query(
@@ -534,10 +505,9 @@ class PostRepository:
             ][:limit]
             return hydrated, len(hydrated)
 
-        # Filtered tabs: skip COUNT(*) - it's a full scan until the
-        # keyword_match index exists, and it was timing out D1 (~10s) on
-        # every tab click. Approximate "there's another page" from the
-        # page size instead.
+        # Tab có lọc: bỏ COUNT(*) - nó quét toàn bảng cho tới khi có index keyword_match, và
+        # đã làm D1 timeout (~10s) mỗi lần bấm tab. Ước lượng "còn trang sau" từ kích thước
+        # trang thay thế.
         if keyword_match is None:
             count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
             total = (count_rows[0]["total"] if count_rows else 0) or 0
@@ -557,25 +527,21 @@ class PostRepository:
         cursor: str | None = None,
         limit: int = 50,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Keyset-paginated equivalent of list_posts, for sort="recent"
-        only (engagement sort's expression can't be used as a keyset
-        column without a generated/indexed copy of it - not worth adding
-        until this method is actually load-bearing). `cursor` is the
-        opaque "<scraped_at>|<id>" of the last row from the previous page;
-        None starts from the top. No total count - keyset pagination
-        trades "page N of M" (and, not incidentally, the approximate/
-        sometimes-wrong total list_posts' keyword_match branch reports -
-        see its own comment) for O(limit) cost per page regardless of how
-        deep you go, which is the whole point.
+        """Bản phân trang keyset tương đương list_posts, chỉ cho sort="recent" (biểu thức sắp
+        xếp theo tương tác không dùng làm cột keyset được nếu không có một bản sao
+        generated/có index của nó - chưa đáng thêm cho tới khi method này thực sự gánh tải).
+        `cursor` là chuỗi "<scraped_at>|<id>" không cần hiểu bên trong của dòng cuối trang
+        trước; None là bắt đầu từ đầu. Không có tổng số - phân trang keyset đánh đổi "trang
+        N trên M" (và, không phải ngẫu nhiên, cả con số tổng ước lượng/đôi khi sai mà nhánh
+        keyword_match của list_posts báo - xem comment của nó) lấy chi phí O(limit) mỗi trang
+        bất kể đi sâu tới đâu, và đó chính là mục đích.
 
-        Now wired into GET /stats/posts (see stats.py) - list_posts' own
-        OFFSET, confirmed live once posts crossed ~100k, gets *slower with
-        depth* specifically when combined with the keyword/movie LEFT
-        JOINs (flat ~0.1s regardless of offset with the JOINs removed,
-        vs. up to several seconds at a 90k offset with them) - D1 isn't
-        pushing the LIMIT/OFFSET below the join. Keyset sidesteps this
-        entirely: the WHERE seek bounds the scan before the join ever
-        runs, so it doesn't matter how deep `cursor` points."""
+        Giờ đã nối vào GET /stats/posts (xem stats.py) - OFFSET của list_posts, đã xác nhận
+        thực tế khi số bài vượt khoảng 100 nghìn, *chậm dần theo độ sâu* đặc biệt khi đi kèm
+        LEFT JOIN keyword/movie (bỏ JOIN thì đều khoảng 0,1s bất kể offset, so với tới vài
+        giây ở offset 90 nghìn khi có JOIN) - D1 không đẩy LIMIT/OFFSET xuống dưới phép join.
+        Keyset né hoàn toàn chuyện này: điều kiện WHERE giới hạn phạm vi quét trước khi join
+        chạy, nên `cursor` trỏ sâu tới đâu cũng không sao."""
         if sort != "recent":
             raise ValueError("list_posts_cursor only supports sort='recent'")
         await _ensure_post_indexes()
@@ -625,26 +591,23 @@ class PostRepository:
     async def list_posts_needing_comments(
         self, *, platform: str, keyword_id: str, top_n: int = 100
     ) -> list[dict[str, Any]]:
-        """Of this keyword's own top `top_n` posts by engagement (the exact
-        same ranking as list_posts(sort="engagement") above), the ones with
-        zero comments stored yet - backs the daily "top comments" sweep (see
-        scheduler.py's _top_comments_tick). Ranks first, *then* filters for
-        zero comments (a CTE, not a single WHERE) - filtering first would let a
-        101st/150th-ranked post with no comments crowd out an actual top-100
-        post that merely already has some, which isn't "of the top 100, which
-        still need comments" any more.
+        """Trong top `top_n` bài theo tương tác của từ khoá này (đúng cùng cách xếp hạng với
+        list_posts(sort="engagement") ở trên), những bài chưa có comment nào được lưu - phục
+        vụ lượt quét "top comments" hằng ngày (xem _top_comments_tick trong scheduler.py).
+        Xếp hạng trước, *rồi* mới lọc bài không có comment (một CTE, không phải một WHERE
+        duy nhất) - lọc trước sẽ để bài hạng 101/150 không có comment chen mất chỗ của một
+        bài thật sự thuộc top 100 chỉ vì nó đã có vài comment, như vậy không còn là "trong
+        top 100, bài nào vẫn cần comment" nữa.
 
-        A post already swept on some earlier day isn't queued again just
-        because it's still sitting in the keyword's top 100 - only ones that
-        are new to it (or never got comments the first time) are - so a
-        keyword whose top 100 barely reshuffles day to day doesn't keep
-        re-spending the account/proxy pool on posts it already fetched
-        comments for. Same relevance_label='related' + movie_hashtag_present
-        gate as the dashboard's top-100 list (list_posts sort="engagement")
-        - see that method's own docstring and movie_hashtag_present's for
-        why relevance_label alone isn't independent corroboration; same
-        AI-labeled-post caveat applies (a post not yet swept by
-        label_posts_relevance.py's batch run is invisible here too)."""
+        Bài đã được quét ở một ngày trước không bị xếp hàng lại chỉ vì vẫn nằm trong top
+        100 của từ khoá - chỉ những bài mới vào top (hoặc lần đầu chưa lấy được comment)
+        mới được xếp hàng - nên một từ khoá có top 100 gần như không đổi qua các ngày sẽ
+        không tốn lại pool tài khoản/proxy cho những bài đã lấy comment rồi. Cùng cổng
+        relevance_label='related' + movie_hashtag_present như danh sách top 100 trên
+        dashboard (list_posts sort="engagement") - xem docstring của method đó và của
+        movie_hashtag_present để biết vì sao riêng relevance_label không phải bằng chứng
+        củng cố độc lập; lưu ý về bài đã được AI gắn nhãn cũng áp dụng (bài chưa được lượt
+        chạy theo lô của label_posts_relevance.py quét qua cũng không hiện ở đây)."""
         await _ensure_post_indexes()
         overfetch = max(top_n * 4, top_n + 100)
         rows = await d1_query(
@@ -679,9 +642,9 @@ class PostRepository:
         return selected
 
     async def get_post_by_external_id(self, platform: str, external_id: str) -> dict[str, Any] | None:
-        """One post by (platform, external_id) - the id spider-hub's comment
-        payloads carry (see app/workers/ingest_consumer/main.py's
-        handle_comment), as opposed to get_post's D1-internal id."""
+        """Một bài theo (platform, external_id) - id mà payload comment của spider-hub mang theo
+        (xem handle_comment trong app/workers/ingest_consumer/main.py), khác với id nội bộ D1
+        của get_post."""
         await _ensure_post_indexes()
         rows = await d1_query(
             "SELECT id, platform, external_id, url FROM posts WHERE platform = ? AND external_id = ?",
@@ -690,11 +653,10 @@ class PostRepository:
         return rows[0] if rows else None
 
     async def get_post(self, post_id: str) -> dict[str, Any] | None:
-        """One post by its D1 id (not external_id) - used by the "fetch
-        comments for this post" trigger (see app/api/routes/facebook.py) to
-        resolve the platform's own post id + url spider-hub's bootstrap/spider
-        needs, from the D1 id the dashboard actually has on hand (see
-        app/schemas/stats.py's Post.id)."""
+        """Một bài theo id D1 (không phải external_id) - dùng cho nút kích hoạt "lấy comment
+        cho bài này" (xem app/api/routes/facebook.py) để tra ra id bài của nền tảng + url mà
+        bootstrap/spider của spider-hub cần, từ id D1 mà dashboard đang có (xem Post.id
+        trong app/schemas/stats.py)."""
         rows = await d1_query("SELECT id, platform, external_id, url FROM posts WHERE id = ?", [post_id])
         return rows[0] if rows else None
 
@@ -710,26 +672,23 @@ class PostRepository:
         relevance_label: str | None = None,
         relevance_confidence: float | None = None,
     ) -> bool:
-        """Upsert one scraped post (any registered platform) straight into
-        cinemark-scraper's own `posts` table (+ an engagement snapshot on
-        change) - ported from its src/jobs/persist-post.ts so both the
-        Worker's own scrapers and this Kafka-fed path write through the exact
-        same logic. `draft` is already normalized by the platform's mapper
-        (see app/services/platforms.py) - this function has no
-        platform-specific field knowledge of its own.
+        """Upsert một bài đã crawl (của bất kỳ nền tảng đã đăng ký nào) thẳng vào bảng `posts`
+        của cinemark-scraper (+ một snapshot tương tác khi có thay đổi) - chuyển từ
+        src/jobs/persist-post.ts bên đó để cả scraper riêng của Worker lẫn đường đi qua
+        Kafka này ghi qua đúng cùng một logic. `draft` đã được mapper của nền tảng chuẩn hoá
+        (xem app/services/platforms.py) - hàm này không tự biết trường nào riêng của nền
+        tảng nào.
 
-        `ai_relevant`, when given (see app/ai/tasks/post_relevance.py), is
-        Kira's "related" verdict and is used for keyword_match instead of
-        the exact-substring contains_keyword check below - callers pass None
-        to fall back to the substring check (Kira uncertain, off, over its
-        daily cap, or the call failed) rather than blocking ingestion on a
-        classifier hiccup.
+        `ai_relevant`, khi có (xem app/ai/tasks/post_relevance.py), là phán quyết "related"
+        của Kira và được dùng cho keyword_match thay cho kiểm tra chuỗi con chính xác
+        contains_keyword bên dưới - chỗ gọi truyền None để quay về kiểm tra chuỗi con (Kira
+        không chắc, đang tắt, vượt hạn mức ngày, hoặc lời gọi thất bại) thay vì chặn việc
+        ingest chỉ vì bộ phân loại trục trặc.
 
-        `relevance_label`/`relevance_confidence`, when given, are that same
-        classification stored straight onto the row at ingest time (the
-        3-bucket related/not_related/uncertain scheme, not the boolean
-        keyword_match) - set live, so a post shows up in relevance-filtered
-        views without waiting for any batch pass."""
+        `relevance_label`/`relevance_confidence`, khi có, là chính kết quả phân loại đó được
+        lưu thẳng lên dòng lúc ingest (hệ 3 nhóm related/not_related/uncertain, không phải
+        keyword_match kiểu boolean) - đặt ngay lúc đó, để bài hiện ra trong các màn hình lọc
+        theo độ liên quan mà không phải chờ lượt chạy theo lô nào."""
         if not _configured() or platform not in registered_platforms():
             return False
         await _ensure_post_indexes()
@@ -740,19 +699,17 @@ class PostRepository:
 
         content = draft.get("content")
 
-        # Junk filter: too-short content (a bare reaction/emoji has no real
-        # signal to analyze) - skip entirely. Does NOT filter on keyword_match:
-        # a real commenter writing an abbreviation, an unaccented Vietnamese
-        # spelling, or the movie's English name would never literally contain
-        # the configured keyword phrase, so gating storage on that match would
-        # silently drop real posts. keyword_match is still computed and stored
-        # below as a flag for callers to filter on if they choose to, same as
-        # before - it's just not a reason to skip storing the post outright.
+        # Lọc rác: nội dung quá ngắn (một reaction/emoji trơ trọi không có tín hiệu gì để phân
+        # tích) - bỏ qua hẳn. KHÔNG lọc theo keyword_match: người comment thật viết tắt, viết
+        # tiếng Việt không dấu, hoặc dùng tên tiếng Anh của phim sẽ không bao giờ chứa nguyên
+        # văn cụm từ khoá đã cấu hình, nên chặn việc lưu theo kiểu khớp đó sẽ âm thầm làm mất
+        # bài thật. keyword_match vẫn được tính và lưu bên dưới như một cờ để chỗ gọi tự lọc
+        # nếu muốn, như trước - chỉ là nó không phải lý do để bỏ hẳn việc lưu bài.
         if not content or len(content.strip()) < MIN_CONTENT_LENGTH:
             logger.info("post_skipped_junk", platform=platform, external_id=external_id, reason="content_too_short")
-            # Intentional skip, not a write failure - True so handle_post's
-            # `if not ok` doesn't fire the drop-alert counter (the counter
-            # is fed by the ingest_decisions Kafka stream, not D1).
+            # Cố ý bỏ qua, không phải ghi lỗi - trả True để `if not ok` của handle_post không kích
+            # hoạt bộ đếm cảnh báo bài bị loại (bộ đếm đó lấy dữ liệu từ luồng Kafka
+            # ingest_decisions, không phải D1).
             return True
         is_keyword_match = ai_relevant if ai_relevant is not None else contains_keyword(content, keyword)
 
@@ -760,11 +717,10 @@ class PostRepository:
         media_json = json.dumps(draft.get("media") or {})
         raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
         engagement = {field: draft.get(field) or 0 for field in ENGAGEMENT_FIELDS}
-        # D1 stores booleans as SQLite integers (0/1) - pass an int, not a JSON
-        # bool, so the HTTP API binds it as the same type Drizzle's
-        # integer(..., {mode: "boolean"}) column expects. Can legitimately be 0
-        # - see this function's own docstring for why a non-match still gets
-        # stored instead of skipped.
+        # D1 lưu boolean dưới dạng số nguyên SQLite (0/1) - truyền int, không truyền bool
+        # JSON, để HTTP API bind đúng kiểu mà cột integer(..., {mode: "boolean"}) của Drizzle
+        # cần. Có thể bằng 0 là hợp lệ - xem docstring của hàm này để biết vì sao bài không
+        # khớp vẫn được lưu thay vì bị bỏ qua.
         keyword_match = int(is_keyword_match)
 
         existing_rows = await d1_query(
@@ -812,11 +768,9 @@ class PostRepository:
                 ],
             )
             if inserted is None:
-                # Insert failed (race with another message for the same
-                # external_id, D1 outage, ...) - the post row doesn't exist,
-                # so a snapshot referencing post_id here would be an orphan.
-                # Log and stop; the next re-scrape of this post will retry
-                # the whole upsert from scratch.
+                # Insert thất bại (đua với một message khác cùng external_id, D1 sập, ...) - dòng bài
+                # không tồn tại, nên một snapshot tham chiếu post_id ở đây sẽ thành mồ côi. Log rồi
+                # dừng; lần crawl lại bài này sau sẽ thử lại toàn bộ upsert từ đầu.
                 logger.warning("d1_post_insert_failed", platform=platform, external_id=external_id)
                 return False
             await d1_query(
@@ -833,13 +787,12 @@ class PostRepository:
         post_id = existing["id"]
         changed = any(existing.get(field) != engagement[field] for field in ENGAGEMENT_FIELDS)
 
-        # relevance_* use COALESCE(?, column) rather than a plain overwrite:
-        # this branch re-runs on every re-scrape of an already-existing post
-        # (engagement-only updates), and content unchanged means the same
-        # contains_keyword/classify path as before, which can legitimately
-        # be None here (substring match alone decided it, no Kira verdict
-        # made) - a plain overwrite would null out a real label a batch
-        # sweep (or an earlier ingest classification) already set.
+        # relevance_* dùng COALESCE(?, column) thay vì ghi đè thẳng: nhánh này chạy lại mỗi
+        # lần crawl lại một bài đã có (chỉ cập nhật tương tác), và nội dung không đổi nghĩa là
+        # đi lại đúng đường contains_keyword/phân loại như trước, mà đường đó có thể trả None
+        # một cách hợp lệ ở đây (chỉ khớp chuỗi con đã quyết định, không có phán quyết của
+        # Kira) - ghi đè thẳng sẽ xoá mất một nhãn thật mà lượt quét theo lô (hoặc lần phân
+        # loại lúc ingest trước đó) đã đặt.
         updated = await d1_query(
             """
             UPDATE posts SET
@@ -873,11 +826,10 @@ class PostRepository:
             ],
         )
         if updated is None:
-            # UPDATE failed (D1 outage, ...) - post_id still refers to a real,
-            # pre-existing row (unlike the insert branch above), so nothing's
-            # orphaned, but the engagement numbers below would reflect this
-            # message's payload, not what's actually stored. Skip the snapshot;
-            # the next re-scrape retries the whole upsert.
+            # UPDATE thất bại (D1 sập, ...) - post_id vẫn trỏ tới một dòng thật đã có từ trước
+            # (khác với nhánh insert ở trên), nên không có gì bị mồ côi, nhưng số tương tác bên
+            # dưới sẽ phản ánh payload của message này chứ không phải dữ liệu thực sự đang lưu.
+            # Bỏ qua snapshot; lần crawl lại sau sẽ thử lại toàn bộ upsert.
             logger.warning("d1_post_update_failed", platform=platform, external_id=external_id, post_id=post_id)
             return False
         if changed:
@@ -896,7 +848,7 @@ class PostRepository:
 post_repo = PostRepository()
 
 
-# --- backward-compatible free functions (see module docstring) -----------
+# --- các hàm tự do để tương thích ngược (xem docstring module) -----------
 
 
 async def list_posts(**kwargs: Any) -> tuple[list[dict[str, Any]], int]:

@@ -1,29 +1,26 @@
-"""In-process background queue for social-topic report generation -
-backs the dashboard's "Tạo report" button (POST /movies/{id}/generate-
-report, app/api/routes/movies.py). Added 2026-09-25: that route used to
-run generate_report_for_movie synchronously in the request handler (two
-sequential Bee/Kira calls, confirmed live the topics-clustering call alone
-can take 2+ minutes), and the dashboard's own mutation state disabled
-every OTHER row's button while one was in flight - so an operator could
-never have more than one report generating at a time. Enqueuing here lets
-the HTTP call return immediately and lets several movies' reports run
-concurrently.
+"""Hàng đợi nền trong tiến trình cho việc tạo report social-topic - phục vụ nút "Tạo
+report" trên dashboard (POST /movies/{id}/generate-report,
+app/api/routes/movies.py). Thêm ngày 2026-09-25: route đó từng chạy
+generate_report_for_movie đồng bộ ngay trong request handler (hai lời gọi Bee/Kira
+tuần tự, đã xác nhận thực tế riêng lời gọi gom topic có thể mất hơn 2 phút), và
+trạng thái mutation của dashboard khoá nút của MỌI dòng KHÁC trong lúc một dòng đang
+chạy - nên người vận hành không bao giờ tạo được quá một report cùng lúc. Đưa vào
+hàng đợi ở đây cho lời gọi HTTP trả về ngay và cho report của nhiều phim chạy song
+song.
 
-In-memory, not Redis: this deployment is one uvicorn process (see
-Dockerfile's CMD - no --workers), so a plain dict is visible to every
-request without the serialization cost of a shared store, same tradeoff
-crawl_jobs.py/task_queue.py made the opposite way only because THEY
-coordinate across this process and spider-hub's separate one. If this
-API ever runs multiple workers/replicas, this needs to move to Redis
-(same shape as crawl_jobs.py) - a status GET landing on the "wrong"
-worker would otherwise show stale/missing state.
+Trong bộ nhớ, không dùng Redis: bản deploy này là một tiến trình uvicorn (xem CMD
+trong Dockerfile - không có --workers), nên một dict thường là mọi request đều thấy,
+không tốn chi phí serialize của kho dùng chung; crawl_jobs.py/task_queue.py chọn
+ngược lại chỉ vì CHÚNG phải phối hợp giữa tiến trình này và tiến trình riêng của
+spider-hub. Nếu sau này API chạy nhiều worker/replica, phần này phải chuyển sang Redis
+(cùng dạng với crawl_jobs.py) - nếu không, một lần GET trạng thái rơi vào "nhầm"
+worker sẽ thấy trạng thái cũ/thiếu.
 
-No explicit concurrency cap here - app.ai.client's own per-provider
-semaphore (asyncio.Semaphore(2), see call_ai) already bounds how many
-Bee/Kira calls run at once; enqueuing more movies than that just means
-the extra ones sit inside generate_report_for_movie awaiting that
-semaphore, which is exactly the same queueing behavior, just with the
-existing single choke point instead of a second one duplicating it here."""
+Không có giới hạn đồng thời riêng ở đây - semaphore theo provider của app.ai.client
+(asyncio.Semaphore(2), xem call_ai) vốn đã giới hạn số lời gọi Bee/Kira chạy cùng
+lúc; đưa vào hàng đợi nhiều phim hơn mức đó chỉ có nghĩa là các phim dư nằm chờ
+semaphore đó bên trong generate_report_for_movie, đúng cùng hành vi xếp hàng, chỉ là
+dùng điểm nghẽn duy nhất sẵn có thay vì thêm một điểm thứ hai lặp lại nó ở đây."""
 
 from __future__ import annotations
 
@@ -38,9 +35,9 @@ logger = get_logger(__name__)
 
 JobStatus = Literal["queued", "running", "done", "failed"]
 
-# Pruned lazily (see _prune) rather than on a timer - a job's entry only
-# needs to survive long enough for the dashboard's post-enqueue polling to
-# see its final state, not forever.
+# Dọn lười (xem _prune) thay vì theo hẹn giờ - mục của một job chỉ cần sống đủ lâu để
+# lượt hỏi định kỳ sau khi đưa vào hàng đợi của dashboard thấy được trạng thái cuối
+# cùng, không cần mãi mãi.
 _JOB_TTL_SECONDS = 3600.0
 
 _jobs: dict[str, dict[str, Any]] = {}
@@ -58,17 +55,16 @@ def _prune() -> None:
 
 
 def get_report_job(movie_id: str) -> dict[str, Any] | None:
-    """None if no job has ever been enqueued for this movie (or its entry
-    already aged out - see _JOB_TTL_SECONDS) - the dashboard treats that
-    the same as "nothing to show", not an error."""
+    """None nếu chưa từng có job nào được đưa vào hàng đợi cho phim này (hoặc mục của nó đã
+    hết hạn - xem _JOB_TTL_SECONDS) - dashboard coi đó là "không có gì để hiện", không
+    phải lỗi."""
     return _jobs.get(movie_id)
 
 
 async def enqueue_report_job(movie_id: str) -> dict[str, Any]:
-    """Idempotent: a movie already queued/running just returns its
-    existing job instead of starting a second concurrent run of itself -
-    a double-click shouldn't race two generate_report_for_movie calls
-    against the same social_topic_reports row."""
+    """Idempotent: phim đang trong hàng đợi/đang chạy thì chỉ trả về job hiện có thay vì
+    chạy thêm một lượt song song nữa của chính nó - bấm đúp không được để hai lời gọi
+    generate_report_for_movie đua nhau trên cùng một dòng social_topic_reports."""
     _prune()
     existing = _jobs.get(movie_id)
     if existing is not None and existing["status"] in ("queued", "running"):

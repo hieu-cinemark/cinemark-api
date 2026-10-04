@@ -1,10 +1,10 @@
-"""Compares today's post count per platform against the median of the
-previous 7 days - catches "the crawl ran and reported success, but the
-platform's response shape silently changed and extraction now returns way
-less/more than normal" cases that the error-based alerts elsewhere in this
-project can't see (no exception is ever raised in that scenario).
+"""So số bài hôm nay của từng nền tảng với trung vị của 7 ngày trước đó - bắt các trường
+hợp "crawl đã chạy và báo thành công, nhưng dạng response của nền tảng âm thầm thay
+đổi và giờ trích xuất ra ít/nhiều hơn hẳn bình thường" mà các cảnh báo dựa trên lỗi ở
+chỗ khác trong project không thấy được (trong tình huống đó không có exception nào
+được raise).
 
-Run daily via cron, right after the scheduled crawl trigger:
+Chạy hằng ngày qua cron, ngay sau lần kích hoạt crawl theo lịch:
     python -m scripts.check_volume_anomaly
 """
 
@@ -22,12 +22,12 @@ from app.services.d1 import get_post_timeseries
 logger = get_logger(__name__)
 
 BASELINE_DAYS = 7
-# Below this fraction of the baseline median -> "did this platform quietly
-# break". Above this multiple -> "is this a spam/bug spike". Both are just
-# starting points - tune once you've seen a week of real data.
+# Dưới tỉ lệ này so với trung vị gốc -> "nền tảng này có âm thầm hỏng không". Trên bội
+# số này -> "đây có phải đột biến do spam/bug không". Cả hai chỉ là điểm xuất phát -
+# chỉnh lại khi đã thấy một tuần dữ liệu thật.
 LOW_RATIO = 0.3
 HIGH_RATIO = 3.0
-MIN_BASELINE_TO_ALERT = 5  # a platform with 1-2 posts/day is too noisy to alert on ratio alone
+MIN_BASELINE_TO_ALERT = 5  # nền tảng chỉ có 1-2 bài/ngày thì quá nhiễu để cảnh báo chỉ dựa vào tỉ lệ
 
 
 async def check() -> None:
@@ -42,7 +42,7 @@ async def check() -> None:
         today_count = counts_by_day.get(today, 0)
         baseline_counts = [c for day, c in counts_by_day.items() if day != today]
         if len(baseline_counts) < 3:
-            continue  # not enough history yet to judge
+            continue  # chưa đủ lịch sử để đánh giá
 
         baseline = statistics.median(baseline_counts)
         if baseline < MIN_BASELINE_TO_ALERT:

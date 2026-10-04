@@ -1,10 +1,9 @@
-"""TikTok scraper routes: POST /tiktok/run (shared trigger contract - see
-platform_scraper.py), GET/POST /tiktok/keywords (see keywords.py), the
-restore-session / import-cookies / token-status trio (see token_refresh.py
-- same dashboard flow as Facebook/Threads, but spider-hub recaptures
-device_id/odin_id instead of a GraphQL token cache),
-POST /tiktok/posts/{post_id}/comments/run, and
-POST /tiktok/channels/run (channel_videos spider for one @username).
+"""Các route scraper TikTok: POST /tiktok/run (hợp đồng kích hoạt dùng chung - xem
+platform_scraper.py), GET/POST /tiktok/keywords (xem keywords.py), bộ ba
+restore-session / import-cookies / token-status (xem token_refresh.py - cùng luồng
+dashboard với Facebook/Threads, nhưng spider-hub lấy lại device_id/odin_id thay vì
+cache token GraphQL), POST /tiktok/posts/{post_id}/comments/run, và
+POST /tiktok/channels/run (spider channel_videos cho một @username).
 """
 
 from __future__ import annotations

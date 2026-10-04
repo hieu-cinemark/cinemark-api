@@ -1,4 +1,4 @@
-"""app/workers/ingest_consumer/sentiment_sweep.py with D1 and Bee stubbed."""
+"""app/workers/ingest_consumer/sentiment_sweep.py với D1 và AI được thay bằng bản giả."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ async def test_classifies_and_saves_grouped_by_label(monkeypatch, d1) -> None:
     assert select_params == ["2026-09-26T08:00:00+00:00", 11]  # limit + len(exclude)
     updates = {params[0]: params[1:] for sql, params in d1[1:]}
     assert updates == {"positive": ["c0", "c3"], "negative": ["c1"], "neutral": ["c4"]}
-    assert all("AND sentiment IS NULL" in sql for sql, _ in d1[1:])  # never overwrite
+    assert all("AND sentiment IS NULL" in sql for sql, _ in d1[1:])  # không bao giờ ghi đè
     assert result["selected"] == 5 and result["classified"] == 4 and result["failed_ids"] == ["c2"]
 
 

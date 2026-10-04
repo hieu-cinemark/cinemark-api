@@ -1,26 +1,26 @@
-"""Shared refresh-token trio for every spider-hub-backed platform that has
-a saved session to restore or a human-pasted cookie import
-(facebook, threads, tiktok):
+"""Bộ ba refresh-token dùng chung cho mọi nền tảng chạy qua spider-hub có session đã
+lưu để khôi phục hoặc cookie do người dán vào (facebook, threads, tiktok):
 
-  GET  /<platform>/token-status         current session status
-                                        (FB/Threads: Redis GraphQL cache TTL;
-                                         TikTok: enabled account + sessionid)
-  WS   /<platform>/refresh-token/ws     live progress of a triggered refresh
-  POST /<platform>/import-cookies      hand over a human-exported session,
-                                        then refresh (GraphQL tokens, or
-                                        TikTok device_id/odin_id)
-  POST /<platform>/restore-session     reuse Redis storage_state / cookie
-                                        column for one account, then refresh
+  GET  /<platform>/token-status         trạng thái session hiện tại
+                                        (FB/Threads: TTL cache GraphQL trong Redis;
+                                         TikTok: tài khoản đang bật + sessionid)
+  WS   /<platform>/refresh-token/ws     tiến độ trực tiếp của lần refresh vừa kích hoạt
+  POST /<platform>/import-cookies      nhận session do người xuất ra, rồi refresh
+                                        (token GraphQL, hoặc device_id/odin_id của
+                                        TikTok)
+  POST /<platform>/restore-session     dùng lại storage_state trong Redis / cột cookie
+                                        của một tài khoản, rồi refresh
 
-There's no standalone "refresh now" that types a password. spider-hub's
-bootstrap.py refuses to auto-login unattended. The GraphQL token cache
-expiring is *not* the same as Facebook logging the account out: cookies in
-Redis (or the account's cookie column) may still be live. restore-session
-is the button for that case. import-cookies is only when those saved
-cookies are actually dead and a person logged in from a real browser.
+Không có nút "refresh now" nào gõ mật khẩu từ dashboard. (Lưu ý: bootstrap.py của
+spider-hub giờ tự đăng nhập qua proxy đã ghim khi tài khoản không còn session - xem
+spiders/<platform>/auth/bootstrap.py bên đó.) Cache token GraphQL hết hạn *không*
+giống với việc Facebook đăng xuất tài khoản: cookie trong Redis (hoặc cột cookie
+của tài khoản) có thể vẫn còn sống. restore-session là nút dành cho trường hợp đó.
+import-cookies chỉ dùng khi các cookie đã lưu thực sự đã chết và một người đã đăng
+nhập từ trình duyệt thật.
 
-A platform file just calls build_token_refresh_routes(router, "<platform>") -
-same shape as platform_scraper.build_run_route."""
+File nền tảng chỉ cần gọi build_token_refresh_routes(router, "<platform>") - cùng
+dạng với platform_scraper.build_run_route."""
 
 from __future__ import annotations
 

@@ -1,9 +1,8 @@
-"""Single shared Redis client for this service - same instance spider-hub's
-own RedisCache connects to (see social_crawler/clients/redis.py there),
-read-only from this side. Module-level singleton, same pattern as
-app/clients/kafka.py's `_producer`, so every caller (currently just
-platform_token.py, but any future one too) reuses one connection pool
-instead of each opening its own."""
+"""Redis client dùng chung duy nhất của service này - cùng instance mà RedisCache của
+spider-hub kết nối tới (xem social_crawler/clients/redis.py bên đó), phía này chỉ
+đọc. Singleton cấp module, cùng kiểu với `_producer` của app/clients/kafka.py, để
+mọi chỗ gọi (hiện chỉ có platform_token.py, nhưng cả những chỗ sau này) dùng chung
+một connection pool thay vì mỗi chỗ tự mở."""
 
 from __future__ import annotations
 

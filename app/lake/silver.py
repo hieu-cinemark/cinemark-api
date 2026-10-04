@@ -1,13 +1,13 @@
-"""Silver layer of the R2 data lake: cleans the bronze Kafka archive
-(app/workers/lake_writer) into typed Parquet tables.
+"""Tầng silver của data lake trên R2: làm sạch kho lưu trữ Kafka thô ở tầng bronze
+(app/workers/lake_writer) thành các bảng Parquet có kiểu dữ liệu rõ ràng.
 
-    silver/posts_snapshots/platform=<p>/dt=<d>/  one row per crawl of a post (engagement history)
-    silver/posts/platform=<p>/                    one row per post: latest crawl + ingest decision
+    silver/posts_snapshots/platform=<p>/dt=<d>/  mỗi lần crawl một bài là một dòng (lịch sử tương tác)
+    silver/posts/platform=<p>/                    mỗi bài một dòng: lần crawl mới nhất + quyết định của ingest
 
-Each step is a named DuckDB view/table (raw -> deduped -> snapshots -> posts),
-checked before anything is written. Every run is a full rebuild: the same
-bronze always produces the same silver, so re-running is safe. Run it with
-scripts/build_silver.py."""
+Mỗi bước là một view/table DuckDB có tên (raw -> deduped -> snapshots -> posts),
+được kiểm tra trước khi ghi bất cứ thứ gì. Mỗi lần chạy là dựng lại toàn bộ: cùng
+một bronze luôn cho ra cùng một silver, nên chạy lại bao nhiêu lần cũng an toàn.
+Chạy bằng scripts/build_silver.py."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ BRONZE = f"r2://{settings.lake_bucket}/bronze"
 SILVER = f"r2://{settings.lake_bucket}/silver"
 COLS = """{topic: 'VARCHAR', "partition": 'INTEGER', "offset": 'BIGINT', kafka_ts: 'BIGINT', payload: 'JSON'}"""
 
-# Same expression on every platform.
+# Biểu thức giống nhau trên mọi nền tảng.
 COMMON = {
     "keyword_id": "payload->>'keyword_id'",
     "url": "payload->>'url'",
@@ -33,9 +33,8 @@ COMMON = {
     "scraped_at": "to_timestamp(kafka_ts / 1000)",
 }
 
-# Every platform must map exactly these columns - see _check_mapping. A
-# misspelt name would otherwise survive UNION ALL BY NAME as a silently
-# NULL column.
+# Mỗi nền tảng phải ánh xạ đúng đủ các cột này - xem _check_mapping. Nếu không,
+# một tên viết sai sẽ lọt qua UNION ALL BY NAME thành một cột NULL mà không ai biết.
 POST_COLUMNS = {
     "post_id",
     "content",
@@ -54,7 +53,7 @@ POST_FIELDS = {
         "content": "payload->>'message'",
         "posted_at": "to_timestamp(CAST(payload->>'timestamp' AS BIGINT))",
         "author_username": "NULL::VARCHAR",
-        # The spider stores Facebook hashtags URL-encoded (villah%E1%BB%99ian).
+        # Spider lưu hashtag Facebook ở dạng URL-encoded (villah%E1%BB%99ian).
         "hashtags": "list_transform(CAST(payload->'hashtags' AS VARCHAR[]), tag -> url_decode(tag))",
         "likes": "CAST(payload->>'reactions_count' AS INT)",
         "comments": "CAST(payload->>'comments_count' AS INT)",
@@ -81,19 +80,19 @@ POST_FIELDS = {
         "likes": "CAST(payload->>'like_count' AS INT)",
         "comments": "CAST(payload->>'comment_count' AS INT)",
         "shares": "CAST(payload->>'share_count' AS INT)",
-        # BIGINT: a viral video's play count can pass INT's 2.1 billion.
+        # BIGINT: lượt xem của video viral có thể vượt giới hạn 2,1 tỉ của INT.
         "views": "CAST(payload->>'play_count' AS BIGINT)",
     },
 }
 
-# A platform where more than this share of rows has no content/posted_at is
-# almost certainly mapped to the wrong field names.
+# Nếu một nền tảng có hơn tỉ lệ này số dòng thiếu content/posted_at thì gần như
+# chắc chắn đang ánh xạ sai tên trường.
 MAX_NULL_SHARE = 0.5
 
 
 def connect() -> duckdb.DuckDBPyConnection:
-    """In-memory DuckDB that reads and writes the R2 lake through r2:// paths
-    (an R2 secret built from the same settings app/clients/lake.py uses)."""
+    """DuckDB chạy trong bộ nhớ, đọc và ghi lake trên R2 qua đường dẫn r2://
+    (một R2 secret tạo từ chính các setting mà app/clients/lake.py dùng)."""
     if not (settings.r2_endpoint and settings.r2_access_key_id and settings.r2_secret_access_key):
         raise RuntimeError("R2 is not configured (R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY)")
     con = duckdb.connect()
@@ -128,28 +127,28 @@ def _read(bronze: str, entity: str) -> str:
 
 
 def build_posts(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: str = SILVER) -> dict[str, int]:
-    """Rebuilds silver posts_snapshots + posts from bronze. `bronze`/`out` can
-    be local directories (tests, trying it out) or r2:// paths."""
+    """Dựng lại silver posts_snapshots + posts từ bronze. `bronze`/`out` có thể
+    là thư mục local (khi test, khi thử) hoặc đường dẫn r2://."""
     _check_mapping()
 
-    # 1. raw: a view - nothing is read until a later step needs it.
+    # 1. raw: một view - chưa đọc gì cho tới khi có bước sau cần dùng.
     con.execute(f"CREATE OR REPLACE VIEW raw AS SELECT * FROM {_read(bronze, 'posts')}")
 
-    # 2. deduped: one row per Kafka message (the lake writer can re-write a
-    #    batch after a crash).
+    # 2. deduped: mỗi message Kafka chỉ giữ một dòng (lake writer có thể ghi lại
+    #    một batch sau khi bị crash).
     con.execute(
         """CREATE OR REPLACE VIEW deduped AS SELECT * FROM raw
         QUALIFY row_number() OVER (PARTITION BY topic, "partition", "offset" ORDER BY kafka_ts) = 1"""
     )
 
-    # 3. snapshots: a table, because both posts and the COPY read it - the
-    #    gzip files on R2 are only read once.
+    # 3. snapshots: là table vì cả posts lẫn lệnh COPY đều đọc nó - các file gzip
+    #    trên R2 chỉ phải đọc một lần.
     con.execute(
         "CREATE OR REPLACE TABLE snapshots AS\n"
         + "\nUNION ALL BY NAME\n".join(_platform_select(p, f) for p, f in POST_FIELDS.items())
     )
 
-    # 4. decisions: the latest keep/drop decision per post.
+    # 4. decisions: quyết định giữ/loại mới nhất của mỗi bài.
     con.execute(
         f"""CREATE OR REPLACE VIEW decisions AS
         SELECT payload->>'platform' AS platform, payload->>'post_id' AS post_id,
@@ -160,7 +159,7 @@ def build_posts(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: st
             PARTITION BY payload->>'platform', payload->>'post_id' ORDER BY payload->>'decided_at' DESC) = 1"""
     )
 
-    # 5. posts: one row per post (its latest crawl) + its decision.
+    # 5. posts: mỗi bài một dòng (lần crawl mới nhất) + quyết định của nó.
     con.execute(
         """CREATE OR REPLACE TABLE posts AS
         SELECT s.*, d.decision, d.reason
@@ -169,10 +168,10 @@ def build_posts(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: st
         LEFT JOIN decisions d USING (platform, post_id)"""
     )
 
-    # 6. check before anything is written.
+    # 6. kiểm tra xong mới ghi.
     _check(con)
 
-    # 7. write.
+    # 7. ghi.
     _write(con, "snapshots", f"{out}/posts_snapshots", partition_by="platform, dt")
     _write(con, "posts", f"{out}/posts", partition_by="platform")
     return {table: con.sql(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("snapshots", "posts")}
@@ -204,13 +203,13 @@ def _check(con: duckdb.DuckDBPyConnection) -> None:
 
 def _write(con: duckdb.DuckDBPyConnection, table: str, dest: str, *, partition_by: str) -> None:
     if not dest.startswith("r2://"):
-        # DuckDB creates the partition folders but not missing parents.
+        # DuckDB tự tạo các thư mục partition nhưng không tạo thư mục cha còn thiếu.
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
         con.execute(f"COPY {table} TO '{dest}' (FORMAT parquet, PARTITION_BY ({partition_by}), OVERWRITE)")
         return
-    # DuckDB's OVERWRITE isn't supported on remote file systems, and
-    # OVERWRITE_OR_IGNORE leaves files from an earlier run in place (rows
-    # counted twice) - so clear the destination first. Only ever under silver/.
+    # OVERWRITE của DuckDB không hỗ trợ file system từ xa, còn OVERWRITE_OR_IGNORE
+    # để lại file của lần chạy trước (dòng bị đếm hai lần) - nên phải xoá đích trước.
+    # Chỉ được xoá dưới silver/.
     prefix = dest.split(f"r2://{settings.lake_bucket}/", 1)[1].rstrip("/") + "/"
     if not prefix.startswith("silver/"):
         raise ValueError(f"refusing to clear {prefix!r} - silver writes stay under silver/")

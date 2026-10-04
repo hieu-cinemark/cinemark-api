@@ -1,17 +1,16 @@
-"""One-time migration: copies Kira/Bee credentials from .env
-(KIRA_BASE_URL/KIRA_API_KEY, BEEKNOEE_BASE_URL/BEEKNOEE_API_KEY) plus the
-currently-effective model into the new ai_providers Supabase table (see
-app/services/platform_config_db.py), so app/ai/client.py can load them
-from there instead of env vars. Safe to re-run - upserts by key.
+"""Migrate một lần: chép thông tin đăng nhập Kira/Bee từ .env
+(KIRA_BASE_URL/KIRA_API_KEY, BEEKNOEE_BASE_URL/BEEKNOEE_API_KEY) cùng model đang có
+hiệu lực vào bảng ai_providers mới trên Supabase (xem
+app/services/platform_config_db.py), để app/ai/client.py nạp từ đó thay vì từ biến
+env. Chạy lại an toàn - upsert theo key.
 
-Reads .env directly (not app.core.config.Settings, which no longer
-declares these fields - they've already been removed there on the
-environment this migration was first run against) so this still works
-against any OTHER environment (staging/another server's .env) that hasn't
-migrated yet. Delete the KIRA_*/BEEKNOEE_* lines from that environment's
-.env once this has run successfully there too.
+Đọc thẳng .env (không qua app.core.config.Settings, vốn không còn khai báo các trường
+này - chúng đã bị xoá khỏi đó trên môi trường mà migration này chạy lần đầu) để vẫn
+chạy được trên bất kỳ môi trường KHÁC nào (staging/.env của server khác) chưa
+migrate. Xoá các dòng KIRA_*/BEEKNOEE_* khỏi .env của môi trường đó khi đã chạy thành
+công ở đó.
 
-Usage: .venv/bin/python -m scripts.migrate_ai_provider_credentials
+Cách dùng: .venv/bin/python -m scripts.migrate_ai_provider_credentials
 """
 
 from __future__ import annotations
@@ -28,16 +27,16 @@ _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 
 def _env(name: str) -> str | None:
-    # Real process env wins (matches pydantic-settings' own precedence),
-    # falling back to whatever's still in .env.
+    # Env thật của tiến trình được ưu tiên (khớp thứ tự ưu tiên của pydantic-settings),
+    # quay về giá trị còn trong .env.
     return os.getenv(name) or dotenv_values(_ENV_PATH).get(name) or None
 
 
 async def main() -> None:
     kira_base_url, kira_api_key = _env("KIRA_BASE_URL"), _env("KIRA_API_KEY")
     if kira_base_url and kira_api_key:
-        # No model names in code: KIRA_MODEL, else whatever Supabase already
-        # holds (the provider row, then the legacy ai_settings.model).
+        # Không có tên model trong code: KIRA_MODEL, nếu không thì lấy giá trị Supabase đang
+        # giữ (dòng provider, rồi tới ai_settings.model cũ).
         existing = await get_ai_provider("kira") or {}
         legacy = await get_ai_settings()
         kira_model = (

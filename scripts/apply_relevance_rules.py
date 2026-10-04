@@ -1,15 +1,14 @@
-"""Applies app/services/relevance_rules.py to posts already in D1 - the
-ingest consumer only applies them to new posts.
+"""Áp dụng app/services/relevance_rules.py cho các bài đã có trong D1 - ingest consumer
+chỉ áp dụng chúng cho bài mới.
 
-Scope: posts currently counted as relevant (keyword_match > 0, what every
-dashboard query filters on). A post a rule rejects gets keyword_match = 0
-and relevance_label = 'not_related' - nothing is deleted. Every change is
-written first to a rollback CSV (id, previous keyword_match /
-relevance_label / relevance_confidence, rule), so it can be undone with
---rollback <csv>.
+Phạm vi: các bài hiện đang được tính là liên quan (keyword_match > 0, điều kiện mà mọi
+query của dashboard lọc theo). Bài bị một quy tắc loại sẽ có keyword_match = 0 và
+relevance_label = 'not_related' - không xoá gì cả. Mọi thay đổi được ghi trước vào một
+file CSV để rollback (id, keyword_match / relevance_label / relevance_confidence cũ,
+quy tắc), nên có thể hoàn tác bằng --rollback <csv>.
 
-Usage:
-  .venv/bin/python -m scripts.apply_relevance_rules            # dry run: counts + samples
+Cách dùng:
+  .venv/bin/python -m scripts.apply_relevance_rules            # chạy thử: số lượng + mẫu
   .venv/bin/python -m scripts.apply_relevance_rules --apply
   .venv/bin/python -m scripts.apply_relevance_rules --rollback scripts/_relevance_rules_rollback_<ts>.csv
 """
@@ -31,8 +30,8 @@ from app.services.relevance_rules import foreign_language_reason, mentions_other
 logger = get_logger(__name__)
 
 PAGE_SIZE = 2000
-# D1 caps bound parameters at 100 per statement; each row here uses 7
-# (3 CASE pairs + the IN list), so 12 rows = 84.
+# D1 giới hạn 100 tham số bind mỗi câu lệnh; mỗi dòng ở đây dùng 7 (3 cặp CASE + danh
+# sách IN), nên 12 dòng = 84.
 BATCH = 12
 QUERY_TIMEOUT = 60.0
 
@@ -91,8 +90,8 @@ async def _write(updates: list[tuple[str, int, str | None, float | None]]) -> No
             params,
             timeout=QUERY_TIMEOUT,
         )
-        # d1_query returns None (logged, not raised) on failure - stop rather
-        # than report rows as updated that never were.
+        # d1_query trả về None (có log, không raise) khi lỗi - dừng lại thay vì báo là đã cập
+        # nhật những dòng chưa hề được cập nhật.
         if result is None:
             raise RuntimeError(f"D1 update failed for batch starting at {chunk[0][0]!r} ({start} rows written so far)")
 
@@ -109,7 +108,7 @@ async def run(apply: bool) -> None:
         return
     stamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
     rollback = Path(f"scripts/_relevance_rules_rollback_{stamp}.csv")
-    with rollback.open("w", encoding="utf-8", newline="") as f:  # noqa: ASYNC230 - one small local file
+    with rollback.open("w", encoding="utf-8", newline="") as f:  # noqa: ASYNC230 - chỉ một file local nhỏ
         writer = csv.writer(f)
         writer.writerow(["id", "keyword_match", "relevance_label", "relevance_confidence", "rule"])
         for c in changes:

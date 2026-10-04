@@ -1,7 +1,7 @@
-"""Runs the daily irrelevant-post purge by hand - the same cleanup.run_purge
-the API's scheduler calls at the dashboard's run_time: dashboard-stored
-grace_hours, a cleanup_run_history row, and the shared lock, so it never
-overlaps a scheduled run.
+"""Chạy tay lượt dọn bài không liên quan hằng ngày - đúng cleanup.run_purge mà scheduler
+của API gọi lúc run_time trên dashboard: grace_hours lưu trên dashboard, một dòng
+cleanup_run_history, và khoá dùng chung, nên không bao giờ chạy chồng lên lượt theo
+lịch.
 
     .venv/bin/python -m scripts.purge_irrelevant_posts --dry-run
     .venv/bin/python -m scripts.purge_irrelevant_posts

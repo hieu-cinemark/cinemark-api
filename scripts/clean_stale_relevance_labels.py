@@ -1,25 +1,23 @@
-"""Re-checks a movie's relevance_label='related' posts against the CURRENT
-movie_hashtag_present (hashtag/exact-token + author-reputation gate), and
-downgrades any that no longer pass to 'not_related'.
+"""Kiểm tra lại các bài relevance_label='related' của một phim bằng movie_hashtag_present
+HIỆN TẠI (cổng hashtag/token chính xác + uy tín tác giả), và hạ cấp những bài không
+còn qua được thành 'not_related'.
 
-Exists because relevance_label itself is a point-in-time snapshot: it was
-set by whatever verdict (AI or the old keyword substring check) was live
-at ingest time, and never gets re-evaluated as movie_hashtag_present's own
-logic improves. list_posts(sort="engagement")/get_comment_sample_for_movie
-already re-run movie_hashtag_present at query time so their OWN output is
-clean, but relevance_label on disk stays wrong until something rewrites
-it - and get_movie_sentiment_counts (app/services/d1.py) counts straight
-off relevance_label with no such re-check, so a movie whose title is
-ordinary vocabulary (e.g. "Huyết Thống") keeps polluting its own sentiment
-percentages even after the post-list/report views were fixed.
+Tồn tại vì bản thân relevance_label là một snapshot tại một thời điểm: nó được đặt bởi
+phán quyết nào (AI hoặc kiểm tra chuỗi con theo từ khoá cũ) đang chạy lúc ingest, và
+không bao giờ được đánh giá lại khi logic của movie_hashtag_present được cải thiện.
+list_posts(sort="engagement")/get_comment_sample_for_movie vốn đã chạy lại
+movie_hashtag_present lúc query nên output CỦA CHÚNG sạch, nhưng relevance_label trên
+đĩa vẫn sai cho tới khi có gì đó ghi lại - và get_movie_sentiment_counts
+(app/services/d1.py) đếm thẳng trên relevance_label mà không kiểm tra lại như vậy,
+nên phim có tên là từ vựng thông thường (ví dụ "Huyết Thống") vẫn làm bẩn tỉ lệ cảm
+xúc của chính nó ngay cả sau khi màn hình danh sách bài/report đã được sửa.
 
-Scope: one movie per run, by id. Safe to re-run - every row is a plain
-relevance_label='related' -> 'not_related' downgrade (never the reverse;
-this script only removes false positives, it can't add missed true
-positives back), so re-running just re-confirms/no-ops on rows already
-downgraded.
+Phạm vi: mỗi lần chạy một phim, theo id. Chạy lại an toàn - mỗi dòng chỉ là hạ cấp
+relevance_label='related' -> 'not_related' (không bao giờ ngược lại; script này chỉ
+xoá dương tính giả, không thêm lại được các dương tính thật đã bỏ sót), nên chạy lại
+chỉ xác nhận lại/không làm gì với các dòng đã hạ cấp.
 
-Usage:
+Cách dùng:
   .venv/bin/python -m scripts.clean_stale_relevance_labels <movie_id>
 """
 
@@ -36,10 +34,10 @@ from app.services.d1 import d1_query
 logger = get_logger(__name__)
 
 PAGE_SIZE = 1000
-# id (label CASE) + id (confidence CASE, literal 0.0) + id+now (labeled_at
-# CASE) + id (IN clause) = 5 params/row - well under the D1 bound-parameter
-# ceiling scripts/push_relevance_labels.py's own ROWS_PER_BATCH comment
-# documents; 10 rows/batch (50 params) matches that script's batch size.
+# id (CASE nhãn) + id (CASE confidence, literal 0.0) + id+now (CASE labeled_at) + id
+# (mệnh đề IN) = 5 tham số/dòng - thấp xa so với trần tham số bind của D1 mà comment
+# ROWS_PER_BATCH trong scripts/push_relevance_labels.py ghi lại; 10 dòng/lô (50 tham
+# số) khớp với kích thước lô của script đó.
 ROWS_PER_BATCH = 10
 
 

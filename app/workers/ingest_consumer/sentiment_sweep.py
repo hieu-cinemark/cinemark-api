@@ -1,18 +1,16 @@
-"""Background comment-sentiment sweep, run inside the ingest consumer.
+"""Lượt quét cảm xúc comment chạy nền, bên trong ingest consumer.
 
-handle_comment persists comments with sentiment NULL; this loop picks up
-the recent unclassified ones every SWEEP_INTERVAL_SECONDS and classifies
-them through Kira in batches (app/ai/tasks/sentiment.py), so a comment gets
-its label within a minute or two instead of stalling Kafka ingest on one
-LLM call per comment.
+handle_comment lưu comment với sentiment NULL; vòng lặp này cứ mỗi
+SWEEP_INTERVAL_SECONDS lại lấy các comment gần đây chưa phân loại và phân loại theo
+lô qua Kira (app/ai/tasks/sentiment.py), để một comment có nhãn trong vòng một hai
+phút thay vì làm nghẽn việc ingest Kafka bằng mỗi comment một lời gọi LLM.
 
-Kira calls run one batch at a time, so the sweep never takes more than one
-of Kira's concurrency slots (app/ai/client.py) from post relevance at
-ingest.
-A Redis lock keeps two running consumers from classifying the same rows.
+Lời gọi Kira chạy từng lô một, nên lượt quét không bao giờ chiếm quá một chỗ trong
+giới hạn song song của Kira (app/ai/client.py) so với phân loại độ liên quan của bài
+lúc ingest. Một khoá Redis ngăn hai consumer đang chạy cùng phân loại một dòng.
 
-scripts/backfill_comment_sentiment.py reuses classify_pending() for the
-older backlog outside the sweep's recency window.
+scripts/backfill_comment_sentiment.py dùng lại classify_pending() cho hàng tồn cũ
+hơn, nằm ngoài cửa sổ thời gian gần đây của lượt quét.
 """
 
 from __future__ import annotations
@@ -31,19 +29,19 @@ logger = get_logger(__name__)
 
 SWEEP_INTERVAL_SECONDS = 60
 SWEEP_MAX_ROWS = 200
-# Only recent comments: older NULL rows are the backfill script's job, and
-# the window bounds how long a comment Bee keeps failing on gets retried.
+# Chỉ comment gần đây: các dòng NULL cũ hơn là việc của script backfill, và cửa sổ này
+# giới hạn thời gian một comment mà Kira cứ lỗi mãi còn được thử lại.
 SWEEP_WINDOW = timedelta(hours=48)
-# A comment Bee returned no valid label for this many times is left for
-# the backfill script instead of occupying every sweep.
+# Comment mà Kira không trả về nhãn hợp lệ quá chừng này lần thì để lại cho script
+# backfill thay vì chiếm chỗ ở mọi lượt quét.
 MAX_ATTEMPTS = 3
 _LOCK_KEY = f"{REDIS_KEY_PREFIX}comment_sentiment_sweep_lock"
 _LOCK_TTL_SECONDS = 600
 
 
 async def _save(labels: dict[str, str]) -> int:
-    """One UPDATE per label value (ids in IN (...)) - at most BATCH_SIZE+1
-    bound params, well under D1's 100 per statement."""
+    """Mỗi giá trị nhãn một lệnh UPDATE (id trong IN (...)) - tối đa BATCH_SIZE+1 tham số
+    bind, thấp xa so với giới hạn 100 mỗi câu lệnh của D1."""
     by_label: dict[str, list[str]] = {}
     for comment_id, label in labels.items():
         by_label.setdefault(label, []).append(comment_id)
@@ -70,15 +68,15 @@ async def classify_pending(
     exclude: set[str] | frozenset[str] = frozenset(),
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    """Classifies up to `limit` NULL-sentiment comments, newest first, one
-    Bee batch at a time, writing each batch as soon as it's labeled.
-    Returns {"selected", "classified", "failed", "failed_ids", <label>:
-    count...} - failed_ids so callers can cap retries per comment."""
+    """Phân loại tối đa `limit` comment có sentiment NULL, mới nhất trước, từng lô Kira một,
+    ghi mỗi lô ngay khi đã gắn nhãn. Trả về {"selected", "classified", "failed",
+    "failed_ids", <label>: count...} - có failed_ids để chỗ gọi giới hạn số lần thử lại
+    của từng comment."""
     sql = f"SELECT id, message FROM comments WHERE sentiment IS NULL AND length(trim(message)) >= {MIN_CONTENT_LENGTH}"
     params: list[str | int] = []
     if since is not None:
         sql += " AND scraped_at >= ?"
-        params.append(since.astimezone(UTC).isoformat())  # scraped_at is ISO-8601 UTC
+        params.append(since.astimezone(UTC).isoformat())  # scraped_at là ISO-8601 UTC
     if platform:
         sql += " AND platform = ?"
         params.append(platform)
@@ -89,8 +87,8 @@ async def classify_pending(
         raise RuntimeError("comment_sentiment_select_failed")
     rows = [row for row in rows if row["id"] not in exclude][:limit]
 
-    # classified set up front: with no rows the loop never touches it, and
-    # the returned plain dict (unlike Counter) raises on a missing key.
+    # Đặt sẵn classified từ đầu: khi không có dòng nào thì vòng lặp không chạm tới nó, và
+    # dict thường được trả về (khác Counter) sẽ lỗi khi thiếu key.
     stats: Counter[str] = Counter(selected=len(rows), classified=0)
     failed_ids: list[str] = []
     for start in range(0, len(rows), BATCH_SIZE):
@@ -107,7 +105,7 @@ async def classify_pending(
 async def _acquire_lock() -> bool:
     try:
         return bool(await get_redis_client().set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL_SECONDS))
-    except Exception as exc:  # noqa: BLE001 - no Redis, run unlocked (single consumer is the norm)
+    except Exception as exc:  # noqa: BLE001 - không có Redis thì chạy không khoá (bình thường chỉ có một consumer)
         logger.warning("comment_sentiment_lock_unavailable", error=exc)
         return True
 
@@ -115,12 +113,12 @@ async def _acquire_lock() -> bool:
 async def _release_lock() -> None:
     try:
         await get_redis_client().delete(_LOCK_KEY)
-    except Exception as exc:  # noqa: BLE001 - the TTL expires it anyway
+    except Exception as exc:  # noqa: BLE001 - đằng nào TTL cũng làm nó hết hạn
         logger.debug("comment_sentiment_lock_release_failed", error=exc)
 
 
 async def sweep_forever() -> None:
-    """Never returns; every failure is logged and retried next round."""
+    """Không bao giờ trả về; mọi lỗi đều được log và thử lại ở vòng sau."""
     attempts: Counter[str] = Counter()
     while True:
         full_batch = False
@@ -134,19 +132,19 @@ async def sweep_forever() -> None:
                 finally:
                     await _release_lock()
                 failed_ids = result.pop("failed_ids")
-                # Count a failure against the comment only when Bee labeled
-                # others in the same round - a round where every batch failed
-                # is Bee down/limited, and must not exclude everything.
+                # Chỉ tính lỗi cho comment khi Kira đã gắn nhãn được các comment khác trong cùng vòng -
+                # một vòng mà lô nào cũng lỗi nghĩa là Kira sập/bị giới hạn, và không được loại bỏ mọi
+                # thứ.
                 if result["classified"]:
                     attempts.update(failed_ids)
-                if len(attempts) > 10_000:  # bound memory; worst case a few extra retries
+                if len(attempts) > 10_000:  # giới hạn bộ nhớ; tệ nhất là thử lại thêm vài lần
                     attempts.clear()
                 if result["selected"]:
                     logger.info("comment_sentiment_sweep_finished", **result)
                 full_batch = result["selected"] >= SWEEP_MAX_ROWS and result["classified"] > 0
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - keep sweeping; ingest must not die over sentiment
+        except Exception as exc:  # noqa: BLE001 - tiếp tục quét; ingest không được chết vì cảm xúc
             logger.warning("comment_sentiment_sweep_failed", error=exc)
-        # A full page means a backlog - go again right away.
+        # Đầy một trang nghĩa là còn hàng tồn - chạy tiếp ngay.
         await asyncio.sleep(1 if full_batch else SWEEP_INTERVAL_SECONDS)

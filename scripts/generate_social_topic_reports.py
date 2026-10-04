@@ -1,19 +1,17 @@
-"""Regenerates the AI "top 10 topics" social listening report for every
-enabled movie (or one movie via --movie-id), overwriting
-social_topic_reports by movie_id. This is deliberately a periodic batch job,
-not computed per-pageview - topic-clustering a movie's comments is an
-expensive Bee (Claude Sonnet 5) call, and a movie's discussion topics don't
-meaningfully shift within a few hours at current comment volume. Run daily
-via cron (see scripts/trigger_scheduled_crawl.sh); use --movie-id for an
-on-demand one-off regeneration (e.g. right after a backfill run, without
-waiting for the next cron cycle) - the dashboard's own manual "Tạo report"
-button (POST /movies/{id}/generate-report) does the same one-movie call.
+"""Tạo lại report social listening "top 10 topic" bằng AI cho mọi phim đang bật (hoặc
+một phim qua --movie-id), ghi đè social_topic_reports theo movie_id. Đây cố ý là job
+theo lô chạy định kỳ, không tính theo mỗi lượt xem trang - gom topic comment của một
+phim là một lời gọi AI tốn kém (Kira mặc định, hoặc Bee nếu chọn trong Settings), và
+chủ đề thảo luận của một phim không thay đổi đáng kể trong vài giờ với lượng comment
+hiện tại. Chạy hằng ngày qua cron (xem scripts/trigger_scheduled_crawl.sh); dùng
+--movie-id để tạo lại một lần khi cần (ví dụ ngay sau một lượt backfill, không phải
+chờ chu kỳ cron sau) - nút "Tạo report" bấm tay trên dashboard (POST
+/movies/{id}/generate-report) cũng gọi đúng cho một phim như vậy.
 
-The actual per-movie algorithm lives in app/services/social_topic.py,
-shared with that button - this script is just the enabled-movies sweep +
-CLI around it.
+Thuật toán thật theo từng phim nằm ở app/services/social_topic.py, dùng chung với nút
+đó - script này chỉ là lượt quét các phim đang bật + CLI bọc quanh nó.
 
-Usage:
+Cách dùng:
     python -m scripts.generate_social_topic_reports
     python -m scripts.generate_social_topic_reports --movie-id abc123
     python -m scripts.generate_social_topic_reports --dry-run

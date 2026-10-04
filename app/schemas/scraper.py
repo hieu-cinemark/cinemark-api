@@ -6,16 +6,16 @@ from pydantic import BaseModel
 
 
 class RunScraperRequest(BaseModel):
-    """All fields optional and mutually exclusive in effect:
-    - keyword_id set: trigger just that one keyword.
-    - movie_id set (keyword_id absent): trigger every enabled keyword for that movie.
-    - neither set: trigger every enabled keyword across every movie (the daily job's case).
+    """Mọi trường đều không bắt buộc và trên thực tế loại trừ nhau:
+    - có keyword_id: chỉ kích hoạt đúng từ khoá đó.
+    - có movie_id (không có keyword_id): kích hoạt mọi từ khoá đang bật của phim đó.
+    - không có cái nào: kích hoạt mọi từ khoá đang bật của mọi phim (trường hợp của job hằng ngày).
 
-    keyword_id/movie_id are D1 ids (see app/services/d1.py), not UUIDs.
+    keyword_id/movie_id là id của D1 (xem app/services/d1.py), không phải UUID.
 
-    start_date/end_date only make sense for Facebook search (date-posted
-    sweep). Threads has no date filter; TikTok is hashtag-only. The API
-    ignores these fields for non-Facebook platforms.
+    start_date/end_date chỉ có nghĩa với tìm kiếm Facebook (quét theo ngày đăng).
+    Threads không có bộ lọc ngày; TikTok chỉ tìm theo hashtag. API bỏ qua các trường này
+    với nền tảng không phải Facebook.
     """
 
     keyword_id: str | None = None
@@ -23,8 +23,9 @@ class RunScraperRequest(BaseModel):
     max_pages: int | None = None
     start_date: date | None = None
     end_date: date | None = None
-    # Operator-approved TikTok related-hashtag hop. Ignored unless keyword_id
-    # is set. spider-hub caps pages and stops suggesting further tags at depth 2.
+    # Bước nhảy sang hashtag liên quan của TikTok đã được người vận hành duyệt. Bị bỏ qua
+    # nếu không có keyword_id. spider-hub giới hạn số trang và ngừng gợi ý thêm tag ở độ
+    # sâu 2.
     bfs_depth: int | None = None
 
 
@@ -41,7 +42,7 @@ class JobStatus(BaseModel):
     type: str | None = None
     account: str | None = None
     post_id: str | None = None
-    # Free-text TikTok channel handle for type=channel_videos jobs.
+    # Handle kênh TikTok nhập tự do cho job type=channel_videos.
     username: str | None = None
 
 
@@ -54,7 +55,7 @@ class RunCommentsResponse(BaseModel):
 
 
 class RunChannelVideosRequest(BaseModel):
-    """TikTok channel grid crawl - username without or with leading @."""
+    """Crawl lưới video của một kênh TikTok - username có hoặc không có @ ở đầu."""
 
     username: str
     max_pages: int | None = None
@@ -76,21 +77,20 @@ class TokenStatus(BaseModel):
 
 
 class ImportCookiesRequest(BaseModel):
-    # platform_accounts.id (the numeric row id) - resolved server-side to
-    # the actual account_key (email or account_id) bootstrap.py's --account
-    # expects, see app/api/routes/token_refresh.py.
+    # platform_accounts.id (id số của dòng) - phía server tra ra account_key thật (email
+    # hoặc account_id) mà --account của bootstrap.py cần, xem
+    # app/api/routes/token_refresh.py.
     account_id: int
-    # Raw JSON text as exported from DevTools - either {"c_user": "...",
-    # "xs": "...", ...} or a full Playwright-style cookie list. Passed
-    # through as-is to spider-hub's import_cookies(), which validates the
-    # required cookie names are present.
+    # Text JSON thô xuất từ DevTools - hoặc {"c_user": "...", "xs": "...", ...} hoặc một
+    # danh sách cookie đầy đủ kiểu Playwright. Chuyển nguyên vẹn sang import_cookies() của
+    # spider-hub, nơi kiểm tra có đủ các tên cookie bắt buộc.
     cookies: str
 
 
 class RestoreSessionRequest(BaseModel):
-    # Same row id as ImportCookiesRequest - spider-hub reuses that account's
-    # Redis storage_state (or the cookie column) and recaptures GraphQL
-    # tokens. No new cookies from the operator.
+    # Cùng id dòng với ImportCookiesRequest - spider-hub dùng lại storage_state trong Redis
+    # (hoặc cột cookie) của tài khoản đó và bắt lại token GraphQL. Người vận hành không
+    # cần đưa cookie mới.
     account_id: int
 
 

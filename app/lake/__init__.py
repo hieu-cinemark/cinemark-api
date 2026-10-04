@@ -1,1 +1,1 @@
-"""R2 data lake layers built on top of the bronze archive - see silver.py."""
+"""Các tầng data lake R2 dựng trên kho lưu trữ bronze - xem silver.py."""

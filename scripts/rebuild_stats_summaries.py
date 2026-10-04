@@ -1,6 +1,6 @@
-"""One-shot rebuild of stats_platform_daily / stats_keyword_daily from
-existing posts + comments on the configured D1 (remote). Run after first
-deploy of the rollup tables, or anytime counts look drifted:
+"""Dựng lại một lần stats_platform_daily / stats_keyword_daily từ posts + comments hiện có
+trên D1 đã cấu hình (remote). Chạy sau lần deploy đầu tiên của các bảng tổng hợp, hoặc
+bất cứ lúc nào số liệu có vẻ bị lệch:
 
     cd cinemark-api && source .venv/bin/activate
     python -m scripts.rebuild_stats_summaries

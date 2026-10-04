@@ -1,7 +1,7 @@
-"""Bulk-label comments.sentiment via the lexicon in
-app/services/sentiment_lexicon.py (no Kira calls).
+"""Gắn nhãn hàng loạt comments.sentiment bằng từ điển trong
+app/services/sentiment_lexicon.py (không gọi Kira).
 
-Usage:
+Cách dùng:
     python -m scripts.label_comment_sentiment_lexicon
     python -m scripts.label_comment_sentiment_lexicon --dry-run --limit 100
     python -m scripts.label_comment_sentiment_lexicon --platform tiktok

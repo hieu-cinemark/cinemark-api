@@ -72,11 +72,11 @@ class Post(BaseModel):
 
 
 class PostPage(BaseModel):
-    """Keyset-paginated - no `total`/`offset` (see PostRepository.
-    list_posts_cursor's own docstring for why: OFFSET+JOIN degrades with
-    depth on D1 once a table gets large, and a numbered pager needs an
-    exact total anyway - `nextCursor` is the opaque page-2 token; None
-    means this was the last page."""
+    """Phân trang keyset - không có `total`/`offset` (xem docstring của
+    PostRepository.list_posts_cursor để biết lý do: OFFSET+JOIN chậm dần theo độ sâu
+    trên D1 khi bảng lớn, và một thanh phân trang đánh số đằng nào cũng cần tổng số
+    chính xác) - `nextCursor` là token trang kế tiếp không cần hiểu bên trong; None
+    nghĩa là đây là trang cuối."""
 
     items: list[Post]
     nextCursor: str | None = None
@@ -111,7 +111,7 @@ class CommentWithPost(Comment):
 
 
 class CommentPage(BaseModel):
-    """Keyset-paginated - see PostPage's own docstring."""
+    """Phân trang keyset - xem docstring của PostPage."""
 
     items: list[CommentWithPost]
     nextCursor: str | None = None

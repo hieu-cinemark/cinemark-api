@@ -1,11 +1,10 @@
-"""App-wide custom error hierarchy + the FastAPI handlers that turn them into
-a consistent JSON shape: {"error": {"code": "...", "message": "..."}}.
+"""Cây lỗi tuỳ chỉnh dùng cho cả app + các handler FastAPI biến chúng thành một dạng
+JSON thống nhất: {"error": {"code": "...", "message": "..."}}.
 
-Raise these from anywhere in app/services, app/api/routes, etc. instead of
-FastAPI's own HTTPException - a service function raising NotFoundError
-doesn't need to know it's being called from an HTTP route (a Kafka consumer
-calling the same service later doesn't have a status_code to give, but can
-still catch AppError and log err.code)."""
+Raise các lỗi này từ bất cứ đâu trong app/services, app/api/routes, v.v. thay cho
+HTTPException của FastAPI - một hàm service raise NotFoundError không cần biết nó
+đang được gọi từ một route HTTP (một Kafka consumer gọi cùng service đó về sau không
+có status_code nào để trả, nhưng vẫn bắt được AppError và log err.code)."""
 
 from __future__ import annotations
 
@@ -18,10 +17,10 @@ logger = get_logger(__name__)
 
 
 class AppError(Exception):
-    """Base class for every expected, named failure in this app. Unexpected
-    exceptions (bugs, third-party library errors) are NOT AppErrors - those
-    are caught separately by the catch-all handler below and always
-    reported as a generic 500, never leaking internals to the client."""
+    """Lớp cơ sở cho mọi lỗi có tên, đã lường trước trong app này. Exception bất ngờ (bug,
+    lỗi của thư viện bên thứ ba) KHÔNG phải AppError - chúng được handler bắt-tất-cả bên
+    dưới xử lý riêng và luôn trả về một lỗi 500 chung chung, không bao giờ để lộ chi
+    tiết bên trong cho client."""
 
     status_code = 500
     code = "internal_error"
@@ -32,59 +31,59 @@ class AppError(Exception):
 
 
 class NotFoundError(AppError):
-    """The requested resource does not exist."""
+    """Tài nguyên được yêu cầu không tồn tại."""
 
     status_code = 404
     code = "not_found"
 
 
 class AuthenticationError(AppError):
-    """Missing, invalid, or expired credentials."""
+    """Thông tin xác thực bị thiếu, sai hoặc hết hạn."""
 
     status_code = 401
     code = "unauthorized"
 
 
 class AuthorizationError(AppError):
-    """Authenticated, but not allowed to do this (wrong scope/role)."""
+    """Đã xác thực, nhưng không được phép làm việc này (sai scope/role)."""
 
     status_code = 403
     code = "forbidden"
 
 
 class ValidationError(AppError):
-    """The request is well-formed but fails a business rule (distinct from
-    FastAPI/Pydantic's own 422 for malformed request bodies)."""
+    """Request đúng định dạng nhưng vi phạm một quy tắc nghiệp vụ (khác với lỗi 422 của
+    chính FastAPI/Pydantic cho body request sai định dạng)."""
 
     status_code = 400
     code = "validation_error"
 
 
 class NoSavedSessionError(ValidationError):
-    """This account has no Redis storage_state and no cookie field to reuse."""
+    """Tài khoản này không có storage_state trong Redis và cũng không có trường cookie nào
+    để dùng lại."""
 
     code = "no_saved_session"
 
 
 class ConflictError(AppError):
-    """The request conflicts with existing state (e.g. a duplicate key)."""
+    """Request xung đột với trạng thái hiện có (ví dụ key bị trùng)."""
 
     status_code = 409
     code = "conflict"
 
 
 class UpstreamError(AppError):
-    """A dependency this app relies on (Kafka, the database, an external
-    API) failed or is unreachable."""
+    """Một phụ thuộc mà app này dựa vào (Kafka, database, một API bên ngoài) bị lỗi hoặc
+    không truy cập được."""
 
     status_code = 502
     code = "upstream_error"
 
 
 def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
-    # Required by the OAuth2 spec (and expected by Swagger UI / any proper
-    # OAuth2 client) on a 401 - without it, clients can't tell what auth
-    # scheme to retry with.
+    # Bắt buộc theo đặc tả OAuth2 (và Swagger UI / mọi OAuth2 client đúng chuẩn đều chờ
+    # nó) khi trả 401 - thiếu nó thì client không biết phải thử lại với kiểu xác thực nào.
     headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
     return JSONResponse(status_code=status_code, content={"error": {"code": code, "message": message}}, headers=headers)
 

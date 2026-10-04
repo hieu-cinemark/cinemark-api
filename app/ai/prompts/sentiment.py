@@ -68,10 +68,9 @@ FIELD RULES:
 other value, no combination, no explanation text mixed in.
 """
 
-# The output format is repeated here, in the user prompt, on purpose: the
-# system prompt can be replaced from the dashboard (ai_settings prompts), and
-# an override written for the old one-comment-per-call format must not break
-# the batch parser.
+# Định dạng đầu ra được lặp lại ở đây, trong user prompt, là cố ý: system prompt có
+# thể bị thay từ dashboard (ai_settings prompts), và một bản ghi đè viết cho định
+# dạng cũ (mỗi lời gọi một comment) không được làm hỏng bộ parse theo lô.
 SENTIMENT_DATA_PROMPT = """
 Classify the sentiment of each of the following {count} comments, left under
 movie-related posts.

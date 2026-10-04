@@ -1,10 +1,10 @@
-"""Default system prompt for the "post_relevance" task (see
-app/ai/tasks/post_relevance.py). Its own module so app/ai/defaults.py can
-import it without importing app/ai/kira.py (circular)."""
+"""System prompt mặc định cho task "post_relevance" (xem
+app/ai/tasks/post_relevance.py). Tách ra module riêng để app/ai/defaults.py import
+được mà không phải import app/ai/kira.py (tránh import vòng)."""
 
-# Criteria only - the JSON wrapper lives in the (code-owned) user prompt, see
-# app/ai/tasks/post_relevance.py, so a dashboard-edited copy of this prompt can't
-# break the batch reply format.
+# Chỉ chứa tiêu chí - phần khung JSON nằm trong user prompt (do code quản lý), xem
+# app/ai/tasks/post_relevance.py, nên bản prompt bị sửa trên dashboard không thể làm
+# hỏng định dạng trả lời theo lô.
 POST_RELEVANCE_SYSTEM_PROMPT = """
 You label social-media posts for a Vietnamese film-marketing dashboard.
 You get a numbered batch of posts. Each post comes with its OWN TARGET FILM;

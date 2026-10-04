@@ -1,9 +1,8 @@
-"""One-off: pushes movies -> keywords -> posts (not comments) to remote D1.
+"""Chạy một lần: đẩy movies -> keywords -> posts (không có comments) lên D1 remote.
 
-Reuses push_local_data_to_remote.py's own helper functions - this just
-calls its push() sequence minus the final comments step, for the case
-where only a posts backfill is wanted this run (see that script's own
-push() for the full movies+keywords+posts+comments version).
+Dùng lại các hàm helper của push_local_data_to_remote.py - chỉ gọi chuỗi push() của nó
+trừ bước comments cuối cùng, cho trường hợp lượt này chỉ muốn backfill bài (xem push()
+của script đó cho bản đầy đủ movies+keywords+posts+comments).
 
     python -m scripts.push_posts_only
 """

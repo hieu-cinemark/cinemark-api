@@ -1,20 +1,19 @@
-"""AI-assisted bulk import for platform_accounts/platform_proxies - backs
-app/api/routes/settings.py's POST /settings/import/parse. Lets an operator
-paste a batch of raw account/proxy data in *any* shape (a spreadsheet
-export, a text file from wherever the accounts were bought, one line per
-account with fields in whatever order/separator) plus a plain-language
-description of that shape, and get back structured rows.
+"""Import hàng loạt có AI hỗ trợ cho platform_accounts/platform_proxies - phục vụ
+POST /settings/import/parse trong app/api/routes/settings.py. Cho phép người vận
+hành dán một loạt dữ liệu tài khoản/proxy thô ở *bất kỳ* dạng nào (file xuất từ
+bảng tính, file text lấy từ nơi mua tài khoản, mỗi dòng một tài khoản với các
+trường theo thứ tự/ký tự phân cách tuỳ ý) kèm mô tả bằng lời về dạng đó, rồi nhận
+lại các dòng có cấu trúc.
 
-Deliberately two-step, never paste-straight-to-DB: parse_import() only
-returns candidate rows for the dashboard to show as an editable preview -
-the actual write (platform_config_db.create_account/create_proxy) only
-happens once the operator confirms it via POST /settings/import/commit. A
-parsing mistake here would otherwise silently write a real password into
-the wrong column.
+Cố ý làm hai bước, không bao giờ dán thẳng vào DB: parse_import() chỉ trả về các
+dòng ứng viên để dashboard hiển thị thành bản xem trước sửa được - việc ghi thật
+(platform_config_db.create_account/create_proxy) chỉ xảy ra khi người vận hành xác
+nhận qua POST /settings/import/commit. Nếu không, một lỗi parse ở đây có thể âm
+thầm ghi mật khẩu thật vào sai cột.
 
-A FORMAT that is already a column header (ID|PASS|MAIL|COOKIE) is split
-locally and never waits on Kira. Free-form descriptions still go to Kira
-(force=True so Settings import works while ingest classifiers stay off).
+FORMAT nào vốn đã là dòng tiêu đề cột (ID|PASS|MAIL|COOKIE) sẽ được tách ngay tại
+chỗ và không phải chờ Kira. Mô tả tự do vẫn gửi cho Kira (force=True để import ở
+Settings vẫn chạy khi các bộ phân loại ingest đang tắt).
 """
 
 from __future__ import annotations
@@ -156,8 +155,8 @@ def _normalize_column(name: str) -> str:
 
 
 def _format_columns(format_hint: str, aliases: dict[str, str]) -> list[str | None] | None:
-    """Pipe/tab/semicolon header like ID|PASS|MAIL|COOKIE. None if this is
-    free-form prose that still needs Kira."""
+    """Dòng tiêu đề phân cách bằng pipe/tab/chấm phẩy như ID|PASS|MAIL|COOKIE. Trả về None
+    nếu đây là văn bản mô tả tự do, vẫn cần Kira."""
     hint = format_hint.strip()
     separator = "|" if "|" in hint else ("\t" if "\t" in hint else (";" if ";" in hint else None))
     if separator is None:
@@ -220,11 +219,11 @@ def parse_delimited(target: ImportTarget, format_hint: str, content: str) -> lis
 
 
 async def parse_import(target: ImportTarget, format_hint: str, content: str) -> list[dict[str, Any]]:
-    """Returns candidate rows - see module docstring for why this never
-    writes to the DB itself. Raises on anything that isn't parseable JSON
-    or isn't a JSON array; the caller (app/api/routes/settings.py) turns
-    that into a 4xx asking the operator to adjust FORMAT or split CONTENT
-    into a smaller batch, rather than silently returning nothing."""
+    """Trả về các dòng ứng viên - xem docstring module để biết vì sao hàm này không bao
+    giờ tự ghi vào DB. Raise với mọi thứ không parse được thành JSON hoặc không phải
+    mảng JSON; bên gọi (app/api/routes/settings.py) đổi lỗi đó thành 4xx, yêu cầu
+    người vận hành chỉnh FORMAT hoặc chia CONTENT thành lô nhỏ hơn, thay vì âm thầm
+    trả về rỗng."""
     local = parse_delimited(target, format_hint, content)
     if local is not None:
         logger.info("import_parsed", target=target, row_count=len(local), source="delimited")

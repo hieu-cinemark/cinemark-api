@@ -1,7 +1,7 @@
-"""Exercises scripts/generate_social_topic_reports.py's own CLI-sweep logic
-(--movie-id targeting a single movie instead of the full enabled-movies
-list) - see test_social_topic.py for the per-movie report-generation logic
-itself, which now lives in app/services/social_topic.py."""
+"""Kiểm tra logic quét qua CLI của chính scripts/generate_social_topic_reports.py
+(--movie-id nhắm một phim thay vì cả danh sách phim đang bật) - xem
+test_social_topic.py cho logic tạo report theo từng phim, giờ nằm ở
+app/services/social_topic.py."""
 
 from __future__ import annotations
 

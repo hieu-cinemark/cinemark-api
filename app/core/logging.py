@@ -1,27 +1,27 @@
-"""structlog setup for cinemark-api.
+"""Cấu hình structlog cho cinemark-api.
 
-Shared log contract with spider-hub (social_crawler/logger.py implements
-the same one - keep the two in sync):
+Hợp đồng log dùng chung với spider-hub (social_crawler/logger.py bên đó cài đặt
+cùng hợp đồng này - giữ hai bên đồng bộ):
 
-  - Every line carries: timestamp (ISO 8601, UTC), level, event, service,
-    logger (module name), plus whatever context was bound (request_id
-    here via bind_request_context, run_id in spider-hub).
-  - event is a static snake_case English name ("proxy_settings_updated"),
-    never an interpolated sentence - variable parts go in key=value fields.
-  - Errors use the same keys everywhere: error (message text), error_type
-    (exception class name), error_code (an app-level code, e.g.
-    AppError.code). Passing the exception object itself as error= fills in
-    both error and error_type automatically (see _normalize_error_fields);
-    the legacy aliases exc=/err= are folded into error= the same way.
-  - LOG_FORMAT=console (default) renders one human-readable line per event;
-    LOG_FORMAT=json renders one JSON object per line for log shipping.
-    Colors only when writing to a real terminal - log files never get ANSI
-    escape codes.
-  - LOG_LEVEL (default INFO) filters below that level.
+  - Mọi dòng đều có: timestamp (ISO 8601, UTC), level, event, service, logger (tên
+    module), cộng với mọi context đã bind (request_id ở đây qua
+    bind_request_context, run_id ở spider-hub).
+  - event là một tên tiếng Anh dạng snake_case cố định ("proxy_settings_updated"),
+    không bao giờ là một câu được ghép chuỗi - phần thay đổi đặt vào các trường
+    key=value.
+  - Lỗi dùng cùng các key ở mọi nơi: error (nội dung thông báo), error_type (tên
+    class exception), error_code (mã cấp app, ví dụ AppError.code). Truyền chính
+    object exception vào error= sẽ tự điền cả error lẫn error_type (xem
+    _normalize_error_fields); các alias cũ exc=/err= cũng được gộp vào error= theo
+    cách đó.
+  - LOG_FORMAT=console (mặc định) in mỗi event một dòng dễ đọc; LOG_FORMAT=json in
+    mỗi dòng một object JSON để chuyển log đi nơi khác. Chỉ có màu khi ghi ra
+    terminal thật - file log không bao giờ có mã escape ANSI.
+  - LOG_LEVEL (mặc định INFO) lọc bỏ các mức thấp hơn.
 
-`bind_request_context()` / `clear_request_context()` are used by the
-request-logging middleware to attach a request_id to every log line
-emitted while handling one request, without passing it through every call.
+`bind_request_context()` / `clear_request_context()` được middleware log request
+dùng để gắn request_id vào mọi dòng log phát ra trong lúc xử lý một request, mà
+không phải truyền nó qua từng lời gọi.
 """
 
 from __future__ import annotations
@@ -44,10 +44,9 @@ def _add_service_field(_logger, _method_name, event_dict):
 
 
 def _normalize_error_fields(_logger, _method_name, event_dict):
-    """Folds the legacy exc=/err= aliases into error=, and turns an
-    exception object passed as error= into error (text) + error_type (class
-    name) - so every error line has the same shape however the call site
-    wrote it."""
+    """Gộp các alias cũ exc=/err= vào error=, và biến một object exception truyền vào
+    error= thành error (text) + error_type (tên class) - để mọi dòng lỗi có cùng một
+    dạng bất kể chỗ gọi viết thế nào."""
     for alias in ("exc", "err"):
         if alias in event_dict and "error" not in event_dict:
             event_dict["error"] = event_dict.pop(alias)

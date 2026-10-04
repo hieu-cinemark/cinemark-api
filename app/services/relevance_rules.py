@@ -1,27 +1,25 @@
-"""Deterministic relevance rules applied at ingest, before (and regardless
-of) the keyword substring shortcut and the Kira classifier.
+"""Các quy tắc độ liên quan có tính tất định, áp dụng lúc ingest, trước (và bất kể) lối
+tắt chuỗi con theo từ khoá và bộ phân loại Kira.
 
-Why rules, not just the model: measured 2026-09-28, the ingest pipeline
-admitted any post whose text contains the keyword without any model
-looking at it - so foreign videos sharing an unaccented hashtag (#memin:
-17% of its posts were not Vietnamese, mostly Spanish posts about the
-Mexican comic Memín) went straight to the dashboard. And PhoBERT (trained
-on keyword_match labels) confidently marked posts about a *different*
-tracked film as related (e.g. "Lan Trinh trong Án Mạng Xém Hoàn Hảo"
-attributed to Án Mạng Karaoke). Both have cheap, checkable signals:
+Vì sao dùng quy tắc, không chỉ dùng model: đo ngày 2026-09-28, pipeline ingest nhận
+mọi bài có nội dung chứa từ khoá mà không có model nào xem qua - nên video nước ngoài
+dùng chung một hashtag không dấu (#memin: 17% số bài không phải tiếng Việt, phần lớn
+là bài tiếng Tây Ban Nha về truyện tranh Mexico Memín) đi thẳng lên dashboard. Còn
+PhoBERT (huấn luyện trên nhãn keyword_match) tự tin đánh dấu related cho các bài về
+một phim *khác* cũng đang theo dõi (ví dụ "Lan Trinh trong Án Mạng Xém Hoàn Hảo" bị
+gán cho Án Mạng Karaoke). Cả hai đều có tín hiệu rẻ, kiểm tra được:
 
-  foreign_language_reason() - the post's own words (hashtags, mentions,
-      URLs and emoji removed) are clearly not Vietnamese, or TikTok's own
-      textLanguage says so. Deliberately conservative: short/ambiguous text
-      returns None (no verdict) rather than guessing.
-  mentions_other_film() - the post doesn't reference the target film at
-      all but names another tracked film.
+  foreign_language_reason() - chính phần chữ của bài (đã bỏ hashtag, mention, URL và
+      emoji) rõ ràng không phải tiếng Việt, hoặc textLanguage của TikTok nói vậy. Cố
+      ý thận trọng: text ngắn/mơ hồ trả về None (không phán quyết) thay vì đoán.
+  mentions_other_film() - bài hoàn toàn không nhắc tới phim mục tiêu nhưng lại nêu
+      tên một phim khác đang theo dõi.
 
-Every tracked film is Vietnamese; a relevant post about one is in
-Vietnamese (with or without diacritics) in practice. A dropped post is
-archived via the ingest_decisions Kafka topic (-> lake writer, under
-bronze/entity=decisions/), so a false positive here is replayable from
-the lake's NDJSON files rather than a now-deleted D1 table.
+Mọi phim đang theo dõi đều là phim Việt; trên thực tế bài liên quan tới một phim đều
+viết bằng tiếng Việt (có dấu hoặc không dấu). Bài bị loại được lưu trữ qua topic
+Kafka ingest_decisions (-> lake writer, dưới bronze/entity=decisions/), nên một lần
+loại nhầm ở đây vẫn phát lại được từ các file NDJSON trong lake thay vì từ một bảng
+D1 giờ đã bị xoá.
 """
 
 from __future__ import annotations
@@ -32,11 +30,11 @@ import unicodedata
 _STRIP_RE = re.compile(r"(?:#|@)\S+|https?://\S+|www\.\S+")
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
-# Letters that only occur in Vietnamese among Latin-script languages this
-# pipeline sees (after NFC). Any one of them settles the question.
+# Các chữ cái chỉ có trong tiếng Việt trong số các ngôn ngữ chữ Latinh mà pipeline này
+# gặp (sau NFC). Có bất kỳ chữ nào là đủ kết luận.
 _VI_CHARS = frozenset("ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ")
-# Unaccented Vietnamese words that are not also common words in English,
-# Spanish, Indonesian or Tagalog - evidence for diacritic-less Vietnamese.
+# Các từ tiếng Việt không dấu đồng thời không phải từ thông dụng trong tiếng Anh, Tây
+# Ban Nha, Indonesia hay Tagalog - bằng chứng cho tiếng Việt không dấu.
 _VI_WORDS = frozenset(
     [
         "khong",
@@ -81,9 +79,9 @@ _VI_WORDS = frozenset(
         "biet",
     ]
 )
-# Frequent function words of the foreign languages that actually show up
-# under colliding hashtags (English, Spanish/Portuguese, Indonesian/Malay,
-# Tagalog). Two or more, with no Vietnamese signal, means foreign text.
+# Các hư từ thường gặp của những ngôn ngữ nước ngoài thực sự xuất hiện dưới các hashtag
+# bị trùng (tiếng Anh, Tây Ban Nha/Bồ Đào Nha, Indonesia/Mã Lai, Tagalog). Có từ hai từ
+# trở lên, không có tín hiệu tiếng Việt nào, nghĩa là text nước ngoài.
 _FOREIGN_WORDS = frozenset(
     [
         "the",
@@ -151,10 +149,10 @@ _FOREIGN_WORDS = frozenset(
     ]
 )
 _MIN_LETTERS = 12
-# Film/cinema vocabulary: a foreign-language caption that uses it is often a
-# Vietnamese fan or distributor writing in English about the film (seen live:
-# "One more time for cinetourrr ... #nghihesonghihuu"), so the function-word
-# rule stands down. Script and platform-language verdicts still apply.
+# Từ vựng phim/điện ảnh: một caption tiếng nước ngoài dùng các từ này thường là fan
+# hoặc nhà phát hành Việt viết bằng tiếng Anh về phim (đã thấy thực tế: "One more time
+# for cinetourrr ... #nghihesonghihuu"), nên quy tắc hư từ nhường lại. Phán quyết theo
+# bảng chữ viết và theo ngôn ngữ của nền tảng vẫn áp dụng.
 _FILM_CONTEXT_WORDS = frozenset(
     [
         "cinema",
@@ -181,9 +179,8 @@ _FILM_CONTEXT_WORDS = frozenset(
 
 
 def _body(text: str | None) -> str:
-    # NFKC folds decorative Unicode ("𝐞𝐛𝐞́", fullwidth letters) back to
-    # plain letters + combining marks, then NFC recomposes the Vietnamese
-    # diacritics so _VI_CHARS can match them.
+    # NFKC đưa Unicode trang trí ("𝐞𝐛𝐞́", chữ full-width) về chữ thường + dấu kết hợp, rồi
+    # NFC ghép lại dấu tiếng Việt để _VI_CHARS khớp được.
     folded = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", text or ""))
     return _STRIP_RE.sub(" ", folded)
 
@@ -193,8 +190,8 @@ def _is_latin(ch: str) -> bool:
 
 
 def foreign_language_reason(text: str | None, text_language: str | None = None) -> str | None:
-    """A short reason string when the post is clearly not Vietnamese, else
-    None (Vietnamese, or not enough text to tell)."""
+    """Một chuỗi lý do ngắn khi bài rõ ràng không phải tiếng Việt, ngược lại là None (tiếng
+    Việt, hoặc không đủ chữ để kết luận)."""
     body = _body(text)
     lowered = body.lower()
     has_vi_chars = any(ch in _VI_CHARS for ch in lowered)
@@ -216,7 +213,7 @@ def foreign_language_reason(text: str | None, text_language: str | None = None) 
     if sum(1 for w in words if w in _VI_WORDS):
         return None
     foreign_hits = sum(1 for w in words if w in _FOREIGN_WORDS)
-    # "cinetourrr" -> "cinetour": collapse stretched letters before the lookup.
+    # "cinetourrr" -> "cinetour": gộp các chữ bị kéo dài trước khi tra.
     film_context = any(re.sub(r"(.)\1{2,}", r"\1", w) in _FILM_CONTEXT_WORDS for w in words)
     if len(words) >= 3 and foreign_hits >= 2 and not film_context:
         return "foreign_function_words"
@@ -224,8 +221,8 @@ def foreign_language_reason(text: str | None, text_language: str | None = None) 
 
 
 def normalize_title(value: str | None) -> str:
-    """Accent/case/punctuation-insensitive form ("Án Mạng Karaoke" ->
-    "an mang karaoke"), with đ folded to d."""
+    """Dạng không phân biệt dấu/hoa thường/dấu câu ("Án Mạng Karaoke" -> "an mang
+    karaoke"), với đ chuyển thành d."""
     stripped = "".join(
         ch for ch in unicodedata.normalize("NFD", (value or "").lower()) if unicodedata.category(ch) != "Mn"
     )
@@ -239,11 +236,10 @@ def _contains_phrase(haystack: str, phrase: str) -> bool:
 def mentions_other_film(
     content: str | None, movie_title: str | None, keyword: str | None, other_titles: list[str]
 ) -> str | None:
-    """The other tracked film this post names, when it doesn't reference
-    the target film (title or keyword, accent-insensitive, hashtag form
-    included) at all. None otherwise. Short or nested titles are skipped:
-    one-or-two-word titles like "Anh Hùng"/"Loạn Thế" are everyday phrases,
-    and "Út Lan" vs "Út Lan 2" would match each other."""
+    """Phim đang theo dõi khác mà bài này nêu tên, khi bài hoàn toàn không nhắc tới phim mục
+    tiêu (tên phim hoặc từ khoá, không phân biệt dấu, tính cả dạng hashtag). Ngược lại là
+    None. Bỏ qua tên ngắn hoặc lồng nhau: tên một-hai chữ như "Anh Hùng"/"Loạn Thế" là
+    cụm từ thường ngày, còn "Út Lan" với "Út Lan 2" sẽ khớp lẫn nhau."""
     text = normalize_title(content)
     squashed = text.replace(" ", "")
     own = normalize_title(movie_title)

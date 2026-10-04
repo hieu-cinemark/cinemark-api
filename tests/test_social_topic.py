@@ -1,11 +1,10 @@
-"""Exercises app/services/social_topic.py's generate_report_for_movie
-against fakes for every D1/Bee call (no real D1 or Bee involved). What's
-worth verifying: movies below MIN_COMMENTS_FOR_REPORT are skipped without
-spending a Bee call, the upsert is keyed by movie_id with the real
-SQL-computed percentages (not whatever the LLM might have guessed), and
---dry-run never writes. Shared by scripts/generate_social_topic_reports.py's
-sweep and the dashboard's manual "Tạo report" button - see
-test_generate_social_topic_reports.py for the sweep's own CLI-level test."""
+"""Kiểm tra generate_report_for_movie của app/services/social_topic.py với bản giả cho
+mọi lời gọi D1/AI (không dùng D1 hay AI thật). Những điều đáng kiểm chứng: phim dưới
+MIN_COMMENTS_FOR_REPORT bị bỏ qua mà không tốn lời gọi AI nào, upsert theo movie_id
+với tỉ lệ thật do SQL tính (không phải con số LLM có thể đoán), và --dry-run không bao
+giờ ghi. Dùng chung cho lượt quét của scripts/generate_social_topic_reports.py và nút
+"Tạo report" bấm tay trên dashboard - xem test_generate_social_topic_reports.py cho
+test cấp CLI của lượt quét."""
 
 from __future__ import annotations
 
@@ -61,7 +60,7 @@ async def test_movie_below_threshold_is_skipped_without_any_bee_call() -> None:
 
 
 async def test_happy_path_upserts_with_sql_computed_percentages_not_llm_guessed() -> None:
-    counts = {"positive": 30, "negative": 10}  # 75% / 25%, total 40
+    counts = {"positive": 30, "negative": 10}  # 75% / 25%, tổng 40
 
     with (
         patch("app.services.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
@@ -76,7 +75,7 @@ async def test_happy_path_upserts_with_sql_computed_percentages_not_llm_guessed(
     mock_upsert.assert_awaited_once()
     kwargs = mock_upsert.await_args.kwargs
     assert kwargs["movie_id"] == "movie_1"
-    assert kwargs["post_count"] == 2  # 2 distinct post_ids across SAMPLE_COMMENTS
+    assert kwargs["post_count"] == 2  # 2 post_id khác nhau trong SAMPLE_COMMENTS
 
     data = json.loads(kwargs["dashboard_data_json"])
     assert data["overall_sentiment"]["positive_percent"] == 75.0

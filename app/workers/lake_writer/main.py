@@ -1,11 +1,11 @@
-"""Archives every raw Kafka message to the R2 data lake (bronze layer):
+"""Lưu trữ mọi message Kafka thô lên data lake R2 (tầng bronze):
 
     bronze/entity={posts|comments|decisions}/platform=<p>/dt=<YYYY-MM-DD>/p<partition>-<first>-<last>.ndjson.gz
 
-Own consumer group, so it reads the same topics as the ingest consumer
-without affecting it. Offsets are committed only after every object of a
-batch is written: a crash re-reads from the last commit, so bronze can hold
-a few duplicate rows - silver dedups on (topic, partition, offset).
+Có consumer group riêng, nên đọc cùng các topic với ingest consumer mà không ảnh
+hưởng tới nó. Offset chỉ được commit sau khi mọi object của một lô đã ghi xong: crash
+thì đọc lại từ lần commit gần nhất, nên bronze có thể có vài dòng trùng - silver khử
+trùng theo (topic, partition, offset).
 
     python -m app.workers.lake_writer.main
 """
@@ -37,7 +37,7 @@ SCHEMA_VERSION = 1
 
 
 def _envelope(record: ConsumerRecord) -> tuple[str, str, str]:
-    """(platform, dt, ndjson line) for one Kafka record."""
+    """(platform, dt, dòng ndjson) cho một bản ghi Kafka."""
     try:
         payload: Any = json.loads(record.value)
     except TypeError, ValueError:

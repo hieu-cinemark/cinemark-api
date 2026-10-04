@@ -1,7 +1,6 @@
-"""Everything that reads/writes D1's `comments` table - see
-app/repositories/d1/posts.py's own module docstring for why this table got
-split out on its own and why app/services/d1.py still re-exports every name
-below for existing callers."""
+"""Mọi thứ đọc/ghi bảng `comments` của D1 - xem docstring module của
+app/repositories/d1/posts.py để biết vì sao bảng này được tách riêng và vì sao
+app/services/d1.py vẫn re-export mọi tên bên dưới cho các chỗ gọi hiện có."""
 
 from __future__ import annotations
 
@@ -14,33 +13,31 @@ from typing import Any
 from app.clients.d1 import _configured, d1_query
 from app.services.platforms import CommentDraft
 
-# Above this many rows, list_comments stops returning more - an admin
-# review list, not a paginated feed like list_posts; a single post rarely
-# has more than a few hundred comments, and this is just a sanity ceiling
-# against a runaway response.
+# Quá số dòng này thì list_comments không trả thêm - đây là danh sách để admin xem
+# lại, không phải feed phân trang như list_posts; một bài hiếm khi có quá vài trăm
+# comment, đây chỉ là trần an toàn chống một response phình to mất kiểm soát.
 MAX_COMMENTS_PER_POST = 500
 
 _comments_parent_column_ready = False
 _comments_parent_column_lock = asyncio.Lock()
 
-# See posts.py's own _POST_INDEXES comment - same rationale, grounded in
-# the actual WHERE/ORDER BY/JOIN shapes below and in ingest_consumer's
-# persist_comment upsert-check.
+# Xem comment _POST_INDEXES trong posts.py - cùng lý do, dựa trên đúng dạng
+# WHERE/ORDER BY/JOIN bên dưới và phần kiểm tra upsert persist_comment của
+# ingest_consumer.
 _COMMENT_INDEXES = (
-    # /stats/comments with no platform filter (CommentsReview.tsx's default
-    # "All platforms" tab) - list_all_comments' ORDER BY scraped_at DESC
-    # with no WHERE.
+    # /stats/comments không lọc nền tảng (tab mặc định "All platforms" của
+    # CommentsReview.tsx) - ORDER BY scraped_at DESC của list_all_comments, không có
+    # WHERE.
     "CREATE INDEX IF NOT EXISTS idx_comments_scraped_at ON comments(scraped_at DESC)",
-    # /stats/comments?platform=X - list_all_comments' WHERE platform = ?
-    # ORDER BY scraped_at DESC.
+    # /stats/comments?platform=X - WHERE platform = ? ORDER BY scraped_at DESC của
+    # list_all_comments.
     "CREATE INDEX IF NOT EXISTS idx_comments_platform_scraped_at ON comments(platform, scraped_at DESC)",
-    # list_comments' WHERE post_id = ? ORDER BY scraped_at DESC (one post's
-    # comment thread) - also covers list_posts_needing_comments' unfiltered
-    # `GROUP BY post_id` subquery as an index-only scan instead of a full
-    # table aggregate.
+    # WHERE post_id = ? ORDER BY scraped_at DESC của list_comments (luồng comment của một
+    # bài) - cũng phủ luôn subquery `GROUP BY post_id` không lọc của
+    # list_posts_needing_comments thành quét chỉ trên index thay vì tổng hợp toàn bảng.
     "CREATE INDEX IF NOT EXISTS idx_comments_post_id_scraped_at ON comments(post_id, scraped_at DESC)",
-    # persist_comment's own upsert-check (SELECT ... WHERE platform = ? AND
-    # external_id = ?) runs on every single ingested comment.
+    # Phần kiểm tra upsert của persist_comment (SELECT ... WHERE platform = ? AND
+    # external_id = ?) chạy trên từng comment được ingest.
     "CREATE INDEX IF NOT EXISTS idx_comments_platform_external_id ON comments(platform, external_id)",
 )
 
@@ -65,18 +62,17 @@ async def _ensure_comment_indexes() -> None:
 
 
 async def ensure_tab_filter_indexes() -> None:
-    """CREATE INDEX for CommentsReview sentiment tabs. Startup background
-    task - see posts.ensure_tab_filter_indexes."""
+    """CREATE INDEX cho các tab cảm xúc của CommentsReview. Task nền lúc khởi động - xem
+    posts.ensure_tab_filter_indexes."""
     for sql in _TAB_FILTER_INDEXES:
         await d1_query(sql, quiet=True, timeout=90.0)
 
 
 async def _ensure_comments_parent_column() -> None:
-    """Adds comments.parent_external_id once per process. The column already
-    exists on migrated DBs - concurrent ingest used to race N ALTERs and
-    spam local_db_query_failed('duplicate column name'). Lock + existence
-    check so we only ALTER when missing, and never treat duplicate as a
-    real failure."""
+    """Thêm comments.parent_external_id một lần mỗi tiến trình. Cột này đã có sẵn trên DB
+    đã migrate - trước đây ingest chạy song song đua nhau chạy N lệnh ALTER và spam
+    local_db_query_failed('duplicate column name'). Khoá + kiểm tra tồn tại để chỉ ALTER
+    khi còn thiếu, và không bao giờ coi lỗi trùng cột là thất bại thật."""
     global _comments_parent_column_ready
     if _comments_parent_column_ready:
         return
@@ -90,18 +86,18 @@ async def _ensure_comments_parent_column() -> None:
             if cols and any(row.get("name") == "parent_external_id" for row in cols):
                 _comments_parent_column_ready = True
                 return
-        # quiet: already-migrated DBs raise duplicate column — expected.
+        # quiet: DB đã migrate sẽ báo trùng cột — là chuyện bình thường.
         await d1_query("ALTER TABLE comments ADD COLUMN parent_external_id TEXT", quiet=True)
         _comments_parent_column_ready = True
 
 
 class CommentRepository:
-    """Owns every query against `comments`. One process-wide instance
-    (`comment_repo` below), same shape as PostRepository."""
+    """Giữ mọi query trên `comments`. Một instance cho cả tiến trình (`comment_repo` bên
+    dưới), cùng dạng với PostRepository."""
 
     async def list_comments(self, post_id: str) -> list[dict[str, Any]]:
-        """Every comment stored for one post (D1 id, see PostRepository.get_post
-        above), newest first - backs GET /stats/posts/{post_id}/comments."""
+        """Mọi comment đã lưu của một bài (id D1, xem PostRepository.get_post ở trên), mới
+        nhất trước - phục vụ GET /stats/posts/{post_id}/comments."""
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
         rows = await d1_query(
@@ -131,10 +127,9 @@ class CommentRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Paginated comment feed across every post (most recently collected
-        first), joined to its parent post for display - backs a dedicated
-        "Comments" review tab, same shape as PostRepository.list_posts above.
-        Every filter is optional and additive."""
+        """Feed comment phân trang trên mọi bài (thu thập gần nhất trước), join với bài cha để
+        hiển thị - phục vụ tab xem lại "Comments" riêng, cùng dạng với
+        PostRepository.list_posts ở trên. Mọi bộ lọc đều không bắt buộc và cộng dồn."""
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
         where = []
@@ -196,13 +191,12 @@ class CommentRepository:
         cursor: str | None = None,
         limit: int = 50,
     ) -> tuple[list[dict[str, Any]], str | None]:
-        """Keyset-paginated equivalent of list_all_comments - see
-        posts.py's list_posts_cursor for the full rationale (same OFFSET+
-        JOIN slowdown confirmed live on this table's own parent/post/
-        movie/keyword joins). `cursor` is the opaque "<scraped_at>|<id>"
-        of the last row from the previous page; None starts from the top.
-        No total - see list_posts_cursor's own comment on why that's the
-        point, not a gap."""
+        """Bản phân trang keyset tương đương list_all_comments - xem list_posts_cursor trong
+        posts.py để biết đầy đủ lý do (đã xác nhận thực tế cùng kiểu chậm OFFSET+JOIN trên
+        các join parent/post/movie/keyword của bảng này). `cursor` là chuỗi
+        "<scraped_at>|<id>" không cần hiểu bên trong của dòng cuối trang trước; None là bắt
+        đầu từ đầu. Không có tổng số - xem comment trong list_posts_cursor về việc đó là chủ
+        đích, không phải thiếu sót."""
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
         where = []
@@ -254,16 +248,14 @@ class CommentRepository:
     async def persist_comment(
         self, *, post_id: str, platform: str, draft: CommentDraft, sentiment: str | None = None
     ) -> bool:
-        """Upsert one scraped comment by (platform, external_id) - same shape
-        as PostRepository.persist_post but simpler (comments have no
-        engagement-snapshot history of their own, just a live
-        reactions/replies count).
+        """Upsert một comment đã crawl theo (platform, external_id) - cùng dạng với
+        PostRepository.persist_post nhưng đơn giản hơn (comment không có lịch sử snapshot
+        tương tác riêng, chỉ có số reaction/reply hiện tại).
 
-        `sentiment` is the AI-classified label ("positive"/"negative"/"neutral")
-        from app.ai.tasks.sentiment.classify_sentiment() (Bee), already resolved by the
-        caller before this is invoked - None means either classification wasn't
-        attempted (message too short) or the Bee call failed, and just leaves
-        the column NULL rather than blocking the upsert."""
+        `sentiment` là nhãn do AI phân loại ("positive"/"negative"/"neutral") từ
+        app.ai.tasks.sentiment.classify_sentiment() (Kira), đã được chỗ gọi xác định trước
+        khi gọi hàm này - None nghĩa là hoặc chưa phân loại (message quá ngắn) hoặc lời gọi
+        AI thất bại, và chỉ để cột là NULL thay vì chặn việc upsert."""
         if not _configured():
             return False
 
@@ -362,7 +354,7 @@ class CommentRepository:
 comment_repo = CommentRepository()
 
 
-# --- backward-compatible free functions (see module docstring) -----------
+# --- các hàm tự do để tương thích ngược (xem docstring module) -----------
 
 
 async def list_comments(post_id: str) -> list[dict[str, Any]]:

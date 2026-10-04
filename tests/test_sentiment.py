@@ -1,7 +1,7 @@
-"""Exercises app/ai/tasks/sentiment.py's batched Kira classifier and its
-fail-open contract: classify_sentiments must never raise - a Kira outage, a
-malformed or partial reply, or a too-short comment all just come back as
-None for the affected comments."""
+"""Kiểm tra bộ phân loại Kira theo lô của app/ai/tasks/sentiment.py và hợp đồng
+fail-open của nó: classify_sentiments không bao giờ được raise - Kira sập, câu trả lời
+sai định dạng hoặc thiếu, hay comment quá ngắn đều chỉ trả về None cho các comment bị
+ảnh hưởng."""
 
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ async def test_single_wrapper() -> None:
 
 
 async def test_unnumbered_results_map_by_order_when_counts_match() -> None:
-    # Seen live: a stale one-comment system prompt made Kira drop "i".
+    # Đã thấy thực tế: một system prompt cũ cho một comment làm Kira bỏ mất "i".
     call, configured = _kira(json.dumps({"results": [{"sentiment": "positive"}, {"sentiment": "negative"}]}))
     with call, configured:
         assert await classify_sentiments([LONG, LONG]) == ["positive", "negative"]

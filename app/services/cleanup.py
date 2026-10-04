@@ -1,25 +1,22 @@
-"""Daily purge of irrelevant post data from D1.
+"""Dọn dữ liệu bài không liên quan khỏi D1 hằng ngày.
 
-Removes posts the relevance pipeline labelled not_related (plus their
-comments and engagement snapshots) once they've carried that label for
-grace_hours. Every read path already filters these out
-(app/repositories/d1/posts.py's RELEVANT_POST_SQL, the worker's
-social-topic query), so they only cost D1 storage and row reads.
+Xoá các bài mà pipeline phân loại độ liên quan đã gắn nhãn not_related (cùng comment
+và snapshot tương tác của chúng) sau khi mang nhãn đó đủ grace_hours. Mọi đường đọc
+vốn đã lọc bỏ những bài này (RELEVANT_POST_SQL trong app/repositories/d1/posts.py,
+query social-topic của worker), nên chúng chỉ tốn chỗ lưu và lượt đọc dòng trên D1.
 
-One scan per run picks the ids to delete (up to MAX_BATCHES * BATCH_SIZE,
-oldest id first); deletes then go batch by batch against those explicit
-ids, children before the post, so a comment is never left behind for a
-post that's gone and a crash mid-run is simply resumed by the next run. A
-large backlog is worked off over several days instead of in one long run -
-each statement stays well inside D1's per-statement time limit, and the
-whole run stays far below the Cloudflare API rate limit the dashboard and
-ingest share.
+Mỗi lượt chạy quét một lần để chọn ra các id cần xoá (tối đa MAX_BATCHES *
+BATCH_SIZE, id cũ nhất trước); sau đó xoá theo từng lô trên đúng các id đó, bảng con
+trước bài, để không bao giờ còn sót comment của một bài đã bị xoá, và nếu crash giữa
+chừng thì lượt sau chỉ việc làm tiếp. Hàng tồn lớn được xử lý dần qua nhiều ngày thay
+vì trong một lượt dài - mỗi câu lệnh nằm gọn trong giới hạn thời gian mỗi câu lệnh
+của D1, và cả lượt chạy luôn thấp xa so với giới hạn rate của Cloudflare API mà
+dashboard và ingest dùng chung.
 
-The historical `dropped_posts` purge is gone - the lake writer
-(app/workers/lake_writer/main.py) now owns the archive of every drop
-decision via the ingest_decisions Kafka topic (see
-app/clients/kafka.py:publish_ingest_decision), so there is nothing left
-in D1 to age out."""
+Việc dọn `dropped_posts` lịch sử đã bỏ - lake writer (app/workers/lake_writer/main.py)
+giờ giữ kho lưu trữ mọi quyết định loại bài qua topic Kafka ingest_decisions (xem
+app/clients/kafka.py:publish_ingest_decision), nên trong D1 không còn gì để xoá theo
+tuổi nữa."""
 
 from __future__ import annotations
 
@@ -38,16 +35,16 @@ logger = get_logger(__name__)
 BATCH_SIZE = 500
 MAX_BATCHES = 60
 
-# Grace is measured from when the post got its not_related label, not from
-# when it was scraped - a relabel sweep that downgrades old posts must still
-# leave the operator grace_hours to notice and revert it.
+# Thời gian ân hạn tính từ lúc bài bị gắn nhãn not_related, không phải lúc được crawl -
+# một lượt gắn nhãn lại hạ cấp các bài cũ vẫn phải chừa cho người vận hành đủ
+# grace_hours để phát hiện và hoàn tác.
 _ELIGIBLE = (
     "relevance_label = 'not_related' "
     "AND COALESCE(relevance_labeled_at, scraped_at) < strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)"
 )
 
-# Shared by the API's scheduler and scripts/purge_irrelevant_posts.py, so a
-# manual run can't overlap a scheduled one in another process.
+# Dùng chung giữa scheduler của API và scripts/purge_irrelevant_posts.py, để một lượt
+# chạy tay không chạy chồng lên lượt theo lịch ở tiến trình khác.
 _LOCK_KEY = "cinemark_api:cleanup:irrelevant_posts:lock"
 _LOCK_TTL_SECONDS = 2 * 60 * 60
 
@@ -60,23 +57,23 @@ async def _run(sql: str, params: list[Any]) -> list[dict[str, Any]]:
 
 
 def _id_list(ids: list[str]) -> str:
-    # Inlined as quoted literals rather than bound: D1 caps a statement at
-    # 100 bound parameters, and one statement per batch keeps a run to a
-    # few hundred API calls. The ids come straight from the SELECT above.
+    # Nhúng thẳng thành literal trong dấu nháy thay vì bind tham số: D1 giới hạn một câu
+    # lệnh tối đa 100 tham số bind, và mỗi lô một câu lệnh giúp một lượt chạy chỉ tốn vài
+    # trăm lời gọi API. Các id lấy thẳng từ câu SELECT ở trên.
     return ",".join("'" + str(i).replace("'", "''") + "'" for i in ids)
 
 
 async def resolve_cleanup_settings() -> dict[str, Any]:
-    """Effective cleanup knobs: the dashboard-stored cleanup_settings row
-    for any key it has, the env fallback from app/core/config.py
-    otherwise. Always the same shape, so callers need no conditionals."""
+    """Các tham số dọn dẹp đang có hiệu lực: dòng cleanup_settings lưu trên dashboard cho
+    những key nó có, còn lại lấy giá trị dự phòng từ env trong app/core/config.py. Luôn
+    cùng một dạng, nên chỗ gọi không cần rẽ nhánh."""
     row = await db.get_cleanup_settings()
     stored = row.get("settings") if isinstance(row.get("settings"), dict) else {}
     grace = stored.get("grace_hours")
     return {
         "run_time": str(stored.get("run_time") or settings.irrelevant_post_purge_time),
         "enabled": bool(stored.get("enabled", settings.irrelevant_post_purge_enabled)),
-        # `is None`, not `or`: 0 is a valid stored value ("purge right away").
+        # Dùng `is None`, không dùng `or`: 0 là giá trị lưu hợp lệ ("xoá ngay").
         "grace_hours": int(grace if grace is not None else settings.irrelevant_post_grace_hours),
         "updated_at": row.get("updated_at"),
     }
@@ -87,9 +84,9 @@ async def purge_irrelevant_posts(
     dry_run: bool = False,
     grace_hours: int | None = None,
 ) -> dict[str, Any]:
-    """One purge pass. grace_hours defaults to the env fallback - callers
-    that should honor the dashboard (the scheduler, the Run-now button, the
-    script) go through run_purge, which resolves the stored value."""
+    """Một lượt dọn. grace_hours mặc định lấy giá trị dự phòng từ env - những chỗ gọi cần
+    tôn trọng dashboard (scheduler, nút Run-now, script) thì đi qua run_purge, nơi lấy
+    giá trị đã lưu."""
     grace_value = max(0, grace_hours if grace_hours is not None else settings.irrelevant_post_grace_hours)
     grace = f"-{grace_value} hours"
 
@@ -119,10 +116,9 @@ async def purge_irrelevant_posts(
         totals["batches"] += 1
 
     if totals["posts"]:
-        # The Overview page's totals come from the stats_*_daily rollups,
-        # which only ever count up on insert - without this they keep
-        # showing every deleted post/comment. The rows are already gone, so
-        # a failed rebuild is reported but doesn't fail the purge.
+        # Tổng số trên trang Overview lấy từ các bảng tổng hợp stats_*_daily, vốn chỉ tăng khi
+        # insert - không có bước này thì chúng vẫn tính cả mọi bài/comment đã bị xoá. Các dòng
+        # đã bị xoá rồi, nên dựng lại thất bại chỉ được báo chứ không làm hỏng lượt dọn.
         try:
             await rebuild_from_source()
             totals["stats_rebuilt"] = True
@@ -138,11 +134,10 @@ async def purge_irrelevant_posts(
 
 
 async def run_purge(*, triggered_by: str) -> dict[str, Any] | None:
-    """Full purge run as the scheduler, the dashboard's Run-now and the
-    manual script all do it: take the cross-process lock, resolve the
-    dashboard's grace_hours, record the run in cleanup_run_history.
-    Returns the summary, or None when another run already holds the lock.
-    Errors are recorded on the history row and re-raised."""
+    """Chạy trọn một lượt dọn theo đúng cách scheduler, nút Run-now trên dashboard và script
+    chạy tay đều làm: lấy khoá liên tiến trình, lấy grace_hours của dashboard, ghi lượt
+    chạy vào cleanup_run_history. Trả về bản tổng kết, hoặc None khi đang có lượt khác
+    giữ khoá. Lỗi được ghi vào dòng lịch sử rồi raise lại."""
     redis = get_redis_client()
     token = uuid.uuid4().hex
     if not await redis.set(_LOCK_KEY, token, nx=True, ex=_LOCK_TTL_SECONDS):
@@ -160,7 +155,7 @@ async def run_purge(*, triggered_by: str) -> dict[str, Any] | None:
             try:
                 await db.record_cleanup_run_finish(run_id, summary={}, error=str(exc))
             except Exception as history_exc:
-                # Must not mask the original error.
+                # Không được che mất lỗi gốc.
                 logger.error("irrelevant_purge_history_write_failed", error=str(history_exc))
         raise
     finally:

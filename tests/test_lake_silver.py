@@ -1,5 +1,5 @@
-"""app/lake/silver.py against a tiny local bronze tree in the lake writer's
-own envelope format - no R2, no network."""
+"""app/lake/silver.py chạy trên một cây bronze local nhỏ xíu theo đúng định dạng phong bì
+của lake writer - không R2, không mạng."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ def bronze(tmp_path: Path) -> Path:
         "2026-10-01",
         [
             {"offset": 1, "ts": 1790000100, "payload": fb},
-            {"offset": 1, "ts": 1790000100, "payload": fb},  # same Kafka message written twice
+            {"offset": 1, "ts": 1790000100, "payload": fb},  # cùng một message Kafka được ghi hai lần
             {"offset": 2, "ts": 1790009000, "payload": {**fb, "reactions_count": 40}},
         ],
     )
@@ -171,7 +171,7 @@ def bronze(tmp_path: Path) -> Path:
 
 
 def _post(con: duckdb.DuckDBPyConnection, post_id: str) -> dict:
-    # TIMESTAMPTZ columns would need pytz to become Python datetimes - not needed here.
+    # Cột TIMESTAMPTZ cần pytz mới chuyển thành datetime Python được - ở đây không cần.
     cur = con.execute("SELECT * EXCLUDE (posted_at, scraped_at) FROM posts WHERE post_id = ?", [post_id])
     return dict(zip([c[0] for c in cur.description], cur.fetchone(), strict=True))
 
@@ -180,12 +180,12 @@ def test_build_posts_end_to_end(bronze: Path, tmp_path: Path) -> None:
     con = duckdb.connect()
     counts = silver.build_posts(con, bronze=str(bronze), out=str(tmp_path / "silver"))
 
-    assert counts == {"snapshots": 4, "posts": 3}  # the duplicated Kafka message counted once
+    assert counts == {"snapshots": 4, "posts": 3}  # message Kafka bị trùng chỉ được tính một lần
 
     fb = _post(con, "fb1")
-    assert fb["likes"] == 40  # latest crawl wins
-    assert (fb["decision"], fb["reason"]) == ("dropped", "kira_irrelevant")  # latest decision wins
-    assert fb["hashtags"] == ["villahộian"]  # URL-decoded
+    assert fb["likes"] == 40  # lần crawl mới nhất thắng
+    assert (fb["decision"], fb["reason"]) == ("dropped", "kira_irrelevant")  # quyết định mới nhất thắng
+    assert fb["hashtags"] == ["villahộian"]  # đã URL-decode
 
     tt = _post(con, "tt1")
     assert (tt["content"], tt["views"], tt["decision"]) == ("Trailer", 3_000_000_000, "kept")
@@ -210,4 +210,4 @@ def test_check_catches_a_field_mapped_to_the_wrong_name(bronze: Path, tmp_path: 
     monkeypatch.setattr(silver, "POST_FIELDS", broken)
     with pytest.raises(ValueError, match="tiktok: 100% of 1 rows have no content/posted_at"):
         silver.build_posts(duckdb.connect(), bronze=str(bronze), out=str(tmp_path / "silver"))
-    assert not (tmp_path / "silver").exists()  # nothing written when a check fails
+    assert not (tmp_path / "silver").exists()  # không ghi gì khi một bước kiểm tra thất bại

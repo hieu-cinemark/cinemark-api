@@ -1,17 +1,18 @@
-"""Everything LLM, both providers (Kira, Bee) in one place:
+"""Mọi thứ liên quan tới LLM, cả hai provider (Kira, Bee), gom về một chỗ:
 
-  client.py    provider-agnostic OpenAI-compatible HTTP client - credentials
-               and model (ai_providers table, no model names in code), retry/backoff, concurrency, JSON parsing
-  kira.py      Kira task policy: per-task enabled toggle + system-prompt
-               overrides from the ai_settings table, call_kira
-  bee.py       Beeknoee facade (call_bee) - optional report writer
-  defaults.py  code-default model + per-task system prompts
-  prompts/     the prompt text for each task
-  tasks/       the classifiers/generators built on top: post_relevance
-               (ingest), sentiment (comment sweep) and import_parser
-               (Settings bulk import) and report (social-topic
-               reports) all on Kira; reports can be switched to Bee from
-               the dashboard, with Kira as its fallback
+  client.py    HTTP client tương thích OpenAI, dùng chung cho mọi provider - thông tin
+               đăng nhập và model (bảng ai_providers, không ghi tên model trong code),
+               retry/backoff, giới hạn số lời gọi đồng thời, parse JSON
+  kira.py      chính sách theo task của Kira: bật/tắt theo task + system prompt ghi đè
+               từ bảng ai_settings, call_kira
+  bee.py       lớp mỏng cho Beeknoee (call_bee) - chỉ dùng khi chọn Bee viết report
+  defaults.py  system prompt mặc định trong code cho từng task
+  prompts/     nội dung prompt của từng task
+  tasks/       các bộ phân loại/sinh nội dung xây trên đó: post_relevance (ingest),
+               sentiment (sweep comment), import_parser (import hàng loạt ở Settings)
+               và report (report social topic) đều chạy trên Kira; report có thể
+               chuyển sang Bee từ dashboard, khi đó Kira làm dự phòng
 
-The non-AI lexicon sentiment fallback lives in app/services/sentiment_lexicon.py.
+Bộ phân loại cảm xúc dự phòng không dùng AI (theo từ điển) nằm ở
+app/services/sentiment_lexicon.py.
 """

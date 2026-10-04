@@ -1,31 +1,28 @@
-"""Unit tests for the Cloudflare D1 storage-backoff retry in d1_client.
+"""Unit test cho cơ chế thử lại khi storage D1 của Cloudflare backoff trong d1_client.
 
-Covers the four scenarios that drove the operator's reported failure
-(scheduled_crawl_firing -> d1_request_failed status=429 code 7429
-cascading for ~60s):
+Phủ bốn tình huống dẫn tới lỗi mà người vận hành đã báo
+(scheduled_crawl_firing -> d1_request_failed status=429 code 7429 dây chuyền trong
+khoảng 60s):
 
-  1. Healthy response (status 200) returns rows, no retry.
-  2. Transient 7429 then success: retries with exponential backoff and
-     returns rows.
-  3. Persistent 7429 past max_retries: returns None after the full
-     retry budget is exhausted, with a final warning log.
-  4. Non-7429 429 (e.g. a real rate-limit): returns None immediately,
-     no retry - the existing caller paths treat None as failure and
-     we don't want to mask a real quota problem behind a silent retry
-     loop.
+  1. Response bình thường (status 200) trả về các dòng, không thử lại.
+  2. 7429 tạm thời rồi thành công: thử lại với backoff tăng dần và trả về các dòng.
+  3. 7429 kéo dài quá max_retries: trả về None sau khi dùng hết ngân sách thử lại,
+     kèm một log cảnh báo cuối cùng.
+  4. 429 không phải 7429 (ví dụ rate-limit thật): trả về None ngay, không thử lại -
+     các đường gọi hiện có coi None là thất bại và ta không muốn che một vấn đề quota
+     thật sau một vòng thử lại âm thầm.
 
-Mocks httpx.AsyncClient.post directly so the tests run without network
-access. Each test asserts both the returned value AND that the
-expected number of HTTP calls was made.
+Mock thẳng httpx.AsyncClient.post để test chạy không cần mạng. Mỗi test kiểm tra cả
+giá trị trả về LẪN số lần gọi HTTP đúng như mong đợi.
 """
 
 from __future__ import annotations
 
 import asyncio
 
-# Make `from app.clients.d1 import d1_query` work without
-# triggering app.* import side effects (settings, logging config, ...)
-# by inserting the repo root on sys.path before importing.
+# Cho `from app.clients.d1 import d1_query` chạy được mà không kích hoạt tác dụng phụ
+# khi import app.* (settings, cấu hình logging, ...) bằng cách chèn thư mục gốc của repo
+# vào sys.path trước khi import.
 import os
 import sys
 from typing import Any
@@ -37,8 +34,7 @@ from app.clients import d1 as d1_client  # noqa: E402
 
 
 class _FakeResp:
-    """Just enough of httpx.Response for d1_query's reads:
-    .status_code, .text, .json()."""
+    """Vừa đủ phần httpx.Response mà d1_query đọc: .status_code, .text, .json()."""
 
     def __init__(self, status_code: int, body: dict[str, Any] | str):
         self.status_code = status_code
@@ -54,12 +50,11 @@ class _FakeResp:
 
 
 def _make_client_mock(responses: list[_FakeResp]) -> AsyncMock:
-    """Returns an AsyncMock standing in for httpx.AsyncClient whose
-    `.post()` returns each response in `responses` in order. Tracks
-    call count via a plain list so tests can assert how many HTTP
-    calls were made - using `mock.post.await_count` requires mock.post
-    to itself be a Mock attribute, but we override it with a real
-    function (to consume the iterator), so we keep a separate counter.
+    """Trả về một AsyncMock đóng vai httpx.AsyncClient có `.post()` lần lượt trả từng
+    response trong `responses`. Đếm số lần gọi bằng một list thường để test kiểm tra được
+    đã gọi HTTP bao nhiêu lần - dùng `mock.post.await_count` thì mock.post phải tự là
+    thuộc tính Mock, nhưng ta ghi đè nó bằng một hàm thật (để tiêu thụ iterator), nên giữ
+    bộ đếm riêng.
     """
     mock = AsyncMock()
     mock.is_closed = False
@@ -75,16 +70,15 @@ def _make_client_mock(responses: list[_FakeResp]) -> AsyncMock:
 
     mock.post = _post
     mock.call_count = call_count  # type: ignore[attr-defined]
-    # The d1_query enters _remote_sem; patch it to a no-op so the test
-    # doesn't actually run the semaphore (which is module-level and
-    # shared across tests).
+    # d1_query đi vào _remote_sem; patch nó thành no-op để test không thực sự chạy
+    # semaphore (vốn ở cấp module và dùng chung giữa các test).
     return mock
 
 
 async def _run_with_client(mock_client: AsyncMock) -> list[dict[str, Any]] | None:
-    """Calls d1_query after wiring the module's _get_http_client to
-    return our mock. Stubs out the remote semaphore so a test run
-    doesn't share state with other tests."""
+    """Gọi d1_query sau khi nối _get_http_client của module để trả về mock của ta. Thay
+    semaphore remote bằng bản giả để một lần chạy test không dùng chung trạng thái với các
+    test khác."""
     sem = asyncio.Semaphore(8)
 
     async def _fake_sem() -> Any:
@@ -101,17 +95,15 @@ async def _run_with_client(mock_client: AsyncMock) -> list[dict[str, Any]] | Non
         patch.object(d1_client, "_configured", return_value=True),
         patch.object(d1_client, "_logged_db_target", True, create=True),
     ):
-        # Reset the module's one-time info-log flag so it doesn't
-        # silently short-circuit our patched _get_http_client on the
-        # second test run.
+        # Reset cờ log info một lần của module để nó không âm thầm đi tắt qua
+        # _get_http_client đã patch ở lần chạy test thứ hai.
         d1_client._logged_db_target = True
         return await d1_client.d1_query("SELECT 1", [], quiet=True)
 
 
 async def test_healthy_response_no_retry() -> None:
-    """One 200 with rows -> d1_query returns the rows, makes exactly
-    one HTTP call. Regression guard for "retry logic accidentally
-    doubles the load on healthy requests"."""
+    """Một lần 200 có dòng -> d1_query trả về các dòng, gọi HTTP đúng một lần. Chốt chặn hồi
+    quy cho "logic thử lại vô tình nhân đôi tải lên các request bình thường"."""
     rows = [{"results": [{"n": 1}]}]
     mock = _make_client_mock([_FakeResp(200, {"success": True, "result": rows})])
     out = await _run_with_client(mock)
@@ -121,15 +113,15 @@ async def test_healthy_response_no_retry() -> None:
 
 
 async def test_7429_then_success() -> None:
-    """One 429-with-code-7429, then a 200. d1_query should sleep once
-    (base = 2s) and return rows. Total HTTP calls = 2."""
+    """Một lần 429 có mã 7429, rồi một lần 200. d1_query phải sleep một lần (base = 2s) và
+    trả về các dòng. Tổng số lần gọi HTTP = 2."""
     mock = _make_client_mock(
         [
             _FakeResp(429, '{"success":false,"errors":[{"code":7429,"message":"..."}]}'),
             _FakeResp(200, {"success": True, "result": [{"results": [{"n": 7}]}]}),
         ]
     )
-    # Patch asyncio.sleep so the test doesn't actually pause 2s.
+    # Patch asyncio.sleep để test không thực sự dừng 2s.
     with patch("asyncio.sleep", new=AsyncMock()) as fake_sleep:
         out = await _run_with_client(mock)
     assert out == [{"n": 7}], f"expected rows after retry, got {out}"
@@ -139,10 +131,9 @@ async def test_7429_then_success() -> None:
 
 
 async def test_7429_persistent_exhausts_retries() -> None:
-    """All 5 attempts return 7429. d1_query should give up after the
-    4th retry (default max_retries=4 -> 5 total attempts: 1 initial +
-    4 retries) and return None. Sleep count should be 4 (one per
-    retry), with backoff doubles 2s, 4s, 8s, 16s."""
+    """Cả 5 lần thử đều trả 7429. d1_query phải bỏ cuộc sau lần thử lại thứ 4 (mặc định
+    max_retries=4 -> tổng 5 lần: 1 lần đầu + 4 lần thử lại) và trả về None. Số lần sleep
+    phải là 4 (mỗi lần thử lại một lần), với backoff gấp đôi 2s, 4s, 8s, 16s."""
     bodies = [_FakeResp(429, '{"success":false,"errors":[{"code":7429,"message":"..."}]}')] * 5
     mock = _make_client_mock(bodies)
     sleeps: list[float] = []
@@ -159,10 +150,9 @@ async def test_7429_persistent_exhausts_retries() -> None:
 
 
 async def test_non_7429_429_returns_immediately() -> None:
-    """A 429 with a different body (e.g. real Cloudflare rate-limit,
-    no 7429 code) should NOT retry - the existing failure-handling
-    paths treat None as failure and we don't want to silently mask a
-    quota problem behind a retry loop."""
+    """Một lần 429 với body khác (ví dụ rate-limit thật của Cloudflare, không có mã 7429)
+    KHÔNG được thử lại - các đường xử lý lỗi hiện có coi None là thất bại và ta không
+    muốn âm thầm che một vấn đề quota sau một vòng thử lại."""
     mock = _make_client_mock([_FakeResp(429, '{"success":false,"errors":[{"code":10000,"message":"Rate limit"}]}')])
     with patch("asyncio.sleep", new=AsyncMock()) as fake_sleep:
         out = await _run_with_client(mock)

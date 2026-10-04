@@ -1,9 +1,8 @@
-"""Read-only stats for the spider-hub dashboard: how many posts and comments
-have been collected per platform, and a daily trend. Pure GROUP BY queries
-against D1's `posts` / `comments` tables. Posts/comments themselves go
-through their own repositories (app/repositories/d1/{posts,comments}.py);
-everything else here is a stats_summary.py passthrough (see
-app/services/d1.py)."""
+"""Thống kê chỉ đọc cho dashboard spider-hub: số bài và comment đã thu thập theo nền
+tảng, và xu hướng theo ngày. Bản thân bài/comment đi qua repository riêng
+(app/repositories/d1/{posts,comments}.py); mọi thứ khác ở đây chỉ chuyển tiếp sang
+stats_summary.py (xem app/services/d1.py), vốn đọc các bảng tổng hợp theo ngày thay
+vì GROUP BY trên toàn bảng `posts` / `comments` của D1."""
 
 from __future__ import annotations
 
@@ -72,11 +71,10 @@ async def posts(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> PostPage:
-    # sort="engagement" (top-N by keyword/movie) has no numbered pager on
-    # the frontend and isn't keyset-eligible (see list_posts_cursor's own
-    # docstring) - keeps using list_posts' offset path, always offset=0
-    # in practice (useTopPostsByKeyword/useTopPostsByMovie fetch one
-    # fixed-size batch, never paginate further).
+    # sort="engagement" (top-N theo từ khoá/phim) không có thanh phân trang đánh số ở
+    # frontend và không dùng được keyset (xem docstring của list_posts_cursor) - vẫn dùng
+    # đường offset của list_posts, thực tế luôn là offset=0 (useTopPostsByKeyword/
+    # useTopPostsByMovie lấy một lô cố định, không bao giờ phân trang tiếp).
     if sort == "engagement":
         rows, _total = await post_repo.list_posts(
             platform=platform,

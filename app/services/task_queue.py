@@ -1,8 +1,8 @@
-"""Dashboard-visible collection queue: pending Kafka work, plus a short
-history of finished/skipped/failed tasks. Written when cinemark-api
-publishes a crawl_requests message; spider-hub pops/updates the same keys
-as it runs (see social_crawler/services/task_queue.py). Redis, same prefix
-as crawl_job:* so both processes share one list."""
+"""Hàng đợi thu thập hiển thị trên dashboard: công việc Kafka đang chờ, cộng một lịch sử
+ngắn các task đã xong/bỏ qua/thất bại. Được ghi khi cinemark-api publish một message
+crawl_requests; spider-hub pop/cập nhật cùng các key đó khi chạy (xem
+social_crawler/services/task_queue.py). Dùng Redis, cùng prefix với crawl_job:* để hai
+tiến trình dùng chung một danh sách."""
 
 from __future__ import annotations
 
@@ -64,20 +64,19 @@ async def enqueue_published(request: dict[str, Any]) -> None:
 
 
 async def clear_pending(platform: str) -> None:
-    """UI goes empty immediately on Stop; Kafka leftovers are skipped by
-    platform_drain / comments_drain in the consumer."""
+    """Giao diện trống ngay khi bấm Dừng; các message Kafka còn sót được consumer bỏ qua nhờ
+    platform_drain / comments_drain."""
     client = get_redis_client()
     await client.delete(_pending_key(platform))
 
 
 async def remove_pending(platform: str, run_id: str) -> bool:
-    """Removes just one still-queued item by its run_id, for the per-row
-    Stop button (see crawl_jobs.cancel_job) - unlike clear_pending, every
-    other queued item for this platform is left alone. This item was only
-    ever a dashboard-side "shown as waiting" marker (see enqueue_published);
-    it was never itself consumed off a Kafka topic, so removing it from
-    this Redis list is enough - there's nothing on the spider-hub side
-    that still needs to be told to skip it."""
+    """Chỉ xoá đúng một mục còn đang chờ theo run_id của nó, cho nút Dừng trên từng dòng
+    (xem crawl_jobs.cancel_job) - khác với clear_pending, mọi mục đang chờ khác của nền
+    tảng này được giữ nguyên. Mục này chỉ là một dấu "hiện là đang chờ" phía dashboard
+    (xem enqueue_published); bản thân nó không bao giờ được consume từ một topic Kafka,
+    nên xoá nó khỏi list Redis này là đủ - phía spider-hub không còn gì cần được báo để
+    bỏ qua nó."""
     client = get_redis_client()
     raw_items = await client.lrange(_pending_key(platform), 0, -1)
     for raw in raw_items or []:
@@ -121,8 +120,8 @@ async def snapshot() -> dict[str, list[dict[str, Any]]]:
     running: list[dict[str, Any]] = []
     queued: list[dict[str, Any]] = []
     for platform in PLATFORMS:
-        # A running job is shown even while the platform drains after Stop:
-        # targeted triggers (nurture, comments) keep running through it.
+        # Job đang chạy vẫn được hiển thị kể cả khi nền tảng đang drain sau khi bấm Dừng: các
+        # lần kích hoạt có chủ đích (nurture, comments) vẫn chạy tiếp qua đó.
         draining = await is_platform_draining(platform)
         job = await get_running_job(platform)
         if job:
@@ -144,7 +143,7 @@ async def snapshot() -> dict[str, list[dict[str, Any]]]:
                     "status": "running",
                 }
             )
-        # Stop cleared the list; anything queued since then without
-        # bypass_drain will be skipped, so it isn't shown as waiting.
+        # Lần Dừng đã xoá danh sách; mọi thứ xếp hàng sau đó mà không có bypass_drain sẽ bị bỏ
+        # qua, nên không hiển thị là đang chờ.
         queued.extend(item for item in await list_pending(platform) if not draining or item.get("bypass_drain"))
     return {"running": running, "queued": queued, "history": await list_history()}

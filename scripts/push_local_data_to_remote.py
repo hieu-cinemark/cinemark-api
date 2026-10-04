@@ -1,33 +1,30 @@
-"""Pushes new data from the local SQLite mirror (see scripts/pull_local_db.py)
-up to the real D1 database - the one-off reverse direction that script never
-needed, written for 2026-09-15's session: DB_MODE=local was on while a full
-crawl batch ran, so every post/comment (and any keyword added via the
-dashboard meanwhile) landed only in .local-db/scraper.sqlite, invisible to
-production until pushed up.
+"""Đẩy dữ liệu mới từ bản sao SQLite local (xem scripts/pull_local_db.py) lên database D1
+thật - chiều ngược lại một lần mà script kia chưa bao giờ cần, viết cho phiên làm việc
+ngày 2026-09-15: DB_MODE=local đang bật trong lúc chạy một lô crawl đầy đủ, nên mọi
+bài/comment (và mọi từ khoá thêm qua dashboard trong lúc đó) chỉ nằm trong
+.local-db/scraper.sqlite, production không thấy cho tới khi được đẩy lên.
 
-Scope (by request - post_engagement_snapshots deliberately
-left out, both are either disposable or regeneratable, not worth the extra
-D1 write quota):
-  - keywords (and, as a hard FK prerequisite, any movies they need) that
-    exist locally but not yet in remote
-  - every local post, keyword_id validated against the now-migrated remote keywords
-  - every local comment, whose post_id row must already exist in remote
+Phạm vi (theo yêu cầu - cố ý bỏ post_engagement_snapshots, vì có thể bỏ đi hoặc tạo
+lại được, không đáng tốn thêm quota ghi D1):
+  - keywords (và, vì là điều kiện khoá ngoại bắt buộc, mọi movie chúng cần) có ở local
+    nhưng chưa có trên remote
+  - mọi bài ở local, keyword_id được kiểm tra với các keyword đã migrate lên remote
+  - mọi comment ở local, mà dòng post_id phải đã có trên remote
 
-Insert order matters (FK constraints): movies -> keywords -> posts ->
-comments. Every insert uses "INSERT OR IGNORE" and is safe to re-run - an
-id that already made it to remote (a previous partial run, or genuinely
-already there) is silently skipped rather than erroring the whole batch.
+Thứ tự insert quan trọng (ràng buộc khoá ngoại): movies -> keywords -> posts ->
+comments. Mọi lệnh insert dùng "INSERT OR IGNORE" và chạy lại an toàn - id đã lên tới
+remote (một lần chạy dở trước đó, hoặc vốn đã có ở đó) bị bỏ qua âm thầm thay vì làm
+lỗi cả lô.
 
-Local movies/keywords can share a unique slug/text with a remote row but a
-different uuid (dashboard created them while DB_MODE=local). Those ids are
-rewritten to the remote row before child inserts.
+Movie/keyword ở local có thể trùng slug/text duy nhất với một dòng remote nhưng khác
+uuid (dashboard tạo chúng khi đang DB_MODE=local). Các id đó được ghi lại thành id của
+dòng remote trước khi insert bảng con.
 
-Always forces db_mode="remote" for the writes (same rationale as
-pull_local_db.py: reads the *local* sqlite file directly with its own
-connection, never through d1_query, so forcing remote can't accidentally
-point d1_query back at the file this is reading from) and pages inserts in
-batches to stay under D1's per-statement size/response limits and this
-project's own 10s D1 HTTP timeout.
+Luôn ép db_mode="remote" cho các lần ghi (cùng lý do như pull_local_db.py: đọc file
+sqlite *local* trực tiếp bằng connection riêng, không qua d1_query, nên ép remote
+không thể vô tình trỏ d1_query ngược về file đang đọc) và chia insert theo lô để nằm
+dưới giới hạn kích thước/response mỗi câu lệnh của D1 và timeout HTTP D1 10s của
+project này.
 
     python -m scripts.push_local_data_to_remote
 """
@@ -44,14 +41,13 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# D1's HTTP query API rejects a statement above some bound-parameter count
-# well under SQLite's own usual 999 (confirmed live 2026-09-15: a 16-row,
-# 12-column movies batch - 192 params - already got rejected as "too many
-# SQL variables"). Not documented anywhere obvious, so staying well clear
-# of it rather than hunting the exact number: cap every batch at this many
-# *parameters* (rows * column count), not a fixed row count, so a wide
-# table (posts, 19 columns) automatically gets a smaller row-batch than a
-# narrow one (comments, 15) without needing its own hardcoded constant.
+# HTTP query API của D1 từ chối câu lệnh vượt quá một số lượng tham số bind nào đó, thấp
+# hơn nhiều so với mức 999 thường thấy của SQLite (đã xác nhận thực tế 2026-09-15: một
+# lô movies 16 dòng, 12 cột - 192 tham số - đã bị từ chối là "too many SQL variables").
+# Không được ghi ở chỗ nào dễ thấy, nên giữ khoảng cách an toàn thay vì đi dò con số
+# chính xác: giới hạn mỗi lô theo số *tham số* (dòng * số cột), không theo số dòng cố
+# định, để bảng rộng (posts, 19 cột) tự động có lô ít dòng hơn bảng hẹp (comments, 15)
+# mà không cần hằng số gán cứng riêng.
 _MAX_PARAMS_PER_BATCH = 90
 
 
@@ -60,9 +56,9 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
 
 
 async def _remote_ids(d1_query, table: str) -> set[str]:
-    """Page through remote ids - a single SELECT of every posts.id can
-    exceed d1_query's 10s HTTP timeout once the table is tens of thousands
-    of rows, which would abort the whole push before any writes."""
+    """Duyệt id trên remote theo trang - một câu SELECT mọi posts.id có thể vượt timeout HTTP
+    10s của d1_query khi bảng đã tới hàng chục nghìn dòng, làm huỷ cả lần đẩy trước khi
+    ghi được gì."""
     ids: set[str] = set()
     page_size = 2000
     offset = 0
@@ -194,8 +190,8 @@ async def _push_new_rows(
 
 
 async def push() -> None:
-    settings.db_mode = "remote"  # see module docstring - writes target real D1, reads come from the local file directly
-    from app.services.d1 import d1_query  # imported after forcing remote, not at module load
+    settings.db_mode = "remote"  # xem docstring module - ghi vào D1 thật, đọc thẳng từ file local
+    from app.services.d1 import d1_query  # import sau khi đã ép remote, không phải lúc nạp module
 
     if not (settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id):
         raise RuntimeError(

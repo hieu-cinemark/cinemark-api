@@ -1,22 +1,20 @@
-"""Generates the AI "top 10 topics" social-listening report for one movie
-- the per-movie logic shared by scripts/generate_social_topic_reports.py's
-batch/cron sweep and the dashboard's manual "Tạo report" button
-(POST /movies/{id}/generate-report in app/api/routes/movies.py).
+"""Tạo report social-listening "top 10 topic" bằng AI cho một phim - logic theo từng
+phim dùng chung giữa lượt quét theo lô/cron của scripts/generate_social_topic_reports.py
+và nút "Tạo report" bấm tay trên dashboard (POST /movies/{id}/generate-report trong
+app/api/routes/movies.py).
 
-For one movie:
-1. Fetch an engagement-ranked, capped sample of its sentiment-classified
-   comments (get_comment_sample_for_movie) for the topic-clustering call.
-2. Separately, count EVERY classified comment for that movie by sentiment
-   (get_movie_sentiment_counts) - this is what overall_sentiment's
-   percentages are computed from, not the capped sample, so the numbers on
-   screen reflect the true population even when it's larger than the
-   sample the LLM saw.
-3. Skip if there are fewer than MIN_COMMENTS_FOR_REPORT classified
-   comments - not enough signal for a meaningful topic cluster.
-4. Two Bee calls: topics+verbatims (over the sample), then a narrative
-   blurb fed the real percentages from step 2.
-5. Assemble the exact ReportData['dashboard_data'] shape the frontend
-   expects and upsert it.
+Với một phim:
+1. Lấy một mẫu có giới hạn, xếp theo tương tác, gồm các comment đã phân loại cảm xúc
+   của phim (get_comment_sample_for_movie) cho lời gọi gom topic.
+2. Riêng ra, đếm MỌI comment đã phân loại của phim theo cảm xúc
+   (get_movie_sentiment_counts) - tỉ lệ của overall_sentiment được tính từ đây, không
+   phải từ mẫu có giới hạn, nên số liệu trên màn hình phản ánh đúng toàn bộ tập
+   comment kể cả khi nó lớn hơn mẫu mà LLM thấy.
+3. Bỏ qua nếu có ít hơn MIN_COMMENTS_FOR_REPORT comment đã phân loại - không đủ tín
+   hiệu để gom topic có ý nghĩa.
+4. Hai lời gọi AI (Kira mặc định, hoặc Bee nếu chọn trong Settings): topics +
+   verbatims (trên mẫu), rồi một đoạn narrative được cấp tỉ lệ thật từ bước 2.
+5. Ghép đúng dạng ReportData['dashboard_data'] mà frontend cần rồi upsert.
 """
 
 from __future__ import annotations
@@ -68,10 +66,9 @@ def _lookup_sample_comment(item: dict, by_id: dict[str, dict], by_text: dict[str
 
 
 def hydrate_report_comments(topics_result: dict, sample: list[dict]) -> dict:
-    """Attach author + parent-post fields the dashboard renders next to
-    evidence/verbatims. The LLM only sees id/message/likes; we stitch the
-    rest back from the same sample after the call so existing reports can
-    also be hydrated at read time by the same text match."""
+    """Gắn thêm các trường tác giả + bài cha mà dashboard hiển thị cạnh evidence/verbatims.
+    LLM chỉ thấy id/message/likes; phần còn lại được ghép lại từ chính mẫu đó sau lời
+    gọi, để các report đã có cũng có thể được bổ sung lúc đọc bằng cùng cách khớp text."""
     by_id = {c["id"]: c for c in sample if c.get("id")}
     by_text: dict[str, dict] = {}
     for comment in sample:
@@ -162,8 +159,8 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         )
         return "generated"
 
-    # The model that actually wrote the topics: that provider's model in
-    # ai_providers (the provider key itself if the row has none).
+    # Model thực sự đã viết topics: model của provider đó trong ai_providers (hoặc chính
+    # key của provider nếu dòng đó không có model).
     provider = topics_result.get("provider") or "kira"
     provider_cfg = await load_provider(provider)
     model = (provider_cfg.model if provider_cfg else "") or provider
@@ -173,8 +170,8 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         dashboard_data_json=json.dumps(dashboard_data, ensure_ascii=False),
         comment_count=len(sample),
         post_count=post_count,
-        # Column is still named kira_model (schema predates Bee) - holds
-        # whichever model wrote the report.
+        # Cột vẫn tên là kira_model (schema có từ trước khi có Bee) - lưu model nào đã viết
+        # report.
         kira_model=model,
     )
     if not ok:

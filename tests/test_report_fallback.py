@@ -1,6 +1,6 @@
-"""app/ai/tasks/report.py: Bee writes reports, Kira takes over when a Bee
-call fails or returns something unusable, and the dashboard can point
-reports straight at Kira."""
+"""app/ai/tasks/report.py: khi chọn Bee thì Bee viết report, Kira thay thế khi lời gọi
+Bee lỗi hoặc trả về thứ không dùng được, và dashboard có thể trỏ report thẳng sang
+Kira."""
 
 from __future__ import annotations
 

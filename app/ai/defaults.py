@@ -1,8 +1,8 @@
-"""Code-default per-task system prompts (model names live only in Supabase's
-ai_providers rows). Settings can override
-these (see app/services/platform_config_db.py's ai_settings row); an empty
-stored prompt falls back here so a wiped textarea never ships a blank
-system message."""
+"""System prompt mặc định trong code cho từng task (tên model chỉ nằm trong các dòng
+ai_providers trên Supabase). Settings có thể ghi đè các prompt này (xem dòng
+ai_settings trong app/services/platform_config_db.py); prompt lưu mà rỗng thì quay
+về giá trị ở đây, để một ô textarea bị xoá trắng không bao giờ gửi đi system
+message rỗng."""
 
 from __future__ import annotations
 
@@ -61,8 +61,8 @@ If NONE of the entries plausibly match the GOAL at all, respond with
 exactly: none
 """.strip()
 
-# Stable task keys stored in ai_settings.prompts JSON and logged on every
-# KiraResponse. Crawl-side tasks use the same keys in spider-hub.
+# Các key task cố định, lưu trong JSON ai_settings.prompts và được ghi vào log của
+# mọi KiraResponse. Các task phía crawl dùng cùng key này bên spider-hub.
 AI_PROMPT_TASKS: tuple[str, ...] = (
     "relevance",
     "post_relevance",

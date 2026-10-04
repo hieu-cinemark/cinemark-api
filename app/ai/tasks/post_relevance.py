@@ -1,27 +1,26 @@
-"""Kira as THE post-relevance classifier at ingest. The ingest consumer asks
-Kira about every post that survives the deterministic rules
-(app/services/relevance_rules.py); the keyword substring check is only the
-fallback when Kira gives no verdict (off, over the daily cap, failed). Kira
-sees the target film's facts (director/cast/distributor/release date) plus
-the other tracked titles, which is what lets it separate "a post about THIS
-film" from a post about a similarly named one or a foreign post sharing an
-unaccented hashtag.
+"""Kira là bộ phân loại độ liên quan của bài viết ở bước ingest. Ingest consumer hỏi
+Kira về mọi bài đã qua được các luật cố định (app/services/relevance_rules.py);
+việc kiểm tra từ khoá theo chuỗi con chỉ là dự phòng khi Kira không đưa ra kết
+luận (đang tắt, vượt giới hạn ngày, lỗi). Kira được biết thông tin của phim đích
+(đạo diễn/diễn viên/nhà phát hành/ngày ra rạp) cùng tên các phim khác đang theo
+dõi - nhờ vậy mới phân biệt được "bài nói về ĐÚNG phim này" với bài nói về một phim
+trùng tên, hay bài nước ngoài dùng chung một hashtag không dấu.
 
-Batched: classify_post_relevance_kira() keeps a one-post signature, but a
-micro-batcher collects the posts the ingest consumer is handling
-concurrently (up to BATCH_SIZE, waiting at most BATCH_WINDOW_S) into ONE
-Kira call. One post per call left ingest ~0.8 posts/s behind Kira's 2-call
-concurrency budget and repeated the system prompt for every post.
+Theo lô: classify_post_relevance_kira() vẫn nhận từng bài, nhưng một bộ gom lô nhỏ
+gom các bài mà ingest consumer đang xử lý cùng lúc (tối đa BATCH_SIZE, chờ tối đa
+BATCH_WINDOW_S) thành MỘT lời gọi Kira. Mỗi lời gọi một bài khiến ingest chậm hơn
+khoảng 0,8 bài/giây so với giới hạn 2 lời gọi đồng thời của Kira, và lặp lại
+system prompt cho từng bài.
 
-Prompt: task "post_relevance" (editable on the dashboard's Settings AI tab;
-POST_RELEVANCE_SYSTEM_PROMPT is its default) holds the labeling criteria.
-The batch JSON shape is in the user prompt built here, so an edited system
-prompt can't break parsing.
+Prompt: task "post_relevance" (sửa được ở tab AI của Settings trên dashboard;
+POST_RELEVANCE_SYSTEM_PROMPT là giá trị mặc định) chứa tiêu chí gán nhãn. Khung
+JSON theo lô nằm trong user prompt dựng ở đây, nên system prompt bị sửa cũng không
+làm hỏng việc parse.
 
-Spend control: respects the dashboard's Kira on/off toggle (call_kira
-without force) and a per-day post cap (settings.kira_post_relevance_daily_cap,
-counted in Redis). Fail-open: a post gets None on any problem, and the
-caller then keeps it rather than dropping it.
+Kiểm soát chi phí: tuân theo nút bật/tắt Kira trên dashboard (call_kira không có
+force) và giới hạn số bài mỗi ngày (settings.kira_post_relevance_daily_cap, đếm
+trong Redis). Fail open: bài nào gặp bất kỳ vấn đề gì sẽ nhận None, và bên gọi khi
+đó giữ bài lại thay vì loại.
 """
 
 from __future__ import annotations
@@ -43,8 +42,8 @@ TASK = "post_relevance"
 MAX_CONTENT_CHARS = 1500
 BATCH_SIZE = 10
 BATCH_WINDOW_S = 1.5
-# Batches waiting on Kira at once; Kira's own semaphore (app/ai/client.py)
-# runs 2, a third keeps the next one ready.
+# Số lô được chờ Kira cùng lúc; semaphore của Kira (app/ai/client.py) chạy 2 lô, lô
+# thứ ba để sẵn lô kế tiếp.
 MAX_BATCHES_IN_FLIGHT = 3
 _LABELS = {"relevant": "related", "irrelevant": "not_related", "uncertain": "uncertain"}
 
@@ -116,7 +115,7 @@ async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
             platform=jobs[0].platform if len({job.platform for job in jobs}) == 1 else None,
         )
         parsed = parse_json_response(response)
-    except Exception as exc:  # noqa: BLE001 - fail open, the caller keeps the posts
+    except Exception as exc:  # noqa: BLE001 - fail open, bên gọi giữ lại các bài
         logger.warning("kira_post_relevance_failed", error=exc, batch_size=len(jobs))
         return [None] * len(jobs)
 
@@ -139,8 +138,8 @@ async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
 
 
 class _Batcher:
-    """Collects concurrent requests into batches. Bound to the running event
-    loop and rebuilt if the loop changes (each asyncio.run() in tests/scripts)."""
+    """Gom các request đồng thời thành lô. Gắn với event loop đang chạy và được tạo lại
+    nếu loop đổi (mỗi lần asyncio.run() trong test/script)."""
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -202,7 +201,7 @@ async def _within_daily_cap() -> bool:
         count = await client.incr(key)
         if count == 1:
             await client.expire(key, 2 * 24 * 3600)
-    except Exception as exc:  # noqa: BLE001 - no counter, no spend
+    except Exception as exc:  # noqa: BLE001 - không có bộ đếm thì không tốn chi phí
         logger.warning("kira_post_relevance_cap_check_failed", error=exc)
         return False
     if count == cap + 1:
@@ -218,10 +217,9 @@ async def classify_post_relevance_kira(
     platform: str | None,
     other_titles: list[str],
 ) -> Verdict | None:
-    """{"label": related|not_related|uncertain, "confidence": float,
-    "reason": str}, or None when Kira is off, over the daily cap,
-    unreachable or answered in an unexpected shape. Batched with whatever
-    other posts are being classified at the same moment."""
+    """{"label": related|not_related|uncertain, "confidence": float, "reason": str},
+    hoặc None khi Kira đang tắt, vượt giới hạn ngày, không kết nối được hoặc trả lời
+    sai định dạng. Được gom lô chung với các bài khác đang phân loại cùng lúc."""
     if not content or not content.strip() or not movie.get("title"):
         return None
     if not await _within_daily_cap():

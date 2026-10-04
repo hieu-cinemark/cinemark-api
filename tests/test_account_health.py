@@ -1,9 +1,8 @@
-"""evaluate_account_health() is pure signal-reading (Redis + the row's own
-`enabled` flag) with no network calls to any platform - see
-app/services/account_health.py's module docstring for why that's
-deliberate. These tests mock Redis/get_token_status and check the status
-string for each branch, since that's exactly what ends up written to
-platform_accounts.last_check_status and shown on the dashboard."""
+"""evaluate_account_health() chỉ thuần đọc tín hiệu (Redis + cờ `enabled` của chính dòng
+đó), không gọi mạng tới nền tảng nào - xem docstring module của
+app/services/account_health.py để biết vì sao đó là chủ đích. Các test này mock
+Redis/get_token_status và kiểm tra chuỗi trạng thái cho từng nhánh, vì đó chính là thứ
+được ghi vào platform_accounts.last_check_status và hiển thị trên dashboard."""
 
 from __future__ import annotations
 
@@ -39,9 +38,9 @@ async def test_tiktok_no_block_streak_is_ok() -> None:
 
 
 async def test_tiktok_with_recorded_block_is_warning() -> None:
-    # The value itself doesn't matter - evaluate_account_health only checks
-    # whether the key exists (see account_health.py's _check_tiktok), same
-    # as a real Redis GET on a key client.py created with INCR.
+    # Bản thân giá trị không quan trọng - evaluate_account_health chỉ kiểm tra key có tồn
+    # tại không (xem _check_tiktok trong account_health.py), giống một lệnh GET Redis thật
+    # trên key mà client.py tạo bằng INCR.
     fake_client = AsyncMock()
     fake_client.get.return_value = "1"
     with patch("app.services.account_health.get_redis_client", return_value=fake_client):
@@ -51,10 +50,9 @@ async def test_tiktok_with_recorded_block_is_warning() -> None:
 
 
 async def test_redis_error_propagates_instead_of_being_swallowed() -> None:
-    """Deliberate, not an oversight - mirrors platform_token.get_token_status,
-    which has the same no-try/except shape. A Redis blip should surface as a
-    failed check (500 from the route, nothing written to last_check_status)
-    rather than silently reporting a wrong status like "ok"."""
+    """Có chủ đích, không phải sơ suất - giống platform_token.get_token_status, vốn cũng
+    không có try/except. Redis trục trặc nên hiện ra thành lần kiểm tra thất bại (route trả
+    500, không ghi gì vào last_check_status) thay vì âm thầm báo sai trạng thái như "ok"."""
     fake_client = AsyncMock()
     fake_client.get.side_effect = redis.exceptions.ConnectionError("redis unreachable")
     with (

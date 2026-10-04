@@ -1,4 +1,4 @@
-"""GET /jobs - running, waiting, and recent finished collection tasks."""
+"""GET /jobs - các việc thu thập đang chạy, đang chờ và vừa xong gần đây."""
 
 from __future__ import annotations
 
@@ -53,10 +53,10 @@ class KafkaLagEntry(BaseModel):
 
 @router.get("/kafka-lag", response_model=list[KafkaLagEntry])
 async def kafka_lag() -> list[KafkaLagEntry]:
-    """Real, broker-computed backlog per consumer group (app.clients.kafka.
-    get_consumer_lag) - a different, ground-truth number from the `queued`
-    array above, which is app-tracked bookkeeping in Redis that can get
-    stuck if a consumer never gets to clear an entry (see that function's
-    own docstring for the incident that motivated adding this route)."""
+    """Số message tồn đọng thật của từng consumer group, do broker tính
+    (app.clients.kafka.get_consumer_lag) - một con số khác và đáng tin hơn so với mảng
+    `queued` phía trên, vốn là sổ sách app tự ghi trong Redis và có thể bị kẹt nếu một
+    consumer không bao giờ xoá được mục của nó (xem docstring của hàm đó về sự cố đã
+    khiến route này được thêm vào)."""
     rows = await get_consumer_lag()
     return [KafkaLagEntry(**row) for row in rows]

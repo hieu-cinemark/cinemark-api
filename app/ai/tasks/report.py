@@ -1,18 +1,16 @@
-"""LLM calls behind scripts/generate_social_topic_reports.py - same
-two-call split and same prompts either provider runs (see
-app/ai/prompts/report.py's own module docstring for why split into two
-calls). Both are fail-open (return None on any error), same convention as
-every classifier in this codebase - the caller decides what "no report
-this run" means.
+"""Các lời gọi LLM đứng sau scripts/generate_social_topic_reports.py - cùng cách tách
+hai lời gọi và cùng prompt dù chạy trên provider nào (xem docstring module của
+app/ai/prompts/report.py để biết vì sao tách hai lời gọi). Cả hai đều fail open
+(trả về None khi có bất kỳ lỗi nào), cùng quy ước với mọi bộ phân loại trong
+codebase - bên gọi tự quyết "lần này không có report" nghĩa là gì.
 
-Kira writes reports by default (Bee ran out of credit on 2026-10-03);
-the dashboard's AI settings tab picks the provider (app/ai/kira.py's
-active_report_provider(), default "kira"). Picking "bee" makes Bee write
-first, and when a Bee call fails or returns something unusable (an error,
-a truncated or wrong-shaped JSON) the same prompt goes to Kira instead.
-call_kira's force=True bypasses the ingest-classifiers on/off switch, same
-as app/ai/tasks/import_parser.py's operator-triggered calls - a report run
-is its own explicit request."""
+Mặc định Kira viết report (Bee hết số dư từ 2026-10-03); tab AI settings trên
+dashboard chọn provider (active_report_provider() trong app/ai/kira.py, mặc định
+"kira"). Chọn "bee" thì Bee viết trước, và khi lời gọi Bee lỗi hoặc trả về thứ
+không dùng được (lỗi, JSON bị cắt hoặc sai cấu trúc) thì cùng prompt đó được gửi
+sang Kira. force=True của call_kira bỏ qua nút bật/tắt của các bộ phân loại ingest,
+giống các lời gọi do người vận hành bấm trong app/ai/tasks/import_parser.py - mỗi
+lần chạy report là một yêu cầu tường minh."""
 
 from __future__ import annotations
 
@@ -59,11 +57,11 @@ async def _call_provider(
 async def _generate(
     *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float, parse: Callable[[str], T]
 ) -> tuple[T, str]:
-    """Just Kira by default; Bee first with Kira as the fallback when the
-    dashboard points reports at Bee. `parse` validates the response and raises when it's
-    unusable, so a truncated/wrong-shaped answer falls back too, not only a
-    failed call. Returns (parsed result, provider that produced it); raises
-    the last error when every provider failed."""
+    """Mặc định chỉ dùng Kira; khi dashboard chọn Bee cho report thì Bee trước, Kira dự
+    phòng. `parse` kiểm tra câu trả lời và raise khi không dùng được, nên câu trả lời
+    bị cắt/sai cấu trúc cũng được chuyển sang dự phòng, không chỉ khi lời gọi lỗi. Trả
+    về (kết quả đã parse, provider đã tạo ra nó); raise lỗi cuối cùng khi mọi provider
+    đều lỗi."""
     providers = ["kira"] if await active_report_provider() == "kira" else ["bee", "kira"]
     last_error: Exception | None = None
     for provider in providers:
@@ -100,11 +98,10 @@ def _parse_narrative(response: str) -> str:
 
 
 async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """`comments` is get_comment_sample_for_movie()'s rows (id/message/
-    reactions_count/sentiment). Returns {"top_10_topics": [...],
-    "top_10_verbatims": [...]} matching the frontend's ReportData shape plus
-    "provider" ("bee" or "kira", whichever wrote it), or None when both
-    failed."""
+    """`comments` là các dòng của get_comment_sample_for_movie() (id/message/
+    reactions_count/sentiment). Trả về {"top_10_topics": [...], "top_10_verbatims":
+    [...]} đúng cấu trúc ReportData của frontend, kèm "provider" ("bee" hoặc "kira",
+    bên nào đã viết), hoặc None khi cả hai đều lỗi."""
     comments_payload = [
         {"id": c["id"], "message": c["message"], "likes": c.get("reactions_count") or 0, "sentiment": c["sentiment"]}
         for c in comments
@@ -114,29 +111,24 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
         comments_json=json.dumps(comments_payload, ensure_ascii=False),
     )
     try:
-        # Confirmed live: 8000 (the old Kira version's own budget) truncated
-        # Sonnet 5 mid-JSON (finish_reason="length") on a 146-comment movie -
-        # Sonnet's output for this same up-to-10-topics x evidence_comments
-        # plus up-to-10-verbatims shape runs noticeably more verbose than
-        # whatever model Kira was actually running. Sonnet 5 comfortably
-        # supports a much larger output window, so there's real headroom to
-        # spend here rather than trimming the prompt/shape instead.
-        # Raised to 150000 (2026-10-04) now that Kira writes reports - not yet
-        # confirmed that Kira's model accepts an output budget this large; if
-        # every topics call starts failing, lower it first.
+        # Đã xác nhận thực tế: 8000 (ngân sách cũ của bản Kira trước đây) làm Sonnet 5 bị
+        # cắt giữa chừng JSON (finish_reason="length") với một phim 146 comment - đầu ra của
+        # Sonnet cho cùng cấu trúc tối đa 10 topic x evidence_comments cộng tối đa 10
+        # verbatim dài dòng hơn hẳn model mà Kira từng chạy. Sonnet 5 hỗ trợ cửa sổ đầu ra
+        # lớn hơn nhiều, nên có dư địa thật để chi ở đây thay vì cắt bớt prompt/cấu trúc.
+        # Đã nâng lên 150000 (2026-10-04) khi Kira viết report - chưa xác nhận model của
+        # Kira chấp nhận ngân sách đầu ra lớn vậy; nếu mọi lời gọi topics bắt đầu lỗi thì
+        # giảm con số này trước tiên.
         #
-        # temperature=0.3, not 0.0: confirmed live that Beeknoee caches by
-        # (model, messages, temperature) but NOT max_tokens - the very
-        # first (truncated, max_tokens=8000) call against this exact
-        # prompt at temperature=0 got cached, and every later retry at
-        # temperature=0 kept replaying that same truncated response
-        # verbatim regardless of how high max_tokens was raised afterward.
-        # A non-zero temperature avoids re-poisoning that cache for any
-        # prompt this ever happens to again - also just a more natural
-        # choice for a writing task than strict determinism. Kept the same
-        # when the active provider is Kira instead - no evidence yet that
-        # its backend lacks the same caching behavior, and a non-zero
-        # temperature is a reasonable default for this task either way.
+        # temperature=0.3 chứ không phải 0.0: đã xác nhận thực tế là Beeknoee cache theo
+        # (model, messages, temperature) nhưng KHÔNG theo max_tokens - lời gọi đầu tiên (bị
+        # cắt, max_tokens=8000) với đúng prompt này ở temperature=0 đã bị cache, và mọi lần
+        # thử lại sau đó ở temperature=0 cứ trả lại nguyên câu trả lời bị cắt đó dù sau này
+        # max_tokens được nâng cao đến đâu. temperature khác 0 tránh làm "đầu độc" cache như
+        # vậy nếu chuyện này lặp lại với prompt nào đó - và cũng tự nhiên hơn cho một tác vụ
+        # viết so với tính tất định tuyệt đối. Giữ nguyên khi provider đang dùng là Kira -
+        # chưa có bằng chứng backend của nó không cache tương tự, và temperature khác 0 vốn
+        # là mặc định hợp lý cho tác vụ này.
         parsed, provider = await _generate(
             task="topics",
             system_prompt=TOPICS_SYSTEM_PROMPT,
@@ -159,8 +151,8 @@ async def generate_narrative(
     neutral_percent: float,
     topic_names: list[str],
 ) -> str | None:
-    """Returns the "analysis" blurb string, or None on failure - the caller
-    should fall back to an empty string rather than block the report."""
+    """Trả về đoạn "analysis", hoặc None khi lỗi - bên gọi nên dùng chuỗi rỗng thay vì
+    chặn cả report."""
     prompt = NARRATIVE_DATA_PROMPT.format(
         movie_title=movie_title,
         positive_percent=positive_percent,
@@ -169,11 +161,10 @@ async def generate_narrative(
         topic_names="\n".join(f"- {name}" for name in topic_names) or "N/A",
     )
     try:
-        # Same temperature=0.3 rationale as generate_topics_and_verbatims's
-        # own call above (avoid caching a bad/truncated response forever at
-        # temperature=0). max_tokens bumped from the old Kira budget for
-        # the same reasoning-tokens-eat-the-budget headroom reason too,
-        # though this shorter prompt hasn't been observed to need it yet.
+        # Cùng lý do temperature=0.3 như lời gọi của generate_topics_and_verbatims phía trên
+        # (tránh cache vĩnh viễn một câu trả lời hỏng/bị cắt ở temperature=0). max_tokens
+        # được nâng so với ngân sách Kira cũ cũng vì lý do reasoning token ăn mất ngân sách,
+        # dù prompt ngắn này chưa từng thấy cần tới.
         analysis, _provider = await _generate(
             task="narrative",
             system_prompt=NARRATIVE_SYSTEM_PROMPT,

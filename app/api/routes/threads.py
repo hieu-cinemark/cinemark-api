@@ -1,16 +1,15 @@
-"""Threads scraper routes: POST /threads/run, same shared trigger contract
-as facebook.py (see platform_scraper.py) - spider-hub's crawl_request_consumer.py
-already has a "threads" -> threads_search spider mapping (SPIDER_BY_PLATFORM),
-this just exposes the trigger for it. GET /threads/keywords (see
-keywords.py) lists keywords for the dashboard's picker. Threads' spider-hub
-integration does have its own browser-bootstrap token cache, mirroring
-Facebook's field for field (see spider-hub's spiders/threads/auth/bootstrap.py)
-- so it gets the same refresh-token/token-status/WS trio via
-token_refresh.py, and POST /threads/posts/{post_id}/comments/run (see
-platform_scraper.build_comments_run_route - spider-hub's threads_comments
-spider only fetches a post's first page of replies, see its own module
-docstring for why, but that's still a real comments feature worth exposing
-here)."""
+"""Các route scraper Threads: POST /threads/run, cùng hợp đồng kích hoạt dùng chung với
+facebook.py (xem platform_scraper.py) - crawl_request_consumer.py của spider-hub đã
+có ánh xạ "threads" -> spider threads_search (SPIDER_BY_PLATFORM), ở đây chỉ mở ra
+nút kích hoạt cho nó. GET /threads/keywords (xem keywords.py) liệt kê từ khoá cho ô
+chọn trên dashboard. Phần tích hợp Threads của spider-hub có cache token bootstrap
+trình duyệt riêng, giống Facebook từng trường một (xem
+spiders/threads/auth/bootstrap.py của spider-hub) - nên nó có cùng bộ ba
+refresh-token/token-status/WS qua token_refresh.py, và POST
+/threads/posts/{post_id}/comments/run (xem platform_scraper.build_comments_run_route
+- spider threads_comments của spider-hub chỉ lấy trang reply đầu tiên của một bài,
+xem docstring module của nó để biết lý do, nhưng đó vẫn là một tính năng comment
+thật đáng để mở ra ở đây)."""
 
 from __future__ import annotations
 

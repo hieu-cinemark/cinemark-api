@@ -1,6 +1,6 @@
-"""Liveness check + a debug route that deliberately raises AppError, so the
-error-handling wiring in main.py can be smoke-tested with a single curl
-instead of needing a real failing resource lookup somewhere."""
+"""Kiểm tra sống (liveness) + một route debug cố ý raise AppError, để có thể kiểm tra
+nhanh phần xử lý lỗi trong main.py chỉ bằng một lệnh curl, không cần tìm một tài
+nguyên thật nào đó bị lỗi."""
 
 from __future__ import annotations
 

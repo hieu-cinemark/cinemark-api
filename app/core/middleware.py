@@ -1,9 +1,8 @@
-"""Request interceptor: assigns/propagates a request id and logs every
-request once it's done (method, path, status, duration) - the request id is
-bound into structlog's contextvars for the duration of the request, so every
-log line emitted anywhere while handling it (routes, services, db calls)
-carries the same request_id without threading it through every function
-signature by hand."""
+"""Bộ chặn request: gán/truyền tiếp request id và log mỗi request khi xong (method,
+path, status, thời gian) - request id được bind vào contextvars của structlog trong
+suốt request, nên mọi dòng log phát ra ở bất cứ đâu trong lúc xử lý nó (route,
+service, lời gọi db) đều mang cùng request_id mà không phải tự truyền qua chữ ký của
+từng hàm."""
 
 from __future__ import annotations
 
@@ -30,9 +29,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
         except Exception:
-            # The route/handler didn't turn this into an AppError - let it
-            # propagate to the catch-all exception handler in errors.py,
-            # but log the timing here too before the context gets cleared.
+            # Route/handler không chuyển lỗi này thành AppError - để nó đi tiếp tới handler
+            # exception bắt-tất-cả trong errors.py, nhưng vẫn log thời gian ở đây trước khi
+            # context bị xoá.
             duration_ms = (time.perf_counter() - start) * 1000
             logger.error(
                 "request_failed", method=request.method, path=request.url.path, duration_ms=round(duration_ms, 1)

@@ -1,5 +1,5 @@
-"""FastAPI entrypoint - wires logging, the request interceptor, and the
-custom error handlers together. Run with:
+"""Điểm vào FastAPI - nối logging, bộ chặn request và các handler lỗi tuỳ chỉnh lại với
+nhau. Chạy bằng:
     uvicorn app.main:app --reload
 """
 
@@ -54,13 +54,12 @@ app.include_router(settings_router)
 app.include_router(cron_router)
 
 
-# ensure_default_crawl_schedules just seeds a nice-to-have default row (see
-# its own docstring) - it must never be able to hold up the rest of startup
-# (every route, the scheduler, Kafka) behind an unreachable/slow Postgres.
-# psycopg's own connect_timeout=5 (platform_config_db._connect) doesn't
-# bound DNS resolution, which can hang well past that - hit live 2026-09-21
-# when a network blip during startup stalled the whole app, including
-# /health, for 18+ minutes with zero log output.
+# ensure_default_crawl_schedules chỉ tạo sẵn một dòng mặc định cho tiện (xem docstring
+# của nó) - nó tuyệt đối không được làm treo phần còn lại của quá trình khởi động (mọi
+# route, scheduler, Kafka) chỉ vì Postgres không truy cập được/chậm. connect_timeout=5
+# của psycopg (platform_config_db._connect) không giới hạn bước phân giải DNS, bước
+# này có thể treo lâu hơn nhiều - đã gặp thực tế 2026-09-21 khi mạng chập chờn lúc
+# khởi động làm treo cả app, kể cả /health, hơn 18 phút mà không có dòng log nào.
 _STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS = 10.0
 
 
@@ -90,7 +89,7 @@ async def _build_tab_filter_indexes() -> None:
     from app.repositories.d1 import comments as comments_repo
     from app.repositories.d1 import posts as posts_repo
 
-    # Let the first dashboard queries land before we occupy D1 with CREATE INDEX.
+    # Để các query đầu tiên của dashboard chạy xong trước khi chiếm D1 bằng CREATE INDEX.
     await asyncio.sleep(8)
     try:
         await posts_repo.ensure_tab_filter_indexes()
@@ -104,8 +103,9 @@ _SHUTDOWN_STEP_TIMEOUT_SECONDS = 5
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    # The Kafka flush is bounded: unbounded, it left `uvicorn --reload`
-    # stuck mid-restart (port closed, new worker never started) on 2026-09-30.
+    # Việc flush Kafka có giới hạn thời gian: không giới hạn thì nó từng làm
+    # `uvicorn --reload` kẹt giữa lúc restart (port đã đóng, worker mới không bao giờ khởi
+    # động) vào 2026-09-30.
     refresh_tracker.shutdown()
     scheduler.stop()
     try:

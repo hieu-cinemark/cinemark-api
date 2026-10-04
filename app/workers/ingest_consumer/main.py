@@ -1,27 +1,24 @@
-"""Reads scraped posts and comments off Kafka (published by spider-hub's
-spiders - see social_crawler/clients/kafka.py there) and mirrors them into
-D1 (see app/services/d1.py). Runs as its own long-lived process, separate
-from the FastAPI app:
+"""Đọc bài và comment đã crawl từ Kafka (do các spider của spider-hub publish - xem
+social_crawler/clients/kafka.py bên đó) và ghi sang D1 (xem app/services/d1.py).
+Chạy như một tiến trình sống lâu riêng, tách khỏi app FastAPI:
 
     python -m app.workers.ingest_consumer.main
 
-Each message is handled independently, and one bad message (unresolvable
-keyword, D1 error, malformed payload) is logged and skipped rather than
-killing the whole consumer - a poison-pill message must not take down
-ingestion for every other message behind it.
+Mỗi message được xử lý độc lập, và một message lỗi (từ khoá không tra được, lỗi D1,
+payload sai định dạng) được log rồi bỏ qua thay vì giết cả consumer - một message
+"thuốc độc" không được làm sập việc ingest của mọi message phía sau nó.
 
-Two independent consumer loops, one per topic (see _run_topic_consumer),
-not one consumer subscribed to both - split 2026-09-17 after confirming
-live that raw_posts and raw_comments sharing one consumer group/semaphore
-meant a comment-heavy post (hundreds of comments, each needing its own
-message) could starve post ingestion of concurrency slots, and vice versa.
-Each loop handles its own messages with bounded concurrency (sized by
-_POST_MESSAGE_CONCURRENCY / _COMMENT_MESSAGE_CONCURRENCY) instead of one at
-a time, since each message is now a couple of D1 HTTP round trips rather
-than a local DB write.
+Hai vòng lặp consumer độc lập, mỗi topic một vòng (xem _run_topic_consumer), không
+phải một consumer subscribe cả hai - tách ngày 2026-09-17 sau khi xác nhận thực tế
+rằng raw_posts và raw_comments dùng chung một consumer group/semaphore khiến một bài
+nhiều comment (hàng trăm comment, mỗi comment một message) có thể chiếm hết chỗ
+chạy song song của việc ingest bài, và ngược lại. Mỗi vòng xử lý message của mình với
+mức song song có giới hạn (theo _POST_MESSAGE_CONCURRENCY /
+_COMMENT_MESSAGE_CONCURRENCY) thay vì từng cái một, vì giờ mỗi message là vài lượt
+gọi HTTP tới D1 chứ không phải một lần ghi DB local.
 
-Comment sentiment is classified out-of-band, not inline: a third task,
-sentiment_sweep.sweep_forever(), labels new comments in Bee batches."""
+Cảm xúc comment được phân loại riêng, không làm tại chỗ: một task thứ ba,
+sentiment_sweep.sweep_forever(), gắn nhãn comment mới theo lô qua Kira."""
 
 from __future__ import annotations
 
@@ -57,40 +54,38 @@ logger = get_logger(__name__)
 
 RAW_POSTS_TOPIC = "raw_posts"
 RAW_COMMENTS_TOPIC = "raw_comments"
-# Separate consumer groups (not one shared "cinemark-api.ingest" group
-# subscribed to both topics, as this used to be) - see _run_topic_consumer's
-# own docstring for why a comment flood and a post flood must not compete
-# for the same concurrency budget.
+# Consumer group riêng (không phải một group "cinemark-api.ingest" dùng chung
+# subscribe cả hai topic như trước đây) - xem docstring của _run_topic_consumer để biết
+# vì sao một đợt dồn comment và một đợt dồn bài không được tranh nhau cùng ngân sách
+# chạy song song.
 CONSUMER_GROUP_POSTS = "cinemark-api.ingest.posts"
 CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
-# The single shared group these two replaced (see module docstring). Neither
-# new group id has any committed offset on its first-ever run, so without
-# migrating from here they would start at the end of each topic
-# (auto_offset_reset="latest" below) and skip whatever the old group hadn't
-# processed yet.
+# Group dùng chung duy nhất mà hai group này thay thế (xem docstring module). Ở lần
+# chạy đầu tiên, cả hai group id mới đều chưa có offset nào được commit, nên nếu không
+# chuyển offset từ group này sang thì chúng sẽ bắt đầu ở cuối mỗi topic
+# (auto_offset_reset="latest" bên dưới) và bỏ qua những gì group cũ chưa xử lý.
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
-# Each in-flight post mostly waits on its Kira verdict, which is batched
-# (app/ai/tasks/post_relevance.py: up to BATCH_SIZE posts per call, 3 calls in
-# flight) - enough concurrent posts to fill those batches.
+# Mỗi bài đang xử lý chủ yếu chờ phán quyết của Kira, vốn được gom lô
+# (app/ai/tasks/post_relevance.py: tối đa BATCH_SIZE bài mỗi lời gọi, 3 lời gọi chạy
+# cùng lúc) - đủ số bài chạy song song để lấp đầy các lô đó.
 _POST_MESSAGE_CONCURRENCY = 24
-# Comments make no AI call inline (sentiment is sentiment_sweep.py's job) -
-# each one is just a mapper call + one D1 write, cheap enough that a
-# higher concurrency actually gets used.
+# Comment không gọi AI tại chỗ (cảm xúc là việc của sentiment_sweep.py) - mỗi comment
+# chỉ là một lần gọi mapper + một lần ghi D1, đủ rẻ để mức song song cao hơn thực sự
+# được dùng tới.
 _COMMENT_MESSAGE_CONCURRENCY = 24
 
-# A burst of silent drops (unregistered platform mapper, malformed
-# producer payload, a keyword that got disabled/deleted mid-flight) used to
-# only ever show up as a WARNING log line nobody was watching - exactly how
-# TikTok's missing mapper went unnoticed until someone happened to check
-# the dashboard. This turns a *sustained* burst of one specific drop reason
-# into a Telegram alert instead, without paging on every single message
-# once a platform is already known to be broken.
+# Một loạt bài bị loại âm thầm (chưa đăng ký mapper nền tảng, producer gửi payload sai
+# định dạng, một từ khoá bị tắt/xoá giữa chừng) trước đây chỉ hiện thành một dòng log
+# WARNING không ai theo dõi - đúng cách mà việc thiếu mapper của TikTok đã bị bỏ sót cho
+# tới khi có người tình cờ xem dashboard. Phần này biến một loạt *kéo dài* của một lý
+# do loại cụ thể thành cảnh báo Telegram, mà không báo động theo từng message một khi
+# đã biết nền tảng đó đang hỏng.
 DROP_ALERT_THRESHOLD = 10
-# Rolling window, not a lifetime count - "10 drops in the last hour" is a
-# meaningful signal; "10 drops since whenever this key first appeared,
-# maybe weeks ago" isn't. Reset by re-arming the key's TTL each time a
-# fresh window starts (the first increment after expiry/creation).
+# Cửa sổ trượt, không phải đếm cả đời - "10 bài bị loại trong giờ qua" là tín hiệu có
+# ý nghĩa; "10 bài bị loại từ lúc key này xuất hiện lần đầu, có khi vài tuần trước" thì
+# không. Reset bằng cách đặt lại TTL của key mỗi khi một cửa sổ mới bắt đầu (lần tăng
+# đầu tiên sau khi hết hạn/tạo mới).
 DROP_COUNTER_TTL_SECONDS = 3600
 
 _DROP_ALERT_TEXT = {
@@ -101,9 +96,9 @@ _DROP_ALERT_TEXT = {
 }
 
 
-# Tracked films (titles for relevance_rules.mentions_other_film, facts for
-# Kira's prompt) - a small table that changes when someone adds a film, so a
-# short cache is enough.
+# Các phim đang theo dõi (tên phim cho relevance_rules.mentions_other_film, thông tin
+# cho prompt của Kira) - một bảng nhỏ chỉ đổi khi có người thêm phim, nên cache ngắn là
+# đủ.
 _TRACKED_MOVIES_TTL_SECONDS = 300.0
 _tracked_movies_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
 
@@ -117,7 +112,7 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
         rows = (
             await d1_query('SELECT id, title, director, "cast", distributor, released_at FROM movies', quiet=True) or []
         )
-    except Exception as exc:  # noqa: BLE001 - the rules/Kira just sit out this round
+    except Exception as exc:  # noqa: BLE001 - quy tắc/Kira tạm đứng ngoài lượt này
         logger.warning("tracked_movies_load_failed", error=exc)
         return _tracked_movies_cache[1] if _tracked_movies_cache else {}
     movies = {r["id"]: r for r in rows if r.get("title")}
@@ -130,10 +125,9 @@ async def _tracked_titles() -> list[str]:
 
 
 async def _note_drop(platform: str, reason: str, **context: Any) -> None:
-    """Atomically increments this (platform, reason)'s rolling-window
-    counter and fires exactly one Telegram alert the instant it crosses
-    DROP_ALERT_THRESHOLD - not once per message after that, so an ongoing
-    outage doesn't spam the channel once it's already been reported."""
+    """Tăng nguyên tử bộ đếm cửa sổ trượt của (platform, reason) này và bắn đúng một cảnh
+    báo Telegram ngay khi vượt DROP_ALERT_THRESHOLD - không phải mỗi message một lần sau
+    đó, để sự cố đang kéo dài không spam kênh sau khi đã được báo."""
     client = get_redis_client()
     key = f"{REDIS_KEY_PREFIX}ingest_drop:{platform}:{reason}"
     count = await client.incr(key)
@@ -150,8 +144,8 @@ async def _note_drop(platform: str, reason: str, **context: Any) -> None:
 async def _decide(
     *, platform: str | None, post_id: Any, keyword_id: Any, decision: str, reason: str, **extra: Any
 ) -> None:
-    """One event per post on the ingest_decisions topic - archived to the R2
-    lake by app/workers/lake_writer, so every keep/drop and why is on record."""
+    """Mỗi bài một event trên topic ingest_decisions - được app/workers/lake_writer lưu lên
+    lake R2, nên mọi quyết định giữ/loại và lý do đều có hồ sơ."""
     await publish_ingest_decision(
         {
             "post_id": post_id,
@@ -166,20 +160,19 @@ async def _decide(
 
 
 async def _drop(*, platform: str | None, post_id: Any, reason: str, keyword_id: Any = None, **extra: Any) -> None:
-    """Records the drop decision on the ingest_decisions topic. Nothing is
-    archived in D1 any more: the lake writer (app/workers/lake_writer/main.py)
-    keeps the raw payload from raw_posts under bronze/entity=posts/ and this
-    decision under bronze/entity=decisions/ - replay joins the two on
-    post_id. Drops from before the lake (D1's old dropped_posts table) are
-    archived in R2 under backfill/entity=dropped_posts/."""
+    """Ghi quyết định loại bài lên topic ingest_decisions. Không còn lưu gì trong D1 nữa:
+    lake writer (app/workers/lake_writer/main.py) giữ payload thô từ raw_posts dưới
+    bronze/entity=posts/ và quyết định này dưới bronze/entity=decisions/ - khi phát lại
+    thì join hai bên theo post_id. Các bài bị loại từ trước khi có lake (bảng
+    dropped_posts cũ của D1) được lưu trữ trên R2 dưới backfill/entity=dropped_posts/."""
     await _decide(platform=platform, post_id=post_id, keyword_id=keyword_id, decision="dropped", reason=reason, **extra)
 
 
 async def handle_post(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
-    # TikTok payloads carry the id as video_id - without the fallback every
-    # TikTok ingest decision went out with post_id=None and could never be
-    # joined back to its post in the lake (app/lake/silver.py).
+    # Payload TikTok mang id ở trường video_id - không có phương án dự phòng này thì mọi
+    # quyết định ingest của TikTok đều gửi đi với post_id=None và không bao giờ join lại
+    # được với bài của nó trong lake (app/lake/silver.py).
     post_id = payload.get("post_id") or payload.get("video_id")
 
     mapper = get_post_mapper(platform)
@@ -205,11 +198,11 @@ async def handle_post(payload: dict[str, Any]) -> None:
 
     draft = mapper(payload)
 
-    # Rules first, before the keyword shortcut below can admit the post
-    # (see app/services/relevance_rules.py for the measured cases). Every
-    # rule drop flows through _drop() and ends up in the lake's
-    # bronze/entity=decisions/ stream, so a rule mistake is recoverable by
-    # replaying the corresponding ingest_decisions NDJSON file.
+    # Quy tắc chạy trước, trước khi lối tắt từ khoá bên dưới kịp nhận bài (xem
+    # app/services/relevance_rules.py cho các trường hợp đã đo). Mọi bài bị quy tắc loại
+    # đều đi qua _drop() và nằm trong luồng bronze/entity=decisions/ của lake, nên một lần
+    # quy tắc sai vẫn khôi phục được bằng cách phát lại file NDJSON ingest_decisions tương
+    # ứng.
     foreign = foreign_language_reason(draft.get("content"), payload.get("text_language"))
     if foreign:
         logger.info(
@@ -218,10 +211,10 @@ async def handle_post(payload: dict[str, Any]) -> None:
         await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=foreign)
         return
 
-    # Kira classifies every post that survived the rules. The keyword
-    # substring check is only the fallback when Kira gives no verdict -
-    # turned off on the dashboard, over settings.kira_post_relevance_daily_cap,
-    # or failed - so an outage never drops or hides posts it would have kept.
+    # Kira phân loại mọi bài đã qua được các quy tắc. Kiểm tra chuỗi con theo từ khoá chỉ
+    # là phương án dự phòng khi Kira không đưa ra phán quyết - bị tắt trên dashboard, vượt
+    # settings.kira_post_relevance_daily_cap, hoặc lỗi - để một lần sự cố không bao giờ
+    # loại hay giấu đi những bài lẽ ra được giữ.
     ai_relevant = None
     relevance_label = None
     relevance_confidence = None
@@ -231,8 +224,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
             draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
         )
         if other_film:
-            # Names another tracked film and never this one - no need to pay
-            # for a Kira call to confirm it.
+            # Nêu tên một phim đang theo dõi khác và không hề nhắc phim này - không cần tốn một lời
+            # gọi Kira để xác nhận.
             logger.info(
                 "post_dropped_other_film",
                 platform=platform,
@@ -259,9 +252,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
         if relevance_label == "related":
             ai_relevant = True
         elif relevance_label == "not_related":
-            # Decision is recorded via _drop() -> ingest_decisions topic ->
-            # lake (bronze/entity=decisions/). Recover a mislabel by
-            # replaying the lake NDJSON, not D1.
+            # Quyết định được ghi qua _drop() -> topic ingest_decisions -> lake
+            # (bronze/entity=decisions/). Khôi phục một nhãn sai bằng cách phát lại NDJSON trong
+            # lake, không phải từ D1.
             logger.info(
                 "post_dropped_irrelevant",
                 platform=platform,
@@ -280,9 +273,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
                 kira_reason=verdict["reason"],
             )
             return
-        # "uncertain" (e.g. hashtag-only captions): ai_relevant stays None,
-        # so persist_post falls back to the keyword substring check, and the
-        # label is stored so the post is visibly unresolved.
+        # "uncertain" (ví dụ caption chỉ có hashtag): ai_relevant giữ None, nên persist_post
+        # quay về kiểm tra chuỗi con theo từ khoá, và nhãn được lưu để thấy rõ bài chưa được
+        # phân định.
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
@@ -298,8 +291,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
         return
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
-    # kira_related / kira_uncertain, or no_verdict when Kira sat out (off,
-    # over the daily cap, failed) and the keyword check decided alone.
+    # kira_related / kira_uncertain, hoặc no_verdict khi Kira đứng ngoài (tắt, vượt hạn mức
+    # ngày, lỗi) và chỉ mình kiểm tra từ khoá quyết định.
     await _decide(
         platform=platform,
         post_id=post_id,
@@ -317,27 +310,24 @@ async def handle_comment(payload: dict[str, Any]) -> None:
 
     mapper = get_comment_mapper(platform)
     if mapper is None:
-        # No archive for unregistered-platform comments: the parent post
-        # (which carries the comment's content context) is already durably
-        # stored and re-fetchable by post_id, so losing an unknown-platform
-        # comment isn't the kind of unrecoverable loss a whole dropped post
-        # would be.
+        # Không lưu trữ comment của nền tảng chưa đăng ký: bài cha (mang ngữ cảnh nội dung của
+        # comment) đã được lưu bền vững và lấy lại được theo post_id, nên mất một comment của
+        # nền tảng lạ không phải loại mất mát không khôi phục được như mất cả một bài.
         logger.warning("comment_unregistered_platform", platform=platform, post_id=external_post_id)
         return
 
     post = await get_post_by_external_id(platform, external_post_id) if external_post_id else None
     if post is None:
-        # The post this comment belongs to isn't in D1 yet (or never will
-        # be - e.g. content_too_short skipped it, see persist_post) - a
-        # comment can't exist without its parent row (post_id has a NOT
-        # NULL FK, see cinemark-scraper's schema.ts), so there's nothing
-        # to attach it to.
+        # Bài chứa comment này chưa có trong D1 (hoặc sẽ không bao giờ có - ví dụ bị
+        # content_too_short bỏ qua, xem persist_post) - comment không thể tồn tại nếu không có
+        # dòng cha (post_id có khoá ngoại NOT NULL, xem schema.ts của cinemark-scraper), nên
+        # không có gì để gắn nó vào.
         logger.warning("comment_unknown_post", platform=platform, post_id=external_post_id)
         return
 
     draft = mapper(payload)
-    # Sentiment stays NULL here - sentiment_sweep.py classifies new
-    # comments in Bee batches within a minute or two.
+    # Ở đây sentiment vẫn là NULL - sentiment_sweep.py phân loại comment mới theo lô qua
+    # Kira trong vòng một hai phút.
     ok = await persist_comment(post_id=post["id"], platform=platform, draft=draft, sentiment=None)
     if not ok:
         logger.warning("d1_comment_persist_failed", platform=platform, post_id=external_post_id)
@@ -346,18 +336,16 @@ async def handle_comment(payload: dict[str, Any]) -> None:
 
 
 class _OffsetTracker:
-    """Commits an offset only once every message up to and including it has
-    actually finished processing - not on aiokafka's default timer, which
-    commits based on how far the `async for` loop has iterated regardless
-    of whether the concurrently-running task for that message is done.
-    Without this, a message dispatched to a task that's still mid-flight
-    (e.g. blocked in Kira's retry/backoff) can have its offset committed by
-    the timer before the task finishes; a crash in that window loses the
-    message for good, since Kafka won't redeliver an offset already
-    committed past. Messages within one partition are dispatched in the
-    order aiokafka yields them, so a per-partition queue of dispatched
-    offsets plus a set of finished ones is enough to find the highest
-    *contiguous* finished offset - the only one safe to commit."""
+    """Chỉ commit một offset khi mọi message tới và bao gồm nó đã thực sự xử lý xong -
+    không theo bộ hẹn giờ mặc định của aiokafka, vốn commit dựa trên việc vòng
+    `async for` đã duyệt tới đâu, bất kể task chạy song song cho message đó đã xong hay
+    chưa. Không có cái này, một message được giao cho task còn đang chạy dở (ví dụ đang
+    kẹt trong retry/backoff của Kira) có thể bị bộ hẹn giờ commit offset trước khi task
+    xong; crash trong khoảng đó là mất message vĩnh viễn, vì Kafka không giao lại một
+    offset đã commit qua rồi. Message trong một partition được giao theo đúng thứ tự
+    aiokafka trả ra, nên một hàng đợi offset đã giao theo từng partition cộng một tập các
+    offset đã xong là đủ để tìm offset đã xong *liên tục* cao nhất - offset duy nhất an
+    toàn để commit."""
 
     def __init__(self) -> None:
         self._dispatched: dict[TopicPartition, deque[int]] = defaultdict(deque)
@@ -367,8 +355,8 @@ class _OffsetTracker:
         self._dispatched[tp].append(offset)
 
     def finished(self, tp: TopicPartition, offset: int) -> dict[TopicPartition, int]:
-        """Marks one offset done and returns any {partition: next_offset}
-        entries that became safe to commit as a result."""
+        """Đánh dấu một offset đã xong và trả về các mục {partition: next_offset} vừa trở nên an
+        toàn để commit nhờ đó."""
         self._finished[tp].add(offset)
         queue = self._dispatched[tp]
         done = self._finished[tp]
@@ -394,10 +382,9 @@ async def _process_message(
         except Exception as exc:
             logger.error("ingest_message_failed", topic=message.topic, error=str(exc))
         finally:
-            # Committed regardless of success/failure - a message this
-            # process can't handle (bad payload, unresolvable keyword) is
-            # deliberately skipped, not retried forever (see module
-            # docstring); only a crash mid-processing should redeliver it.
+            # Commit bất kể thành công/thất bại - một message mà tiến trình này không xử lý được
+            # (payload lỗi, từ khoá không tra được) được cố ý bỏ qua, không thử lại mãi (xem
+            # docstring module); chỉ crash giữa lúc xử lý mới nên giao lại nó.
             to_commit = tracker.finished(tp, message.offset)
             if to_commit:
                 try:
@@ -407,14 +394,12 @@ async def _process_message(
 
 
 async def _seed_offsets_from_legacy_group(consumer: AIOKafkaConsumer, topic: str, group_id: str) -> None:
-    """One-time migration for the group split described in the module
-    docstring: for each partition this (new) consumer was just assigned,
-    if the new group has no committed offset yet but the retired
-    cinemark-api.ingest group does, seek there and commit it - so the split
-    picks up where the old shared consumer left off instead of replaying
-    the whole topic. A partition with no offset in the old group either
-    (fresh cluster, or the old consumer never reached it) is left alone and
-    falls through to auto_offset_reset as normal."""
+    """Migrate một lần cho việc tách group mô tả trong docstring module: với mỗi partition
+    mà consumer (mới) này vừa được giao, nếu group mới chưa có offset đã commit nhưng
+    group cinemark-api.ingest đã nghỉ hưu thì có, seek tới đó và commit - để sau khi tách
+    thì tiếp tục từ chỗ consumer dùng chung cũ dừng lại thay vì phát lại cả topic.
+    Partition mà group cũ cũng không có offset (cluster mới, hoặc consumer cũ chưa bao
+    giờ tới đó) thì để nguyên và rơi về auto_offset_reset như bình thường."""
     assignment = consumer.assignment()
     if not assignment:
         return
@@ -445,28 +430,25 @@ async def _seed_offsets_from_legacy_group(consumer: AIOKafkaConsumer, topic: str
 
 
 async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> None:
-    """One independent consumer loop for a single topic (posts or
-    comments) - raw_posts and raw_comments used to share one consumer
-    group and one concurrency budget, so a comment flood (one post can
-    have hundreds) queued up behind the same semaphore slots a post
-    needed, and vice versa. Separate consumer groups also mean each
-    topic's own lag is independently visible via kafka-consumer-groups.sh,
-    instead of one blended number that can't say which topic is actually
-    behind."""
+    """Một vòng lặp consumer độc lập cho một topic (bài hoặc comment) - raw_posts và
+    raw_comments từng dùng chung một consumer group và một ngân sách chạy song song, nên
+    một đợt dồn comment (một bài có thể có hàng trăm) xếp hàng sau đúng các chỗ semaphore
+    mà bài cần, và ngược lại. Consumer group riêng cũng có nghĩa là lag của từng topic
+    được thấy độc lập qua kafka-consumer-groups.sh, thay vì một con số trộn chung không
+    nói được topic nào thực sự đang chậm."""
     consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=settings.kafka_bootstrap_servers,
         group_id=group_id,
         value_deserializer=lambda v: json.loads(v.decode("utf-8")),
-        # A group with no usable committed offset starts at the END, not the
-        # start: on 2026-09-29 a Kafka restore made both groups lose their
-        # position and "earliest" re-queued ~264k already-ingested messages
-        # through Kira and D1. Skipping is the cheaper failure - if anything
-        # needs replaying, reset the group's offset by hand (or read the lake).
+        # Group không có offset đã commit dùng được thì bắt đầu ở CUỐI, không phải đầu: ngày
+        # 2026-09-29 một lần khôi phục Kafka làm cả hai group mất vị trí và "earliest" đã xếp
+        # lại khoảng 264 nghìn message đã ingest để chạy qua Kira và D1. Bỏ qua là kiểu lỗi rẻ
+        # hơn - nếu cần phát lại gì, tự đặt lại offset của group bằng tay (hoặc đọc từ lake).
         auto_offset_reset="latest",
-        # Manual, per-message commit (see _OffsetTracker) instead of the
-        # default timer-based auto-commit, which is decoupled from whether
-        # a message's own concurrent task has actually finished.
+        # Commit thủ công theo từng message (xem _OffsetTracker) thay vì auto-commit theo bộ
+        # hẹn giờ mặc định, vốn không gắn với việc task song song của message đó đã thực sự xong
+        # hay chưa.
         enable_auto_commit=False,
     )
 
@@ -492,10 +474,9 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
             task = asyncio.create_task(_process_message(message, message_semaphore, tracker, consumer))
             pending.add(task)
             task.add_done_callback(pending.discard)
-            # A cap well above concurrency (not equal to it) - the
-            # semaphore already limits how many run *concurrently*; this
-            # just stops `pending` itself from growing unbounded if the
-            # Kafka read loop can enqueue faster than tasks finish.
+            # Trần cao hơn khá nhiều so với mức song song (không bằng nó) - semaphore vốn đã giới
+            # hạn số task chạy *cùng lúc*; cái này chỉ ngăn bản thân `pending` phình ra không giới
+            # hạn nếu vòng đọc Kafka đưa vào nhanh hơn tốc độ task xong.
             if len(pending) >= concurrency * 4:
                 await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
     except KafkaError as exc:
@@ -508,15 +489,14 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
 
 
 async def run() -> None:
-    """Runs both topics' consumer loops, plus the comment-sentiment sweep,
-    concurrently in this one process.
-    Same "cancel the survivor and re-raise" shape as spider-hub's own
-    crawl_request_consumer.py run() (see that module's own docstring for
-    the full rationale) - if either loop exits unexpectedly, the other is
-    cancelled and the process exits non-zero so systemd's Restart=on-
-    failure brings both back, rather than leaving one topic's ingestion
-    silently stopped forever while the process still looks "up"."""
-    # Before the loops: decisions published while it's down are silently skipped.
+    """Chạy song song vòng lặp consumer của cả hai topic, cộng lượt quét cảm xúc comment,
+    trong cùng một tiến trình này. Cùng kiểu "huỷ cái còn sống rồi raise lại" như run()
+    trong crawl_request_consumer.py của spider-hub (xem docstring module đó để biết đầy
+    đủ lý do) - nếu một vòng lặp thoát bất ngờ, vòng còn lại bị huỷ và tiến trình thoát
+    với mã khác 0 để Restart=on-failure của systemd khởi động lại cả hai, thay vì để
+    việc ingest của một topic âm thầm dừng mãi trong khi tiến trình trông vẫn "đang
+    chạy"."""
+    # Trước các vòng lặp: các quyết định publish lúc nó đang sập sẽ bị bỏ qua âm thầm.
     await start_kafka_producer()
     try:
         await _run_loops()

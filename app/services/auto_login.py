@@ -1,56 +1,50 @@
-"""Hourly auto-login scheduler service.
+"""Service bộ lập lịch auto-login chạy mỗi giờ.
 
-Mirrors the shape of app/services/cleanup.py (same singleton jsonb
-settings row + run_history table + resolve_settings helper): the
-dashboard's PUT /settings/auto-login and POST /settings/auto-login/run
-both flow through here, and the in-process scheduler loop in
-app/services/scheduler.py calls run_auto_login_tick on every interval.
+Cùng dạng với app/services/cleanup.py (cùng dòng setting jsonb singleton + bảng
+run_history + helper resolve_settings): PUT /settings/auto-login và POST
+/settings/auto-login/run của dashboard đều đi qua đây, và vòng lặp lập lịch trong
+tiến trình ở app/services/scheduler.py gọi run_auto_login_tick ở mỗi chu kỳ.
 
-Why a scheduler inside cinemark-api at all, when spider-hub already has
-its own auto_login/scheduler.py? Three reasons:
+Sao lại cần bộ lập lịch bên trong cinemark-api, khi spider-hub đã có
+auto_login/scheduler.py riêng? Ba lý do:
 
-  1. ONE source of truth for "is auto-login on?". The dashboard
-     settings row IS that source. spider-hub's AUTO_LOGIN_ENABLED env
-     var was the original gate, but env vars + a separate daemon means
-     the dashboard's "Enable auto-login" switch flipped a Postgres row
-     that nothing on the spider-hub side ever checked, and the only way
-     for an operator to know "is it actually on?" was to SSH into the
-     spider-hub host and `cat /etc/spider-hub.env`. Having cinemark-api
-     own the schedule means flipping the dashboard toggle reliably
-     starts/stops the work on the next tick boundary, and a single
-     `ps aux | grep cinemark-api` tells the operator what's running.
+  1. MỘT nguồn sự thật duy nhất cho câu "auto-login có đang bật không?". Dòng
+     setting trên dashboard CHÍNH LÀ nguồn đó. Biến env AUTO_LOGIN_ENABLED của
+     spider-hub là cổng ban đầu, nhưng env + một daemon riêng nghĩa là công tắc
+     "Enable auto-login" trên dashboard chỉ lật một dòng Postgres mà phía spider-hub
+     không bao giờ kiểm tra, và cách duy nhất để người vận hành biết "nó có thực sự
+     đang bật không?" là SSH vào máy spider-hub rồi `cat /etc/spider-hub.env`. Để
+     cinemark-api giữ lịch nghĩa là bật/tắt trên dashboard chắc chắn bắt đầu/dừng
+     công việc ở ranh giới lượt kế tiếp, và một lệnh `ps aux | grep cinemark-api` là
+     người vận hành biết cái gì đang chạy.
 
-  2. RUN HISTORY needs to live somewhere the dashboard can read. Putting
-     it in Supabase (auto_login_run_history table) and the run logic in
-     cinemark-api means the dashboard's "last run" card pulls from the
-     same Postgres the rest of settings already does - no new HTTP
-     endpoint, no auth boundary, just a SELECT.
+  2. LỊCH SỬ CHẠY cần nằm ở chỗ dashboard đọc được. Đặt nó trong Supabase (bảng
+     auto_login_run_history) và logic chạy trong cinemark-api nghĩa là thẻ "last
+     run" trên dashboard lấy dữ liệu từ cùng Postgres mà phần settings còn lại vẫn
+     dùng - không cần endpoint HTTP mới, không có ranh giới auth, chỉ một câu SELECT.
 
-  3. KAFKA is the right transport to spider-hub. spider-hub is the
-     process that owns Playwright, browser fingerprints, and the proxy
-     pool. cinemark-api doesn't import patchright (and shouldn't - it's
-     a FastAPI web server, not a headless browser host), so we publish
-     one auto_login_requests Kafka message per account and let
-     spider-hub's auto_login/consumer.py do the actual relogin.
+  3. KAFKA là kênh truyền đúng sang spider-hub. spider-hub là tiến trình sở hữu
+     Playwright, dấu vân tay trình duyệt và pool proxy. cinemark-api không import
+     patchright (và không nên - nó là web server FastAPI, không phải nơi chạy trình
+     duyệt headless), nên ta publish mỗi tài khoản một message Kafka
+     auto_login_requests và để auto_login/consumer.py của spider-hub làm việc đăng
+     nhập lại thật sự.
 
-What this module owns:
+Module này phụ trách:
 
-  * resolve_auto_login_settings(): read the singleton row, merge over
-    AutoLoginSettings defaults, return a fully-validated object.
-  * run_auto_login_tick(): one scheduler / manual-trigger tick. Reads
-    settings, queries Supabase for accounts-needing-relogin, publishes
-    one Kafka message per account, writes the run history row.
-  * in_flight flag: like cleanup.py's purge_in_progress - the
-    dashboard uses this to gray out its "Run now" button when a tick
-    is mid-run.
+  * resolve_auto_login_settings(): đọc dòng singleton, trộn lên trên mặc định của
+    AutoLoginSettings, trả về object đã được kiểm tra đầy đủ.
+  * run_auto_login_tick(): một lượt của bộ lập lịch / kích hoạt tay. Đọc settings,
+    query Supabase tìm các tài khoản cần đăng nhập lại, publish mỗi tài khoản một
+    message Kafka, ghi dòng lịch sử chạy.
+  * cờ in_flight: giống purge_in_progress của cleanup.py - dashboard dùng nó để làm
+    mờ nút "Run now" khi đang có lượt chạy dở.
 
-Why we don't re-implement list_accounts_needing_relogin here: that
-query lives in spider-hub's social_crawler/db/relogin.py because the
-"needs relogin" predicate (dead cookies + not checkpointed + not
-needs_manual) is the same predicate the spider-hub side already uses
-for its own scheduler + consumer. We
-read the same data via Supabase directly - same source of truth, no
-duplicated business logic."""
+Vì sao không viết lại list_accounts_needing_relogin ở đây: query đó nằm trong
+social_crawler/db/relogin.py của spider-hub vì điều kiện "cần đăng nhập lại" (cookie
+chết + không bị checkpoint + không needs_manual) chính là điều kiện mà phía
+spider-hub vốn đã dùng cho bộ lập lịch + consumer của nó. Ta đọc cùng dữ liệu thẳng
+từ Supabase - cùng nguồn sự thật, không lặp logic nghiệp vụ."""
 
 from __future__ import annotations
 
@@ -68,45 +62,40 @@ from app.services import platform_config_db as platform_cfg
 
 logger = get_logger(__name__)
 
-# Per the schema defaults - mirrors spider-hub's auto_login/scheduler.py
-# so the dashboard's defaults match what a fresh
-# AUTO_LOGIN_ENABLED=true env-only deploy would have produced.
+# Theo mặc định của schema - giống auto_login/scheduler.py của spider-hub để mặc định
+# trên dashboard khớp với những gì một bản deploy mới chỉ dùng env
+# AUTO_LOGIN_ENABLED=true sẽ tạo ra.
 DEFAULT_INTERVAL_SECONDS = 3600
 DEFAULT_PLATFORMS = ("facebook", "threads")
 
 
-# Tracks whether a tick is currently in flight. The dashboard's "Run
-# now" button reads this to grey itself out + show "refreshing..."
-# while a tick is running - same UX as the Cleanup schedule's
-# `running: bool` field. Module-level + asyncio.Lock because two
-# endpoints can both try to trigger (manual POST + scheduler tick
-# firing simultaneously on the same interval boundary), and we want
-# exactly one of them to actually start the work.
+# Theo dõi xem có lượt nào đang chạy không. Nút "Run now" của dashboard đọc cờ này để
+# tự làm mờ + hiện "refreshing..." trong lúc có lượt đang chạy - cùng trải nghiệm với
+# trường `running: bool` của lịch Cleanup. Đặt ở cấp module + asyncio.Lock vì hai
+# endpoint có thể cùng cố kích hoạt (POST bấm tay + lượt của bộ lập lịch chạy cùng lúc
+# đúng ranh giới chu kỳ), và ta muốn đúng một trong hai thực sự bắt đầu công việc.
 _in_flight = False
 _in_flight_lock = asyncio.Lock()
 
 
 def is_auto_login_in_flight() -> bool:
-    """Used by the dashboard's "Run now" button - returns True while
-    run_auto_login_tick is mid-execution so the dashboard can disable
-    the trigger + show a spinner. False otherwise (including between
-    scheduler ticks)."""
+    """Dùng cho nút "Run now" của dashboard - trả True khi run_auto_login_tick đang chạy dở
+    để dashboard khoá nút kích hoạt + hiện spinner. Ngược lại là False (kể cả khoảng
+    giữa các lượt của bộ lập lịch)."""
     return _in_flight
 
 
 async def resolve_auto_login_settings() -> AutoLoginSettings:
-    """Reads the singleton row from Supabase, merges the stored values
-    over the AutoLoginSettings defaults (so a row from before a new
-    field was added still gets the default for that field), and
-    validates the result against the schema. Mirrors
-    app/services/cleanup.py:resolve_cleanup_settings's shape exactly -
-    same partial-update + over-defaults merge so the schema is the
-    one source of truth for what each field's type/constraints are.
+    """Đọc dòng singleton từ Supabase, trộn giá trị đã lưu lên trên mặc định của
+    AutoLoginSettings (để một dòng có từ trước khi thêm trường mới vẫn nhận giá trị mặc
+    định cho trường đó), và kiểm tra kết quả bằng schema. Giống hệt dạng của
+    app/services/cleanup.py:resolve_cleanup_settings - cùng kiểu cập nhật một phần +
+    trộn lên mặc định, để schema là nguồn sự thật duy nhất về kiểu/ràng buộc của từng
+    trường.
 
-    The platforms field is normalized to a list (Postgres stores it
-    as a comma-separated string for cross-DB compatibility, the
-    schema accepts a list) and the sorted/alpha-set is what the
-    spider-hub consumer reads in its key."""
+    Trường platforms được chuẩn hoá thành list (Postgres lưu dạng chuỗi phân cách bằng
+    dấu phẩy để tương thích nhiều DB, schema nhận list) và tập đã sắp xếp theo chữ cái là
+    thứ consumer của spider-hub đọc trong key của nó."""
     row = await platform_cfg.get_auto_login_settings()
     stored: dict[str, Any] = row.get("settings") or {}
     defaults = AutoLoginSettings()
@@ -115,8 +104,8 @@ async def resolve_auto_login_settings() -> AutoLoginSettings:
         if key not in merged:
             continue
         try:
-            # Re-validate via the schema for THIS key only so a single
-            # bad stored value doesn't 500 the whole settings read.
+            # Kiểm tra lại bằng schema CHỈ cho key này để một giá trị lưu sai không làm cả lần đọc
+            # settings lỗi 500.
             merged[key] = getattr(AutoLoginSettings.model_validate({key: value}), key)
         except Exception:
             logger.warning("auto_login_setting_invalid_stored_value", key=key)
@@ -124,9 +113,8 @@ async def resolve_auto_login_settings() -> AutoLoginSettings:
 
 
 async def get_auto_login_settings_out() -> AutoLoginSettingsOut:
-    """Convenience for the GET endpoint: wraps resolve + adds the
-    metadata fields the schema exposes (`updated_at`). The defaults
-    come from the schema class itself - no separate copy needed."""
+    """Tiện ích cho endpoint GET: bọc resolve + thêm các trường metadata mà schema có
+    (`updated_at`). Giá trị mặc định lấy từ chính class schema - không cần bản sao riêng."""
     row = await platform_cfg.get_auto_login_settings()
     history = await platform_cfg.list_auto_login_run_history(limit=1)
     return AutoLoginSettingsOut(
@@ -139,18 +127,17 @@ async def get_auto_login_settings_out() -> AutoLoginSettingsOut:
 
 
 async def _list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
-    """Replicates the SELECT in spider-hub's social_crawler/db/relogin.py
-    (list_accounts_needing_relogin). Kept as an inline copy (not a
-    shared module) because the two sides connect to Supabase with
-    different driver libs (psycopg sync vs async) and the dashboard
-    here never needs the password/totp_secret/cookie/token/email/
-    email_password columns the spider-hub side does - we only need
-    account_id (for the Kafka payload) and id (for the dashboard's
-    "what would run" preview).
+    """Chép lại câu SELECT trong social_crawler/db/relogin.py của spider-hub
+    (list_accounts_needing_relogin). Giữ thành bản chép trực tiếp (không phải module dùng
+    chung) vì hai bên kết nối Supabase bằng thư viện driver khác nhau (psycopg đồng bộ
+    so với async) và dashboard ở đây không bao giờ cần các cột
+    password/totp_secret/cookie/token/email/email_password như phía spider-hub - ta chỉ
+    cần account_id (cho payload Kafka) và id (cho phần xem trước "cái gì sẽ chạy" trên
+    dashboard).
 
-    Returns an empty list on a DB error (logs the failure) so a
-    transient Supabase hiccup doesn't take down the whole scheduler
-    tick - same defensive pattern as the spider-hub helper."""
+    Trả về list rỗng khi lỗi DB (có log lỗi) để một trục trặc tạm thời của Supabase
+    không làm hỏng cả lượt của bộ lập lịch - cùng kiểu phòng thủ với helper bên
+    spider-hub."""
     try:
         from app.services.platform_config_db import _connect
 
@@ -178,24 +165,22 @@ async def _list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
 
 
 async def _tick_one_platform(platform: str, *, dry_run: bool) -> tuple[dict[str, int], int, int]:
-    """Runs the auto-login flow for one platform: query Supabase for
-    candidates, publish one Kafka message per account, count outcomes.
-    Returns (per_status_counters, kafka_published, kafka_publish_failed).
+    """Chạy luồng auto-login cho một nền tảng: query Supabase lấy ứng viên, publish mỗi tài
+    khoản một message Kafka, đếm kết quả. Trả về (per_status_counters, kafka_published,
+    kafka_publish_failed).
 
-    Status counter keys:
-      * attempted - how many accounts we tried to publish (== len(rows))
-      * relogged_in - reserved for the spider-hub side's per-account
-        outcome reporting (not populated here - spider-hub will write
-        it to auto_login_run_history via a separate update path; this
-        module writes zero for now and lets the history row's
-        `kafka_published` column tell the dashboard "we DID dispatch
-        these" vs the eventual post-tick summary. The full
-        per-account relogged_in / needs_human / error breakdown
-        lands in `auto_login_run_history.per_platform` via the
-        spider-hub consumer's webhook - see its docstring.)
-      * needs_human - same reservation as relogged_in
-      * failed - same
-      * error - same"""
+    Các key của bộ đếm trạng thái:
+      * attempted - số tài khoản đã thử publish (== len(rows))
+      * relogged_in - để dành cho việc báo kết quả theo từng tài khoản của phía
+        spider-hub (ở đây không điền - spider-hub sẽ ghi vào auto_login_run_history qua
+        một đường cập nhật riêng; module này tạm ghi 0 và để cột `kafka_published` của
+        dòng lịch sử báo cho dashboard "ta ĐÃ gửi đi những tài khoản này" so với bản tổng
+        kết sau lượt. Chi tiết đầy đủ relogged_in / needs_human / error theo từng tài
+        khoản sẽ vào `auto_login_run_history.per_platform` qua webhook của consumer
+        spider-hub - xem docstring của nó.)
+      * needs_human - để dành giống relogged_in
+      * failed - như trên
+      * error - như trên"""
     per_status: dict[str, int] = {
         "attempted": 0,
         "relogged_in": 0,
@@ -228,12 +213,10 @@ async def _tick_one_platform(platform: str, *, dry_run: bool) -> tuple[dict[str,
             kafka_published += 1
         else:
             kafka_publish_failed += 1
-            # Don't bail on a single publish failure - log it and let
-            # the next account try. A Kafka outage mid-tick is
-            # expected to take out a chunk of one tick, not the whole
-            # schedule. The dashboard's history table will show the
-            # `kafka_publish_failed` count so an operator can spot a
-            # partial outage after the fact.
+            # Không bỏ cuộc chỉ vì một lần publish lỗi - log lại và để tài khoản kế tiếp thử. Kafka
+            # sập giữa lượt chỉ nên làm mất một phần của một lượt, không phải cả lịch. Bảng lịch sử
+            # trên dashboard sẽ hiện số `kafka_publish_failed` để người vận hành phát hiện sự cố
+            # một phần sau đó.
 
     logger.info(
         "auto_login_tick_platform_end",
@@ -247,16 +230,15 @@ async def _tick_one_platform(platform: str, *, dry_run: bool) -> tuple[dict[str,
 
 
 async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = False) -> int:
-    """Runs one tick of the auto-login scheduler. `triggered_by` is
-    `"schedule"` for the in-process scheduler loop and `"manual"` for
-    the dashboard's "Run now" button - recorded on the history row so
-    the operator can tell the two apart later. `force=True` skips the
-    enabled-gate (used by the scheduler loop's first call after startup
-    so a freshly-restarted API doesn't silently drop the very first
-    tick if the dashboard setting raced ahead of process start).
+    """Chạy một lượt của bộ lập lịch auto-login. `triggered_by` là `"schedule"` cho vòng
+    lặp lập lịch trong tiến trình và `"manual"` cho nút "Run now" trên dashboard - được
+    ghi vào dòng lịch sử để người vận hành phân biệt hai loại về sau. `force=True` bỏ qua
+    cổng enabled (dùng cho lần gọi đầu tiên của vòng lặp lập lịch sau khi khởi động, để
+    API vừa restart không âm thầm bỏ mất lượt đầu tiên nếu setting trên dashboard được
+    lưu trước khi tiến trình kịp khởi động).
 
-    Returns the auto_login_run_history.id of this run (or -1 if no run
-    was recorded because the tick was a no-op due to enabled=false)."""
+    Trả về auto_login_run_history.id của lượt này (hoặc -1 nếu không ghi lượt nào vì
+    lượt đó không làm gì do enabled=false)."""
     settings = await resolve_auto_login_settings()
     if not settings.enabled and not force:
         logger.info(
@@ -268,10 +250,9 @@ async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = F
     async with _in_flight_lock:
         global _in_flight
         if _in_flight:
-            # Two simultaneous triggers (manual POST + scheduler tick
-            # firing at the same moment). The scheduler tick loses
-            # silently here - the manual run already started, and the
-            # dashboard's "Run now" button being grey is enough UX.
+            # Hai lần kích hoạt cùng lúc (POST bấm tay + lượt của bộ lập lịch chạy đúng cùng thời
+            # điểm). Lượt của bộ lập lịch lặng lẽ thua ở đây - lượt bấm tay đã bắt đầu, và nút
+            # "Run now" bị làm mờ trên dashboard là đủ để người dùng hiểu.
             logger.warning("auto_login_tick_already_in_flight", triggered_by=triggered_by)
             return -1
         _in_flight = True
@@ -307,11 +288,9 @@ async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = F
                 kafka_published_total += kafka_published
                 kafka_publish_failed_total += kafka_publish_failed
             except Exception as exc:
-                # One platform's failure shouldn't kill the whole tick
-                # (same defensive pattern as the cleanup tick's
-                # try/except around purge_irrelevant_posts). Log the
-                # error under the platform key so the dashboard can
-                # show "facebook: <error>".
+                # Một nền tảng lỗi không được làm chết cả lượt (cùng kiểu phòng thủ với try/except
+                # quanh purge_irrelevant_posts trong lượt cleanup). Log lỗi dưới key của nền tảng để
+                # dashboard hiện "facebook: <lỗi>".
                 logger.exception(
                     "auto_login_tick_platform_crashed",
                     platform=platform,
@@ -356,11 +335,10 @@ async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = F
 
 
 async def list_auto_login_history(*, limit: int = 20) -> list[AutoLoginRunHistoryEntry]:
-    """Reads the most-recent-first list from auto_login_run_history
-    and shapes each row into the pydantic schema the dashboard
-    consumes. Same shape cleanup.py:list_cleanup_history exposes -
-    both wrap platform_config_db.list_*_run_history and convert to
-    the dashboard-friendly schema."""
+    """Đọc danh sách auto_login_run_history (mới nhất trước) và chuyển mỗi dòng thành
+    schema pydantic mà dashboard dùng. Cùng dạng mà cleanup.py:list_cleanup_history trả
+    ra - cả hai đều bọc platform_config_db.list_*_run_history và chuyển sang schema thân
+    thiện với dashboard."""
     rows = await platform_cfg.list_auto_login_run_history(limit=limit)
     out: list[AutoLoginRunHistoryEntry] = []
     for row in rows:

@@ -1,8 +1,8 @@
-"""Kira-task policy layer over the shared app.ai.client: per-task enabled
-toggle + system-prompt overrides (ai_settings table in Supabase), on top
-of the provider-agnostic HTTP/retry/concurrency machinery in
-app.ai.client. Every classifier in app/ai/ goes through call_kira() so
-they share one enabled/prompts read and one retry budget."""
+"""Lớp chính sách theo task của Kira, nằm trên app.ai.client dùng chung: bật/tắt theo
+task + system prompt ghi đè (bảng ai_settings trên Supabase), chạy trên phần
+HTTP/retry/giới hạn đồng thời không phụ thuộc provider của app.ai.client. Mọi bộ
+phân loại trong app/ai/ đều đi qua call_kira() để dùng chung một lần đọc
+enabled/prompts và một ngân sách retry."""
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ __all__ = [
 logger = get_logger(__name__)
 
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
-# Every read opens a fresh Supabase connection (~3s), so a short TTL made
-# almost every Kira/Bee call wait on it. The API process invalidates this on
-# save; other processes (the ingest consumer) pick changes up within a minute.
+# Mỗi lần đọc phải mở kết nối Supabase mới (khoảng 3 giây), nên TTL ngắn làm gần như
+# mọi lời gọi Kira/Bee đều phải chờ. Tiến trình API tự xoá cache này khi lưu; các
+# tiến trình khác (ingest consumer) nhận thay đổi trong vòng một phút.
 _AI_CFG_TTL_SECONDS = 60.0
 
 
@@ -42,9 +42,8 @@ def _normalize_prompts(raw: object) -> dict[str, str]:
 
 
 async def load_ai_runtime() -> dict[str, Any]:
-    """enabled + per-task prompt overrides from Supabase's ai_settings row,
-    falling back to disabled/no-overrides if the table isn't there yet.
-    Provider credentials/model are a separate concern - see
+    """enabled + prompt ghi đè theo task từ dòng ai_settings trên Supabase, mặc định là
+    tắt/không ghi đè nếu bảng chưa có. Thông tin provider/model là chuyện riêng - xem
     app.ai.client.load_provider()."""
     global _ai_cfg_cache
     now = time.monotonic()
@@ -68,12 +67,11 @@ async def load_ai_runtime() -> dict[str, Any]:
 
 
 async def active_report_provider() -> str:
-    """ "kira" or "bee" - which provider app/ai/tasks/report.py's
-    generate_topics_and_verbatims/generate_narrative should call, switchable
-    from the dashboard's AI settings tab without touching ai_providers'
-    own credentials. Defaults to "kira" if unset/unrecognized - Bee ran out
-    of credit on 2026-10-03; picking "bee" still works, with Kira as the
-    fallback."""
+    """Provider mà generate_topics_and_verbatims/generate_narrative trong
+    app/ai/tasks/report.py sẽ gọi - "kira" hoặc "bee", đổi được từ tab AI settings
+    trên dashboard mà không động tới thông tin đăng nhập trong ai_providers. Mặc định
+    là "kira" nếu chưa đặt hoặc giá trị lạ - Bee hết số dư từ 2026-10-03; chọn "bee"
+    vẫn chạy được, khi đó Kira làm dự phòng."""
     value = (await load_ai_runtime())["active_report_provider"]
     return value if value in ("kira", "bee") else "kira"
 
@@ -107,11 +105,10 @@ async def call_kira(
     task: str = "chat",
     platform: str | None = None,
 ) -> str:
-    """Runs one Kira chat completion via app.ai.client.call_ai(). force=True
-    is for operator-triggered Settings import (works even while ingest
-    classifiers are toggled off). Raises on disabled/misconfigured/
-    provider errors - every caller here already catches broadly and fails
-    open (see e.g. app/ai/tasks/post_relevance.py)."""
+    """Chạy một lần chat completion của Kira qua app.ai.client.call_ai(). force=True dành
+    cho import Settings do người vận hành bấm (vẫn chạy khi các bộ phân loại ingest
+    đang tắt). Raise khi bị tắt, cấu hình sai hoặc provider lỗi - mọi bên gọi ở đây đều
+    đã bắt rộng và fail open (xem ví dụ app/ai/tasks/post_relevance.py)."""
     cfg = await load_ai_runtime()
     if not cfg["enabled"] and not force:
         raise RuntimeError("kira_temporarily_disabled")

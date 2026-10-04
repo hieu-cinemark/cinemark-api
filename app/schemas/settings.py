@@ -23,18 +23,17 @@ class AccountOut(BaseModel):
     updated_at: datetime
     last_checked_at: datetime | None = None
     last_check_status: str | None = None
-    # AI-generated diagnosis (see spider-hub's clients/kira.
-    # diagnose_account_failure) whenever this account gets hard-disabled -
-    # cleared back to null on the next successful login.
+    # Chẩn đoán do AI sinh ra (xem diagnose_account_failure trong clients/kira.py của
+    # spider-hub) mỗi khi tài khoản này bị tắt cứng - được xoá về null ở lần đăng nhập
+    # thành công kế tiếp.
     last_check_note: str | None = None
-    # Pool / circuit-breaker + sticky proxy pinning - written by spider-hub
-    # (services/pool.py, db/accounts.py), read-only here (see
-    # platform_config_db.ACCOUNT_CREATE_COLUMNS, which excludes them).
-    # pool_status is "active" | "checkpoint" (see db.record_account_outcome)
-    # - distinct from last_check_status above. Optional despite the column
-    # having a NOT NULL DEFAULT (see platform_config_db._ensure_pool_columns):
-    # a row from before that default existed, or written through a path that
-    # doesn't apply it, must not 500 the whole account list.
+    # Pool / circuit-breaker + ghim proxy cố định - do spider-hub ghi (services/pool.py,
+    # db/accounts.py), ở đây chỉ đọc (xem platform_config_db.ACCOUNT_CREATE_COLUMNS, vốn
+    # loại các cột này ra). pool_status là "active" | "checkpoint" (xem
+    # db.record_account_outcome) - khác với last_check_status ở trên. Không bắt buộc dù cột
+    # có NOT NULL DEFAULT (xem platform_config_db._ensure_pool_columns): một dòng có từ
+    # trước khi có default đó, hoặc được ghi qua đường không áp default, không được làm cả
+    # danh sách tài khoản lỗi 500.
     pool_status: str | None = "active"
     cooldown_until: datetime | None = None
     consecutive_failures: int | None = 0
@@ -79,15 +78,15 @@ class ProxyOut(BaseModel):
     enabled: bool
     created_at: datetime
     updated_at: datetime
-    # Pool / circuit-breaker - written by spider-hub (db/proxies.py),
-    # read-only here. pool_status is "active" | "degraded". Optional for
-    # the same not-yet-migrated/NULL-tolerance reason as AccountOut above.
+    # Pool / circuit-breaker - do spider-hub ghi (db/proxies.py), ở đây chỉ đọc.
+    # pool_status là "active" | "degraded". Không bắt buộc vì cùng lý do chưa migrate/chịu
+    # được NULL như AccountOut ở trên.
     pool_status: str | None = "active"
     cooldown_until: datetime | None = None
     consecutive_failures: int | None = 0
     last_used_at: datetime | None = None
-    # How many accounts are currently sticky-pinned to this proxy - see
-    # platform_config_db.list_proxies. Only populated by the list endpoint.
+    # Số tài khoản đang được ghim cố định vào proxy này - xem
+    # platform_config_db.list_proxies. Chỉ endpoint danh sách mới điền giá trị này.
     assigned_account_count: int = 0
 
 
@@ -141,9 +140,9 @@ class CrawlScheduleOut(BaseModel):
 
 
 class CrawlScheduleUpdate(BaseModel):
-    # "HH:MM", 24h, interpreted in Asia/Ho_Chi_Minh by app/services/
-    # scheduler.py - see that module for why a fixed timezone is enough
-    # (single operator, no per-platform timezone need).
+    # "HH:MM", 24 giờ, được app/services/scheduler.py hiểu theo giờ Asia/Ho_Chi_Minh - xem
+    # module đó để biết vì sao một múi giờ cố định là đủ (một người vận hành, không cần múi
+    # giờ riêng theo nền tảng).
     run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
     nurture_before: bool = False
@@ -162,13 +161,12 @@ class CommentScheduleOut(BaseModel):
 class CommentScheduleUpdate(BaseModel):
     run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
-    # Per enabled keyword, how many of its top-engagement posts to check for
-    # missing comments each run - see app/services/d1.py's
-    # list_posts_needing_comments.
+    # Với mỗi từ khoá đang bật, số bài tương tác cao nhất cần kiểm tra thiếu comment mỗi
+    # lượt chạy - xem list_posts_needing_comments trong app/services/d1.py.
     top_n: int = Field(default=100, ge=1, le=500)
 
 
-# --- AI-assisted account/proxy import - see app/ai/tasks/import_parser.py ---
+# --- Import tài khoản/proxy có AI hỗ trợ - xem app/ai/tasks/import_parser.py ---
 
 
 class ImportParseRequest(BaseModel):
@@ -206,10 +204,10 @@ class NurtureResponse(BaseModel):
 
 
 class TotpCodeResponse(BaseModel):
-    # Current 6-digit code, computed from the account's own stored
-    # totp_secret - the same math any authenticator app does. Shown to a
-    # human completing a *manual* login themselves (see spider-hub's
-    # "unattended_login_refused" guard) - never typed in automatically.
+    # Mã 6 chữ số hiện tại, tính từ totp_secret đã lưu của chính tài khoản - đúng phép
+    # tính mà mọi app authenticator làm. Hiển thị cho người tự hoàn tất đăng nhập *bằng
+    # tay* (khi đăng nhập tự động của spider-hub không qua được) - endpoint này không bao
+    # giờ tự gõ mã vào đâu cả.
     code: str
     expires_in_seconds: int
 
@@ -223,14 +221,14 @@ class AiPromptOut(BaseModel):
 class AiSettingsOut(BaseModel):
     enabled: bool
     model: str
-    # Whether the "kira" row in ai_providers has both base_url and api_key
-    # set - the dashboard toggle cannot call the provider without these.
+    # Dòng "kira" trong ai_providers đã có đủ base_url và api_key chưa - thiếu thì nút
+    # bật/tắt trên dashboard không gọi được provider.
     configured: bool
     prompts: list[AiPromptOut]
-    # Which provider app/ai/tasks/report.py's social-topic-report generation
-    # calls - "kira" or "bee", independent of `enabled` above (that gate is
-    # ingest-time classifiers only; report generation is an
-    # operator/schedule-triggered action, same category as Settings import).
+    # Provider mà phần tạo report topic mạng xã hội của app/ai/tasks/report.py gọi - "kira"
+    # hoặc "bee", độc lập với `enabled` ở trên (cổng đó chỉ dành cho các bộ phân loại lúc
+    # ingest; tạo report là hành động do người vận hành/lịch kích hoạt, cùng nhóm với
+    # import trong Settings).
     active_report_provider: str
     updated_at: datetime | None = None
 
@@ -245,7 +243,7 @@ class AiSettingsUpdate(BaseModel):
 class AiProviderOut(BaseModel):
     key: str
     base_url: str
-    # Whether a secret is stored - the raw api_key is never returned.
+    # Có lưu secret hay chưa - không bao giờ trả về api_key thô.
     api_key_set: bool
     model: str
     updated_at: datetime | None = None
@@ -253,8 +251,8 @@ class AiProviderOut(BaseModel):
 
 class AiProviderUpdate(BaseModel):
     base_url: str = Field(min_length=1, max_length=500)
-    # None/blank keeps whatever secret is already stored, so the dashboard
-    # can change base_url/model without resending the key every time.
+    # None/rỗng thì giữ nguyên secret đã lưu, để dashboard đổi base_url/model mà không phải
+    # gửi lại key mỗi lần.
     api_key: str | None = Field(default=None, max_length=500)
     model: str = Field(min_length=1, max_length=120)
 
@@ -267,37 +265,36 @@ class CronJob(BaseModel):
     last_run_at: datetime | None = None
 
 
-# --- Proxy behavior -----------------------------------------------------
-# Mirrors spider-hub's social_crawler/db/proxy_settings.py DEFAULTS -
-# the field defaults below ARE the fallback values spider-hub uses when a
-# key is absent, so keep the two in sync when adding a key. Stored as one
-# jsonb object in the proxy_settings singleton row (see
-# platform_config_db.get_proxy_settings).
+# --- Hành vi proxy -------------------------------------------------------
+# Giống DEFAULTS trong social_crawler/db/proxy_settings.py của spider-hub - giá trị mặc
+# định của các trường bên dưới CHÍNH LÀ giá trị dự phòng spider-hub dùng khi thiếu
+# key, nên khi thêm key phải giữ hai bên đồng bộ. Lưu thành một object jsonb trong dòng
+# singleton proxy_settings (xem platform_config_db.get_proxy_settings).
 
 
 class ProxySettings(BaseModel):
-    # Sticky pinning (services/pool.py)
+    # Ghim proxy cố định (services/pool.py)
     repin_after_consecutive_failures: int = Field(default=5, ge=1, le=100)
-    # Circuit-breaker cooldown: base * 2^failures, capped (db/proxies.py)
+    # Cooldown của circuit-breaker: base * 2^failures, có trần (db/proxies.py)
     cooldown_base_minutes: float = Field(default=5.0, gt=0, le=240)
     cooldown_max_minutes: float = Field(default=120.0, gt=0, le=10080)
-    # proxy_health_check.py (cron, every 5 min)
+    # proxy_health_check.py (cron, mỗi 5 phút)
     health_check_ping_url: str = Field(
         default="https://www.google.com/generate_204", min_length=8, max_length=500, pattern=r"^https?://"
     )
     health_check_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     health_check_alert_after_failures: int = Field(default=2, ge=1, le=100)
     health_check_streak_ttl_hours: float = Field(default=6.0, gt=0, le=168)
-    # Rotating-lease vendor API (services/proxy_provider.py)
+    # API thuê proxy xoay vòng của nhà cung cấp (clients/proxy_provider.py)
     provider_request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     provider_min_get_new_interval_seconds: float = Field(default=60.0, ge=0, le=3600)
     provider_max_cooldown_wait_seconds: float = Field(default=120.0, ge=0, le=3600)
-    # crawl_request_consumer.py - requeue backoff when a platform's whole proxy pool is down
+    # crawl_request_consumer.py - backoff khi xếp hàng lại lúc cả pool proxy của một nền tảng bị sập
     exhausted_backoff_base_seconds: float = Field(default=30.0, gt=0, le=3600)
     exhausted_backoff_growth_factor: float = Field(default=2.0, ge=1, le=10)
     exhausted_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86400)
     exhausted_max_requeues: int = Field(default=3, ge=0, le=100)
-    # TikTok synthetic guest identities (spiders/tiktok/client.py)
+    # Danh tính khách synthetic của TikTok (spiders/tiktok/client.py)
     tiktok_synthetic_provider: str = Field(default="proxiestrust_tiktok_us", min_length=1, max_length=64)
     tiktok_hashtag_max_attempts: int = Field(default=8, ge=1, le=50)
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
@@ -312,7 +309,7 @@ class ProxySettingsOut(BaseModel):
 class ProxyProviderOut(BaseModel):
     key: str
     api_url: str
-    # Whether a token is stored in the DB - the raw token is never returned.
+    # Có lưu token trong DB hay chưa - không bao giờ trả về token thô.
     token_set: bool
     ip_allowlist: bool
     updated_at: datetime | None = None
@@ -320,34 +317,34 @@ class ProxyProviderOut(BaseModel):
 
 class ProxyProviderUpdate(BaseModel):
     api_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
-    # None/blank keeps whatever token is already stored.
+    # None/rỗng thì giữ nguyên token đã lưu.
     token: str | None = Field(default=None, max_length=500)
     ip_allowlist: bool = False
 
 
-# --- Irrelevant-post cleanup (app/services/cleanup.py) ---
-# Dashboard-editable knobs for the daily purge of posts labelled not_related
-# plus their comments/snapshots. Mirrors the same singleton-row pattern as
-# ProxySettings (see platform_config_db.get_cleanup_settings). Defaults
-# match the env fallbacks in app/core/config.py so an unset DB row behaves
-# the same as the pre-dashboard config.
+# --- Dọn bài không liên quan (app/services/cleanup.py) ---
+# Các tham số sửa được trên dashboard cho lượt dọn hằng ngày các bài gắn nhãn
+# not_related cùng comment/snapshot của chúng. Cùng kiểu dòng singleton với
+# ProxySettings (xem platform_config_db.get_cleanup_settings). Giá trị mặc định khớp
+# với giá trị dự phòng từ env trong app/core/config.py để khi DB chưa có dòng thì hành
+# vi vẫn giống cấu hình trước khi có dashboard.
 #
-# Historical note: dropped_posts rows were also purged here until the lake
-# writer took over archiving every drop decision via the ingest_decisions
-# Kafka topic (see app/clients/kafka.py:publish_ingest_decision +
-# app/workers/lake_writer/main.py). The retention_days knob is gone for
-# that reason - there's nothing left in D1 to age out.
+# Ghi chú lịch sử: các dòng dropped_posts cũng từng bị dọn ở đây cho tới khi lake
+# writer đảm nhận việc lưu trữ mọi quyết định loại bài qua topic Kafka
+# ingest_decisions (xem app/clients/kafka.py:publish_ingest_decision +
+# app/workers/lake_writer/main.py). Tham số retention_days đã bỏ vì lý do đó - trong
+# D1 không còn gì để xoá theo tuổi nữa.
 
 CLEANUP_REASONS_LABEL = "irrelevant_post_purge"
 
 
 class CleanupSettings(BaseModel):
-    # "HH:MM", 24h, Asia/Ho_Chi_Minh (see app/services/scheduler.py's TIMEZONE).
+    # "HH:MM", 24 giờ, Asia/Ho_Chi_Minh (xem TIMEZONE trong app/services/scheduler.py).
     run_time: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
-    # Posts are kept this long after being labelled not_related before being
-    # eligible for deletion - gives a classifier regression a chance to be
-    # caught before its bad labels disappear.
+    # Bài được giữ chừng này thời gian sau khi bị gắn nhãn not_related rồi mới đủ điều kiện
+    # bị xoá - cho cơ hội phát hiện một lần bộ phân loại chạy sai trước khi các nhãn sai
+    # của nó biến mất.
     grace_hours: int = Field(default=24, ge=0, le=720)
 
 
@@ -379,26 +376,21 @@ class CleanupRunHistoryEntry(BaseModel):
     error: str | None = None
 
 
-# --- Auto-login scheduler (app/services/auto_login.py) ---
-# Dashboard-editable knobs for the hourly auto-login scheduler. One
-# singleton row in auto_login_settings (mirrors ProxySettings /
-# CleanupSettings pattern - see platform_config_db.get_auto_login_settings
-# for the storage side). Defaults match the env fallbacks
-# spider-hub/services/auto_login_scheduler.py uses, so a fresh deploy
-# with AUTO_LOGIN_ENABLED=true env + the new dashboard setting on
-# behaves identically whether the scheduler runs in spider-hub or
-# cinemark-api.
+# --- Bộ lập lịch auto-login (app/services/auto_login.py) ---
+# Các tham số sửa được trên dashboard cho bộ lập lịch auto-login chạy mỗi giờ. Một dòng
+# singleton trong auto_login_settings (cùng kiểu với ProxySettings / CleanupSettings -
+# xem platform_config_db.get_auto_login_settings cho phía lưu trữ). Giá trị mặc định
+# khớp với giá trị dự phòng từ env mà auto_login/scheduler.py của spider-hub dùng, nên
+# một bản deploy mới với env AUTO_LOGIN_ENABLED=true + bật setting mới trên dashboard
+# chạy giống hệt nhau dù bộ lập lịch chạy ở spider-hub hay cinemark-api.
 #
-# `platforms` is the list of platforms to iterate each tick; the
-# spider-hub consumer keys its consumer group on this list (one
-# group per platform) so a Facebook relogin backlog doesn't head-of-
-# line block Threads (and vice versa). `dry_run` is honored by both
-# the producer (we still publish the Kafka message, tagged dry_run,
-# so the consumer can log "would have relogged_in this" and stamp
-# nothing) and the consumer (no actual Playwright launches).
-# `telegram_alert` mirrors the same option in
-# CleanupSettings - opt-in since the original auto-login is
-# opt-in itself.
+# `platforms` là danh sách nền tảng duyệt qua mỗi lượt; consumer của spider-hub đặt
+# consumer group theo danh sách này (mỗi nền tảng một group) để hàng đợi đăng nhập lại
+# của Facebook không chặn đầu hàng của Threads (và ngược lại). `dry_run` được tôn
+# trọng ở cả producer (vẫn publish message Kafka, gắn dry_run, để consumer log "lẽ ra
+# đã đăng nhập lại tài khoản này" và không ghi gì) lẫn consumer (không thực sự mở
+# Playwright). `telegram_alert` giống tuỳ chọn cùng tên trong CleanupSettings - mặc
+# định tắt vì bản thân auto-login ban đầu cũng mặc định tắt.
 
 
 class AutoLoginSettings(BaseModel):
@@ -406,11 +398,10 @@ class AutoLoginSettings(BaseModel):
     interval_seconds: int = Field(default=3600, ge=60, le=86400)
     platforms: list[Literal["facebook", "threads"]] = Field(default_factory=lambda: ["facebook", "threads"])
     dry_run: bool = False
-    # Skip accounts whose last_checked_at is newer than this many
-    # seconds - prevents the scheduler from hammering an account that
-    # check_facebook_cookies.py just marked dead and that hasn't had
-    # time for any transient blip to clear. Default 0 = no cooldown,
-    # process every "dead" account every tick (the original behavior).
+    # Bỏ qua tài khoản có last_checked_at mới hơn chừng này giây - tránh để bộ lập lịch
+    # dồn dập vào một tài khoản mà check_facebook_cookies.py vừa đánh dấu chết và chưa đủ
+    # thời gian để trục trặc tạm thời qua đi. Mặc định 0 = không cooldown, xử lý mọi tài
+    # khoản "chết" ở mỗi lượt (hành vi ban đầu).
     min_age_seconds: int = Field(default=0, ge=0, le=3600)
     telegram_alert: bool = True
 
@@ -439,10 +430,9 @@ class AutoLoginRunHistoryEntry(BaseModel):
     dry_run: bool
     interval_seconds: int
     platforms: list[str]
-    # JSON blob from auto_login_run_history.per_platform. Shape:
+    # Khối JSON lấy từ auto_login_run_history.per_platform. Dạng:
     # { "<platform>": { "attempted": N, "relogged_in": N, ... } }
-    # The dashboard renders this as a small per-platform breakdown
-    # under each history row.
+    # Dashboard hiển thị thành một bảng chi tiết nhỏ theo nền tảng dưới mỗi dòng lịch sử.
     per_platform: dict[str, Any] = Field(default_factory=dict)
     total_attempted: int = 0
     total_relogged_in: int = 0

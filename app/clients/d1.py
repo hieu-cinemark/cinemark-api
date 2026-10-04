@@ -1,16 +1,15 @@
-"""Cloudflare D1 transport - the one place that knows whether "the D1
-database" means Cloudflare's HTTP query API or a local SQLite mirror (see
-DB_MODE in app/core/config.py). Every repository (app/repositories/d1/*)
-and app/services/d1.py's own remaining functions call d1_query() here
-instead of touching sqlite3/httpx directly, so a future swap (a different
-storage backend entirely, or just D1's API changing) has exactly one
-place to change.
+"""Tầng truyền tải Cloudflare D1 - nơi duy nhất biết "database D1" nghĩa là HTTP query
+API của Cloudflare hay một bản SQLite sao chép ở local (xem DB_MODE trong
+app/core/config.py). Mọi repository (app/repositories/d1/*) và các hàm còn lại của
+app/services/d1.py đều gọi d1_query() ở đây thay vì đụng thẳng vào sqlite3/httpx,
+nên sau này có đổi (sang hẳn một kiểu lưu trữ khác, hoặc chỉ là API của D1 thay
+đổi) thì chỉ có đúng một chỗ phải sửa.
 
-Split out of app/services/d1.py so the per-table repositories can depend on
-this transport without depending on d1.py itself (which, the other way
-around, re-exports the repositories' functions for callers that still do
-`from app.services.d1 import persist_post` etc.) - importing d1.py from a
-repository would be a circular import."""
+Tách ra khỏi app/services/d1.py để các repository theo từng bảng có thể phụ thuộc
+vào tầng truyền tải này mà không phụ thuộc vào chính d1.py (ngược lại, d1.py
+re-export các hàm của repository cho những chỗ gọi vẫn dùng
+`from app.services.d1 import persist_post` v.v.) - import d1.py từ một repository sẽ
+thành import vòng."""
 
 from __future__ import annotations
 
@@ -33,10 +32,10 @@ _local_conn: sqlite3.Connection | None = None
 _local_lock = threading.Lock()
 _logged_db_target = False
 
-# Shared remote HTTP client + concurrency cap. Creating a fresh AsyncClient
-# per query (TLS handshake to api.cloudflare.com) under a dashboard fan-out
-# of /stats/* + ingest writes saturates the event loop and has hung the
-# whole API (even /health) after switching DB_MODE=remote.
+# HTTP client dùng chung cho chế độ remote + giới hạn số request đồng thời. Tạo một
+# AsyncClient mới cho mỗi query (bắt tay TLS với api.cloudflare.com) khi dashboard
+# gọi dồn /stats/* cùng lúc với các lượt ghi của ingest sẽ làm nghẽn event loop, và đã
+# từng treo cả API (kể cả /health) sau khi chuyển sang DB_MODE=remote.
 _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
 _remote_sem = asyncio.Semaphore(8)
@@ -45,19 +44,17 @@ _remote_sem = asyncio.Semaphore(8)
 def _get_local_conn() -> sqlite3.Connection:
     global _local_conn
     if _local_conn is None:
-        # timeout=30: the stdlib default (5s) is what was actually expiring
-        # into "database is locked" (confirmed live 2026-09-17 - a burst of
-        # these every ~5s while scripts/pull_local_db.py was rebuilding this
-        # same file concurrently) - 30s comfortably outlasts one INSERT/
-        # UPDATE's own lock hold, not just this script's occasional
-        # multi-minute rebuild.
+        # timeout=30: mặc định của stdlib (5s) chính là cái đã hết hạn thành lỗi "database
+        # is locked" (đã xác nhận thực tế 2026-09-17 - cứ khoảng 5s lại có một loạt lỗi này
+        # trong lúc scripts/pull_local_db.py đang dựng lại chính file này song song) - 30s dư
+        # sức chờ hết thời gian giữ khoá của một lệnh INSERT/UPDATE, không chỉ riêng lần dựng
+        # lại vài phút thỉnh thoảng của script đó.
         #
-        # WAL journal mode: the stdlib default (DELETE/rollback-journal)
-        # takes an exclusive lock on the *whole file* for a write's
-        # duration, blocking even unrelated readers - WAL lets readers
-        # proceed against the last-committed snapshot while a write is in
-        # flight, which is what this service's read-heavy dashboard
-        # endpoints actually need alongside Kafka-driven writes.
+        # Chế độ journal WAL: mặc định của stdlib (DELETE/rollback-journal) khoá độc quyền
+        # *toàn bộ file* trong suốt một lần ghi, chặn cả những lượt đọc không liên quan - WAL
+        # cho phép đọc tiếp trên snapshot đã commit gần nhất trong khi đang có lượt ghi, đúng
+        # thứ mà các endpoint dashboard đọc nhiều của service này cần khi chạy song song với
+        # các lượt ghi từ Kafka.
         conn = sqlite3.connect(settings.local_db_path, check_same_thread=False, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
@@ -67,22 +64,22 @@ def _get_local_conn() -> sqlite3.Connection:
 
 
 def _run_local_query(sql: str, params: list[Any] | None) -> list[dict[str, Any]]:
-    """Runs synchronously on a worker thread (see d1_query below) - Python's
-    stdlib sqlite3 has no async API, and blocking the event loop directly
-    would stall every other in-flight request for the query's duration."""
+    """Chạy đồng bộ trên một worker thread (xem d1_query bên dưới) - sqlite3 của stdlib
+    Python không có API async, và chặn thẳng event loop sẽ làm treo mọi request khác
+    đang xử lý trong suốt thời gian chạy query."""
     conn = _get_local_conn()
-    # One shared connection, many asyncio.to_thread workers - SQLite will
-    # otherwise interleave execute/fetch and raise "bad parameter or other
-    # API misuse" / IndexError on dict(row).
+    # Một connection dùng chung, nhiều worker asyncio.to_thread - nếu không khoá, SQLite
+    # sẽ chạy xen kẽ execute/fetch và raise "bad parameter or other API misuse" /
+    # IndexError ở dict(row).
     with _local_lock:
         cursor = conn.execute(sql, params or [])
-        # D1's HTTP API returns [] (not an error) for a successful INSERT/UPDATE/
-        # DELETE with no rows to return - mirrored here so callers' `is None`
-        # (failure) vs `[]`/rows (success) checks behave identically in both modes.
+        # HTTP API của D1 trả về [] (không phải lỗi) cho INSERT/UPDATE/DELETE thành công mà
+        # không có dòng nào trả về - làm giống vậy ở đây để kiểm tra `is None` (thất bại) so
+        # với `[]`/các dòng (thành công) của chỗ gọi chạy giống hệt nhau ở cả hai chế độ.
         rows = [] if cursor.description is None else [dict(row) for row in cursor.fetchall()]
-        # Commit whenever the statement opened a write transaction - including
-        # DML that returns rows (DELETE/UPDATE ... RETURNING), which would
-        # otherwise hold the write lock and roll back when the process exits.
+        # Commit mỗi khi câu lệnh đã mở một transaction ghi - kể cả DML có trả về dòng
+        # (DELETE/UPDATE ... RETURNING), nếu không nó sẽ giữ khoá ghi và bị rollback khi tiến
+        # trình thoát.
         if conn.in_transaction:
             conn.commit()
         return rows
@@ -101,8 +98,8 @@ async def _get_http_client() -> httpx.AsyncClient:
     async with _http_client_lock:
         if _http_client is not None and not _http_client.is_closed:
             return _http_client
-        # Default timeout overridden per-request below; limits keep a
-        # dashboard refresh from opening dozens of Cloudflare TLS sessions.
+        # Timeout mặc định được ghi đè cho từng request bên dưới; limits giúp một lần refresh
+        # dashboard không mở hàng chục phiên TLS tới Cloudflare.
         _http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(30.0, connect=10.0),
             limits=httpx.Limits(max_connections=16, max_keepalive_connections=8),
@@ -110,30 +107,26 @@ async def _get_http_client() -> httpx.AsyncClient:
         return _http_client
 
 
-# Cloudflare error code 7429 = "D1 DB storage operation exceeded timeout
-# which caused object to be reset". The HTTP API surfaces this as a 429
-# with a JSON body whose `errors[0].code` is 7429; the storage object
-# stays in this 429-rejecting state for roughly 30-60s while Cloudflare
-# rebuilds the underlying handle. A naive caller (current behavior)
-# just returns None on the first 429 and the dashboard / scheduler
-# move on, but a scheduled job firing inside that window will keep
-# failing one request after another for the entire backoff duration -
-# exactly the cascade pattern that surfaced as
-# scheduled_crawl_firing -> d1_request_failed (429) in the operator's
-# log. Retrying with exponential backoff up to ~60s covers the full
-# backoff window without spinning the event loop longer than a normal
-# dashboard request should ever wait.
+# Mã lỗi Cloudflare 7429 = "D1 DB storage operation exceeded timeout which caused
+# object to be reset". HTTP API trả lỗi này dưới dạng 429 với body JSON có
+# `errors[0].code` là 7429; storage object ở trạng thái từ chối 429 này khoảng 30-60s
+# trong lúc Cloudflare dựng lại handle bên dưới. Một chỗ gọi đơn giản (hành vi hiện
+# tại) chỉ trả về None ở lần 429 đầu tiên rồi dashboard / scheduler đi tiếp, nhưng
+# một job theo lịch chạy đúng trong khoảng đó sẽ thất bại liên tục từng request một
+# trong suốt thời gian backoff - đúng kiểu lỗi dây chuyền đã hiện ra thành
+# scheduled_crawl_firing -> d1_request_failed (429) trong log của người vận hành. Thử
+# lại với backoff tăng dần tới khoảng 60s là phủ hết khoảng backoff mà không giữ event
+# loop lâu hơn mức một request dashboard bình thường nên chờ.
 _D1_STORAGE_BACKOFF_MAX_RETRIES = 4
 _D1_STORAGE_BACKOFF_BASE_SECONDS = 2.0
 _D1_STORAGE_BACKOFF_CAP_SECONDS = 30.0
 
 
 def _is_storage_backoff_response(status_code: int, body_text: str) -> bool:
-    """True if this 429 is the recoverable Cloudflare storage-backoff
-    case (code 7429) rather than a permanent auth/quota error. Matches
-    on the error code substring - the body shape is
-    '{"success":false,"errors":[{"code":7429,"message":"..."}]}' and
-    we don't want to parse the JSON just for this check."""
+    """True nếu lỗi 429 này là trường hợp backoff storage của Cloudflare có thể tự hồi
+    phục (mã 7429) chứ không phải lỗi auth/quota vĩnh viễn. So khớp theo chuỗi con của
+    mã lỗi - body có dạng '{"success":false,"errors":[{"code":7429,"message":"..."}]}'
+    và không cần parse JSON chỉ để kiểm tra chừng này."""
     if status_code != 429:
         return False
     return "7429" in body_text
@@ -147,18 +140,15 @@ async def d1_query(
     timeout: float = 10.0,
     max_retries: int = _D1_STORAGE_BACKOFF_MAX_RETRIES,
 ) -> list[dict[str, Any]] | None:
-    """Runs one SQL statement against the configured D1 database. Returns
-    the result rows, or None if D1 isn't configured or the call failed.
-    quiet=True skips failure logs (idempotent migrations that expect
-    'duplicate column' on already-migrated DBs).
+    """Chạy một câu SQL trên database D1 đã cấu hình. Trả về các dòng kết quả, hoặc None
+    nếu D1 chưa được cấu hình hoặc lời gọi thất bại. quiet=True bỏ qua log lỗi (dùng cho
+    migration idempotent vốn chờ lỗi 'duplicate column' trên DB đã migrate rồi).
 
-    On Cloudflare's D1 storage-backoff 429 (error code 7429), retries
-    with exponential backoff up to max_retries times - see
-    _D1_STORAGE_BACKOFF_MAX_RETRIES. The whole retry sequence is
-    bounded by ~60s of cumulative sleep so a single dashboard request
-    can't hang on a permanently-broken database; if every retry 429s
-    the function still returns None with one final warning log so the
-    caller can decide what to do."""
+    Khi gặp 429 backoff storage của D1 Cloudflare (mã lỗi 7429), thử lại với backoff
+    tăng dần tối đa max_retries lần - xem _D1_STORAGE_BACKOFF_MAX_RETRIES. Cả chuỗi thử
+    lại bị giới hạn khoảng 60s tổng thời gian sleep để một request dashboard không bị
+    treo vì một database hỏng hẳn; nếu lần thử nào cũng 429 thì hàm vẫn trả về None kèm
+    một log cảnh báo cuối cùng để chỗ gọi tự quyết định làm gì."""
     if not _configured():
         return None
 
@@ -205,11 +195,9 @@ async def d1_query(
                 )
             return None
 
-        # Storage-backoff 429: retry with backoff, not a hard fail.
-        # This is the ONLY 429 we retry - a real rate-limit (no 7429
-        # code in the body) or an auth/quota 4xx still surfaces to
-        # the caller as None so the existing failure-handling paths
-        # stay unchanged.
+        # 429 do backoff storage: thử lại với backoff, không coi là lỗi hẳn. Đây là loại 429
+        # DUY NHẤT được thử lại - rate-limit thật (body không có mã 7429) hoặc lỗi 4xx
+        # auth/quota vẫn trả về None cho chỗ gọi để các nhánh xử lý lỗi hiện có không đổi.
         if resp.status_code == 429 and _is_storage_backoff_response(resp.status_code, resp.text):
             attempt += 1
             if attempt > max_retries:

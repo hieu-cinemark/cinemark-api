@@ -1,10 +1,10 @@
-"""Reads/writes spider-hub's crawl_job:<platform> and
-crawl_job_cancel:<run_id> Redis keys - the dashboard-facing half of the
-"stop a running job" mechanism spider-hub's own crawl_request_consumer.py
-implements on the other side (see its _run_subprocess/_run_spider). Same
-shared-Redis pattern as platform_token.py: this side never runs the
-subprocess itself, it only reads/writes the coordination keys spider-hub's
-consumer sets before a crawl and polls for while one is running."""
+"""Đọc/ghi các key Redis crawl_job:<platform> và crawl_job_cancel:<run_id> của
+spider-hub - nửa phía dashboard của cơ chế "dừng một job đang chạy" mà
+crawl_request_consumer.py của spider-hub cài đặt ở phía bên kia (xem
+_run_subprocess/_run_spider bên đó). Cùng kiểu dùng chung Redis như
+platform_token.py: phía này không bao giờ tự chạy tiến trình con, chỉ đọc/ghi các
+key điều phối mà consumer của spider-hub đặt trước khi crawl và kiểm tra định kỳ
+trong lúc crawl."""
 
 from __future__ import annotations
 
@@ -15,52 +15,50 @@ from typing import Any
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.services.task_queue import clear_pending, remove_pending
 
-# How long a stop flag stays armed - covers spider-hub's consumer being
-# briefly down/slow to notice it, without leaving a stale flag around
-# forever if it never does. Comfortably above crawl_request_consumer.py's
-# own JOB_CANCEL_POLL_SECONDS - this is a safety ceiling, not the expected
-# latency.
+# Cờ dừng còn hiệu lực trong bao lâu - phủ trường hợp consumer của spider-hub tạm sập/
+# chậm nhận ra cờ, mà không để một cờ cũ nằm đó mãi nếu nó không bao giờ nhận ra. Lớn
+# hơn khá nhiều so với JOB_CANCEL_POLL_SECONDS của crawl_request_consumer.py - đây là
+# trần an toàn, không phải độ trễ dự kiến.
 STOP_FLAG_TTL_SECONDS = 3600
 
-# How long a Stop click keeps skipping still-queued crawl_requests for
-# this platform (comments, keyword searches, BFS follow-ups) without
-# running them. Long enough to drain a bulk "fetch comments" click.
+# Một lần bấm Dừng tiếp tục bỏ qua (không chạy) các crawl_requests còn trong hàng đợi
+# của nền tảng này (comment, tìm theo từ khoá, các bước BFS tiếp theo) trong bao lâu.
+# Đủ dài để xả hết một lần bấm "lấy comment" hàng loạt.
 BFS_DRAIN_TTL_SECONDS = 900
 
 
 async def get_running_job(platform: str) -> dict[str, Any] | None:
-    """None if no job is currently running for this platform right now -
-    see crawl_request_consumer.py's _run_spider, which sets/clears this key
-    around every dashboard-triggered (has a run_id) crawl subprocess."""
+    """None nếu hiện không có job nào đang chạy cho nền tảng này - xem _run_spider trong
+    crawl_request_consumer.py, nơi đặt/xoá key này quanh mỗi tiến trình crawl con được
+    kích hoạt từ dashboard (có run_id)."""
     client = get_redis_client()
     raw = await client.get(f"{REDIS_KEY_PREFIX}crawl_job:{platform}")
     return json.loads(raw) if raw else None
 
 
 async def is_platform_draining(platform: str) -> bool:
-    """True after Stop until TTL expires or a new Run clears the flags.
-    Queued bulk work is skipped while this holds; targeted triggers
-    (bypass_drain) clicked after the Stop still run, and so does whatever
-    job is still finishing - the dashboard keeps showing both."""
+    """True sau khi bấm Dừng cho tới khi hết TTL hoặc một lần Run mới xoá các cờ. Trong lúc
+    cờ còn, công việc hàng loạt đang xếp hàng bị bỏ qua; các lần kích hoạt có chủ đích
+    (bypass_drain) bấm sau lần Dừng vẫn chạy, và job nào đang chạy dở cũng vậy -
+    dashboard vẫn hiển thị cả hai."""
     client = get_redis_client()
     return bool(await client.exists(f"{REDIS_KEY_PREFIX}platform_drain:{platform}"))
 
 
 async def request_stop(platform: str) -> bool:
-    """Cancels the in-flight subprocess and skips the rest of this
-    platform's queued work (comments + searches) until the drain TTL
-    expires. Always returns True after arming drain - a Stop click with
-    nothing running still clears the waiting list.
+    """Huỷ tiến trình con đang chạy và bỏ qua phần công việc còn lại trong hàng đợi của nền
+    tảng này (comment + tìm kiếm) cho tới khi hết TTL drain. Luôn trả True sau khi bật
+    drain - bấm Dừng khi không có gì đang chạy vẫn xoá được danh sách chờ.
 
-    Arms both crawl_job_cancel:<run_id> (precise) and
-    crawl_job_cancel_platform:<platform> (covers the gap before crawl_job
-    is written - e.g. Facebook comments bootstrap - and any run_id race
-    if a new job starts mid-Stop)."""
+    Bật cả crawl_job_cancel:<run_id> (chính xác) lẫn
+    crawl_job_cancel_platform:<platform> (phủ khoảng trống trước khi crawl_job được ghi -
+    ví dụ bootstrap comment Facebook - và mọi trường hợp đua run_id nếu một job mới bắt
+    đầu giữa lúc Dừng)."""
     client = get_redis_client()
     await client.set(f"{REDIS_KEY_PREFIX}bfs_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
     await client.set(f"{REDIS_KEY_PREFIX}comments_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
-    # The value is the Stop time: spider-hub skips bypass_drain messages
-    # published before it (see its crawl_request_consumer._handle_request).
+    # Giá trị là thời điểm bấm Dừng: spider-hub bỏ qua các message bypass_drain được
+    # publish trước thời điểm đó (xem crawl_request_consumer._handle_request bên đó).
     await client.set(f"{REDIS_KEY_PREFIX}platform_drain:{platform}", str(time.time()), ex=BFS_DRAIN_TTL_SECONDS)
     await client.set(
         f"{REDIS_KEY_PREFIX}crawl_job_cancel_platform:{platform}",
@@ -80,22 +78,19 @@ async def request_stop(platform: str) -> bool:
 
 
 async def cancel_job(platform: str, run_id: str) -> bool:
-    """Stops exactly one job - the dashboard's per-row Stop button.
-    Deliberately does NOT touch bfs_drain/comments_drain/platform_drain or
-    call clear_pending: those are request_stop's "Stop All" behavior, and
-    reusing them here was the actual bug (see JobsPageView.tsx's original
-    per-row Stop wiring) - clicking Stop on one row silently canceled the
-    running job AND wiped every other platform's queued item too.
+    """Dừng đúng một job - nút Dừng trên từng dòng của dashboard. Cố ý KHÔNG đụng tới
+    bfs_drain/comments_drain/platform_drain và không gọi clear_pending: đó là hành vi
+    "Dừng tất cả" của request_stop, và việc dùng lại chúng ở đây chính là lỗi thật (xem
+    cách nối nút Dừng từng dòng ban đầu trong JobsPageView.tsx) - bấm Dừng trên một dòng
+    âm thầm huỷ cả job đang chạy LẪN xoá sạch mục đang chờ của mọi nền tảng khác.
 
-    Arms the precise crawl_job_cancel:<run_id> flag either way (same key
-    request_stop already sets for its own running-job case) -
-    crawl_request_consumer.py's _handle_request now checks this for every
-    Kafka message *before* starting it, not just mid-flight via
-    _run_subprocess's own polling, so it works whether run_id is still
-    queued or already running. remove_pending is just for instant dashboard
-    feedback on a still-queued row (it would otherwise sit there until the
-    consumer reaches and skips it) - every other queued item for the
-    platform is left untouched and runs normally."""
+    Dù thế nào cũng bật cờ chính xác crawl_job_cancel:<run_id> (cùng key mà request_stop
+    vốn đặt cho trường hợp job đang chạy) - _handle_request trong
+    crawl_request_consumer.py giờ kiểm tra cờ này cho mọi message Kafka *trước khi* bắt
+    đầu chạy, không chỉ giữa chừng qua việc kiểm tra định kỳ của _run_subprocess, nên nó
+    hoạt động dù run_id còn đang chờ hay đã chạy. remove_pending chỉ để dashboard phản
+    hồi ngay trên một dòng còn đang chờ (nếu không nó sẽ nằm đó cho tới khi consumer tới
+    nơi và bỏ qua) - mọi mục đang chờ khác của nền tảng giữ nguyên và chạy bình thường."""
     if not run_id:
         return False
 
@@ -112,9 +107,9 @@ async def cancel_job(platform: str, run_id: str) -> bool:
 
 
 async def clear_drain(platform: str) -> None:
-    """Clears Stop's skip flags so a new dashboard trigger actually runs.
-    Kafka messages already consumed under drain are gone; this only unblocks
-    work published after the user deliberately starts crawling again."""
+    """Xoá các cờ bỏ qua của lần Dừng để một lần kích hoạt mới từ dashboard thực sự chạy.
+    Các message Kafka đã bị consume trong lúc drain thì mất rồi; việc này chỉ gỡ chặn cho
+    công việc được publish sau khi người dùng chủ động bắt đầu crawl lại."""
     client = get_redis_client()
     await client.delete(
         f"{REDIS_KEY_PREFIX}bfs_drain:{platform}",

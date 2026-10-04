@@ -1,14 +1,13 @@
-"""Publishes crawl-trigger requests to Kafka - the producer side of
-spider-hub's crawl_request_consumer.py, which listens for these and
-launches the matching `scrapy crawl` subprocess. Both the per-platform
-/<platform>/run routes (app/api/routes/platform_scraper.py, manual "run"
-button) and the daily scheduler script publish through the same function,
-so a manual trigger and a scheduled one are indistinguishable downstream -
-one code path, one contract.
+"""Đẩy các yêu cầu kích hoạt crawl lên Kafka - phía producer của
+crawl_request_consumer.py bên spider-hub, nơi lắng nghe các message này và khởi chạy
+tiến trình `scrapy crawl` tương ứng. Cả các route /<platform>/run theo nền tảng
+(app/api/routes/platform_scraper.py, nút "run" bấm tay) lẫn script lập lịch hằng
+ngày đều publish qua cùng một hàm, nên ở phía sau không phân biệt được kích hoạt tay
+hay theo lịch - một đường code, một hợp đồng.
 
-Mirrors spider-hub's own social_crawler/clients/kafka.py: fire-and-forget,
-never blocks/fails the request over a Kafka outage - a crawl trigger that
-can't be published just doesn't run, logged, not a 500."""
+Giống social_crawler/clients/kafka.py của spider-hub: bắn-rồi-quên, không bao giờ
+chặn/làm hỏng request vì Kafka sập - một lần kích hoạt crawl không publish được thì
+đơn giản là không chạy, có ghi log, không trả 500."""
 
 from __future__ import annotations
 
@@ -32,26 +31,22 @@ logger = get_logger(__name__)
 
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
 
-# Auto-login requests get their own topic rather than reusing
-# crawl_requests - spider-hub's auto_login/consumer.py has totally
-# different dispatch logic (one message = one Playwright relogin
-# attempt, not a "scrapy crawl" subprocess) and is owned by a
-# separate consumer group with separate concurrency settings. Reusing
-# crawl_requests would force auto_login/consumer.py to filter out the
-# much noisier crawl stream just to keep up. See
-# app/services/auto_login.py:publish_auto_login_request for the
-# producer side.
+# Yêu cầu auto-login có topic riêng thay vì dùng lại crawl_requests - auto_login/consumer.py
+# của spider-hub có logic điều phối hoàn toàn khác (một message = một lần thử đăng
+# nhập lại bằng Playwright, không phải một tiến trình "scrapy crawl") và thuộc một
+# consumer group riêng với cấu hình đồng thời riêng. Dùng lại crawl_requests sẽ bắt
+# auto_login/consumer.py phải lọc bỏ luồng crawl ồn ào hơn nhiều chỉ để theo kịp. Xem
+# app/services/auto_login.py:publish_auto_login_request cho phía producer.
 AUTO_LOGIN_REQUESTS_TOPIC = "auto_login_requests"
 
 _producer: AIOKafkaProducer | None = None
 
-# Every (label, topic, consumer group) actually consumed anywhere in this
-# system - spider-hub's crawl_request_consumer.py (PLATFORM_CONSUMER_GROUPS,
-# one group per platform all reading the same crawl_requests topic) and
-# cinemark-api's own app/workers/ingest_consumer/main.py
-# (CONSUMER_GROUP_POSTS/COMMENTS). Kept here rather than derived, since this
-# is the one place that cares about every consumer in the pipeline, both
-# repos at once - see get_consumer_lag() below.
+# Mọi bộ (nhãn, topic, consumer group) thực sự được consume ở đâu đó trong hệ thống -
+# crawl_request_consumer.py của spider-hub (PLATFORM_CONSUMER_GROUPS, mỗi nền tảng một
+# group, cùng đọc topic crawl_requests) và app/workers/ingest_consumer/main.py của
+# chính cinemark-api (CONSUMER_GROUP_POSTS/COMMENTS). Khai báo cứng ở đây thay vì suy
+# ra, vì đây là nơi duy nhất quan tâm tới mọi consumer trong pipeline, của cả hai repo
+# cùng lúc - xem get_consumer_lag() bên dưới.
 CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("facebook", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.facebook"),
     ("threads", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.threads"),
@@ -60,20 +55,20 @@ CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("ingest_comments", "raw_comments", "cinemark-api.ingest.comments"),
     ("lake_posts", "raw_posts", "cinemark-api.lake"),
     ("lake_comments", "raw_comments", "cinemark-api.lake"),
-    # Auto-login requests have their own consumer group in spider-hub's
-    # auto_login/consumer.py - one per platform so a Facebook relogin
-    # backlog doesn't head-of-line-block Threads (and vice versa).
+    # Yêu cầu auto-login có consumer group riêng trong auto_login/consumer.py của
+    # spider-hub - mỗi nền tảng một group để hàng đợi đăng nhập lại của Facebook không
+    # chặn đầu hàng của Threads (và ngược lại).
     ("auto_login_facebook", AUTO_LOGIN_REQUESTS_TOPIC, "spider-hub.auto-login.facebook"),
     ("auto_login_threads", AUTO_LOGIN_REQUESTS_TOPIC, "spider-hub.auto-login.threads"),
 )
 
-# producer.start() only raises KafkaError for a *refused* connection - a
-# broker that's up but not responding (overloaded host, coordinator
-# reload/election in progress - confirmed live 2026-09-21 against the local
-# dev Kafka container) can leave it hanging with no exception at all. Since
-# this runs first in app/main.py's on_startup, an unbounded hang here blocks
-# every route (even /health) from ever becoming reachable, same failure
-# shape ensure_default_crawl_schedules had before it got the same treatment.
+# producer.start() chỉ raise KafkaError khi kết nối bị *từ chối* - một broker vẫn
+# chạy nhưng không phản hồi (máy quá tải, đang nạp lại/bầu lại coordinator - đã xác
+# nhận thực tế 2026-09-21 với container Kafka dev ở local) có thể làm nó treo mà không
+# có exception nào. Vì đoạn này chạy đầu tiên trong on_startup của app/main.py, treo
+# không giới hạn ở đây sẽ khiến mọi route (kể cả /health) không bao giờ truy cập được,
+# cùng kiểu lỗi mà ensure_default_crawl_schedules từng gặp trước khi được xử lý giống
+# vậy.
 _START_TIMEOUT_SECONDS = 10.0
 
 
@@ -114,32 +109,31 @@ async def publish_crawl_request(
     end_date: date | None = None,
     bfs_depth: int | None = None,
 ) -> bool:
-    """Returns whether the request was actually published - callers decide
-    what to tell the user if Kafka is down (e.g. still return 202 since the
-    trigger endpoint's job is just to ask, not to guarantee delivery, or
-    surface a warning - see app/api/routes/platform_scraper.py). keyword_id is D1's
-    own keywords.id (see app/services/d1.py) - threaded through unchanged so
-    the raw_posts message this crawl eventually produces carries an id the
-    ingest consumer can resolve straight back through D1."""
+    """Trả về request có thực sự được publish hay không - chỗ gọi tự quyết định báo gì cho
+    người dùng nếu Kafka sập (ví dụ vẫn trả 202 vì nhiệm vụ của endpoint kích hoạt chỉ
+    là yêu cầu, không bảo đảm giao tới nơi, hoặc hiện một cảnh báo - xem
+    app/api/routes/platform_scraper.py). keyword_id là keywords.id của D1 (xem
+    app/services/d1.py) - truyền qua nguyên vẹn để message raw_posts mà lượt crawl này
+    sinh ra mang một id mà ingest consumer có thể tra ngược thẳng về D1."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", keyword_id=keyword_id)
         return False
     if platform == "tiktok" and not keyword.startswith("#"):
         logger.info("crawl_request_skipped_tiktok_text", keyword=keyword, keyword_id=keyword_id)
         return False
-    # A prior Stop arms platform_drain for ~15m so backlog is skipped. A new
-    # intentional trigger must lift that, or the crawl is published then
-    # immediately logged as request_skipped_drain.
+    # Một lần bấm Dừng trước đó bật platform_drain khoảng 15 phút để bỏ qua hàng tồn. Một
+    # lần kích hoạt có chủ đích mới phải gỡ cờ đó, nếu không lượt crawl được publish xong
+    # sẽ bị log ngay là request_skipped_drain.
     await clear_drain(platform)
-    # Lets spider-hub's crawl_request_consumer.py track this specific
-    # subprocess (crawl_job:<platform> in Redis) so the dashboard's Stop
-    # button (see app/services/crawl_jobs.py) has something to cancel by -
-    # see that module's own docstring for the full mechanism.
+    # Cho crawl_request_consumer.py của spider-hub theo dõi đúng tiến trình con này
+    # (crawl_job:<platform> trong Redis) để nút Dừng trên dashboard (xem
+    # app/services/crawl_jobs.py) có cái để huỷ - xem docstring của module đó để biết đầy
+    # đủ cơ chế.
     run_id = str(uuid.uuid4())
     value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": keyword_id, "run_id": run_id}
     if max_pages is not None:
         value["max_pages"] = max_pages
-    # Date windows only exist on Facebook search. Threads/TikTok ignore them.
+    # Khoảng ngày chỉ có ở tìm kiếm Facebook. Threads/TikTok bỏ qua.
     if platform == "facebook":
         if start_date is not None:
             value["start_date"] = start_date.isoformat()
@@ -165,19 +159,18 @@ async def publish_crawl_request(
     return True
 
 
-# Shared dashboard/API default for comments crawls. Threads root feeds on
-# large posts often need 40+ pages before paging_tokens ends; Facebook
-# Comet pages ~10 comments each so 10 pages only covers ~100 top-level.
-# Callers can still pass a smaller max_pages for a quick sample.
+# Mặc định dùng chung cho dashboard/API khi crawl comment. Feed reply gốc của Threads
+# trên bài lớn thường cần hơn 40 trang mới hết paging_tokens; Facebook Comet mỗi trang
+# khoảng 10 comment nên 10 trang chỉ phủ được khoảng 100 comment cấp một. Chỗ gọi vẫn
+# có thể truyền max_pages nhỏ hơn để lấy mẫu nhanh.
 DEFAULT_COMMENTS_MAX_PAGES = 80
 
 
 async def publish_channel_videos_request(
     *, username: str, max_pages: int | None = None, keyword_id: str | None = None
 ) -> bool:
-    """Queues type=channel_videos for TikTok's tiktok_channel_videos spider
-    (one @username channel grid). Free-text handle - no D1 "tracked
-    channel" table yet."""
+    """Xếp hàng type=channel_videos cho spider tiktok_channel_videos của TikTok (lưới video
+    của một kênh @username). Handle nhập tự do - chưa có bảng "kênh theo dõi" trong D1."""
     handle = username.lstrip("@").strip()
     if not handle:
         return False
@@ -197,29 +190,27 @@ async def publish_comments_crawl_request(
     max_pages: int = DEFAULT_COMMENTS_MAX_PAGES,
     bypass_drain: bool = True,
 ) -> bool:
-    """Publishes a type="comments" request, tagged for crawl_request_consumer.py's
-    _run_comments_spider (spider-hub) to run that platform's comments
-    spider against one specific post - only platforms in spider-hub's own
-    COMMENTS_SPIDER_BY_PLATFORM (facebook, threads, tiktok - see get_comment_mapper's
-    docstring here for the matching cinemark-api-side registry) actually
-    have one; publishing for any other platform just gets logged and
-    dropped on the consumer side. post_url is needed too, not just
-    post_external_id: spider-hub bootstraps its comments-query cache
-    (shared across every post for that account) from a real post URL the
-    first time it's missing/expired, not from a bare numeric id.
+    """Publish một request type="comments", gắn nhãn để _run_comments_spider trong
+    crawl_request_consumer.py (spider-hub) chạy spider comment của nền tảng đó cho đúng
+    một bài - chỉ các nền tảng trong COMMENTS_SPIDER_BY_PLATFORM của spider-hub
+    (facebook, threads, tiktok - xem docstring của get_comment_mapper ở repo này cho
+    registry tương ứng phía cinemark-api) mới thực sự có spider này; publish cho nền
+    tảng khác thì phía consumer chỉ ghi log rồi bỏ. Cần cả post_url chứ không chỉ
+    post_external_id: spider-hub dựng cache query comment (dùng chung cho mọi bài của
+    tài khoản đó) từ một URL bài thật vào lần đầu cache bị thiếu/hết hạn, không phải từ
+    một id số trần.
 
-    bypass_drain=True (the default) is for a one-off dashboard trigger -
-    "fetch comments for this one post" - so an unrelated earlier Stop
-    elsewhere doesn't silently swallow it (see publish_action_request's own
-    docstring). Callers that publish MANY of these at once on purpose - the
-    daily comments-sweep schedule (app/services/scheduler.py's
-    _trigger_comments_platform) and the manual bulk backfill
-    (scripts/trigger_recent_keyword_comments.py) - pass bypass_drain=False
-    instead, so that backlog is exactly what a platform's Stop button
-    cancels. Confirmed live 2026-09-24: with every comments request
-    hardcoded bypass_drain=True, a stuck/slow tiktok comments backlog
-    (500+ deep) had no way to be cancelled through the app at all - Stop
-    armed the drain flags but every queued message ignored them by design."""
+    bypass_drain=True (mặc định) dành cho một lần kích hoạt lẻ từ dashboard - "lấy
+    comment cho đúng bài này" - để một lần bấm Dừng không liên quan trước đó ở chỗ khác
+    không âm thầm nuốt mất nó (xem docstring của publish_action_request). Những chỗ gọi
+    cố ý publish RẤT NHIỀU request loại này cùng lúc - lịch quét comment hằng ngày
+    (_trigger_comments_platform trong app/services/scheduler.py) và backfill hàng loạt
+    bằng tay (scripts/trigger_recent_keyword_comments.py) - thì truyền
+    bypass_drain=False, để chính hàng tồn đó là thứ nút Dừng của nền tảng huỷ được. Đã
+    xác nhận thực tế 2026-09-24: khi mọi request comment đều bị gán cứng
+    bypass_drain=True, một hàng tồn comment tiktok bị kẹt/chậm (sâu hơn 500) hoàn toàn
+    không có cách nào huỷ qua app - Dừng có bật cờ drain nhưng mọi message đang xếp hàng
+    đều bỏ qua cờ đó theo thiết kế."""
     run_id = str(uuid.uuid4())
     return await publish_action_request(
         platform,
@@ -232,21 +223,19 @@ async def publish_comments_crawl_request(
 async def publish_action_request(
     platform: str, action: str, payload: dict[str, Any], *, bypass_drain: bool | None = None
 ) -> bool:
-    """Publishes a generic action request to the crawl_requests topic, tagged
-    with type=action so crawl_request_consumer.py can handle it. Used for
-    account checks, token refreshes, and comments crawls.
+    """Publish một action request chung lên topic crawl_requests, gắn type=action để
+    crawl_request_consumer.py xử lý được. Dùng cho kiểm tra tài khoản, refresh token và
+    crawl comment.
 
-    bypass_drain=None (the default) keeps the original behavior: True for
-    every action except refresh_token/cookie_import, so a one-off targeted
-    request survives an unrelated earlier Stop still within its TTL rather
-    than being silently skipped - clearing drain here instead would wipe
-    bfs_drain/comments_drain/platform_drain for the WHOLE platform, which
-    would just as silently un-block any real backlog a Stop was meant to
-    hold back. Pass bypass_drain explicitly (see
-    publish_comments_crawl_request's own docstring) when the caller
-    publishes many of these at once and DOES want a platform's Stop button
-    able to cancel them - see crawl_request_consumer.py's _handle_request on
-    the spider-hub side for where this flag is actually read."""
+    bypass_drain=None (mặc định) giữ hành vi ban đầu: True cho mọi action trừ
+    refresh_token/cookie_import, để một request lẻ có chủ đích vẫn sống sót qua một lần
+    bấm Dừng không liên quan trước đó còn trong TTL thay vì bị âm thầm bỏ qua - còn nếu
+    xoá cờ drain ở đây thì sẽ xoá bfs_drain/comments_drain/platform_drain cho TOÀN BỘ
+    nền tảng, cũng âm thầm gỡ chặn luôn hàng tồn thật mà lần Dừng muốn giữ lại. Truyền
+    bypass_drain rõ ràng (xem docstring của publish_comments_crawl_request) khi chỗ gọi
+    publish nhiều request loại này cùng lúc và MUỐN nút Dừng của nền tảng huỷ được chúng
+    - xem _handle_request trong crawl_request_consumer.py phía spider-hub để biết chỗ
+    thực sự đọc cờ này."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", platform=platform)
         return False
@@ -254,9 +243,9 @@ async def publish_action_request(
     value: dict[str, Any] = {"type": action, "platform": platform, **payload}
     if action not in ("refresh_token", "cookie_import"):
         value["bypass_drain"] = True if bypass_drain is None else bypass_drain
-        # Lets the consumer drop a bypass_drain message that was already
-        # queued when Stop was clicked (crawl_jobs.request_stop stores the
-        # click time) while still running ones clicked after it.
+        # Cho consumer bỏ một message bypass_drain đã nằm trong hàng đợi lúc bấm Dừng
+        # (crawl_jobs.request_stop lưu thời điểm bấm) mà vẫn chạy những message được kích hoạt
+        # sau đó.
         value["published_at"] = time.time()
     try:
         await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{action}:{platform}:{key}", value=value)
@@ -268,29 +257,24 @@ async def publish_action_request(
 
 
 async def publish_auto_login_request(platform: str, account_id: str, *, dry_run: bool = False) -> bool:
-    """Publishes one auto-login request to AUTO_LOGIN_REQUESTS_TOPIC.
-    spider-hub's auto_login/consumer.py reads it and runs
-    social_crawler.auto_login's flow for exactly that account_id.
+    """Publish một yêu cầu auto-login lên AUTO_LOGIN_REQUESTS_TOPIC. auto_login/consumer.py
+    của spider-hub đọc nó và chạy luồng social_crawler.auto_login cho đúng account_id đó.
 
-    One message per account (rather than batching them) so a Kafka outage
-    mid-tick fails individual accounts instead of taking out an entire
-    platform's worth - and because each account triggers its own browser
-    anyway, the per-account publish overhead is negligible next to the
-    Playwright cost. Keys are account_id-typed so spider-hub can
-    coalesce repeat publishes of the same account within its consumer
-    if it ever needs to.
+    Mỗi tài khoản một message (thay vì gom lô) để Kafka sập giữa lượt chỉ làm hỏng từng
+    tài khoản lẻ thay vì cả một nền tảng - và vì mỗi tài khoản đằng nào cũng mở trình
+    duyệt riêng, chi phí publish từng tài khoản không đáng kể so với chi phí Playwright.
+    Key theo account_id để spider-hub có thể gộp các lần publish lặp lại của cùng một
+    tài khoản trong consumer nếu sau này cần.
 
-    `dry_run=true` is honored by spider-hub's consumer: it logs the
-    "would have relogged_in this account" line and stamps nothing. Lets
-    an operator sanity-check the candidate list without any real
-    login firing - same idea as
-    scripts.relogin_facebook_accounts but driven from the dashboard
-    instead of a shell script.
+    Consumer của spider-hub tôn trọng `dry_run=true`: nó chỉ log dòng "lẽ ra đã đăng
+    nhập lại tài khoản này" và không ghi gì cả. Giúp người vận hành kiểm tra nhanh danh
+    sách ứng viên mà không có lượt đăng nhập thật nào - cùng ý tưởng với
+    scripts.relogin_facebook_accounts nhưng điều khiển từ dashboard thay vì shell script.
 
-    Returns True on a successful publish, False on a Kafka outage -
-    the caller (auto_login.run_auto_login_tick) decides what to do
-    with a False (counts toward kafka_publish_failed, logged as a
-    warning, the run keeps going for the rest of the platform)."""
+    Trả về True nếu publish thành công, False nếu Kafka sập - chỗ gọi
+    (auto_login.run_auto_login_tick) tự quyết định xử lý False thế nào (tính vào
+    kafka_publish_failed, log cảnh báo, lượt chạy vẫn tiếp tục với phần còn lại của nền
+    tảng)."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", platform=platform, kind="auto_login")
         return False
@@ -312,13 +296,12 @@ async def publish_auto_login_request(platform: str, account_id: str, *, dry_run:
 
 
 async def publish_tiktok_identity_reset(account_id: int) -> bool:
-    """TikTok has no browser-bootstrap query/password flow to re-run like
-    Facebook/Threads (see spider-hub's tiktok/auth/bootstrap.py) - a "reset
-    cookies" trigger names one specific platform_accounts row instead, whose
-    device_id/odinId gets a fresh headless capture pass. Still tagged
-    type="refresh_token" so crawl_request_consumer.py's existing dispatch/
-    job-tracking (dashboard "refreshing..."/Stop button) just works, no
-    separate action type needed."""
+    """TikTok không có luồng bootstrap trình duyệt bằng query/mật khẩu để chạy lại như
+    Facebook/Threads (xem tiktok/auth/bootstrap.py của spider-hub) - một lần kích hoạt
+    "reset cookies" chỉ đích danh một dòng platform_accounts, và device_id/odinId của
+    dòng đó được lấy lại bằng một lượt headless mới. Vẫn gắn type="refresh_token" để
+    phần điều phối/theo dõi job sẵn có của crawl_request_consumer.py (trạng thái
+    "refreshing..."/nút Dừng trên dashboard) chạy luôn, không cần thêm loại action riêng."""
     return await publish_action_request(
         "tiktok", "refresh_token", {"account_id": account_id, "run_id": str(uuid.uuid4())}
     )
@@ -332,13 +315,12 @@ async def publish_nurture_request(
     comment: bool = True,
     visits: int = 3,
 ) -> bool:
-    """Queues type=nurture so spider-hub's crawl_request_consumer runs
-    `python -m social_crawler.nurture_accounts` for facebook, threads, or
-    tiktok. TikTok's own warm-up (visits /tag/<hashtag> pages, not the home
-    feed - see spider-hub's nurture_accounts.py module docstring) ignores
-    `comment` and treats `visits` as the number of hashtag pages to visit;
-    there's no separate param for it so this one call shape covers every
-    platform without the caller needing to know which fields apply."""
+    """Xếp hàng type=nurture để crawl_request_consumer của spider-hub chạy
+    `python -m social_crawler.nurture_accounts` cho facebook, threads hoặc tiktok. Phần
+    làm ấm riêng của TikTok (vào các trang /tag/<hashtag>, không phải feed trang chủ -
+    xem docstring module nurture_accounts.py của spider-hub) bỏ qua `comment` và coi
+    `visits` là số trang hashtag cần vào; không có tham số riêng cho việc này nên một
+    dạng lời gọi phủ được mọi nền tảng mà chỗ gọi không cần biết trường nào áp dụng."""
     payload: dict[str, Any] = {
         "like": like,
         "comment": comment,
@@ -353,20 +335,18 @@ async def publish_nurture_request(
 async def publish_cookie_import_request(
     platform: str, account_key: str, cookies: str, run_id: str | None = None
 ) -> str | None:
-    """Publishes type="cookie_import" so crawl_request_consumer.py's
-    _import_cookies runs `bootstrap.py --cookies-file ... --account
-    <account_key>` - the same command a human would otherwise run at a
-    terminal to hand over cookies exported from a real, non-automated
-    browser session (see spider-hub's facebook/threads auth/cookies.py's
-    import_cookies) - then chains straight into a normal token refresh, so
-    one trigger both creates and refreshes the session. Still fully
-    human-authenticated: this only automates the "get the cookies into
-    Redis, then capture tokens" steps, never the login itself - see
-    app/api/routes/token_refresh.py's own docstring for the full flow.
+    """Publish type="cookie_import" để _import_cookies trong crawl_request_consumer.py chạy
+    `bootstrap.py --cookies-file ... --account <account_key>` - đúng lệnh mà người vận
+    hành lẽ ra phải tự chạy trong terminal để đưa cookie xuất từ một phiên trình duyệt
+    thật, không tự động (xem import_cookies trong auth/cookies.py của facebook/threads
+    bên spider-hub) - rồi nối thẳng sang một lần refresh token bình thường, nên một lần
+    kích hoạt vừa tạo vừa refresh session. Vẫn hoàn toàn do người xác thực: chỉ tự động
+    hoá các bước "đưa cookie vào Redis, rồi bắt token", không bao giờ tự đăng nhập - xem
+    docstring của app/api/routes/token_refresh.py để biết đầy đủ luồng.
 
-    Returns the generated run_id (or None if the publish itself failed) -
-    the caller feeds it straight into refresh_tracker.start_refresh so the
-    dashboard's live log panel/status badge track this run."""
+    Trả về run_id được sinh ra (hoặc None nếu bản thân việc publish thất bại) - chỗ gọi
+    đưa thẳng vào refresh_tracker.start_refresh để panel log trực tiếp/badge trạng thái
+    trên dashboard theo dõi lượt chạy này."""
     run_id = run_id or str(uuid.uuid4())
     ok = await publish_action_request(
         platform, "cookie_import", {"account_key": account_key, "cookies": cookies, "run_id": run_id}
@@ -375,33 +355,31 @@ async def publish_cookie_import_request(
 
 
 async def publish_restore_session_request(platform: str, account_key: str, run_id: str | None = None) -> str | None:
-    """Queues type=refresh_token pinned to one account_key so spider-hub
-    recaptures GraphQL tokens from Redis storage_state / the cookie column
-    without a human paste and without rotating to a different pool row."""
+    """Xếp hàng type=refresh_token ghim vào một account_key để spider-hub bắt lại token
+    GraphQL từ storage_state trong Redis / cột cookie mà không cần người dán và không
+    xoay sang một dòng khác trong pool."""
     run_id = run_id or str(uuid.uuid4())
     ok = await publish_action_request(platform, "refresh_token", {"account_key": account_key, "run_id": run_id})
     return run_id if ok else None
 
 
 async def get_consumer_lag() -> list[dict[str, Any]]:
-    """Real backlog per CONSUMER_GROUPS entry: that topic's current end
-    offset (high watermark) minus the group's last *committed* offset,
-    summed across partitions - straight from the broker, not app state.
+    """Số tồn đọng thật cho từng mục trong CONSUMER_GROUPS: offset cuối hiện tại của topic
+    (high watermark) trừ đi offset đã *commit* gần nhất của group, cộng dồn qua các
+    partition - lấy thẳng từ broker, không phải trạng thái của app.
 
-    This is deliberately a different number from task_queue's own "queued"
-    count (a Redis list cinemark-api pushes to on publish and spider-hub
-    pops from on start_task) - that one tracks individual job bookkeeping
-    and can get stuck forever if a consumer never gets to call start_task
-    for some entry (see the incident that motivated this function: a
-    kafka-python consumer group stuck mid-rebalance for hours left ~168
-    tiktok comments requests orphaned in Redis while the topic's own real
-    lag for that group was 578 and climbing). This number can't get stuck
-    that way - it's recomputed from the broker every call.
+    Đây cố ý là một con số khác với số "queued" của task_queue (một list Redis mà
+    cinemark-api push vào khi publish và spider-hub pop ra khi start_task) - con số đó
+    theo dõi sổ sách từng job và có thể bị kẹt mãi nếu một consumer không bao giờ gọi
+    được start_task cho một mục nào đó (xem sự cố dẫn tới hàm này: một consumer group
+    kafka-python bị kẹt giữa rebalance hàng giờ, để lại khoảng 168 request comment
+    tiktok mồ côi trong Redis trong khi lag thật của topic cho group đó là 578 và đang
+    tăng). Con số này không thể kẹt kiểu đó - mỗi lần gọi đều tính lại từ broker.
 
-    Uses only read-only admin RPCs (list_consumer_group_offsets) and a
-    consumer with group_id=None (never joins a group, just asks the broker
-    for the topic's high watermark) - this can never trigger a rebalance on
-    any of the real consumer groups it's reporting on."""
+    Chỉ dùng các RPC admin chỉ đọc (list_consumer_group_offsets) và một consumer có
+    group_id=None (không bao giờ tham gia group, chỉ hỏi broker high watermark của
+    topic) - nên không bao giờ gây rebalance cho bất kỳ consumer group thật nào mà nó
+    đang báo cáo."""
     admin = AIOKafkaAdminClient(bootstrap_servers=settings.kafka_bootstrap_servers)
     consumer = AIOKafkaConsumer(bootstrap_servers=settings.kafka_bootstrap_servers, group_id=None)
     try:
@@ -463,10 +441,10 @@ INGEST_DECISIONS_TOPIC = "ingest_decisions"
 
 
 async def publish_ingest_decision(decision: dict[str, Any]) -> None:
-    """Fire-and-forget: one event per post the ingest consumer keeps or drops,
-    archived by the lake writer (app/workers/lake_writer/main.py) under
-    bronze/entity=decisions/. Sole source of truth for any drop decision -
-    the old dropped_posts D1 table is gone."""
+    """Bắn-rồi-quên: mỗi bài mà ingest consumer giữ hoặc loại là một event, được lake
+    writer (app/workers/lake_writer/main.py) lưu trữ dưới bronze/entity=decisions/. Đây
+    là nguồn sự thật duy nhất cho mọi quyết định loại bài - bảng dropped_posts cũ trên
+    D1 đã bị xoá."""
     if _producer is None:
         return
     try:

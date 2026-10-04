@@ -1,15 +1,14 @@
-"""Pre-aggregated dashboard stats for D1 remote.
+"""Thống kê dashboard được tổng hợp sẵn cho D1 remote.
 
-Full-table COUNT(*) over posts/comments via Cloudflare's HTTP API is too
-slow for the Overview page (multi-second per endpoint). These two daily
-rollup tables are small enough to read in tens of milliseconds, and are
-bumped on every *new* post/comment insert (updates only refresh
-last_scraped_at).
+COUNT(*) toàn bảng posts/comments qua HTTP API của Cloudflare quá chậm cho trang
+Overview (vài giây mỗi endpoint). Hai bảng tổng hợp theo ngày này đủ nhỏ để đọc trong
+vài chục mili giây, và được cộng thêm mỗi lần insert bài/comment *mới* (update chỉ
+làm mới last_scraped_at).
 
     stats_platform_daily  (day, platform) -> posts, comments, last_scraped_at
     stats_keyword_daily   (day, keyword_id) -> platform, posts, comments, last_scraped_at
 
-Rebuild from existing rows with:
+Dựng lại từ các dòng hiện có bằng:
 
     python -m scripts.rebuild_stats_summaries
 """
@@ -28,14 +27,13 @@ logger = get_logger(__name__)
 _ready = False
 _ready_lock = asyncio.Lock()
 
-# Mirrors app/workers/ingest_consumer/main.py's _note_drop pattern. A failed
-# rollup write here doesn't lose the post/comment itself (persist_post/
-# persist_comment already committed that row) but silently leaves the
-# Overview page's counts short for that day/platform forever - these are
-# additive counters with no reconciliation short of someone noticing and
-# running `python -m scripts.rebuild_stats_summaries` by hand. Same
-# rolling-window-then-alert-once shape as ingest's drop counter, so an
-# ongoing D1 outage doesn't spam the channel once already reported.
+# Cùng kiểu với _note_drop trong app/workers/ingest_consumer/main.py. Ghi bảng tổng hợp
+# lỗi ở đây không làm mất chính bài/comment (persist_post/persist_comment đã commit dòng
+# đó rồi) nhưng âm thầm để số liệu trên trang Overview bị thiếu cho ngày/nền tảng đó mãi
+# mãi - đây là các bộ đếm cộng dồn, không có cách đối soát nào trừ khi có người nhận ra
+# và tự chạy `python -m scripts.rebuild_stats_summaries`. Cùng dạng cửa sổ trượt rồi
+# cảnh báo một lần như bộ đếm bài bị loại của ingest, để D1 sập kéo dài không spam kênh
+# sau khi đã báo một lần.
 _ROLLUP_FAILURE_ALERT_THRESHOLD = 5
 _ROLLUP_FAILURE_WINDOW_SECONDS = 3600
 
@@ -66,14 +64,14 @@ def _as_int(value: Any) -> int:
 async def _q(
     sql: str, params: list[Any] | None = None, *, quiet: bool = False, timeout: float = 10.0
 ) -> list[dict[str, Any]] | None:
-    # Lazy import: d1.py calls into this module from persist_*/get_*.
+    # Import lười: d1.py gọi vào module này từ persist_*/get_*.
     from app.services.d1 import d1_query
 
     return await d1_query(sql, params, quiet=quiet, timeout=timeout)
 
 
 async def ensure_stats_tables() -> None:
-    """Creates the rollup tables once per process if missing."""
+    """Tạo các bảng tổng hợp một lần mỗi tiến trình nếu còn thiếu."""
     global _ready
     if _ready:
         return
@@ -121,7 +119,7 @@ async def record_post(
     scraped_at: str,
     is_new: bool,
 ) -> None:
-    """Bump platform (+ keyword) daily rollups after a post write."""
+    """Cộng bảng tổng hợp ngày theo nền tảng (+ từ khoá) sau khi ghi một bài."""
     day = _day_from_iso(scraped_at)
     if not day or not platform:
         return
@@ -162,7 +160,7 @@ async def record_comment(
     scraped_at: str,
     is_new: bool,
 ) -> None:
-    """Bump platform (+ keyword) daily rollups after a comment write."""
+    """Cộng bảng tổng hợp ngày theo nền tảng (+ từ khoá) sau khi ghi một comment."""
     day = _day_from_iso(scraped_at)
     if not day or not platform:
         return
@@ -281,7 +279,7 @@ async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
 
 
 async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
-    """Same response shape as the old full-table join, fed by daily rollups."""
+    """Cùng dạng response với phép join toàn bảng cũ, lấy dữ liệu từ bảng tổng hợp theo ngày."""
     from app.services.d1 import _related_hashtags_for_keywords
 
     await ensure_stats_tables()
@@ -355,18 +353,17 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
 
 
 async def rebuild_from_source() -> dict[str, int]:
-    """Wipe + refill both rollup tables from posts/comments. Run by hand
-    (scripts/rebuild_stats_summaries.py) and after every irrelevant-post
-    purge that deleted rows (app/services/cleanup.py). The posts INSERTs
-    upsert because the ingest consumer can re-create a (day, platform) row
-    between the DELETE and the refill."""
+    """Xoá sạch + điền lại cả hai bảng tổng hợp từ posts/comments. Chạy bằng tay
+    (scripts/rebuild_stats_summaries.py) và sau mỗi lượt dọn bài không liên quan có xoá
+    dòng (app/services/cleanup.py). Các lệnh INSERT cho posts dùng upsert vì ingest
+    consumer có thể tạo lại một dòng (day, platform) giữa lúc DELETE và lúc điền lại."""
     await ensure_stats_tables()
-    # Full-table aggregates can exceed the default 10s D1 HTTP timeout.
+    # Phép tổng hợp toàn bảng có thể vượt timeout HTTP mặc định 10s của D1.
     slow = 120.0
     await _q("DELETE FROM stats_platform_daily", timeout=slow)
     await _q("DELETE FROM stats_keyword_daily", timeout=slow)
 
-    # Platform posts
+    # Bài theo nền tảng
     ok = await _q(
         """
         INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
@@ -382,7 +379,7 @@ async def rebuild_from_source() -> dict[str, int]:
     )
     if ok is None:
         raise RuntimeError("rebuild failed: platform posts aggregate")
-    # Platform comments (add into existing day/platform rows)
+    # Comment theo nền tảng (cộng vào các dòng day/platform đã có)
     ok = await _q(
         """
         INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
@@ -402,7 +399,7 @@ async def rebuild_from_source() -> dict[str, int]:
     )
     if ok is None:
         raise RuntimeError("rebuild failed: platform comments aggregate")
-    # Keyword posts
+    # Bài theo từ khoá
     ok = await _q(
         """
         INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
@@ -418,7 +415,7 @@ async def rebuild_from_source() -> dict[str, int]:
     )
     if ok is None:
         raise RuntimeError("rebuild failed: keyword posts aggregate")
-    # Keyword comments via parent post
+    # Comment theo từ khoá, qua bài cha
     ok = await _q(
         """
         INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)

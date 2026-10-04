@@ -1,17 +1,17 @@
-"""One-off bulk trigger: queue comments-crawl requests for the top-engagement
-posts of the most recently created enabled keywords, across all 3 platforms.
+"""Kích hoạt hàng loạt một lần: xếp hàng các request crawl comment cho các bài tương tác
+cao nhất của những từ khoá đang bật được tạo gần đây nhất, trên cả 3 nền tảng.
 
-Unlike the daily scheduled sweep (list_posts_needing_comments, still gated
-on "zero comments stored locally"), this also skips a post whose own
-reply_count is 0 - the platform's own reported comment count - so a bulk
-run doesn't burn a proxy/browser session on a post that structurally can't
-return anything. reply_count==0 can't distinguish "genuinely zero" from
-"not captured at scrape time" (see platform_scraper.py's own history with
-this ambiguity), but for a one-off bulk *selection* the cost of wrongly
-skipping a post is just "not this round" - much cheaper than the old
-single-post hard gate this same ambiguity used to justify removing.
+Khác với lượt quét theo lịch hằng ngày (list_posts_needing_comments, vẫn chặn theo
+"chưa có comment nào được lưu ở local"), script này còn bỏ qua bài có reply_count bằng
+0 - số comment do chính nền tảng báo - để một lượt chạy hàng loạt không tốn một
+session proxy/trình duyệt cho bài về cấu trúc không thể trả về gì. reply_count==0
+không phân biệt được "thật sự bằng 0" với "lúc crawl không lấy được" (xem lịch sử của
+platform_scraper.py với sự mơ hồ này), nhưng với một lần *chọn* hàng loạt chạy một
+lần thì cái giá của việc bỏ nhầm một bài chỉ là "không phải lượt này" - rẻ hơn nhiều
+so với cổng chặn cứng cho từng bài trước đây, thứ mà chính sự mơ hồ này đã là lý do
+để bỏ đi.
 
-Usage:
+Cách dùng:
   .venv/bin/python -m scripts.trigger_recent_keyword_comments
   .venv/bin/python -m scripts.trigger_recent_keyword_comments --keywords 15 --top-n 100
 """
@@ -64,9 +64,9 @@ async def posts_to_trigger(platform: str, keyword_id: str, top_n: int) -> list[d
         if len(selected) >= top_n:
             break
         if row.get("comment_n"):
-            continue  # already have comments stored - not this run's job
+            continue  # đã có comment được lưu - không phải việc của lượt chạy này
         if not (row.get("reply_count") or 0):
-            continue  # platform reports 0 replies - skip, per this run's request
+            continue  # nền tảng báo 0 reply - bỏ qua, theo yêu cầu của lượt chạy này
         if not row.get("url"):
             continue
         selected.append(row)

@@ -1,9 +1,9 @@
-"""Ops metrics for the dashboard performance chart.
+"""Số liệu vận hành cho biểu đồ hiệu năng trên dashboard.
 
-Samples host load + this API process RSS + crawl queue depth, and keeps a
-short Redis ring buffer so the overview can draw a live line chart without
-a separate Prometheus stack. Each GET /health/metrics may append at most
-one sample (throttled) then returns the series.
+Lấy mẫu tải của máy + RSS của tiến trình API này + độ sâu hàng đợi crawl, và giữ một
+ring buffer ngắn trong Redis để trang Overview vẽ được biểu đồ đường trực tiếp mà
+không cần dựng riêng Prometheus. Mỗi lần GET /health/metrics thêm tối đa một mẫu (có
+giới hạn tần suất) rồi trả về chuỗi số liệu.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ HISTORY_WINDOW_SECONDS = 15 * 60
 
 
 def _rss_mb() -> float:
-    # macOS reports bytes; Linux reports kilobytes.
+    # macOS báo theo byte; Linux báo theo kilobyte.
     rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     if sys.platform != "darwin":
         rss *= 1024.0
@@ -46,8 +46,8 @@ async def _queue_counts() -> tuple[int, int]:
     running = 0
     queued = 0
     for platform in PLATFORMS:
-        # Same rule as task_queue.snapshot: running jobs always count, and
-        # while draining only bypass_drain items are still really queued.
+        # Cùng quy tắc với task_queue.snapshot: job đang chạy luôn được tính, và trong lúc
+        # drain thì chỉ các mục bypass_drain mới thực sự còn trong hàng đợi.
         draining = await is_platform_draining(platform)
         if await get_running_job(platform):
             running += 1
@@ -90,7 +90,8 @@ async def collect_sample() -> dict[str, Any]:
 
 
 async def record_and_list_samples() -> dict[str, Any]:
-    """Throttle-append the latest sample, then return current + series."""
+    """Thêm mẫu mới nhất (có giới hạn tần suất), rồi trả về giá trị hiện tại + chuỗi số
+    liệu."""
     client = get_redis_client()
     sample = await collect_sample()
 

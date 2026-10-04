@@ -1,10 +1,9 @@
-"""scripts/check_account_health.py - the cron counterpart to the dashboard's
-manual "Check" button. The one behavior worth locking in with a test isn't
-"does it call evaluate_account_health" (trivial) but the alert-once
-contract: Telegram gets pinged on a transition into warning/disabled, never
-on every cycle a sustained problem sits there - see the module's own
-docstring for why (an outage that stays broken for days must not repeat the
-same alert every 6h)."""
+"""scripts/check_account_health.py - bản cron tương ứng với nút "Check" bấm tay trên
+dashboard. Hành vi đáng khoá lại bằng test không phải "nó có gọi
+evaluate_account_health không" (quá hiển nhiên) mà là hợp đồng cảnh báo một lần:
+Telegram chỉ được báo khi chuyển sang warning/disabled, không bao giờ ở mỗi chu kỳ mà
+một vấn đề kéo dài vẫn còn đó - xem docstring module để biết lý do (một sự cố hỏng
+nhiều ngày không được lặp lại cùng một cảnh báo mỗi 6 giờ)."""
 
 from __future__ import annotations
 
@@ -62,8 +61,8 @@ async def test_recovering_to_ok_does_not_alert() -> None:
 
 
 async def test_first_ever_check_landing_on_warning_still_alerts() -> None:
-    """previous_status is None (never checked) - still a transition into a
-    degraded state, not something to treat as "already known about"."""
+    """previous_status là None (chưa từng kiểm tra) - vẫn là chuyển sang trạng thái xấu đi,
+    không phải thứ coi là "đã biết rồi"."""
     with (
         patch("scripts.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])),
         patch("scripts.check_account_health.evaluate_account_health", AsyncMock(return_value="disabled")),

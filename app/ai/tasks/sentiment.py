@@ -1,19 +1,20 @@
-"""Comment sentiment classification - Kira (see app/ai/kira.py; Beeknoee
-only writes reports).
+"""Phân loại cảm xúc comment - dùng Kira (xem app/ai/kira.py; Beeknoee chỉ viết
+report).
 
-Batched: one Kira call classifies up to BATCH_SIZE comments. Per comment,
-a call's fixed cost (system prompt, latency, a concurrency slot) dwarfs the
-comment itself, so classifying comments one call each could not keep up
-with a busy crawl day (~22k comments). Goes through call_kira's "sentiment"
-task, so the dashboard's Kira on/off switch and prompt override apply.
+Theo lô: mỗi lời gọi Kira phân loại tối đa BATCH_SIZE comment. Với mỗi comment, chi
+phí cố định của một lời gọi (system prompt, độ trễ, một suất đồng thời) lớn hơn hẳn
+bản thân comment, nên mỗi lời gọi một comment không theo kịp một ngày crawl bận
+(khoảng 22 nghìn comment). Đi qua task "sentiment" của call_kira, nên nút bật/tắt
+Kira và prompt ghi đè trên dashboard đều có hiệu lực.
 
-Called from the ingest consumer's background sweep
-(app/workers/ingest_consumer/sentiment_sweep.py) and
-scripts/backfill_comment_sentiment.py - never inline per comment.
-(Post relevance is Kira's job - app/ai/tasks/post_relevance.py.)
+Được gọi từ vòng sweep chạy nền của ingest consumer
+(app/workers/ingest_consumer/sentiment_sweep.py) và
+scripts/backfill_comment_sentiment.py - không bao giờ gọi trực tiếp cho từng
+comment.
+(Độ liên quan của bài là việc của Kira - app/ai/tasks/post_relevance.py.)
 
-Fail-open: a failed call leaves that batch's results None, so the comment
-simply stays unclassified until the next sweep.
+Fail open: lời gọi lỗi thì kết quả của cả lô là None, và comment đơn giản là chưa
+được phân loại cho tới lần sweep sau.
 """
 
 from __future__ import annotations
@@ -46,15 +47,15 @@ async def _classify_batch(messages: list[str]) -> list[str | None]:
             task="sentiment",
             system_prompt=SENTIMENT_SYSTEM_PROMPT,
             user_prompt=_user_prompt(messages),
-            # Generous: reasoning models spend hidden tokens before the JSON
-            # (a 25-comment batch hit 1,700 with ~250 tokens of output).
+            # Để dư: model có reasoning tốn token ẩn trước khi ra JSON (một lô 25 comment tốn
+            # 1.700 token trong khi đầu ra chỉ khoảng 250 token).
             max_tokens=MAX_TOKENS,
         )
         parsed = parse_json_response(response)
         results = parsed.get("results") if isinstance(parsed, dict) else None
         if not isinstance(results, list):
             raise TypeError(f"unexpected sentiment shape: {str(parsed)[:200]}")
-    except Exception as exc:  # noqa: BLE001 - fail open, the comments stay unclassified
+    except Exception as exc:  # noqa: BLE001 - fail open, các comment tạm chưa được phân loại
         logger.warning("kira_sentiment_failed", error=exc, batch_size=len(messages))
         return [None] * len(messages)
 
@@ -64,8 +65,8 @@ async def _classify_batch(messages: list[str]) -> list[str | None]:
             continue
         index, sentiment = entry.get("i"), entry.get("sentiment")
         if index is None and len(results) == len(messages):
-            # The model dropped the numbering but answered every comment in
-            # order - seen live with a stale one-comment system prompt.
+            # Model bỏ mất số thứ tự nhưng vẫn trả lời đủ mọi comment theo đúng thứ tự - đã gặp
+            # thực tế khi system prompt cũ (mỗi lần một comment) còn được lưu.
             index = position
         if isinstance(index, int) and 1 <= index <= len(messages) and sentiment in VALID_SENTIMENTS:
             labels[index - 1] = sentiment
@@ -76,9 +77,8 @@ async def _classify_batch(messages: list[str]) -> list[str | None]:
 
 
 async def classify_sentiments(messages: list[str | None]) -> list[str | None]:
-    """Same length/order as `messages`: "positive"/"negative"/"neutral", or
-    None for a message too short to classify, while Kira is switched off,
-    or when its batch's call failed."""
+    """Cùng độ dài/thứ tự với `messages`: "positive"/"negative"/"neutral", hoặc None với
+    tin nhắn quá ngắn để phân loại, khi Kira đang tắt, hoặc khi lời gọi của lô đó lỗi."""
     labels: list[str | None] = [None] * len(messages)
     todo = [(i, m.strip()) for i, m in enumerate(messages) if m is not None and _classifiable(m)]
     if not todo or not await kira_is_enabled():
@@ -91,5 +91,5 @@ async def classify_sentiments(messages: list[str | None]) -> list[str | None]:
 
 
 async def classify_sentiment(message: str | None) -> str | None:
-    """Single-comment convenience wrapper around classify_sentiments()."""
+    """Hàm tiện ích phân loại một comment, bọc classify_sentiments()."""
     return (await classify_sentiments([message]))[0]

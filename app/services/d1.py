@@ -1,28 +1,28 @@
-"""Cloudflare D1 access layer - lets this VPS-hosted service read/write a
-D1 database without needing a Cloudflare Worker (D1 bindings only exist
-inside Workers; from a plain process, D1's REST query API is the only door
-in). Talks to the same D1 database cinemark-scraper's Worker owns, using its
-existing movies/keywords/posts/post_engagement_snapshots tables (see
-cinemark-scraper/src/db/schema.ts) - not a separate table of our own, so a
-crawl triggered from here (get_enabled_keywords/get_keyword) and the post it
-produces (persist_post) share the exact same movie_id/keyword_id space, no
-ID-mapping layer needed.
+"""Tầng truy cập Cloudflare D1 - cho service chạy trên VPS này đọc/ghi một database D1
+mà không cần Cloudflare Worker (binding D1 chỉ có bên trong Worker; từ một tiến trình
+thường, REST query API của D1 là cửa duy nhất). Nói chuyện với cùng database D1 mà
+Worker của cinemark-scraper sở hữu, dùng các bảng
+movies/keywords/posts/post_engagement_snapshots có sẵn của nó (xem
+cinemark-scraper/src/db/schema.ts) - không phải bảng riêng của mình, nên một lượt
+crawl kích hoạt từ đây (get_enabled_keywords/get_keyword) và bài nó sinh ra
+(persist_post) dùng chung đúng một không gian movie_id/keyword_id, không cần tầng ánh
+xạ ID nào.
 
-The HTTP-vs-local transport (d1_query) now lives in app/clients/d1.py,
-and posts/comments' own queries live in app/repositories/d1/{posts,comments}.py
-- both re-exported below so existing `from app.services.d1 import
-persist_post` etc. call sites don't need to change. This module keeps the
-transport-agnostic logic for every other table (movies, keywords,
-social_topic_reports) plus the stats_summary.py passthroughs.
+Tầng truyền tải HTTP-hay-local (d1_query) giờ nằm ở app/clients/d1.py, còn query
+riêng của posts/comments nằm ở app/repositories/d1/{posts,comments}.py - cả hai đều
+được re-export bên dưới để các chỗ gọi `from app.services.d1 import persist_post`
+v.v. hiện có không phải sửa. Module này giữ logic không phụ thuộc tầng truyền tải cho
+mọi bảng khác (movies, keywords, social_topic_reports) cộng với các hàm chuyển tiếp
+sang stats_summary.py.
 
-Platform-agnostic: every function here works off app.services.platforms'
-registered_platforms(), not a hardcoded "facebook" literal - see that
-module's docstring for what adding a new platform requires.
+Không phụ thuộc nền tảng: mọi hàm ở đây làm việc dựa trên registered_platforms() của
+app.services.platforms, không gán cứng chữ "facebook" - xem docstring của module đó
+để biết thêm một nền tảng mới cần những gì.
 
-Best-effort throughout: every function here returns None/[]/False and logs
-on failure (missing config, network error, HTTP error) instead of raising -
-a D1 write that fails must never take down Kafka ingestion, which is the
-only durable delivery guarantee this service has."""
+Cố gắng hết mức có thể ở mọi chỗ: mọi hàm ở đây trả về None/[]/False và ghi log khi
+lỗi (thiếu cấu hình, lỗi mạng, lỗi HTTP) thay vì raise - một lần ghi D1 thất bại
+tuyệt đối không được làm sập việc ingest từ Kafka, vốn là bảo đảm giao nhận bền vững
+duy nhất mà service này có."""
 
 from __future__ import annotations
 
@@ -62,9 +62,8 @@ from app.repositories.d1.posts import (
 
 logger = get_logger(__name__)
 
-# Re-exported for existing `from app.services.d1 import X` call sites - see
-# module docstring. Referencing them here (not just importing) keeps linters
-# from flagging the import as unused.
+# Re-export cho các chỗ gọi `from app.services.d1 import X` hiện có - xem docstring
+# module. Tham chiếu chúng ở đây (không chỉ import) để linter không báo import thừa.
 __all_reexports__ = (
     d1_query,
     _configured,
@@ -90,9 +89,9 @@ __all_reexports__ = (
 
 
 async def _related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """TikTok co-occurring tags spider-hub stored after a crawl (Redis
-    tiktok:related_hashtags:{keyword_id}). Missing Redis or empty keys
-    just mean the dashboard shows no review chips yet."""
+    """Các tag TikTok xuất hiện cùng mà spider-hub đã lưu sau một lượt crawl (Redis
+    tiktok:related_hashtags:{keyword_id}). Thiếu Redis hoặc key rỗng chỉ có nghĩa là
+    dashboard chưa có chip nào để duyệt."""
     if not keyword_ids:
         return {}
     try:
@@ -130,41 +129,41 @@ async def _related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, li
 
 
 async def get_post_counts_by_platform() -> list[dict[str, Any]]:
-    """Total posts ingested per platform, plus the most recent scrape and
-    today's vs yesterday's ingest counts. Reads pre-aggregated
-    stats_platform_daily (see app/services/stats_summary.py) - a full
-    COUNT(*) over posts via D1 HTTP is too slow for the Overview page."""
+    """Tổng số bài đã ingest theo nền tảng, cộng thời điểm crawl gần nhất và số ingest hôm
+    nay so với hôm qua. Đọc bảng tổng hợp sẵn stats_platform_daily (xem
+    app/services/stats_summary.py) - COUNT(*) toàn bộ posts qua D1 HTTP quá chậm cho
+    trang Overview."""
     from app.services.stats_summary import get_post_counts_by_platform as _from_summary
 
     return await _from_summary()
 
 
 async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
-    """Daily post counts per platform for the last `days` days - from
-    stats_platform_daily rollups."""
+    """Số bài theo ngày của từng nền tảng trong `days` ngày gần nhất - từ bảng tổng hợp
+    stats_platform_daily."""
     from app.services.stats_summary import get_post_timeseries as _from_summary
 
     return await _from_summary(days)
 
 
 async def get_comment_counts_by_platform() -> list[dict[str, Any]]:
-    """Total comments ingested per platform - same shape as
-    get_post_counts_by_platform, from stats_platform_daily."""
+    """Tổng số comment đã ingest theo nền tảng - cùng dạng với get_post_counts_by_platform,
+    từ stats_platform_daily."""
     from app.services.stats_summary import get_comment_counts_by_platform as _from_summary
 
     return await _from_summary()
 
 
 async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
-    """Daily comment counts per platform for the last `days` days."""
+    """Số comment theo ngày của từng nền tảng trong `days` ngày gần nhất."""
     from app.services.stats_summary import get_comment_timeseries as _from_summary
 
     return await _from_summary(days)
 
 
 async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
-    """Per-search-keyword post/comment totals plus today's vs yesterday's
-    ingest - from stats_keyword_daily rollups."""
+    """Tổng số bài/comment theo từng từ khoá tìm kiếm cộng số ingest hôm nay so với hôm qua
+    - từ bảng tổng hợp stats_keyword_daily."""
     from app.services.stats_summary import get_keyword_volume as _from_summary
 
     return await _from_summary(platform)
@@ -174,7 +173,7 @@ _MOVIE_COLUMNS = "id, title, slug, released_at, poster_url, description, directo
 
 
 def movie_slug(title: str) -> str:
-    """ASCII-ish URL slug from a title (Vietnamese diacritics stripped)."""
+    """Slug URL gần như ASCII từ một tiêu đề (đã bỏ dấu tiếng Việt)."""
     folded = title.strip().replace("đ", "d").replace("Đ", "D")
     normalized = unicodedata.normalize("NFKD", folded)
     ascii_ish = "".join(ch for ch in normalized if not unicodedata.combining(ch))
@@ -204,14 +203,12 @@ async def _unique_movie_slug(base: str, exclude_id: str | None = None) -> str | 
 
 
 async def list_movies() -> list[dict[str, Any]]:
-    """Every enabled movie - feeds the dashboard's "which movie does this
-    new keyword belong to" picker when creating a keyword inline from the
-    crawl-trigger form, and the dashboard's own movie-detail table. Also
-    used by scripts/generate_social_topic_reports.py to iterate every movie
-    that should get a report (extra fields here are simply unused by that
-    caller, not a breaking change for it). `cast` needs backticks - it's a
-    SQL keyword (the CAST() function) in SQLite's own grammar, not just a
-    Python one."""
+    """Mọi phim đang bật - cấp dữ liệu cho ô chọn "từ khoá mới này thuộc phim nào" khi tạo
+    từ khoá ngay trong form kích hoạt crawl, và bảng chi tiết phim của dashboard. Cũng
+    được scripts/generate_social_topic_reports.py dùng để duyệt qua mọi phim cần report
+    (các trường thừa ở đây chỗ gọi đó đơn giản là không dùng, không làm hỏng gì). `cast`
+    cần dấu backtick - nó là từ khoá SQL (hàm CAST()) trong ngữ pháp của chính SQLite,
+    không chỉ của Python."""
     rows = await d1_query(f"SELECT {_MOVIE_COLUMNS} FROM movies WHERE enabled = 1 ORDER BY title ASC")
     return rows or []
 
@@ -224,8 +221,8 @@ async def get_movie(movie_id: str) -> dict[str, Any] | None:
 
 
 async def create_movie(fields: dict[str, Any]) -> dict[str, Any] | None:
-    """Dashboard Movies page create - staff type a title and optional
-    release/cast fields; slug is derived unless they pass one."""
+    """Tạo phim từ trang Movies của dashboard - nhân viên gõ tên và các trường
+    release/cast tuỳ chọn; slug được tự suy ra trừ khi họ truyền vào."""
     title = (fields.get("title") or "").strip()
     if not title:
         return None
@@ -313,7 +310,7 @@ async def update_movie(movie_id: str, fields: dict[str, Any]) -> dict[str, Any] 
 
 
 async def disable_movie(movie_id: str) -> bool | None:
-    """Soft-delete from the dashboard list (keywords/posts keep the FK)."""
+    """Xoá mềm khỏi danh sách trên dashboard (keywords/posts vẫn giữ khoá ngoại)."""
     existing = await get_movie(movie_id)
     if existing is None:
         rows = await d1_query("SELECT id FROM movies WHERE id = ?", [movie_id])
@@ -330,16 +327,15 @@ async def disable_movie(movie_id: str) -> bool | None:
     return True
 
 
-# Below this many classified comments, scripts/generate_social_topic_reports.py
-# skips a movie entirely (too little signal for a meaningful topic cluster) -
-# tune freely, not derived from anything.
+# Dưới số comment đã phân loại này, scripts/generate_social_topic_reports.py bỏ qua hẳn
+# một phim (quá ít tín hiệu để gom topic có ý nghĩa) - chỉnh thoải mái, không suy ra
+# từ đâu cả.
 MIN_COMMENTS_FOR_REPORT = 15
 
-# Cap on how many comments feed one topic-clustering Kira call - keeps the
-# prompt (and the model's reasoning-token spend) bounded regardless of how
-# large a movie's comment volume gets. Ranked by engagement first, so the
-# highest-signal comments are the ones that get dropped if a movie has more
-# than this many classified comments.
+# Trần số comment đưa vào một lời gọi Kira gom topic - giữ prompt (và lượng token suy
+# luận của model) có giới hạn bất kể số comment của phim lớn tới đâu. Xếp hạng theo
+# tương tác trước, nên nếu phim có nhiều comment đã phân loại hơn mức này thì những
+# comment có tín hiệu cao nhất là những comment được giữ lại.
 REPORT_COMMENT_SAMPLE_SIZE = 400
 
 
@@ -347,32 +343,28 @@ _SENTIMENT_BUCKETS = ("positive", "negative", "neutral")
 
 
 def _normalize_comment_text(message: str) -> str:
-    """Collapses a comment down to a dedup key - lowercased, whitespace-
-    collapsed. Catches exact/near-exact copy-paste (spam farms, bot rings
-    reposting the same line under many posts) without the cost/complexity
-    of real fuzzy matching - see get_comment_sample_for_movie's own
-    docstring for why this matters for a sample an LLM treats as
-    representative."""
+    """Thu gọn một comment thành key khử trùng - chữ thường, gộp khoảng trắng. Bắt được các
+    bản copy-paste giống hệt/gần giống hệt (trại spam, nhóm bot đăng lại cùng một câu
+    dưới nhiều bài) mà không tốn chi phí/độ phức tạp của so khớp mờ thật sự - xem
+    docstring của get_comment_sample_for_movie để biết vì sao điều này quan trọng với một
+    mẫu mà LLM coi là đại diện."""
     return " ".join(message.split()).casefold()
 
 
 def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
-    """Picks `limit` rows out of by_sentiment (already engagement-ranked
-    within each bucket) preserving each bucket's real share of the
-    candidate pool, not just whichever bucket happens to have the
-    loudest/most-liked comments. See get_comment_sample_for_movie's own
-    docstring for why a pure top-N-by-engagement sample was skewing the
-    topic-clustering/narrative call."""
+    """Chọn `limit` dòng từ by_sentiment (trong mỗi nhóm đã xếp hạng theo tương tác sẵn),
+    giữ đúng tỉ lệ thật của từng nhóm trong tập ứng viên, không chỉ lấy nhóm nào tình cờ
+    có comment ồn ào/nhiều like nhất. Xem docstring của get_comment_sample_for_movie để
+    biết vì sao mẫu thuần top-N theo tương tác từng làm lệch lời gọi gom topic/narrative."""
     total = sum(len(rows) for rows in by_sentiment.values())
     if total <= limit:
         combined = [row for rows in by_sentiment.values() for row in rows]
         combined.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
         return combined
 
-    # Largest-remainder method: exact real-proportion quotas would rarely
-    # be whole numbers, so floor each bucket's share, then hand out the
-    # few leftover slots to whichever buckets had the biggest fractional
-    # remainder - keeps sum(quotas) == limit exactly.
+    # Phương pháp phần dư lớn nhất: hạn mức theo đúng tỉ lệ thật hiếm khi là số nguyên,
+    # nên làm tròn xuống phần của mỗi nhóm, rồi chia vài chỗ còn dư cho các nhóm có phần
+    # lẻ lớn nhất - giữ sum(quotas) == limit chính xác.
     raw_quotas = {k: (len(v) / total) * limit for k, v in by_sentiment.items()}
     quotas = {k: int(q) for k, q in raw_quotas.items()}
     remainder = limit - sum(quotas.values())
@@ -387,11 +379,9 @@ def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int
         shortfall += quotas[k] - take
 
     if shortfall > 0:
-        # A bucket came up short of its quota (too little real signal in
-        # that sentiment) - backfill from whichever candidates weren't
-        # already taken, still ranked by engagement, so the sample still
-        # ends up exactly `limit` long whenever enough candidates exist
-        # anywhere across buckets.
+        # Một nhóm không đủ hạn mức (quá ít tín hiệu thật ở cảm xúc đó) - bù bằng các ứng viên
+        # chưa được chọn, vẫn xếp theo tương tác, để mẫu vẫn dài đúng `limit` mỗi khi tổng các
+        # nhóm còn đủ ứng viên.
         taken_ids = {row["id"] for row in selected}
         leftover = [row for rows in by_sentiment.values() for row in rows if row["id"] not in taken_ids]
         leftover.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
@@ -402,44 +392,37 @@ def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int
 
 
 async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMENT_SAMPLE_SIZE) -> list[dict[str, Any]]:
-    """Sentiment-stratified, deduped sample of this movie's already-
-    classified comments, for the topic-clustering Bee/Kira call in
-    scripts/generate_social_topic_reports.py - NOT used for the overall
-    sentiment percentages (see get_movie_sentiment_counts, which counts
-    every classified comment, not just this capped sample).
+    """Mẫu comment đã phân loại của phim này, phân tầng theo cảm xúc và đã khử trùng, dùng
+    cho lời gọi Bee/Kira gom topic trong scripts/generate_social_topic_reports.py -
+    KHÔNG dùng cho tỉ lệ cảm xúc tổng thể (xem get_movie_sentiment_counts, hàm đếm mọi
+    comment đã phân loại, không chỉ mẫu có giới hạn này).
 
-    Only comments under a post that's BOTH relevance_label='related' AND
-    passes movie_hashtag_present (see app/repositories/d1/posts.py's own
-    top-100 filter, same two-signal gate, same reasoning: relevance_label
-    alone is just a mirror of the AI verdict at ingest time, not
-    independent corroboration - persist_post's own docstring). Without
-    movie_hashtag_present too, a keyword-matched post that isn't actually
-    about the movie would let its off-topic comments dilute the topic
-    clustering and the sentiment split just as much as it used to dilute
-    the top-100 list. Confirmed live before the relevance_label-only fix:
-    some movies had 25-66% of their "classified comments" sitting under
-    such posts; confirmed live 2026-09-24 that relevance_label alone still
-    wasn't enough on its own (the "Huyết Thống" report needed deleting and
-    regenerating after this second gate was added - see
-    movie_hashtag_present's own docstring for the exact incident).
+    Chỉ lấy comment dưới bài vừa có relevance_label='related' VỪA qua được
+    movie_hashtag_present (xem bộ lọc top 100 trong app/repositories/d1/posts.py, cùng
+    cổng hai tín hiệu, cùng lý do: riêng relevance_label chỉ là bản sao phán quyết của AI
+    lúc ingest, không phải bằng chứng củng cố độc lập - xem docstring của persist_post).
+    Không có thêm movie_hashtag_present, một bài khớp từ khoá nhưng thực ra không nói về
+    phim sẽ để các comment lạc đề của nó làm loãng việc gom topic và tỉ lệ cảm xúc y như
+    từng làm loãng danh sách top 100. Đã xác nhận thực tế trước khi có bản sửa chỉ dùng
+    relevance_label: có phim 25-66% "comment đã phân loại" nằm dưới những bài như vậy;
+    đã xác nhận thực tế 2026-09-24 rằng riêng relevance_label vẫn chưa đủ (report "Huyết
+    Thống" phải xoá và tạo lại sau khi thêm cổng thứ hai này - xem docstring của
+    movie_hashtag_present để biết đúng sự cố).
 
-    Two more accuracy gaps closed 2026-09-25, after the above: a pure
-    top-N-by-engagement sample (i) let exact/near-exact duplicate text
-    (bot rings, copy-paste spam threads - these tend to carry inflated or
-    coordinated like counts) occupy multiple slots as if they were
-    independent opinions, and (ii) could be dominated entirely by one
-    viral sentiment (e.g. a single very-liked positive thread), crowding
-    out negative/neutral comments that are proportionally real but
-    individually less-liked. Now: dedupe by normalized text first (keeping
-    the highest-engagement instance, since rows already arrive engagement-
-    ranked), then sample each sentiment bucket in proportion to its real
-    share of the deduped candidate pool (see _stratified_sample), not just
-    whichever bucket's comments happen to be loudest.
+    Thêm hai lỗ hổng độ chính xác được vá ngày 2026-09-25, sau những điều trên: một mẫu
+    thuần top-N theo tương tác (i) để các đoạn text trùng hệt/gần trùng hệt (nhóm bot,
+    chuỗi spam copy-paste - thường có số like bị thổi phồng hoặc phối hợp) chiếm nhiều
+    chỗ như thể là các ý kiến độc lập, và (ii) có thể bị một cảm xúc viral chiếm trọn
+    (ví dụ một chuỗi tích cực rất nhiều like), đẩy mất các comment tiêu cực/trung lập vốn
+    có thật về tỉ lệ nhưng từng cái ít like hơn. Giờ: khử trùng theo text đã chuẩn hoá
+    trước (giữ bản có tương tác cao nhất, vì các dòng vốn đã tới theo thứ tự tương tác),
+    rồi lấy mẫu từng nhóm cảm xúc theo đúng tỉ lệ thật của nó trong tập ứng viên đã khử
+    trùng (xem _stratified_sample), không chỉ lấy nhóm nào có comment ồn ào nhất.
 
-    Over-fetches well past `limit` (movie_hashtag_present + dedup both run
-    in Python, after the fetch, and shrink the pool further) - same shape
-    as list_posts(sort="engagement"), just a wider margin since two filters
-    now sit between the raw fetch and the final sample instead of one."""
+    Lấy dư khá nhiều so với `limit` (movie_hashtag_present + khử trùng đều chạy bằng
+    Python, sau khi lấy dữ liệu, và còn thu hẹp tập ứng viên thêm) - cùng dạng với
+    list_posts(sort="engagement"), chỉ là biên rộng hơn vì giờ có hai bộ lọc nằm giữa
+    lần lấy thô và mẫu cuối cùng thay vì một."""
     movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
     movie_title = movie_rows[0]["title"] if movie_rows else None
 
@@ -482,25 +465,22 @@ async def get_comment_sample_for_movie(movie_id: str, limit: int = REPORT_COMMEN
 
 
 async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
-    """Count of every classified comment for this movie, grouped by
-    sentiment label - the ground truth for the report's overall_sentiment
-    percentages (computed by the caller via plain division, not estimated
-    by an LLM), over the FULL population, not just the capped sample fed
-    to the topic-clustering call.
+    """Số lượng mọi comment đã phân loại của phim này, nhóm theo nhãn cảm xúc - sự thật gốc
+    cho tỉ lệ overall_sentiment của report (chỗ gọi tính bằng phép chia đơn giản, không
+    để LLM ước lượng), trên TOÀN BỘ tập comment, không chỉ mẫu có giới hạn đưa vào lời
+    gọi gom topic.
 
-    Same relevance_label='related' AND movie_hashtag_present gate as
-    get_comment_sample_for_movie above, for the same reason - the
-    percentages must come from the same on-topic population the sample was
-    drawn from, not a larger one that still includes off-topic posts'
-    comments. relevance_label alone isn't independent corroboration (see
-    that function's own docstring); this one used to skip the second gate,
-    which is exactly why "Huyết Thống" (an ordinary-vocabulary movie title)
-    kept polluting its own sentiment percentages even after the post-list
-    and comment-sample views were fixed to filter it out - counting here
-    ran straight off the raw label, no re-check. Fetches every classified
-    comment (not just a capped sample, unlike get_comment_sample_for_movie)
-    since this needs the true population count, not a representative
-    sample - movie_hashtag_present then still runs in Python per row."""
+    Cùng cổng relevance_label='related' VÀ movie_hashtag_present như
+    get_comment_sample_for_movie ở trên, cùng lý do - tỉ lệ phải lấy từ đúng tập comment
+    đúng chủ đề mà mẫu được rút ra, không phải từ một tập lớn hơn vẫn chứa comment của
+    bài lạc đề. Riêng relevance_label không phải bằng chứng củng cố độc lập (xem
+    docstring của hàm kia); hàm này từng bỏ qua cổng thứ hai, và đó chính là lý do "Huyết
+    Thống" (một tên phim là từ vựng thông thường) vẫn làm bẩn tỉ lệ cảm xúc của chính nó
+    ngay cả sau khi danh sách bài và mẫu comment đã được sửa để lọc bỏ - phần đếm ở đây
+    chạy thẳng trên nhãn thô, không kiểm tra lại. Lấy mọi comment đã phân loại (không chỉ
+    một mẫu có giới hạn, khác với get_comment_sample_for_movie) vì cần đếm đúng toàn bộ,
+    không phải mẫu đại diện - sau đó movie_hashtag_present vẫn chạy bằng Python trên từng
+    dòng."""
     movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
     movie_title = movie_rows[0]["title"] if movie_rows else None
 
@@ -530,9 +510,9 @@ async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
 async def upsert_social_topic_report(
     *, movie_id: str, dashboard_data_json: str, comment_count: int, post_count: int, kira_model: str | None
 ) -> bool:
-    """Upsert-by-movie_id into social_topic_reports - one row per movie,
-    overwritten on each scripts/generate_social_topic_reports.py run (no
-    history kept; nothing reads past reports)."""
+    """Upsert theo movie_id vào social_topic_reports - mỗi phim một dòng, bị ghi đè mỗi lần
+    scripts/generate_social_topic_reports.py chạy (không giữ lịch sử; không có gì đọc
+    report cũ)."""
     if not _configured():
         return False
 
@@ -560,11 +540,10 @@ async def upsert_social_topic_report(
 
 
 async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> dict[str, Any] | None:
-    """Used by the dashboard's inline "type a new keyword" flow (crawl
-    trigger form) - looks up an existing (movie_id, platform, keyword) row
-    first (that triple has a unique index - see cinemark-scraper's
-    src/db/schema.ts) so a repeat submission or a race with another tab
-    just returns the same row instead of erroring on the constraint."""
+    """Dùng cho luồng "gõ từ khoá mới" ngay trên dashboard (form kích hoạt crawl) - tìm
+    dòng (movie_id, platform, keyword) đã có trước (bộ ba đó có unique index - xem
+    src/db/schema.ts của cinemark-scraper) để gửi lặp lại hoặc đua với một tab khác chỉ
+    trả về cùng dòng đó thay vì lỗi ràng buộc."""
     existing = await d1_query(
         """
         SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword
@@ -593,11 +572,10 @@ async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> d
 
 
 async def list_keywords(platform: str) -> list[dict[str, Any]]:
-    """Every enabled keyword for this platform, with its movie's title -
-    feeds the dashboard's keyword picker (GET /<platform>/keywords) so a
-    manual crawl trigger can target one keyword instead of "every enabled
-    keyword for this platform" (see get_enabled_keywords below, still used
-    for that fan-out case)."""
+    """Mọi từ khoá đang bật của nền tảng này, kèm tên phim - cấp dữ liệu cho ô chọn từ khoá
+    trên dashboard (GET /<platform>/keywords) để một lần kích hoạt crawl tay có thể nhắm
+    vào một từ khoá thay vì "mọi từ khoá đang bật của nền tảng này" (xem
+    get_enabled_keywords bên dưới, vẫn dùng cho trường hợp chạy hàng loạt đó)."""
     rows = await d1_query(
         """
         SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword
@@ -611,14 +589,12 @@ async def list_keywords(platform: str) -> list[dict[str, Any]]:
 
 
 async def get_keyword(keyword_id: str, platform: str) -> dict[str, Any] | None:
-    """One enabled keyword by id, on the given platform, joined to its
-    movie's enabled flag - mirrors what the deleted Postgres
-    KeywordRepository.get() + movie lookup used to do for the manual "run
-    one keyword" trigger. The platform argument is required, not
-    incidental: each platform gets its own router (see
-    app/api/routes/facebook.py + platform_scraper.py) that only ever wants
-    keywords for itself - a keyword_id belonging to a different platform
-    must not silently match here."""
+    """Một từ khoá đang bật theo id, trên nền tảng đã cho, join với cờ enabled của phim -
+    giống những gì KeywordRepository.get() + tra phim của Postgres (đã xoá) từng làm cho
+    nút kích hoạt "chạy một từ khoá". Tham số platform là bắt buộc, không phải tình cờ:
+    mỗi nền tảng có router riêng (xem app/api/routes/facebook.py + platform_scraper.py)
+    chỉ muốn từ khoá của chính nó - một keyword_id thuộc nền tảng khác không được âm thầm
+    khớp ở đây."""
     rows = await d1_query(
         """
         SELECT k.id, k.movie_id, k.platform, k.keyword,
@@ -633,10 +609,9 @@ async def get_keyword(keyword_id: str, platform: str) -> dict[str, Any] | None:
 
 
 async def get_enabled_keywords(platform: str, movie_id: str | None = None) -> list[dict[str, Any]]:
-    """Every enabled keyword on the given platform (optionally scoped to
-    one movie) whose movie is also enabled - used for both the "run all
-    keywords for a movie" trigger and a platform's daily cron ("run
-    everything for this platform") call."""
+    """Mọi từ khoá đang bật trên nền tảng đã cho (có thể giới hạn trong một phim) mà phim
+    của nó cũng đang bật - dùng cho cả nút "chạy mọi từ khoá của một phim" lẫn lời gọi
+    cron hằng ngày của một nền tảng ("chạy mọi thứ của nền tảng này")."""
     conditions = ["k.platform = ?", "k.enabled = 1", "m.enabled = 1"]
     params: list[Any] = [platform]
     if movie_id:
@@ -654,14 +629,12 @@ async def get_enabled_keywords(platform: str, movie_id: str | None = None) -> li
 
 
 async def set_keyword_enabled(platform: str, keyword_id: str, enabled: bool) -> dict[str, Any] | None:
-    """Toggles one keyword on/off - lets an operator pause a stale/one-off
-    keyword (or a batch just added for testing) without deleting it, so a
-    platform's daily schedule (get_enabled_keywords above) picks up exactly
-    the intended set. platform is a defensive scope, not a lookup key on
-    its own - keyword_id is already unique - so a mismatched platform in
-    the URL can't silently toggle a different platform's row. Returns the
-    updated row, or None if the id doesn't exist under that platform, or
-    the write itself failed."""
+    """Bật/tắt một từ khoá - cho người vận hành tạm dừng một từ khoá cũ/dùng một lần (hoặc
+    một lô vừa thêm để thử) mà không xoá, để lịch hằng ngày của nền tảng
+    (get_enabled_keywords ở trên) lấy đúng tập mong muốn. platform là phạm vi phòng thủ,
+    không tự nó là key tra cứu - keyword_id vốn đã duy nhất - để một platform không khớp
+    trên URL không thể âm thầm bật/tắt dòng của nền tảng khác. Trả về dòng đã cập nhật,
+    hoặc None nếu id không tồn tại dưới nền tảng đó, hoặc việc ghi thất bại."""
     updated = await d1_query(
         "UPDATE keywords SET enabled = ? WHERE id = ? AND platform = ?",
         [1 if enabled else 0, keyword_id, platform],

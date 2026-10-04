@@ -1,4 +1,4 @@
-"""app/ai/tasks/post_relevance.py with Kira and Redis stubbed out."""
+"""app/ai/tasks/post_relevance.py với Kira và Redis được thay bằng bản giả."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def _classify(content: str = "Và đây là Lan Trinh trong Án Mạng Xém Hoà
 
 
 def _reply_with(monkeypatch: pytest.MonkeyPatch, answer, seen: list | None = None) -> None:
-    """answer: an Exception, a raw string, or fn(post_count) -> results list."""
+    """answer: một Exception, một chuỗi thô, hoặc fn(post_count) -> danh sách kết quả."""
 
     async def fake_call_kira(**kwargs):
         if seen is not None:
@@ -85,7 +85,7 @@ def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
     assert len(seen) == 1
     call = seen[0]
     assert call["task"] == "post_relevance"
-    assert "force" not in call  # respects the dashboard's Kira on/off toggle
+    assert "force" not in call  # tôn trọng công tắc bật/tắt Kira trên dashboard
     assert "[1] TARGET FILM: Án Mạng Karaoke" in call["user_prompt"]
     assert (
         "OTHER TRACKED FILMS (a post about one of these is not about its target): Án Mạng Xém Hoàn Hảo"

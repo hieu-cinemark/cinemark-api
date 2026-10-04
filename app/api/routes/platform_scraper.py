@@ -1,15 +1,14 @@
-"""Shared POST /<platform>/run trigger route - every platform-scoped router
-(see app/api/routes/facebook.py) gets the exact same contract (trigger by
-keyword_id, by movie_id, or "every enabled keyword for this platform") built
-once here instead of copy-pasted per platform file. A platform file only
-needs to call build_run_route(router, "<platform>") and add whatever
-platform-specific extras it needs on top (see facebook.py's
-refresh-token/token-status).
+"""Route kích hoạt POST /<platform>/run dùng chung - mọi router theo nền tảng (xem
+app/api/routes/facebook.py) có đúng cùng hợp đồng (kích hoạt theo keyword_id, theo
+movie_id, hoặc "mọi từ khoá đang bật của nền tảng này"), dựng một lần ở đây thay vì
+chép lại cho từng file nền tảng. File nền tảng chỉ cần gọi
+build_run_route(router, "<platform>") rồi thêm phần riêng của nền tảng nếu cần (xem
+refresh-token/token-status trong facebook.py).
 
-build_comments_run_route below is the same idea for POST
-/<platform>/posts/{post_id}/comments/run - shared by every platform in
-spider-hub's own COMMENTS_SPIDER_BY_PLATFORM (facebook, threads, tiktok -
-a platform not in it simply doesn't call this builder at all)."""
+build_comments_run_route bên dưới cùng ý tưởng cho POST
+/<platform>/posts/{post_id}/comments/run - dùng chung cho mọi nền tảng trong
+COMMENTS_SPIDER_BY_PLATFORM của spider-hub (facebook, threads, tiktok - nền tảng nào
+không có trong đó thì đơn giản là không gọi builder này)."""
 
 from __future__ import annotations
 
@@ -74,8 +73,8 @@ def build_run_route(router: APIRouter, platform: str) -> None:
 
     @router.get("/job-status", response_model=JobStatus)
     async def job_status() -> JobStatus:
-        # Not hidden while draining - a targeted trigger (nurture, comments)
-        # keeps running after Stop and must stay visible and stoppable.
+        # Không bị ẩn khi đang drain - một lần kích hoạt có chủ đích (nurture, comments) vẫn
+        # chạy tiếp sau khi bấm Dừng và phải còn hiện ra để dừng được.
         job = await get_running_job(platform)
         if job is None:
             return JobStatus(running=False)
@@ -104,11 +103,10 @@ def build_run_route(router: APIRouter, platform: str) -> None:
 
 
 def build_comments_run_route(router: APIRouter, platform: str) -> None:
-    """POST /<platform>/posts/{post_id}/comments/run - triggers spider-hub's
-    comments spider for one post (D1 id, not the platform's own post id -
-    see get_post). Only call this for a platform spider-hub actually has a
-    comments spider for (see crawl_request_consumer.py's
-    COMMENTS_SPIDER_BY_PLATFORM)."""
+    """POST /<platform>/posts/{post_id}/comments/run - kích hoạt spider comment của
+    spider-hub cho một bài (id trong D1, không phải id bài của nền tảng - xem
+    get_post). Chỉ gọi cho nền tảng mà spider-hub thực sự có spider comment (xem
+    COMMENTS_SPIDER_BY_PLATFORM trong crawl_request_consumer.py)."""
 
     @router.post("/posts/{post_id}/comments/run", response_model=RunCommentsResponse)
     async def run_comments(
@@ -130,14 +128,12 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
             raise UpstreamError(f"Post {post_id} is not a {platform} post")
         if not post.get("url"):
             raise UpstreamError(f"Post {post_id} has no stored url - can't bootstrap a comments crawl without one")
-        # Used to skip this call when the stored reply_count was 0 - removed
-        # because every platform mapper (app/services/platforms.py) coalesces
-        # a missing/uncaptured count to 0 the same as a real zero
-        # (`payload.get(...) or 0`), so a 0 here can't be trusted to mean
-        # "this post structurally has no comments" rather than "the count
-        # just wasn't captured at scrape time". Skipping on it risked
-        # permanently never fetching comments for posts that actually have
-        # them.
+        # Trước đây bỏ qua lời gọi này khi reply_count đang lưu bằng 0 - đã bỏ vì mọi mapper
+        # nền tảng (app/services/platforms.py) đều quy số đếm bị thiếu/không lấy được về 0
+        # giống như số 0 thật (`payload.get(...) or 0`), nên số 0 ở đây không đáng tin là
+        # "bài này thực sự không có comment" thay vì "lúc crawl chỉ là không lấy được số
+        # đếm". Bỏ qua theo nó có nguy cơ mãi mãi không lấy comment của những bài thật ra có
+        # comment.
         published = await publish_comments_crawl_request(
             platform=platform,
             post_external_id=post["external_id"],

@@ -1,30 +1,27 @@
-"""Pulls new-to-local posts from the real D1 database - the safe,
-additive counterpart to scripts/push_local_data_to_remote.py's own posts
-push. Written for 2026-09-22: after that earlier push, remote has posts
-local never had (remote keeps whatever was pushed; local's own crawl
-meanwhile keeps generating comments remote doesn't have
-yet - see that day's posts count check). This brings
-local's *posts* table back to parity with remote without touching
-comments (local is already ahead there - nothing to pull)
-and without the destructive drop-and-recreate scripts/pull_local_db.py
-does (that would also wipe local-only comment rows not
-yet pushed to remote, and isn't safe to run while a server/consumer holds
-this local db file open - see that script's own docstring). This script
-only ever INSERTs (OR IGNORE) into the existing local tables, so it's
-safe to run alongside an active DB_MODE=local server/consumer - WAL mode
-already lets a reader/writer proceed against the last-committed snapshot
-(see app/clients/d1.py's _get_local_conn comment).
+"""Kéo các bài local chưa có từ database D1 thật - bản an toàn, chỉ thêm vào, tương ứng
+với phần đẩy posts của scripts/push_local_data_to_remote.py. Viết cho ngày
+2026-09-22: sau lần đẩy trước đó, remote có những bài mà local chưa từng có (remote
+giữ mọi thứ đã được đẩy lên; trong khi đó crawl ở local vẫn tiếp tục sinh comment mà
+remote chưa có - xem lần kiểm tra số bài hôm đó). Script này đưa bảng *posts* của
+local về ngang bằng remote mà không đụng tới comments (local đã đi trước ở đó - không
+có gì để kéo) và không xoá-rồi-tạo-lại kiểu phá huỷ như scripts/pull_local_db.py
+(làm vậy sẽ xoá luôn các dòng comment chỉ có ở local chưa được đẩy lên remote, và
+không an toàn khi có server/consumer đang mở file db local này - xem docstring của
+script đó). Script này chỉ INSERT (OR IGNORE) vào các bảng local đã có, nên chạy cùng
+lúc với server/consumer đang dùng DB_MODE=local là an toàn - chế độ WAL vốn đã cho
+đọc/ghi tiếp trên snapshot đã commit gần nhất (xem comment _get_local_conn trong
+app/clients/d1.py).
 
-Movie/keyword ids can differ between local and remote for the same
-logical row (a local-only movie/keyword created under DB_MODE=local
-before ever being pushed gets a different uuid than the row a later push
-matched it to by slug/keyword-text - see push_local_data_to_remote.py's
-own remap functions). Same idea here, just in the opposite id direction,
-so a pulled post's movie_id/keyword_id points at the LOCAL row other
-local posts already reference, not a dangling remote-only id.
+Id của movie/keyword có thể khác nhau giữa local và remote cho cùng một dòng logic
+(một movie/keyword chỉ có ở local được tạo khi đang DB_MODE=local trước khi được đẩy
+lên sẽ có uuid khác với dòng mà một lần đẩy sau đó ghép với nó theo slug/text từ khoá
+- xem các hàm remap của push_local_data_to_remote.py). Ở đây cùng ý tưởng, chỉ là
+theo chiều id ngược lại, để movie_id/keyword_id của một bài được kéo về trỏ tới dòng
+LOCAL mà các bài local khác đang tham chiếu, không phải một id chỉ có trên remote bị
+treo.
 
-Safe to re-run anytime - diffs by id like the push script, so an id
-already present locally is just skipped.
+Chạy lại lúc nào cũng an toàn - so khác biệt theo id giống script đẩy, nên id đã có ở
+local chỉ bị bỏ qua.
 
     python -m scripts.pull_new_posts_from_remote
 """
@@ -41,7 +38,7 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Same D1 response-size rationale as scripts/pull_local_db.py's own _PAGE_SIZE.
+# Cùng lý do về kích thước response của D1 như _PAGE_SIZE trong scripts/pull_local_db.py.
 _PAGE_SIZE = 500
 
 
@@ -50,7 +47,7 @@ def _local_ids(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 async def _movie_id_remap_from_remote(d1_query, local_conn: sqlite3.Connection) -> dict[str, str]:
-    """remote_id -> local_id for movies that are the same row (by slug) under a different uuid."""
+    """remote_id -> local_id cho các movie là cùng một dòng (theo slug) nhưng khác uuid."""
     remote = await d1_query("SELECT id, slug FROM movies")
     if remote is None:
         raise RuntimeError("Could not read remote movies - check D1 credentials/quota.")
@@ -68,7 +65,7 @@ async def _movie_id_remap_from_remote(d1_query, local_conn: sqlite3.Connection) 
 async def _keyword_id_remap_from_remote(
     d1_query, local_conn: sqlite3.Connection, movie_id_remap: dict[str, str]
 ) -> dict[str, str]:
-    """remote_id -> local_id for keywords that are the same row (by movie/platform/text) under a different uuid."""
+    """remote_id -> local_id cho các keyword là cùng một dòng (theo movie/platform/text) nhưng khác uuid."""
     remote = await d1_query("SELECT id, movie_id, platform, keyword FROM keywords")
     if remote is None:
         raise RuntimeError("Could not read remote keywords - check D1 credentials/quota.")
@@ -97,8 +94,8 @@ def _remap_row(row: dict[str, Any], movie_id_remap: dict[str, str], keyword_id_r
 
 
 async def pull_new_posts() -> None:
-    settings.db_mode = "remote"  # reads come from remote; writes go straight to the local sqlite file below
-    from app.services.d1 import d1_query  # imported after forcing remote, not at module load
+    settings.db_mode = "remote"  # đọc từ remote; ghi thẳng vào file sqlite local bên dưới
+    from app.services.d1 import d1_query  # import sau khi đã ép remote, không phải lúc nạp module
 
     if not (settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id):
         raise RuntimeError(
@@ -110,8 +107,8 @@ async def pull_new_posts() -> None:
     if not local_path.exists():
         raise RuntimeError(f"No local mirror at {local_path} - nothing to pull into.")
 
-    # timeout=30 + WAL, same as app/clients/d1.py's _get_local_conn -
-    # a running ingest/crawl consumer may hold this file open concurrently.
+    # timeout=30 + WAL, giống _get_local_conn trong app/clients/d1.py - một consumer
+    # ingest/crawl đang chạy có thể đang mở file này cùng lúc.
     local_conn = sqlite3.connect(local_path, timeout=30.0)
     local_conn.execute("PRAGMA journal_mode=WAL")
     local_conn.execute("PRAGMA busy_timeout=30000")

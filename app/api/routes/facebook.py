@@ -1,16 +1,16 @@
-"""Facebook scraper routes: POST /facebook/run (shared trigger contract -
-see platform_scraper.py), GET /facebook/keywords (see keywords.py), the
-refresh-token/token-status/WS trio (see token_refresh.py), and
-POST /facebook/posts/{post_id}/comments/run (see
-platform_scraper.build_comments_run_route). TikTok uses the same restore /
-cookie-import trio (see tiktok.py) but recaptures device_id/odin_id rather
-than a GraphQL token cache.
+"""Các route scraper Facebook: POST /facebook/run (dùng chung hợp đồng kích hoạt - xem
+platform_scraper.py), GET /facebook/keywords (xem keywords.py), bộ ba
+refresh-token/token-status/WS (xem token_refresh.py), và
+POST /facebook/posts/{post_id}/comments/run (xem
+platform_scraper.build_comments_run_route). TikTok dùng cùng bộ ba khôi phục
+session / import cookie (xem tiktok.py) nhưng lấy lại device_id/odin_id thay vì
+cache token GraphQL.
 
-Adding another spider-hub-backed platform later means a new file this same
-shape: build_run_route(router, "<platform>") + build_keyword_routes (+
-build_token_refresh_routes if sessions are restored/imported from the
-dashboard, + build_comments_run_route if spider-hub has a comments spider
-for it) - registered in app/main.py next to this one."""
+Sau này thêm một nền tảng khác chạy qua spider-hub thì tạo file mới cùng dạng:
+build_run_route(router, "<platform>") + build_keyword_routes (+
+build_token_refresh_routes nếu session được khôi phục/import từ dashboard, +
+build_comments_run_route nếu spider-hub có spider comment cho nền tảng đó) - rồi
+đăng ký trong app/main.py cạnh file này."""
 
 from __future__ import annotations
 

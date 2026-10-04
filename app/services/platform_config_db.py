@@ -1,14 +1,13 @@
-"""Async Postgres client (Supabase) for the platform_accounts /
-platform_proxies tables - same tables spider-hub's own
-social_crawler/db/ package reads from (see its __init__.py there for the
-full rationale: these change too often for env vars + process restarts to
-be worth it). This side has read AND write access, backing the dashboard's
-Settings page; spider-hub only ever reads.
+"""Client Postgres async (Supabase) cho các bảng platform_accounts / platform_proxies -
+cùng các bảng mà package social_crawler/db/ của spider-hub đọc (xem __init__.py bên
+đó để biết đầy đủ lý do: các giá trị này đổi quá thường xuyên, dùng env + restart
+tiến trình thì không đáng). Phía này có quyền đọc VÀ ghi, phục vụ trang Settings của
+dashboard; spider-hub chỉ đọc.
 
-Every write here builds its SQL from a fixed, whitelisted column list plus
-values coming from a Pydantic model (never a raw request dict) - the model
-strips unknown fields by default, so a caller can never smuggle an
-arbitrary column name into the query string."""
+Mọi lần ghi ở đây dựng SQL từ một danh sách cột cố định, đã duyệt trước, cộng với giá
+trị lấy từ một model Pydantic (không bao giờ từ dict request thô) - model mặc định bỏ
+các trường lạ, nên chỗ gọi không bao giờ lén đưa được một tên cột tuỳ ý vào chuỗi
+query."""
 
 from __future__ import annotations
 
@@ -26,13 +25,11 @@ logger = get_logger(__name__)
 ACCOUNT_COLUMNS = (
     "id, platform, account_id, password, totp_secret, cookie, token, email, email_password, "
     "enabled, created_at, updated_at, last_checked_at, last_check_status, last_check_note, "
-    # Pool / circuit-breaker + sticky proxy pinning columns - written by
-    # spider-hub's services/pool.py & db/ package, read-only from this
-    # side (system-written, never part of the account form) - see
-    # ACCOUNT_CREATE_COLUMNS below, which deliberately excludes them. The
-    # raw column is just "status" - aliased to pool_status so it can't be
-    # confused with last_check_status above (a different, manually-
-    # triggered signal - see app/services/account_health.py).
+    # Các cột pool / circuit-breaker + ghim proxy cố định - do services/pool.py & package
+    # db/ của spider-hub ghi, phía này chỉ đọc (hệ thống ghi, không bao giờ nằm trong form
+    # tài khoản) - xem ACCOUNT_CREATE_COLUMNS bên dưới, cố ý loại chúng ra. Cột gốc chỉ tên
+    # là "status" - đặt alias thành pool_status để không lẫn với last_check_status ở trên
+    # (một tín hiệu khác, kích hoạt bằng tay - xem app/services/account_health.py).
     "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id"
 )
 PROXY_COLUMNS = (
@@ -44,15 +41,13 @@ _pool_columns_ready = False
 
 
 async def _ensure_pool_columns() -> None:
-    """Adds the pool/circuit-breaker + sticky-proxy-pinning columns
-    (status, cooldown_until, consecutive_failures, last_used_at,
-    assigned_proxy_id) if this Supabase database predates spider-hub's
-    services/pool.py - mirrors the exact ALTER TABLE ... IF NOT EXISTS
-    statements in spider-hub's scripts/dev_db_schema.sql, so ACCOUNT_COLUMNS/
-    PROXY_COLUMNS/_PROXY_LIST_COLUMNS (which SELECT these columns
-    unconditionally) don't 500 the whole Settings page with
-    UndefinedColumn on a not-yet-migrated database. IF NOT EXISTS so an
-    already-migrated database is a no-op."""
+    """Thêm các cột pool/circuit-breaker + ghim proxy cố định (status, cooldown_until,
+    consecutive_failures, last_used_at, assigned_proxy_id) nếu database Supabase này có
+    từ trước services/pool.py của spider-hub - giống hệt các câu ALTER TABLE ... IF NOT
+    EXISTS trong scripts/dev_db_schema.sql của spider-hub, để
+    ACCOUNT_COLUMNS/PROXY_COLUMNS/_PROXY_LIST_COLUMNS (vốn SELECT các cột này không điều
+    kiện) không làm cả trang Settings lỗi 500 với UndefinedColumn trên database chưa
+    migrate. IF NOT EXISTS nên database đã migrate thì không làm gì."""
     global _pool_columns_ready
     if _pool_columns_ready:
         return
@@ -94,9 +89,9 @@ async def _connect() -> psycopg.AsyncConnection[Any]:
     if not settings.database_url:
         raise UpstreamError("DATABASE_URL is not configured on cinemark-api")
     try:
-        # Keepalives make a socket left over from a previous network (laptop
-        # changed Wi-Fi / woke from sleep) fail within ~1 min instead of
-        # blocking the awaiting query - and the scheduler loop - forever.
+        # Keepalive giúp một socket còn sót từ mạng trước (laptop đổi Wi-Fi / vừa thức dậy từ
+        # chế độ ngủ) lỗi trong khoảng 1 phút thay vì chặn mãi query đang chờ - và cả vòng lặp
+        # scheduler.
         return await psycopg.AsyncConnection.connect(
             settings.database_url,
             row_factory=dict_row,
@@ -111,7 +106,7 @@ async def _connect() -> psycopg.AsyncConnection[Any]:
         raise UpstreamError("Could not connect to the settings database") from exc
 
 
-# --- accounts ---------------------------------------------------------
+# --- tài khoản ---------------------------------------------------------
 
 
 async def list_accounts(platform: str | None = None) -> list[dict[str, Any]]:
@@ -173,10 +168,10 @@ async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, A
 
 
 async def update_account_check_result(account_id: int, *, status: str) -> dict[str, Any]:
-    """Records the outcome of a health check (see app/services/account_health.py)
-    - deliberately separate from update_account above: these columns are
-    system-written from an automated check, never user-editable through the
-    account form, so they're not part of _ACCOUNT_CREATE_COLUMNS at all."""
+    """Ghi kết quả của một lần kiểm tra sức khoẻ (xem app/services/account_health.py) - cố
+    ý tách khỏi update_account ở trên: các cột này do hệ thống ghi từ một lần kiểm tra tự
+    động, người dùng không bao giờ sửa qua form tài khoản, nên chúng hoàn toàn không nằm
+    trong _ACCOUNT_CREATE_COLUMNS."""
     await _ensure_pool_columns()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -192,12 +187,11 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
 
 
 async def reset_account_proxy(account_id: int) -> dict[str, Any]:
-    """Clears one account's sticky proxy pinning (assigned_proxy_id -> NULL)
-    - see spider-hub's services/pool.acquire_proxy_for_account. The account
-    gets re-pinned to whichever proxy currently has the fewest accounts on
-    its next crawl/bootstrap run; use this from the dashboard when a
-    pinned proxy is being retired, or to manually rebalance after adding
-    new proxies to the pool."""
+    """Xoá ghim proxy cố định của một tài khoản (assigned_proxy_id -> NULL) - xem
+    services/pool.acquire_proxy_for_account của spider-hub. Ở lượt crawl/bootstrap kế
+    tiếp, tài khoản được ghim lại vào proxy đang có ít tài khoản nhất; dùng từ dashboard
+    khi bỏ một proxy đang được ghim, hoặc để tự cân bằng lại sau khi thêm proxy mới vào
+    pool."""
     await _ensure_pool_columns()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -213,14 +207,13 @@ async def reset_account_proxy(account_id: int) -> dict[str, Any]:
 
 
 async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
-    """Manually pins one account to a specific proxy - the dashboard
-    counterpart to spider-hub's own auto-pin-to-least-loaded logic (see
-    services/pool.acquire_proxy_for_account), for an operator who wants
-    direct control over which account sits on which IP instead of letting
-    the pool balance it automatically. FK constraint on assigned_proxy_id
-    (see spider-hub's scripts/dev_db_schema.sql) rejects a proxy_id that
-    doesn't exist - surfaces here as a plain psycopg error, not specially
-    handled, since the dashboard's proxy picker only ever offers real ids."""
+    """Ghim tay một tài khoản vào một proxy cụ thể - phần tương ứng trên dashboard của logic
+    tự ghim vào proxy ít tải nhất của spider-hub (xem
+    services/pool.acquire_proxy_for_account), cho người vận hành muốn trực tiếp quyết
+    định tài khoản nào nằm trên IP nào thay vì để pool tự cân bằng. Ràng buộc khoá ngoại
+    trên assigned_proxy_id (xem scripts/dev_db_schema.sql của spider-hub) từ chối
+    proxy_id không tồn tại - lỗi hiện ra ở đây là lỗi psycopg thường, không xử lý riêng,
+    vì ô chọn proxy trên dashboard chỉ đưa ra id thật."""
     await _ensure_pool_columns()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -248,11 +241,11 @@ _PROXY_LIST_COLUMNS = (
     "pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.enabled, "
     "pp.created_at, pp.updated_at, pp.status AS pool_status, pp.cooldown_until, pp.consecutive_failures, "
     "pp.last_used_at, "
-    # How many live platform_accounts rows are sticky-pinned to this
-    # proxy (enabled, not checkpointed) - matches spider-hub's
-    # get_least_loaded_proxy so the dashboard "accounts pinned" number is
-    # the same load the pool actually balances on. Dead pins still sit on
-    # assigned_proxy_id but must not make an IP look full.
+    # Số dòng platform_accounts còn sống đang được ghim cố định vào proxy này (đang bật,
+    # không bị checkpoint) - khớp với get_least_loaded_proxy của spider-hub để con số "tài
+    # khoản đã ghim" trên dashboard đúng bằng mức tải mà pool thực sự cân bằng theo. Các
+    # ghim chết vẫn nằm trên assigned_proxy_id nhưng không được làm một IP trông như đã
+    # đầy.
     "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id "
     "AND pa.enabled = true AND pa.status != 'checkpoint') AS assigned_account_count"
 )
@@ -317,11 +310,11 @@ async def delete_proxy(proxy_id: int) -> None:
         raise NotFoundError(f"Proxy {proxy_id} not found")
 
 
-# --- filter keywords ---------------------------------------------------
-# filter_keywords: generic (not platform-scoped) content filter - movie-
-# relevant vs spam/off-topic keywords, CRUD'd here and read by spider-hub
-# to decide whether a scraped post/comment is worth keeping. Same "no ORM,
-# fixed whitelisted column list" shape as accounts/proxies above.
+# --- từ khoá lọc -------------------------------------------------------
+# filter_keywords: bộ lọc nội dung chung (không theo nền tảng) - các từ khoá liên quan
+# tới phim so với spam/lạc đề, CRUD ở đây và spider-hub đọc để quyết định một bài/
+# comment đã crawl có đáng giữ không. Cùng dạng "không ORM, danh sách cột cố định đã
+# duyệt" như accounts/proxies ở trên.
 
 FILTER_KEYWORD_COLUMNS = "id, keyword, category, enabled, created_at, updated_at"
 _FILTER_KEYWORD_CREATE_COLUMNS = ("keyword", "category", "enabled")
@@ -387,12 +380,12 @@ async def delete_filter_keyword(keyword_id: int) -> None:
         raise NotFoundError(f"Filter keyword {keyword_id} not found")
 
 
-# --- crawl schedule ----------------------------------------------------
-# crawl_schedules: per-platform daily crawl time, CRUD'd from the
-# dashboard's "Crawl schedule" card, read by app/services/scheduler.py's
-# in-process loop - see that table's own comment in spider-hub's
-# scripts/dev_db_schema.sql for the full rationale (replaces both an OS
-# crontab entry and cinemark-scraper's Cloudflare Cron Triggers).
+# --- lịch crawl --------------------------------------------------------
+# crawl_schedules: giờ crawl hằng ngày theo nền tảng, CRUD từ thẻ "Crawl schedule" trên
+# dashboard, được vòng lặp trong tiến trình của app/services/scheduler.py đọc - xem
+# comment của bảng này trong scripts/dev_db_schema.sql của spider-hub để biết đầy đủ lý
+# do (thay thế cả một dòng crontab của hệ điều hành lẫn Cloudflare Cron Triggers của
+# cinemark-scraper).
 
 CRAWL_SCHEDULE_COLUMNS = "platform, run_time, enabled, last_triggered_date, nurture_before, nurture_after, updated_at"
 
@@ -400,9 +393,8 @@ _nurture_columns_ready = False
 
 
 async def _ensure_crawl_schedule_nurture_columns() -> None:
-    """Adds nurture_before/after if this database was created before those
-    columns existed (dev_db_schema.sql now includes them). IF NOT EXISTS
-    so a fresh database is a no-op."""
+    """Thêm nurture_before/after nếu database này được tạo trước khi có các cột đó
+    (dev_db_schema.sql giờ đã có). IF NOT EXISTS nên database mới thì không làm gì."""
     global _nurture_columns_ready
     if _nurture_columns_ready:
         return
@@ -425,18 +417,16 @@ async def list_crawl_schedules() -> list[dict[str, Any]]:
 
 
 async def ensure_default_crawl_schedules(platforms: set[str]) -> None:
-    """Called once at startup (see app/main.py) for every registered
-    platform. Before this table existed, Facebook/TikTok/Threads crawling
-    was guaranteed by a fixed OS crontab / Cloudflare Cron Trigger
-    regardless of any dashboard setting; now a platform with no row here
-    simply never appears in scheduler.py's list_crawl_schedules() loop and
-    never runs again, with nothing surfacing the gap (see
-    upsert_crawl_schedule's own docstring: "every platform starts with no
-    row at all until its schedule is first saved"). Seeds the same
-    run_time='07:00'/enabled=true the table's own column defaults already
-    encode (scripts/dev_db_schema.sql), ON CONFLICT DO NOTHING so a platform
-    an operator has already configured (or deliberately disabled) from the
-    dashboard is never touched."""
+    """Gọi một lần lúc khởi động (xem app/main.py) cho mọi nền tảng đã đăng ký. Trước khi có
+    bảng này, việc crawl Facebook/TikTok/Threads được bảo đảm bằng một crontab cố định /
+    Cloudflare Cron Trigger bất kể setting trên dashboard; giờ một nền tảng không có dòng
+    ở đây đơn giản là không bao giờ xuất hiện trong vòng lặp list_crawl_schedules() của
+    scheduler.py và không bao giờ chạy nữa, mà không có gì báo ra lỗ hổng đó (xem
+    docstring của upsert_crawl_schedule: "mọi nền tảng ban đầu đều không có dòng nào cho
+    tới khi lịch của nó được lưu lần đầu"). Tạo sẵn cùng run_time='07:00'/enabled=true
+    mà mặc định cột của bảng vốn đã có (scripts/dev_db_schema.sql), ON CONFLICT DO
+    NOTHING để một nền tảng người vận hành đã cấu hình (hoặc cố ý tắt) từ dashboard không
+    bao giờ bị đụng tới."""
     await _ensure_crawl_schedule_nurture_columns()
     async with await _connect() as conn, conn.cursor() as cur:
         for platform in platforms:
@@ -450,10 +440,9 @@ async def ensure_default_crawl_schedules(platforms: set[str]) -> None:
 async def upsert_crawl_schedule(
     platform: str, *, run_time: str, enabled: bool, nurture_before: bool = False, nurture_after: bool = False
 ) -> dict[str, Any]:
-    """Dashboard-facing write - run_time/enabled/nurture_* are user-set.
-    ON CONFLICT so the dashboard doesn't need to know whether a platform's
-    row already exists (every platform starts with no row at all until its
-    schedule is first saved)."""
+    """Lần ghi phía dashboard - run_time/enabled/nurture_* do người dùng đặt. ON CONFLICT để
+    dashboard không cần biết dòng của nền tảng đã có hay chưa (mọi nền tảng ban đầu đều
+    không có dòng nào cho tới khi lịch của nó được lưu lần đầu)."""
     await _ensure_crawl_schedule_nurture_columns()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -470,9 +459,9 @@ async def upsert_crawl_schedule(
 
 
 async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> None:
-    """scheduler.py's own re-entrancy guard write - see crawl_schedules.
-    last_triggered_date's column comment. Not user-facing, no route calls
-    this directly."""
+    """Lần ghi chống chạy lặp của chính scheduler.py - xem comment của cột
+    crawl_schedules.last_triggered_date. Không dành cho người dùng, không route nào gọi
+    thẳng hàm này."""
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "UPDATE crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
@@ -481,17 +470,15 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
         await conn.commit()
 
 
-# --- comment crawl schedule ---------------------------------------------
-# comment_crawl_schedules: per-platform daily "top comments sweep" time -
-# separate from crawl_schedules (posts) above since a platform's comments
-# sweep runs on its own cadence, independent of when that platform's post
-# crawl runs. At its run_time, for each of that platform's enabled
-# keywords, queues a comments crawl (app/clients/kafka.py's
-# publish_comments_crawl_request) for the keyword's top `top_n`-by-
-# engagement posts that still have zero comments stored
-# (app/services/d1.py's list_posts_needing_comments) - see
-# app/services/scheduler.py's _comments_tick, the exact same poll/fire/
-# last_triggered_date-guard shape as _tick uses for crawl_schedules.
+# --- lịch crawl comment -------------------------------------------------
+# comment_crawl_schedules: giờ "quét top comment" hằng ngày theo nền tảng - tách khỏi
+# crawl_schedules (bài) ở trên vì lượt quét comment của một nền tảng chạy theo nhịp
+# riêng, độc lập với lúc crawl bài của nền tảng đó. Tới run_time, với mỗi từ khoá đang
+# bật của nền tảng, xếp hàng một lượt crawl comment (publish_comments_crawl_request
+# trong app/clients/kafka.py) cho các bài top `top_n` theo tương tác của từ khoá mà vẫn
+# chưa có comment nào được lưu (list_posts_needing_comments trong app/services/d1.py) -
+# xem _comments_tick trong app/services/scheduler.py, đúng cùng dạng kiểm tra định kỳ/
+# kích hoạt/chặn bằng last_triggered_date như _tick dùng cho crawl_schedules.
 
 COMMENT_SCHEDULE_COLUMNS = "platform, run_time, enabled, top_n, last_triggered_date, updated_at"
 
@@ -527,11 +514,10 @@ async def list_comment_crawl_schedules() -> list[dict[str, Any]]:
 
 
 async def ensure_default_comment_crawl_schedules(platforms: set[str]) -> None:
-    """Same rationale as ensure_default_crawl_schedules above - a platform
-    with no row here just never appears in _comments_tick's loop, with
-    nothing surfacing the gap. ON CONFLICT DO NOTHING so a platform an
-    operator has already configured (or deliberately disabled) is never
-    touched."""
+    """Cùng lý do như ensure_default_crawl_schedules ở trên - một nền tảng không có dòng ở
+    đây đơn giản là không bao giờ xuất hiện trong vòng lặp của _comments_tick, mà không
+    có gì báo ra lỗ hổng đó. ON CONFLICT DO NOTHING để một nền tảng người vận hành đã cấu
+    hình (hoặc cố ý tắt) không bao giờ bị đụng tới."""
     await _ensure_comment_crawl_schedules_table()
     async with await _connect() as conn, conn.cursor() as cur:
         for platform in platforms:
@@ -543,8 +529,8 @@ async def ensure_default_comment_crawl_schedules(platforms: set[str]) -> None:
 
 
 async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled: bool, top_n: int) -> dict[str, Any]:
-    """Dashboard-facing write - ON CONFLICT so the dashboard doesn't need to
-    know whether this platform's row already exists yet."""
+    """Lần ghi phía dashboard - ON CONFLICT để dashboard không cần biết dòng của nền tảng
+    này đã có hay chưa."""
     await _ensure_comment_crawl_schedules_table()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -563,8 +549,8 @@ async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled
 
 
 async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: str) -> None:
-    """scheduler.py's own re-entrancy guard write - see
-    comment_crawl_schedules.last_triggered_date's column comment above."""
+    """Lần ghi chống chạy lặp của chính scheduler.py - xem comment của cột
+    comment_crawl_schedules.last_triggered_date ở trên."""
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "UPDATE comment_crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
@@ -574,9 +560,9 @@ async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: s
 
 
 # --- AI settings -------------------------------------------------------
-# Singleton row (id=1): model + per-task system prompts the dashboard
-# Settings AI tab edits. Read on every Kira call (short-cached in
-# app.ai.kira) so a save applies without restarting ingest/spider-hub.
+# Dòng singleton (id=1): prompt hệ thống theo từng task mà tab AI trong Settings của
+# dashboard sửa. Được đọc ở mỗi lời gọi Kira (cache ngắn trong app.ai.kira) nên lưu
+# xong là áp dụng ngay, không cần restart ingest/spider-hub.
 
 AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, updated_at"
 
@@ -599,14 +585,13 @@ async def _ensure_ai_settings_table() -> None:
             )
             """
         )
-        # Added 2026-09-25 to an already-existing table in production, so a
-        # bare CREATE TABLE IF NOT EXISTS above wouldn't retroactively add
-        # it - which provider (app/ai/tasks/report.py's call_bee vs call_kira)
-        # generates social_topic_reports, switchable from the dashboard
-        # without touching ai_providers' own credentials (see
-        # app/ai/tasks/report.py's own docstring for why this exists: Kira sat
-        # essentially idle in production - the only real per-call-volume
-        # LLM task left was report generation, which was hardcoded to Bee).
+        # Thêm ngày 2026-09-25 vào một bảng đã có trên production, nên câu CREATE TABLE IF NOT
+        # EXISTS trần ở trên sẽ không tự thêm cột này về sau - cột chọn provider nào
+        # (call_bee hay call_kira trong app/ai/tasks/report.py) tạo social_topic_reports, đổi
+        # được từ dashboard mà không đụng tới thông tin đăng nhập trong ai_providers (xem
+        # docstring của app/ai/tasks/report.py để biết vì sao có cột này: khi đó Kira gần như
+        # ngồi không trên production - task LLM duy nhất còn lại có lượng gọi đáng kể là tạo
+        # report, vốn bị gán cứng cho Bee).
         await cur.execute(
             "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider text NOT NULL DEFAULT 'kira'"
         )
@@ -638,10 +623,10 @@ async def get_ai_settings() -> dict[str, Any]:
 
 
 async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_report_provider: str) -> dict[str, Any]:
-    """Model is no longer written here - see ai_providers below, which owns
-    base_url/api_key/model per provider. The ai_settings.model column is
-    left alone (untouched on conflict) rather than dropped, so this isn't a
-    destructive schema change; nothing reads it anymore."""
+    """Không còn ghi model ở đây - xem ai_providers bên dưới, nơi giữ
+    base_url/api_key/model theo từng provider. Cột ai_settings.model được để nguyên
+    (không đụng tới khi conflict) thay vì xoá, để đây không phải thay đổi schema mang
+    tính phá huỷ; không còn gì đọc nó nữa."""
     from psycopg.types.json import Json
 
     await _ensure_ai_settings_table()
@@ -664,14 +649,13 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_r
     return row  # type: ignore[return-value]
 
 
-# --- AI provider credentials --------------------------------------------
-# One row per LLM provider (key = "kira", "bee", ... - add a new provider
-# by inserting a new row, no schema change needed): base_url/api_key/model
-# used to build that provider's OpenAI-compatible client (see
-# app/ai/client.py). Used to be KIRA_API_KEY/KIRA_BASE_URL/
-# BEEKNOEE_API_KEY/BEEKNOEE_BASE_URL env vars - moved here (see
-# scripts/migrate_ai_provider_credentials.py) so a key can be rotated or a
-# new provider added from the dashboard without a redeploy.
+# --- Thông tin đăng nhập AI provider ------------------------------------
+# Mỗi LLM provider một dòng (key = "kira", "bee", ... - thêm provider mới bằng cách
+# chèn một dòng mới, không cần đổi schema): base_url/api_key/model dùng để dựng client
+# tương thích OpenAI của provider đó (xem app/ai/client.py). Trước đây là các biến env
+# KIRA_API_KEY/KIRA_BASE_URL/BEEKNOEE_API_KEY/BEEKNOEE_BASE_URL - chuyển về đây (xem
+# scripts/migrate_ai_provider_credentials.py) để xoay key hoặc thêm provider mới được
+# từ dashboard mà không cần deploy lại.
 
 AI_PROVIDER_COLUMNS = "key, base_url, api_key, model, updated_at"
 
@@ -713,9 +697,8 @@ async def get_ai_provider(key: str) -> dict[str, Any] | None:
 
 
 async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, model: str) -> dict[str, Any]:
-    """api_key=None keeps whatever secret is already stored - lets the
-    dashboard change base_url/model without having to resend the secret
-    every time."""
+    """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà
+    không phải gửi lại secret mỗi lần."""
     await _ensure_ai_providers_table()
     async with await _connect() as conn, conn.cursor() as cur:
         if api_key is None:
@@ -750,12 +733,12 @@ async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, mo
     return row  # type: ignore[return-value]
 
 
-# --- Proxy behavior settings ---------------------------------------------
-# proxy_settings: singleton jsonb of tunables (see app/schemas/settings.py's
-# ProxySettings for keys/defaults/bounds). proxy_providers: one row per
-# rotating-proxy vendor plan (API URL + token + ip_allowlist mode). Both
-# read by spider-hub's social_crawler/db/proxy_settings.py (cached
-# 60s there, so a save here applies to running crawlers within a minute).
+# --- Setting hành vi proxy -----------------------------------------------
+# proxy_settings: jsonb singleton chứa các tham số tinh chỉnh (xem ProxySettings trong
+# app/schemas/settings.py cho key/mặc định/giới hạn). proxy_providers: mỗi gói proxy
+# xoay vòng của nhà cung cấp một dòng (URL API + token + chế độ ip_allowlist). Cả hai
+# đều được social_crawler/db/proxy_settings.py của spider-hub đọc (cache 60s bên đó,
+# nên lưu ở đây thì các crawler đang chạy áp dụng trong vòng một phút).
 
 _proxy_settings_ready = False
 
@@ -790,8 +773,8 @@ async def _ensure_proxy_settings_tables() -> None:
 
 
 async def get_proxy_settings() -> dict[str, Any]:
-    """{"settings": {...stored keys only...}, "updated_at": ...} - merging
-    over defaults is the schema's job (ProxySettings)."""
+    """{"settings": {...chỉ các key đã lưu...}, "updated_at": ...} - việc trộn lên trên giá
+    trị mặc định là việc của schema (ProxySettings)."""
     await _ensure_proxy_settings_tables()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM proxy_settings WHERE id = 1")
@@ -828,8 +811,8 @@ async def list_proxy_providers() -> list[dict[str, Any]]:
 
 
 async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None, ip_allowlist: bool) -> dict[str, Any]:
-    """token=None keeps whatever token is already stored (same contract as
-    upsert_ai_provider's api_key)."""
+    """token=None thì giữ nguyên token đã lưu (cùng hợp đồng với api_key của
+    upsert_ai_provider)."""
     await _ensure_proxy_settings_tables()
     async with await _connect() as conn, conn.cursor() as cur:
         if token is None:
@@ -858,13 +841,12 @@ async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None, ip
     return row  # type: ignore[return-value]
 
 
-# cleanup_settings: singleton jsonb of dashboard-editable knobs for the
-# irrelevant-post purge (see app/services/cleanup.py + scheduler.py).
-# cleanup_run_history: append-only log of every run (scheduled or manually
-# triggered from /settings/cleanup/run) with its per-table delete counts +
-# remaining backlog - the same shape cleanup.py already returns in-memory,
-# just persisted so the dashboard can show "what happened last time" without
-# re-querying the API logs.
+# cleanup_settings: jsonb singleton chứa các tham số sửa được trên dashboard cho lượt
+# dọn bài không liên quan (xem app/services/cleanup.py + scheduler.py).
+# cleanup_run_history: log chỉ-thêm của mọi lượt chạy (theo lịch hoặc bấm tay từ
+# /settings/cleanup/run) kèm số dòng đã xoá theo từng bảng + hàng tồn còn lại - cùng
+# dạng mà cleanup.py vốn trả về trong bộ nhớ, chỉ là được lưu lại để dashboard hiện "lần
+# trước đã xảy ra gì" mà không phải truy lại log của API.
 
 _cleanup_settings_ready = False
 
@@ -907,8 +889,8 @@ async def _ensure_cleanup_settings_tables() -> None:
 
 
 async def get_cleanup_settings() -> dict[str, Any]:
-    """{"settings": {...stored keys only...}, "updated_at": ...} - merging
-    over CleanupSettings defaults is the schema's job."""
+    """{"settings": {...chỉ các key đã lưu...}, "updated_at": ...} - việc trộn lên trên giá
+    trị mặc định của CleanupSettings là việc của schema."""
     await _ensure_cleanup_settings_tables()
     async with await _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM cleanup_settings WHERE id = 1")
@@ -917,9 +899,8 @@ async def get_cleanup_settings() -> dict[str, Any]:
 
 
 async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
-    """Only the keys present in `values` are written - missing keys keep
-    their previously-stored value. Lets PUT /settings/cleanup act as a
-    partial update instead of having to send every key."""
+    """Chỉ ghi các key có trong `values` - key thiếu giữ giá trị đã lưu trước đó. Cho
+    PUT /settings/cleanup hoạt động như cập nhật một phần thay vì phải gửi mọi key."""
     from psycopg.types.json import Json
 
     await _ensure_cleanup_settings_tables()
@@ -1006,21 +987,19 @@ async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
         return await cur.fetchall()
 
 
-# auto_login_settings: singleton jsonb of dashboard-editable knobs for
-# the hourly auto-login scheduler (see app/services/auto_login.py +
-# spider-hub's auto_login/consumer.py). Mirrors the cleanup_settings
-# shape (id=1 singleton + JSON settings + updated_at) so PUT semantics
-# ("only keys in the payload change") are identical across the page.
+# auto_login_settings: jsonb singleton chứa các tham số sửa được trên dashboard cho bộ
+# lập lịch auto-login mỗi giờ (xem app/services/auto_login.py + auto_login/consumer.py
+# của spider-hub). Cùng dạng với cleanup_settings (singleton id=1 + settings JSON +
+# updated_at) để ngữ nghĩa PUT ("chỉ các key trong payload thay đổi") giống hệt nhau
+# trên cả trang.
 #
-# auto_login_run_history: append-only log of every tick the scheduler
-# or the manual /run endpoint fires - same pattern as
-# cleanup_run_history, but tracking which platforms were processed,
-# how many accounts were attempted per platform, how many came back as
-# relogged_in / needs_human / failed / error, and whether the
-# underlying scheduler actually published a request for each one
-# (Kafka publish failures are tracked separately - see schedule
-# settings' `telegram_alert` flag, matched against
-# auto_login.py's "auto_login_request_publish_failed" log line).
+# auto_login_run_history: log chỉ-thêm của mọi lượt mà bộ lập lịch hoặc endpoint /run
+# bấm tay kích hoạt - cùng kiểu với cleanup_run_history, nhưng theo dõi nền tảng nào đã
+# được xử lý, bao nhiêu tài khoản được thử trên mỗi nền tảng, bao nhiêu trả về
+# relogged_in / needs_human / failed / error, và bộ lập lịch bên dưới có thực sự
+# publish request cho từng tài khoản không (lỗi publish Kafka được theo dõi riêng - xem
+# cờ `telegram_alert` trong setting lịch, đối chiếu với dòng log
+# "auto_login_request_publish_failed" của auto_login.py).
 
 _auto_login_settings_ready = False
 
@@ -1069,8 +1048,8 @@ async def _ensure_auto_login_tables() -> None:
             )
             """
         )
-        # The first version created total_relogged_in as boolean, which the
-        # integer sum in record_auto_login_run_finish can't be written into.
+        # Bản đầu tiên tạo total_relogged_in kiểu boolean, nên không ghi được tổng số nguyên
+        # của record_auto_login_run_finish vào đó.
         await cur.execute(
             """
             DO $$
@@ -1103,10 +1082,9 @@ async def get_auto_login_settings() -> dict[str, Any]:
 
 
 async def upsert_auto_login_settings(values: dict[str, Any]) -> dict[str, Any]:
-    """Partial update: only the keys present in `values` are written;
-    missing keys keep their previously-stored value. Lets the
-    dashboard's PUT act as a toggle (just send `{enabled: true}`) or a
-    full edit (send every key) without one stomping the other."""
+    """Cập nhật một phần: chỉ ghi các key có trong `values`; key thiếu giữ giá trị đã lưu
+    trước đó. Cho PUT của dashboard hoạt động như một nút bật/tắt (chỉ gửi
+    `{enabled: true}`) hoặc sửa toàn bộ (gửi mọi key) mà không cái nào đè cái nào."""
     from psycopg.types.json import Json
 
     await _ensure_auto_login_tables()
@@ -1162,10 +1140,9 @@ async def record_auto_login_run_finish(
     kafka_publish_failed: int,
     error: str | None = None,
 ) -> None:
-    """Writes the per-platform breakdown + Kafka publish counters +
-    optional error message. Same shape auto_login.py already returns
-    in-memory, just persisted so the dashboard's history table shows
-    "what happened last time" without re-querying the API logs."""
+    """Ghi chi tiết theo nền tảng + bộ đếm publish Kafka + thông báo lỗi tuỳ chọn. Cùng dạng
+    mà auto_login.py vốn trả về trong bộ nhớ, chỉ là được lưu lại để bảng lịch sử trên
+    dashboard hiện "lần trước đã xảy ra gì" mà không phải truy lại log của API."""
     from psycopg.types.json import Json
 
     total_attempted = sum(p.get("attempted", 0) for p in per_platform.values())

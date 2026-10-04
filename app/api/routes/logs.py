@@ -1,17 +1,17 @@
-"""Tails the two structlog console log files that make up spider-hub's
-crawl pipeline, so the dashboard has somewhere to show "log này kia"
-without needing a new log-shipping/DB-backed logging system:
+"""Đọc phần cuối của hai file log console (structlog) tạo nên pipeline crawl của
+spider-hub, để dashboard có chỗ hiển thị "log này kia" mà không cần dựng hệ thống
+chuyển log / lưu log vào DB mới:
 
-- spider-hub's crawl_request_consumer.py (consumer.log there) - the Kafka
-  consumer that launches `scrapy crawl` per crawl_requests message.
-- this service's own ingest_consumer (ingest_consumer.log) - the Kafka
-  consumer that writes scraped posts into D1.
+- crawl_request_consumer.py của spider-hub (consumer.log bên đó) - Kafka consumer
+  khởi chạy `scrapy crawl` cho mỗi message crawl_requests.
+- ingest_consumer của chính service này (ingest_consumer.log) - Kafka consumer ghi
+  bài đã crawl vào D1.
 
-Both are plain text ConsoleRenderer output (colored via ANSI escapes,
-readable in a terminal but not in a browser) - _strip_ansi() cleans that up
-before returning lines. Best-effort: a missing/unreadable file returns an
-empty list with ok=False rather than a 500, since these are ops
-conveniences, not something any user-facing feature depends on."""
+Cả hai đều là output text thường của ConsoleRenderer (có màu bằng mã ANSI, đọc được
+trên terminal nhưng không đọc được trên trình duyệt) - _strip_ansi() làm sạch trước
+khi trả về. Cố gắng hết mức có thể: file thiếu/không đọc được thì trả về danh sách
+rỗng với ok=False thay vì lỗi 500, vì đây chỉ là tiện ích vận hành, không tính năng
+nào dành cho người dùng phụ thuộc vào nó."""
 
 from __future__ import annotations
 

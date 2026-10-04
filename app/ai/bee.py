@@ -1,14 +1,14 @@
-"""Beeknoee (platform.beeknoee.com) LLM client - an OpenAI-compatible
-proxy this product uses for Claude Sonnet 5. Thin, provider-specific
-facade over app.ai.client.call_ai(provider="bee", ...): the actual HTTP
-client, retry/backoff and concurrency budget live there (shared shape
-with app/ai/kira.py, but Bee gets its own semaphore keyed separately, so a Bee
-outage/rate-limit can't starve Kira or vice versa).
+"""Client LLM của Beeknoee (platform.beeknoee.com) - một proxy tương thích OpenAI mà
+sản phẩm dùng cho Claude Sonnet 5. Là lớp mỏng, riêng cho provider, bọc
+app.ai.client.call_ai(provider="bee", ...): HTTP client thực sự, retry/backoff và
+giới hạn đồng thời đều nằm ở đó (cùng cấu trúc với app/ai/kira.py, nhưng Bee có
+semaphore riêng, nên Bee sập hay bị rate limit cũng không làm Kira bị nghẽn, và
+ngược lại).
 
-Not used by default since 2026-10-03 (out of credit): reports and every
-classifier run on Kira. Bee only writes the social-topic reports again
-when the dashboard's report provider is set to "bee" (app/ai/tasks/
-report.py), with Kira as the fallback when a Bee call fails.
+Từ 2026-10-03 không còn dùng mặc định (hết số dư): report và mọi bộ phân loại đều
+chạy trên Kira. Bee chỉ viết report social topic trở lại khi report provider trên
+dashboard được đặt là "bee" (app/ai/tasks/report.py), và khi đó Kira làm dự phòng
+nếu lời gọi Bee lỗi.
 """
 
 from __future__ import annotations
@@ -31,9 +31,9 @@ async def call_bee(
     model: str | None = None,
     task: str = "chat",
 ) -> str:
-    """One chat completion via Beeknoee. Raises on failure (including "not
-    configured") - callers should catch broadly and fail open, same
-    convention as every Kira classifier."""
+    """Một lần chat completion qua Beeknoee. Raise khi lỗi (kể cả khi "chưa cấu hình") -
+    bên gọi nên bắt rộng và bỏ qua lỗi (fail open), giống quy ước của mọi bộ phân loại
+    dùng Kira."""
     return await call_ai(
         provider="bee",
         task=task,

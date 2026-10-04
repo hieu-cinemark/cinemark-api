@@ -1,23 +1,20 @@
-"""Pushes comments.relevance_label / relevance_confidence / relevance_labeled_at
-from the local D1 mirror up to the real remote D1 - the comments-table twin
-of scripts/push_relevance_labels.py (posts). Same schema migration pattern:
-the 3 columns were added directly to remote (and to the local mirror) via
-ALTER TABLE, no committed migration file - D1's schema is owned by the
-cinemark-scraper repo, not this one.
+"""Đẩy comments.relevance_label / relevance_confidence / relevance_labeled_at từ bản sao
+D1 local lên D1 remote thật - bản sinh đôi cho bảng comments của
+scripts/push_relevance_labels.py (posts). Cùng kiểu migrate schema: 3 cột được thêm
+thẳng vào remote (và vào bản sao local) bằng ALTER TABLE, không có file migration
+được commit - schema của D1 do repo cinemark-scraper sở hữu, không phải repo này.
 
-Scope: only comments that already exist on remote (matched by id) actually
-get updated - a plain UPDATE ... WHERE id IN (...) simply matches zero rows
-for any id not present on remote. Comments that exist locally but were
-never pushed to remote at all are a separate concern (see
-scripts/push_local_data_to_remote.py) - this script does not create rows,
-only updates existing ones.
+Phạm vi: chỉ các comment đã có trên remote (khớp theo id) mới thực sự được cập nhật -
+một câu UPDATE ... WHERE id IN (...) thường chỉ đơn giản khớp 0 dòng với id không có
+trên remote. Comment có ở local nhưng chưa từng được đẩy lên remote là chuyện khác
+(xem scripts/push_local_data_to_remote.py) - script này không tạo dòng, chỉ cập nhật
+dòng có sẵn.
 
-Batches multiple rows into one UPDATE via CASE/WHEN (same D1 bound-
-parameter ceiling push_relevance_labels.py's own ROWS_PER_BATCH comment
-documents).
+Gom nhiều dòng vào một UPDATE bằng CASE/WHEN (cùng trần tham số bind của D1 mà comment
+ROWS_PER_BATCH trong push_relevance_labels.py ghi lại).
 
-Safe to re-run - every row is a plain UPDATE ... WHERE id = one of these,
-so re-running just re-writes the same values.
+Chạy lại an toàn - mỗi dòng chỉ là UPDATE ... WHERE id = một trong số này, nên chạy
+lại chỉ ghi lại đúng các giá trị đó.
 
     python -m scripts.push_comment_relevance_labels
 """
@@ -33,8 +30,8 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# Same 7-params-per-row / D1 bound-parameter ceiling as
-# push_relevance_labels.py's own ROWS_PER_BATCH comment.
+# Cùng 7 tham số mỗi dòng / trần tham số bind của D1 như comment ROWS_PER_BATCH trong
+# push_relevance_labels.py.
 ROWS_PER_BATCH = 10
 
 
@@ -66,8 +63,8 @@ async def _push_batch(d1_query, batch: list[sqlite3.Row]) -> bool:
 
 
 async def push() -> None:
-    settings.db_mode = "remote"  # writes target real D1; reads come from the local file directly below
-    from app.services.d1 import d1_query  # imported after forcing remote, not at module load
+    settings.db_mode = "remote"  # ghi vào D1 thật; đọc thẳng từ file local bên dưới
+    from app.services.d1 import d1_query  # import sau khi đã ép remote, không phải lúc nạp module
 
     if not (settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id):
         raise RuntimeError(

@@ -1,35 +1,32 @@
-"""In-memory (never persisted - nothing here survives a process restart, by
-design) tracker for a dashboard-triggered token refresh, per platform. There
-is no direct signal from spider-hub when a refresh finishes - the request
-just goes over Kafka and a separate process (crawl_request_consumer.py)
-picks it up - so this works the same way GET /logs/spider-hub does: it tails
-spider-hub's consumer.log off disk, starting from the offset at the moment
-the refresh was triggered.
+"""Bộ theo dõi trong bộ nhớ (không bao giờ lưu xuống đâu - restart tiến trình là mất
+hết, theo thiết kế) cho một lần refresh token kích hoạt từ dashboard, theo từng nền
+tảng. spider-hub không có tín hiệu trực tiếp nào báo khi refresh xong - request chỉ
+đi qua Kafka và một tiến trình riêng (crawl_request_consumer.py) nhận lấy - nên bộ
+này hoạt động giống GET /logs/spider-hub: đọc dần consumer.log của spider-hub trên
+đĩa, bắt đầu từ offset ngay lúc refresh được kích hoạt.
 
-Filtered by run_id, not just by platform: crawl_request_consumer.py runs
-one asyncio task *per platform* concurrently (see its own
-`asyncio.create_task(_run_platform_consumer(platform, ...))`), not one
-globally-serial loop across every platform - so a Facebook refresh and a
-Threads crawl can genuinely be writing to the same shared consumer.log at
-the same time. Matching lines by platform=<x> alone (an older version of
-this docstring assumed a single global queue and called this safe without
-run_id plumbing - it wasn't, once per-platform concurrency landed) let a
-concurrently-running *different* platform's own log lines bleed into
-whichever platform's panel happened to be open. run_id is generated once
-per triggered refresh (app/clients/kafka.py's publish_cookie_import_request
-- the only trigger left, see app/api/routes/token_refresh.py's own docstring
-for why there's no separate standalone "refresh now" anymore) and threaded
-all the way through: passed to the spider-hub subprocess as
---run-id, bound into that process's structlog context (see spider-hub's
-facebook/threads auth/bootstrap.py), so every line it logs - regardless of
-which of its own modules logged it - carries `run_id=<x>` and only those
-lines are shown here.
+Lọc theo run_id, không chỉ theo nền tảng: crawl_request_consumer.py chạy song song
+mỗi nền tảng *một* asyncio task (xem
+`asyncio.create_task(_run_platform_consumer(platform, ...))` bên đó), không phải một
+vòng lặp tuần tự toàn cục cho mọi nền tảng - nên một lần refresh Facebook và một lượt
+crawl Threads thật sự có thể cùng ghi vào consumer.log dùng chung một lúc. Chỉ khớp
+dòng theo platform=<x> (một phiên bản cũ của docstring này giả định một hàng đợi toàn
+cục duy nhất và cho rằng làm vậy an toàn mà không cần truyền run_id - không đúng nữa
+khi có chạy song song theo nền tảng) đã để các dòng log của một nền tảng *khác* đang
+chạy cùng lúc lẫn vào panel của nền tảng nào đang mở. run_id được sinh một lần cho mỗi
+lần refresh được kích hoạt (publish_cookie_import_request trong app/clients/kafka.py -
+nút kích hoạt duy nhất còn lại, xem docstring của app/api/routes/token_refresh.py để
+biết vì sao không còn nút "refresh now" riêng nữa) và được truyền đi suốt: chuyển cho
+tiến trình con của spider-hub qua --run-id, bind vào context structlog của tiến trình
+đó (xem auth/bootstrap.py của facebook/threads bên spider-hub), nên mọi dòng nó log -
+bất kể module nào của nó log - đều mang `run_id=<x>` và chỉ những dòng đó được hiển
+thị ở đây.
 
-Every subscriber (a dashboard's open WebSocket) gets the same broadcast -
-first a "snapshot" of whatever's already known (status + buffered lines so
-far), then live "line"/"status" messages as they happen. The snapshot is
-what makes a page reload safe: reconnecting mid-refresh replays everything
-seen so far instead of losing it."""
+Mọi subscriber (một WebSocket đang mở của dashboard) nhận cùng một bản phát - trước
+tiên là "snapshot" của những gì đã biết (trạng thái + các dòng đã đệm tới lúc đó),
+rồi tới các message "line"/"status" trực tiếp khi chúng xảy ra. Snapshot là thứ làm
+cho việc tải lại trang an toàn: kết nối lại giữa lúc refresh sẽ phát lại mọi thứ đã
+thấy thay vì mất đi."""
 
 from __future__ import annotations
 
@@ -56,27 +53,26 @@ _SUCCESS_EVENTS = frozenset({"token_refresh_finished", "tiktok_identity_refreshe
 _FAILURE_EVENTS = frozenset({"token_refresh_failed"})
 _MAX_BUFFER_LINES = 500
 _POLL_INTERVAL_SECONDS = 0.3
-# Routine refreshes (saved session, auto-login) finish in well under a
-# minute - this is generous headroom, not a realistic expected duration. If
-# spider-hub genuinely needs longer (e.g. a fresh manual login), this tracker
-# just stops watching and reports "failed" for dashboard purposes - the
-# actual subprocess in spider-hub is unaffected and keeps logging/running
-# regardless, this is a UI-side give-up only.
+# Các lần refresh thường ngày (session đã lưu, auto-login) xong trong chưa tới một
+# phút - đây là khoảng dư rộng rãi, không phải thời lượng thực tế dự kiến. Nếu
+# spider-hub thật sự cần lâu hơn (ví dụ đăng nhập tay mới), bộ theo dõi này chỉ ngừng
+# theo dõi và báo "failed" cho mục đích hiển thị trên dashboard - tiến trình con thật
+# bên spider-hub không bị ảnh hưởng và vẫn tiếp tục log/chạy, đây chỉ là phía giao diện
+# bỏ cuộc.
 _WATCH_TIMEOUT_SECONDS = 180
-# Below this age, a second start_refresh() for the same platform is treated
-# as a double-click / two open dashboard tabs firing for the same user
-# action, not a deliberate stuck-watch retry - see start_refresh's own
-# docstring. Comfortably above realistic double-click/network jitter,
-# comfortably below how long even a slow routine refresh takes to produce
-# its first log line.
+# Dưới mức tuổi này, lần start_refresh() thứ hai cho cùng nền tảng được coi là bấm đúp
+# / hai tab dashboard đang mở cùng bắn cho một thao tác của người dùng, không phải cố ý
+# thử lại khi bị kẹt - xem docstring của start_refresh. Lớn hơn khá nhiều so với độ
+# nhiễu thực tế của bấm đúp/mạng, và nhỏ hơn khá nhiều so với thời gian ngay cả một
+# lần refresh thường ngày chậm cần để ra dòng log đầu tiên.
 _MIN_RUNNING_SECONDS_BEFORE_RESTART = 5.0
 
 
 def _parse_log_line(line: str) -> tuple[str, str | None, str | None] | None:
-    """(display text, run_id, event) for one spider-hub log line, in either
-    of its LOG_FORMATs (see spider-hub's social_crawler/logger.py): a JSON
-    object per line, or a console line with key=value fields and the event
-    name as the first token after "[level]". None for a blank line."""
+    """(text hiển thị, run_id, event) cho một dòng log của spider-hub, ở một trong hai
+    LOG_FORMAT của nó (xem social_crawler/logger.py bên spider-hub): mỗi dòng một object
+    JSON, hoặc một dòng console với các trường key=value và tên event là token đầu tiên
+    sau "[level]". None nếu dòng trống."""
     if not line.strip():
         return None
     if line.lstrip().startswith("{"):
@@ -96,8 +92,8 @@ def _parse_log_line(line: str) -> tuple[str, str | None, str | None] | None:
             return display, str(run_id) if run_id is not None else None, event
     match = _RUN_ID_RE.search(line)
     run_id = match.group(1).strip("'\"") if match else None
-    # Console shape: "<timestamp> [<level>  ] <event>   [<logger>] k=v ...".
-    # Older spider-hub builds prefixed the event with "[PLATFORM] [STATUS] ".
+    # Dạng console: "<timestamp> [<level>  ] <event>   [<logger>] k=v ...".
+    # Các bản spider-hub cũ thêm tiền tố "[PLATFORM] [STATUS] " trước event.
     event = None
     for token in line.split():
         if token.startswith("[") or token.endswith("]") or token[0].isdigit():
@@ -119,13 +115,13 @@ class _RefreshState:
     lines: list[str] = field(default_factory=list)
     subscribers: set[asyncio.Queue[dict[str, Any] | None]] = field(default_factory=set)
     task: asyncio.Task[None] | None = None
-    # The run_id this state's lines are currently scoped to - see module
-    # docstring. None only very briefly, between _state_for() first creating
-    # a platform's entry and start_refresh() setting it.
+    # run_id mà các dòng của state này đang được giới hạn theo - xem docstring module. Chỉ
+    # là None trong khoảnh khắc rất ngắn, giữa lúc _state_for() vừa tạo mục cho một nền
+    # tảng và lúc start_refresh() đặt giá trị.
     run_id: str | None = None
-    # time.monotonic() when `task` was created - lets start_refresh tell a
-    # double-click/two-open-tabs restart apart from a deliberate stuck-watch
-    # retry (see _MIN_RUNNING_SECONDS_BEFORE_RESTART).
+    # time.monotonic() lúc `task` được tạo - cho start_refresh phân biệt được restart do
+    # bấm đúp/hai tab đang mở với cố ý thử lại khi bị kẹt (xem
+    # _MIN_RUNNING_SECONDS_BEFORE_RESTART).
     task_started_monotonic: float | None = None
 
 
@@ -160,11 +156,10 @@ def unsubscribe(platform: str, queue: asyncio.Queue[dict[str, Any] | None]) -> N
 
 
 def shutdown() -> None:
-    """Wakes every refresh-token WebSocket waiter so uvicorn --reload can
-    actually exit. Those handlers sit on `await queue.get()` with no
-    timeout; without a sentinel, WatchFiles hangs on "Waiting for
-    background tasks" and the dashboard's next /stats and /job-status
-    calls never get a response."""
+    """Đánh thức mọi chỗ đang chờ WebSocket refresh-token để `uvicorn --reload` thực sự
+    thoát được. Các handler đó nằm chờ `await queue.get()` không có timeout; không có
+    giá trị báo hiệu thì WatchFiles treo ở "Waiting for background tasks" và các lời gọi
+    /stats và /job-status tiếp theo của dashboard không bao giờ nhận được response."""
     for state in _states.values():
         if state.task is not None and not state.task.done():
             state.task.cancel()
@@ -178,19 +173,18 @@ def _broadcast(platform: str, message: dict[str, Any]) -> None:
 
 
 def start_refresh(platform: str, run_id: str) -> bool:
-    """Begins tailing spider-hub's consumer.log for this run_id. A click
-    against an already-running watch cancels it and starts tracking the new
-    run_id instead - recovers a stuck watch (TikTok used to finish without
-    run_id on token_refresh_finished, which left status=running forever).
+    """Bắt đầu đọc dần consumer.log của spider-hub theo run_id này. Bấm khi đang có một lượt
+    theo dõi chạy thì huỷ lượt đó và chuyển sang theo dõi run_id mới - giúp gỡ một lượt
+    theo dõi bị kẹt (TikTok từng xong mà không có run_id trên token_refresh_finished,
+    khiến status=running mãi).
 
-    Returns False (leaving the existing watch untouched, publishing nothing
-    new) if that existing watch is both running and younger than
-    _MIN_RUNNING_SECONDS_BEFORE_RESTART - a double-click or two open
-    dashboard tabs producing two run_ids for one user action, not a genuine
-    stuck-watch retry. Cancelling in that case would silently strand the
-    first run_id: crawl_request_consumer.py still runs it to completion in
-    spider-hub, but nothing here is tailing for its run_id anymore, so its
-    eventual success/failure is never reflected in the dashboard."""
+    Trả về False (giữ nguyên lượt theo dõi hiện có, không publish gì mới) nếu lượt đó vừa
+    đang chạy vừa trẻ hơn _MIN_RUNNING_SECONDS_BEFORE_RESTART - đó là bấm đúp hoặc hai tab
+    dashboard đang mở sinh ra hai run_id cho một thao tác, không phải thật sự thử lại khi
+    bị kẹt. Huỷ trong trường hợp đó sẽ âm thầm bỏ rơi run_id đầu tiên:
+    crawl_request_consumer.py vẫn chạy nó tới cùng bên spider-hub, nhưng ở đây không còn
+    gì theo dõi run_id của nó nữa, nên kết quả thành công/thất bại cuối cùng của nó không
+    bao giờ hiện lên dashboard."""
     state = _state_for(platform)
     if (
         state.task is not None
@@ -232,7 +226,7 @@ def _finish(platform: str, status: Status, extra_line: str | None = None) -> Non
 
 
 async def _redis_refresh_result(run_id: str) -> bool | None:
-    """True/False if spider-hub wrote token_refresh_result:{run_id}, else None."""
+    """True/False nếu spider-hub đã ghi token_refresh_result:{run_id}, ngược lại là None."""
     raw = await get_redis_client().get(f"{REDIS_KEY_PREFIX}token_refresh_result:{run_id}")
     if not raw:
         return None
@@ -263,8 +257,8 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
 
             size = path.stat().st_size
             if size < offset:
-                # Log file was rotated/truncated under us - resync from the
-                # top rather than raising on a negative seek.
+                # File log bị xoay vòng/cắt ngắn trong lúc đang đọc - đồng bộ lại từ đầu thay vì lỗi
+                # khi seek tới vị trí âm.
                 offset = 0
             if size > offset:
                 with path.open("r", encoding="utf-8", errors="replace") as f:
@@ -277,10 +271,9 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
                     if parsed is None:
                         continue
                     line, line_run_id, event = parsed
-                    # Skip anything that isn't tagged with this exact run's
-                    # run_id - see module docstring for why a bare platform
-                    # substring match let a concurrently-running different
-                    # platform's own lines bleed into this panel.
+                    # Bỏ qua mọi dòng không gắn đúng run_id của lượt chạy này - xem docstring module để
+                    # biết vì sao khớp chuỗi con theo nền tảng trần đã để dòng của một nền tảng khác đang
+                    # chạy song song lẫn vào panel này.
                     if line_run_id != run_id:
                         continue
                     state.lines.append(line)

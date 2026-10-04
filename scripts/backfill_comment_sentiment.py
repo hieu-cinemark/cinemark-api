@@ -1,10 +1,10 @@
-"""Classifies sentiment for comments the ingest consumer's sweep doesn't
-reach (app/workers/ingest_consumer/sentiment_sweep.py only looks at the
-last 48h) - the older backlog, or rows Bee kept failing on. Same Bee-batch
-code path as the sweep. Only ever touches rows where sentiment IS NULL, so
-it's safe to re-run - a partial run just leaves the rest for the next one.
+"""Phân loại cảm xúc cho các comment mà lượt quét của ingest consumer không tới được
+(app/workers/ingest_consumer/sentiment_sweep.py chỉ xem 48 giờ gần nhất) - hàng tồn
+cũ hơn, hoặc các dòng mà Kira cứ lỗi mãi. Cùng đường code gom lô Kira như lượt quét.
+Chỉ đụng tới các dòng có sentiment IS NULL, nên chạy lại an toàn - một lượt chạy dở
+chỉ để phần còn lại cho lượt sau.
 
-Usage:
+Cách dùng:
     python -m scripts.backfill_comment_sentiment
     python -m scripts.backfill_comment_sentiment --platform facebook
     python -m scripts.backfill_comment_sentiment --limit 50 --dry-run
@@ -39,14 +39,14 @@ async def backfill(platform: str | None, limit: int | None, dry_run: bool) -> No
         totals.update(result)
         logger.info("backfill_sentiment_page", **result, totals=dict(totals))
         if not result["selected"] or dry_run:
-            break  # nothing left (dry-run writes nothing, so it would re-select the same page)
+            break  # không còn gì (chạy thử không ghi gì, nên sẽ lại chọn đúng trang đó)
         if result["classified"]:
-            # Bee is answering: whatever it didn't label is skipped for the
-            # rest of this run instead of being re-selected forever.
+            # Kira đang trả lời: comment nào nó không gắn nhãn được thì bỏ qua trong phần còn lại
+            # của lượt chạy này thay vì bị chọn lại mãi.
             given_up.update(failed_ids)
             failed_pages = 0
         else:
-            # Whole page failed - Bee is down/limited, not these comments.
+            # Cả trang đều lỗi - là do Kira sập/bị giới hạn, không phải do các comment này.
             failed_pages += 1
             if failed_pages >= MAX_FAILED_PAGES:
                 logger.error("backfill_sentiment_aborted", reason="bee_failing", failed_pages=failed_pages)

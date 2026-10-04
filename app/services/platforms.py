@@ -1,29 +1,27 @@
-"""Registry of social platforms this service knows how to trigger crawls
-for and ingest posts from - the same registry pattern spider-hub's
-SPIDER_BY_PLATFORM (crawl_request_consumer.py) and cinemark-scraper's
-scrapers/registry.ts already use, kept in sync by convention rather than
-by any shared code across the three services.
+"""Danh sách đăng ký các nền tảng mạng xã hội mà service này biết cách kích hoạt crawl
+và ingest bài - cùng kiểu registry với SPIDER_BY_PLATFORM (crawl_request_consumer.py)
+của spider-hub và scrapers/registry.ts của cinemark-scraper, được giữ đồng bộ theo
+quy ước chứ không qua code dùng chung nào giữa ba service.
 
-Adding a new platform here means:
-1. Add its mapper below (raw Kafka payload -> PostDraft).
-2. Make sure spider-hub's crawl_request_consumer.py has a matching
-   SPIDER_BY_PLATFORM entry, or triggered crawls for it will silently
-   vanish (see app/services/d1.py's get_keyword docstring).
-3. Add its router (app/api/routes/<platform>.py, same shape as facebook.py)
-   and register it in app/main.py.
-Nothing else in this service - app/services/d1.py, app/workers/ingest_consumer,
-app/api/routes/platform_scraper.py - needs to change."""
+Thêm một nền tảng mới ở đây nghĩa là:
+1. Thêm mapper của nó bên dưới (payload Kafka thô -> PostDraft).
+2. Bảo đảm crawl_request_consumer.py của spider-hub có mục SPIDER_BY_PLATFORM tương
+   ứng, nếu không các lượt crawl được kích hoạt cho nó sẽ âm thầm biến mất (xem
+   docstring get_keyword trong app/services/d1.py).
+3. Thêm router của nó (app/api/routes/<platform>.py, cùng dạng với facebook.py) và
+   đăng ký trong app/main.py.
+Không chỗ nào khác trong service này - app/services/d1.py,
+app/workers/ingest_consumer, app/api/routes/platform_scraper.py - cần sửa."""
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-# The normalized shape every platform mapper below must produce - same
-# fields as cinemark-scraper's own PostDraft type (src/scrapers/types.ts),
-# so app/services/d1.py's persist_post() has no platform-specific field
-# knowledge of its own. `media`/`raw` are dicts here, JSON-encoded only at
-# the point of writing to D1.
+# Dạng chuẩn hoá mà mọi mapper nền tảng bên dưới phải sinh ra - cùng các trường với
+# kiểu PostDraft của cinemark-scraper (src/scrapers/types.ts), để persist_post() trong
+# app/services/d1.py không phải tự biết trường riêng của nền tảng nào. `media`/`raw` ở
+# đây là dict, chỉ mã hoá JSON lúc ghi vào D1.
 PostDraft = dict[str, Any]
 
 
@@ -36,10 +34,10 @@ def _quoted_media(payload: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
-    """spider-hub's FacebookPostItem field names -> PostDraft. Same mapping
-    cinemark-scraper's own facebook.ts scraper uses (reactions = likes,
-    comments = replies, shares = reposts) - Facebook has no separate
-    quote/reshare concept the way Threads does, so those stay 0."""
+    """Tên trường FacebookPostItem của spider-hub -> PostDraft. Cùng cách ánh xạ mà scraper
+    facebook.ts của cinemark-scraper dùng (reactions = likes, comments = replies, shares
+    = reposts) - Facebook không có khái niệm quote/reshare riêng như Threads, nên các số
+    đó giữ 0."""
     timestamp = payload.get("timestamp")
     return {
         "external_id": payload.get("post_id"),
@@ -65,10 +63,9 @@ def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
 
 
 def _map_threads_post(payload: dict[str, Any]) -> PostDraft:
-    """spider-hub's ThreadsPostItem field names -> PostDraft. Unlike
-    Facebook, Threads has real repost/quote counts of its own (not
-    collapsed into a single "shares" figure), so those map directly instead
-    of defaulting to 0."""
+    """Tên trường ThreadsPostItem của spider-hub -> PostDraft. Khác Facebook, Threads có số
+    repost/quote thật của riêng nó (không gộp thành một con số "shares"), nên ánh xạ thẳng
+    thay vì mặc định 0."""
     timestamp = payload.get("timestamp")
     return {
         "external_id": payload.get("post_id"),
@@ -93,13 +90,11 @@ def _map_threads_post(payload: dict[str, Any]) -> PostDraft:
 
 
 def _map_tiktok_post(payload: dict[str, Any]) -> PostDraft:
-    """spider-hub's TikTokVideoItem field names -> PostDraft. Unlike
-    Facebook/Threads, TikTok exposes a real play/view count directly (not
-    collapsed into likes the way Facebook's "reactions" is), so view_count
-    maps to it instead of defaulting to 0. TikTok has no repost/quote
-    concept distinct from its own share count, so repost_count takes that
-    and quote_count/reshare_count stay 0, same rationale as
-    _map_facebook_post's shares -> repost_count."""
+    """Tên trường TikTokVideoItem của spider-hub -> PostDraft. Khác Facebook/Threads, TikTok
+    có sẵn số lượt phát/xem thật (không gộp vào likes như "reactions" của Facebook), nên
+    view_count ánh xạ vào đó thay vì mặc định 0. TikTok không có khái niệm repost/quote
+    tách khỏi số share, nên repost_count lấy số share còn quote_count/reshare_count giữ
+    0, cùng lý do như shares -> repost_count của _map_facebook_post."""
     timestamp = payload.get("create_time")
     return {
         "external_id": payload.get("video_id"),
@@ -139,15 +134,14 @@ def registered_platforms() -> set[str]:
     return set(PLATFORM_POST_MAPPERS)
 
 
-# The normalized shape every comment mapper below must produce - mirrors
-# cinemark-scraper's comments table (src/db/schema.ts) the same way
-# PostDraft mirrors posts.
+# Dạng chuẩn hoá mà mọi mapper comment bên dưới phải sinh ra - giống bảng comments của
+# cinemark-scraper (src/db/schema.ts) theo cùng cách PostDraft giống bảng posts.
 CommentDraft = dict[str, Any]
 
 
 def _map_facebook_comment(payload: dict[str, Any]) -> CommentDraft:
-    """spider-hub's FacebookCommentItem field names -> CommentDraft (see
-    social_crawler/spiders/facebook/items.py there)."""
+    """Tên trường FacebookCommentItem của spider-hub -> CommentDraft (xem
+    social_crawler/spiders/facebook/items.py bên đó)."""
     timestamp = payload.get("timestamp")
     return {
         "external_id": payload.get("comment_id"),
@@ -165,14 +159,12 @@ def _map_facebook_comment(payload: dict[str, Any]) -> CommentDraft:
 
 
 def _map_threads_comment(payload: dict[str, Any]) -> CommentDraft:
-    """spider-hub's ThreadsCommentItem field names -> CommentDraft (see
-    social_crawler/spiders/threads/items.py there). Threads has no
-    separate reactions/replies split the way Facebook's payload names
-    them - "like_count"/"reply_count" map directly to the same
-    reactions_count/replies_count columns. author_url isn't a field
-    spider-hub captures for Threads (only username/name/id/avatar), so
-    it's built here from the username the same way ThreadsPostItem's own
-    author_url is constructed."""
+    """Tên trường ThreadsCommentItem của spider-hub -> CommentDraft (xem
+    social_crawler/spiders/threads/items.py bên đó). Threads không tách
+    reactions/replies theo cách payload của Facebook đặt tên - "like_count"/"reply_count"
+    ánh xạ thẳng vào cùng các cột reactions_count/replies_count. author_url không phải
+    trường spider-hub lấy cho Threads (chỉ có username/name/id/avatar), nên được dựng ở
+    đây từ username theo đúng cách author_url của ThreadsPostItem được dựng."""
     timestamp = payload.get("timestamp")
     username = payload.get("author_username")
     return {
@@ -191,8 +183,8 @@ def _map_threads_comment(payload: dict[str, Any]) -> CommentDraft:
 
 
 def _map_tiktok_comment(payload: dict[str, Any]) -> CommentDraft:
-    """spider-hub's TikTokCommentItem field names -> CommentDraft (see
-    social_crawler/spiders/tiktok/items.py there)."""
+    """Tên trường TikTokCommentItem của spider-hub -> CommentDraft (xem
+    social_crawler/spiders/tiktok/items.py bên đó)."""
     timestamp = payload.get("timestamp")
     username = payload.get("author_username")
     return {
@@ -221,9 +213,9 @@ def get_comment_mapper(platform: str) -> Callable[[dict[str, Any]], CommentDraft
     return PLATFORM_COMMENT_MAPPERS.get(platform)
 
 
-# Platforms spider-hub actually has a comments spider for (see its own
-# COMMENTS_SPIDER_BY_PLATFORM in crawl_request_consumer.py) - same set as
-# PLATFORM_COMMENT_MAPPERS' keys, named separately since call sites like
-# app/services/scheduler.py's comment-crawl schedule care about "can this
-# platform's comments be crawled at all", not the mapper itself.
+# Các nền tảng mà spider-hub thực sự có spider comment (xem COMMENTS_SPIDER_BY_PLATFORM
+# trong crawl_request_consumer.py bên đó) - cùng tập với các key của
+# PLATFORM_COMMENT_MAPPERS, đặt tên riêng vì các chỗ gọi như lịch crawl comment trong
+# app/services/scheduler.py quan tâm "comment của nền tảng này có crawl được không",
+# không phải bản thân mapper.
 COMMENT_CRAWL_PLATFORMS: set[str] = set(PLATFORM_COMMENT_MAPPERS.keys())

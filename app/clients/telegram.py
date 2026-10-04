@@ -18,12 +18,11 @@ def telegram_enabled() -> bool:
 
 
 async def send_telegram_message(text: str) -> None:
-    """Async (httpx, like every other outbound call in this service - see
-    app/services/d1.py) rather than the sync `requests` this used to call
-    with `await` on it - `requests` isn't even a project dependency
-    (httpx==0.28.1 is - see pyproject.toml), so that raised
-    ModuleNotFoundError at import time, and even installed it would have
-    raised TypeError on the await (a sync function returns None, not an
+    """Async (httpx, giống mọi lời gọi ra ngoài khác trong service này - xem
+    app/services/d1.py) thay vì `requests` đồng bộ mà trước đây gọi kèm `await` -
+    `requests` thậm chí không phải dependency của project (httpx==0.28.1 mới là - xem
+    pyproject.toml), nên trước đây lỗi ModuleNotFoundError ngay lúc import, và kể cả có
+    cài thì cũng lỗi TypeError ở chỗ await (hàm đồng bộ trả về None, không phải
     awaitable)."""
     if not telegram_enabled():
         return

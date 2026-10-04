@@ -1,7 +1,7 @@
-"""Movie list + dashboard CRUD. GET still feeds the keyword picker's movie
-dropdown and the Movies page; POST/PATCH/DELETE let staff add or adjust
-titles without leaving the dashboard. Delete is a soft disable so existing
-keywords/posts keep their movie_id."""
+"""Danh sách phim + CRUD trên dashboard. GET vẫn cấp dữ liệu cho ô chọn phim của bộ
+chọn từ khoá và trang Movies; POST/PATCH/DELETE cho phép nhân viên thêm hoặc chỉnh
+phim mà không rời dashboard. Xoá là tắt mềm (soft disable) để các từ khoá/bài hiện
+có vẫn giữ movie_id."""
 
 from __future__ import annotations
 
@@ -101,15 +101,14 @@ async def delete(movie_id: str) -> dict[str, bool]:
 
 @router.post("/{movie_id}/generate-report")
 async def generate_report(movie_id: str) -> dict[str, str]:
-    """Manual "Tạo report" trigger (see spider-hub-dashboard's MoviesTable) -
-    runs the exact same per-movie logic as scripts/
-    generate_social_topic_reports.py's daily sweep, for one movie, on
-    demand. Enqueues and returns immediately (see app.services.
-    report_queue) rather than running the two sequential Bee/Kira calls
-    in the request handler - confirmed live the topics-clustering call
-    alone can take 2+ minutes, during which the dashboard used to disable
-    every OTHER movie's "Tạo report" button too. GET .../generate-report
-    is how the dashboard polls for the queued/running/done/failed result."""
+    """Nút "Tạo report" bấm tay (xem MoviesTable của spider-hub-dashboard) - chạy đúng
+    logic theo từng phim như lượt quét hằng ngày của
+    scripts/generate_social_topic_reports.py, cho một phim, khi cần. Đưa vào hàng đợi và
+    trả về ngay (xem app.services.report_queue) thay vì chạy hai lời gọi Bee/Kira tuần
+    tự ngay trong request handler - đã xác nhận thực tế riêng lời gọi gom topic có thể
+    mất hơn 2 phút, và trong lúc đó dashboard từng khoá luôn nút "Tạo report" của MỌI
+    phim khác. GET .../generate-report là cách dashboard hỏi định kỳ kết quả
+    queued/running/done/failed."""
     movie = await get_movie_for_report(movie_id)
     if movie is None:
         raise NotFoundError("Movie not found")
@@ -119,9 +118,9 @@ async def generate_report(movie_id: str) -> dict[str, str]:
 
 @router.get("/{movie_id}/generate-report")
 async def get_generate_report_status(movie_id: str) -> dict[str, str | None]:
-    """Polled by the dashboard after a POST above - see report_queue's own
-    docstring for why this is in-memory (one uvicorn worker) rather than
-    the Redis-backed pattern crawl_jobs.py uses for spider-hub's own jobs."""
+    """Dashboard gọi định kỳ sau khi POST ở trên - xem docstring của report_queue để biết
+    vì sao cái này nằm trong bộ nhớ (một worker uvicorn) thay vì dùng Redis như
+    crawl_jobs.py làm cho các job của spider-hub."""
     job = get_report_job(movie_id)
     if job is None:
         return {"status": "not_found", "error": None}

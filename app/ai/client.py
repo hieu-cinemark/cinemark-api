@@ -1,16 +1,15 @@
-"""Unified OpenAI-compatible LLM client shared by every provider (kira,
-bee, ...). Provider credentials (base_url/api_key/model) are rows in
-Supabase's ai_providers table (see app/services/platform_config_db.py) -
-loaded and cached here, instead of env vars, so a key can be rotated or a
-new provider added from the dashboard without a redeploy.
+"""Client LLM tương thích OpenAI dùng chung cho mọi provider (kira, bee, ...). Thông
+tin của provider (base_url/api_key/model) là các dòng trong bảng ai_providers trên
+Supabase (xem app/services/platform_config_db.py) - được nạp và cache ở đây thay vì
+dùng biến môi trường, nên có thể đổi key hay thêm provider mới từ dashboard mà
+không cần deploy lại.
 
-app/ai/kira.py and app/ai/bee.py are thin, provider-specific
-facades over call_ai() below: they keep each provider's own policy (Kira's
-enabled-toggle + per-task prompt overrides live in ai_settings; Bee has
-neither). This module owns what used to be duplicated between
-the old KiraAI and Bee clients - building the
-OpenAI client, retry/backoff on 429s, one concurrency budget per provider,
-and one structured log shape per call."""
+app/ai/kira.py và app/ai/bee.py là các lớp mỏng, riêng cho từng provider, bọc
+call_ai() bên dưới: mỗi lớp giữ chính sách riêng của provider đó (Kira có nút
+bật/tắt và prompt ghi đè theo task trong ai_settings; Bee không có cả hai). Module
+này gom những gì trước đây bị lặp giữa client KiraAI và client Bee cũ - tạo
+OpenAI client, retry/backoff khi gặp 429, mỗi provider một giới hạn đồng thời, và
+một định dạng log thống nhất cho mỗi lời gọi."""
 
 from __future__ import annotations
 
@@ -36,13 +35,14 @@ _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
-# Same trade-off as app/ai/kira.py's _AI_CFG_TTL_SECONDS (~3s per Supabase read).
+# Cùng đánh đổi như _AI_CFG_TTL_SECONDS của app/ai/kira.py (mỗi lần đọc Supabase
+# mất khoảng 3 giây).
 _PROVIDER_CACHE_TTL_SECONDS = 60.0
 
-# Token usage of the most recent call_ai() in the current asyncio task -
-# read right after awaiting call_ai() by callers that need to meter spend
-# against a budget (e.g. a batch labeling script).
-# A ContextVar so concurrent tasks each see their own call's usage.
+# Lượng token của lần call_ai() gần nhất trong asyncio task hiện tại - bên gọi đọc
+# ngay sau khi await call_ai() nếu cần tính chi phí theo ngân sách (ví dụ một script
+# gán nhãn hàng loạt). Dùng ContextVar để các task chạy song song mỗi task thấy
+# lượng dùng của chính lời gọi của nó.
 last_call_usage: contextvars.ContextVar[AIUsage | None] = contextvars.ContextVar("last_call_usage", default=None)
 
 
@@ -110,10 +110,9 @@ _concurrency: dict[str, asyncio.Semaphore] = {}
 
 
 def invalidate_provider_cache(key: str | None = None) -> None:
-    """Drops the cached provider config so the next call re-reads Supabase
-    (and rebuilds the OpenAI client if base_url/api_key changed) - call
-    this right after a dashboard edit to ai_providers. key=None clears
-    every provider."""
+    """Xoá cấu hình provider đã cache để lần gọi sau đọc lại từ Supabase (và tạo lại
+    OpenAI client nếu base_url/api_key đổi) - gọi ngay sau khi sửa ai_providers trên
+    dashboard. key=None xoá cache của mọi provider."""
     if key is None:
         _provider_cache.clear()
     else:
@@ -121,10 +120,9 @@ def invalidate_provider_cache(key: str | None = None) -> None:
 
 
 async def load_provider(key: str) -> ProviderConfig | None:
-    """Reads {key, base_url, api_key, model} from ai_providers (Supabase),
-    cached for a few seconds. None if the row doesn't exist yet or is
-    missing base_url/api_key - callers treat that as "not configured",
-    same fail-open convention as everything else in app/ai."""
+    """Đọc {key, base_url, api_key, model} từ ai_providers (Supabase), cache vài giây.
+    Trả về None nếu dòng chưa tồn tại hoặc thiếu base_url/api_key - bên gọi coi như
+    "chưa cấu hình", cùng quy ước fail open như mọi chỗ khác trong app/ai."""
     now = time.monotonic()
     cached = _provider_cache.get(key)
     if cached is not None and now - cached[0] < _PROVIDER_CACHE_TTL_SECONDS:
@@ -197,14 +195,14 @@ async def call_ai(
     max_tokens: int | None = None,
     platform: str | None = None,
 ) -> str:
-    """One chat completion against `provider`'s ai_providers row. Retries
-    429s with backoff (same budget every provider used to implement on its
-    own), one concurrency semaphore per provider (so a Bee burst can't
-    starve Kira or vice versa - each provider still gets its own, just
-    keyed here instead of as a separate module-level constant per client).
-    Raises RuntimeError if the provider row is missing/incomplete, or the
-    underlying OpenAI error after exhausting retries - every caller in
-    app/kira and app/bee already catches broadly and fails open."""
+    """Một lần chat completion theo dòng ai_providers của `provider`. Retry khi gặp 429
+    có backoff (cùng ngân sách retry mà trước đây mỗi provider tự cài), mỗi provider
+    một semaphore riêng (để Bee gọi dồn dập cũng không làm Kira bị nghẽn và ngược
+    lại - mỗi provider vẫn có semaphore riêng, chỉ là được quản lý theo key ở đây thay
+    vì mỗi client một hằng số riêng ở cấp module).
+    Raise RuntimeError nếu dòng provider thiếu hoặc chưa đủ thông tin, hoặc raise lỗi
+    OpenAI gốc sau khi đã retry hết - mọi bên gọi trong app/kira và app/bee đều đã bắt
+    rộng và fail open."""
     cfg = await load_provider(provider)
     if cfg is None:
         raise RuntimeError(f"ai_provider_not_configured:{provider}")
@@ -300,8 +298,8 @@ async def call_ai(
 
 
 def parse_json_response(response: str) -> dict | list:
-    """Strips a Markdown code fence if the model wrapped its JSON answer in
-    one despite instructions not to, then json.loads()s it. Raises on
-    anything malformed - callers should catch broadly and fail open."""
+    """Bỏ khối code Markdown nếu model lỡ bọc câu trả lời JSON trong đó dù đã được dặn
+    không làm vậy, rồi json.loads(). Raise với mọi dữ liệu sai định dạng - bên gọi
+    nên bắt rộng và fail open."""
     cleaned = JSON_FENCE_RE.sub("", response.strip())
     return json.loads(cleaned)

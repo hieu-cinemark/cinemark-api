@@ -1,6 +1,6 @@
-"""R2 data lake client (S3 API). Used by app/workers/lake_writer and the
-backfill scripts - the Worker-side MEDIA_BUCKET binding is a different
-bucket for user uploads."""
+"""Client data lake R2 (qua S3 API). Dùng bởi app/workers/lake_writer và các script
+backfill - binding MEDIA_BUCKET phía Worker là một bucket khác, dành cho file người
+dùng tải lên."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ def _client():
 
 
 async def put_object(key: str, body: bytes, content_type: str = "application/gzip") -> None:
-    # No ContentEncoding=gzip on purpose: HTTP clients (DuckDB included) would
-    # transparently gunzip it, then choke on reading the .gz a second time.
+    # Cố ý không đặt ContentEncoding=gzip: các HTTP client (kể cả DuckDB) sẽ tự giải nén
+    # gzip, rồi lỗi khi đọc file .gz lần thứ hai.
     async with _client() as s3:
         await s3.put_object(Bucket=settings.lake_bucket, Key=key, Body=body, ContentType=content_type)
 
@@ -42,8 +42,8 @@ async def get_object(key: str) -> bytes:
 
 
 async def delete_prefix(prefix: str) -> int:
-    """Deletes every object under `prefix` (1000 per request, the S3 limit).
-    Returns how many were deleted."""
+    """Xoá mọi object dưới `prefix` (1000 object mỗi request, giới hạn của S3). Trả về số
+    object đã xoá."""
     keys = await list_keys(prefix)
     async with _client() as s3:
         for start in range(0, len(keys), 1000):

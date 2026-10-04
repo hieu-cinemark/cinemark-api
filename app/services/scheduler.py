@@ -1,33 +1,29 @@
-"""In-process daily crawl scheduler - the dashboard's own replacement for
-both cinemark-api's OS-crontab-driven scripts/trigger_scheduled_crawl.sh
-(a fixed "every 6h" cadence, only ever changeable by editing a crontab on
-the host) and cinemark-scraper's Cloudflare Cron Triggers for Threads/
-TikTok (wrangler.toml, needs a Worker redeploy to change). Going forward,
-this is the one source of truth for when a platform's crawl runs - editable
-from the dashboard's "Crawl schedule" card (see app/services/
-platform_config_db.py's crawl_schedules CRUD), no crontab/Worker deploy
-needed to change it.
+"""Bộ lập lịch crawl hằng ngày chạy trong tiến trình - bản thay thế của dashboard cho cả
+scripts/trigger_scheduled_crawl.sh chạy bằng crontab hệ điều hành của cinemark-api
+(nhịp cố định "mỗi 6 giờ", chỉ đổi được bằng cách sửa crontab trên máy) lẫn
+Cloudflare Cron Triggers của cinemark-scraper cho Threads/TikTok (wrangler.toml, phải
+deploy lại Worker mới đổi được). Từ giờ, đây là nguồn sự thật duy nhất về lúc nào
+crawl của một nền tảng chạy - sửa được từ thẻ "Crawl schedule" trên dashboard (xem
+CRUD crawl_schedules trong app/services/platform_config_db.py), không cần deploy
+crontab/Worker để đổi.
 
-One asyncio task for the process's lifetime (started/stopped from
-app/main.py's startup/shutdown hooks), waking every _POLL_INTERVAL_SECONDS
-to check every enabled crawl_schedules row's run_time ("HH:MM", a fixed
-Asia/Ho_Chi_Minh clock - see that column's own comment in spider-hub's
-scripts/dev_db_schema.sql) against the current wall-clock minute.
-last_triggered_date is the re-entrancy guard: without it, a poll loop
-checking every 30s would fire the same scheduled run maybe a dozen times
-during the one minute its run_time matches.
+Một asyncio task sống suốt đời tiến trình (bắt đầu/dừng từ hook startup/shutdown của
+app/main.py), thức dậy mỗi _POLL_INTERVAL_SECONDS để so run_time ("HH:MM", giờ cố
+định Asia/Ho_Chi_Minh - xem comment của cột đó trong scripts/dev_db_schema.sql của
+spider-hub) của mọi dòng crawl_schedules đang bật với phút hiện tại. last_triggered_date
+là cờ chống chạy lặp: không có nó, một vòng lặp kiểm tra mỗi 30s sẽ bắn cùng một lượt
+theo lịch có khi cả chục lần trong một phút mà run_time khớp.
 
-Reuses exactly the same get_enabled_keywords + publish_crawl_request calls
-app/api/routes/platform_scraper.py's POST /<platform>/run route makes for
-"every enabled keyword" - a scheduled run and a manual "run everything"
-button click are the same operation, just triggered differently.
+Dùng lại đúng các lời gọi get_enabled_keywords + publish_crawl_request mà route POST
+/<platform>/run trong app/api/routes/platform_scraper.py dùng cho "mọi từ khoá đang
+bật" - một lượt chạy theo lịch và một lần bấm nút "chạy tất cả" là cùng một thao tác,
+chỉ khác cách kích hoạt.
 
-_comments_tick below is the same shape for comment_crawl_schedules - a
-second, independent per-platform daily time that sweeps every enabled
-keyword's top-engagement posts for ones still missing comments (see
-app/services/d1.py's list_posts_needing_comments) and queues a comments
-crawl for each, the same selection scripts/trigger_recent_keyword_comments.py
-already does by hand."""
+_comments_tick bên dưới cùng dạng cho comment_crawl_schedules - một giờ hằng ngày
+thứ hai, độc lập, theo từng nền tảng, quét các bài tương tác cao của mọi từ khoá đang
+bật để tìm bài còn thiếu comment (xem list_posts_needing_comments trong
+app/services/d1.py) và xếp hàng một lượt crawl comment cho mỗi bài, đúng cách chọn mà
+scripts/trigger_recent_keyword_comments.py vẫn làm bằng tay."""
 
 from __future__ import annotations
 
@@ -48,12 +44,12 @@ logger = get_logger(__name__)
 
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 _POLL_INTERVAL_SECONDS = 30
-# One tick must never be able to stall the loop: 2026-09-30 a Postgres
-# socket opened on a previous network hung the tick (and every schedule
-# after it) for a whole night with the API still answering /health.
+# Một lượt không bao giờ được làm treo vòng lặp: ngày 2026-09-30 một socket Postgres mở
+# từ mạng trước đã làm treo lượt đó (và mọi lịch sau nó) suốt một đêm trong khi API vẫn
+# trả lời /health.
 _TICK_TIMEOUT_SECONDS = 25
-# A run missed because the loop was stuck or the host was asleep still
-# fires if the loop recovers within this window after its run_time.
+# Một lượt bị lỡ vì vòng lặp bị kẹt hoặc máy đang ngủ vẫn được bắn nếu vòng lặp hồi
+# phục trong khoảng thời gian này sau run_time của nó.
 _CATCH_UP_MINUTES = 30
 
 
@@ -67,8 +63,8 @@ def _is_due(run_time: str, now: datetime) -> bool:
 
 
 _task: asyncio.Task[None] | None = None
-# Strong refs for fire-and-forget tasks - the event loop only keeps weak
-# ones, so an unreferenced task can be garbage-collected mid-run.
+# Giữ tham chiếu mạnh tới các task bắn-rồi-quên - event loop chỉ giữ tham chiếu yếu,
+# nên task không ai tham chiếu có thể bị garbage-collect giữa chừng.
 _background_tasks: set[asyncio.Task] = set()
 
 
@@ -82,9 +78,9 @@ NURTURE_PLATFORMS = {"facebook", "threads", "tiktok"}
 
 
 async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurture_after: bool = False) -> None:
-    # Same Kafka topic and per-platform consumer as crawls, so a nurture
-    # published first actually runs to completion before the keyword
-    # crawls behind it; published last, it runs after they drain.
+    # Cùng topic Kafka và consumer theo nền tảng với crawl, nên nurture publish trước thì
+    # thực sự chạy xong rồi mới tới các lượt crawl từ khoá phía sau; publish sau cùng thì
+    # nó chạy sau khi chúng xong hết.
     if nurture_before and platform in NURTURE_PLATFORMS:
         ok = await publish_nurture_request(platform)
         logger.info("scheduled_nurture_queued", platform=platform, when="before", ok=ok)
@@ -127,16 +123,15 @@ async def _tick() -> None:
         if not _is_due(sched["run_time"], now):
             continue
         last = sched["last_triggered_date"]
-        # dict_row from psycopg gives back a real date object, not a string
-        # - compare against the same shape rather than the ISO string.
+        # dict_row của psycopg trả về object date thật, không phải chuỗi - so sánh với cùng
+        # dạng thay vì chuỗi ISO.
         if last is not None and last.isoformat() == today:
             continue
         platform = sched["platform"]
         await db.mark_crawl_schedule_triggered(platform, today)
         logger.info("scheduled_crawl_firing", platform=platform, run_time=sched["run_time"], fired_at=current_hm)
-        # Don't await inline - a slow Kafka publish or D1 query for one
-        # platform shouldn't delay checking (or firing) every other
-        # platform's schedule in the same tick.
+        # Không await tại chỗ - một lần publish Kafka hoặc query D1 chậm cho một nền tảng không
+        # được làm trễ việc kiểm tra (hoặc bắn) lịch của mọi nền tảng khác trong cùng lượt.
         _spawn(
             _trigger_platform(
                 platform,
@@ -147,10 +142,10 @@ async def _tick() -> None:
 
 
 async def _trigger_comments_platform(platform: str, *, top_n: int) -> None:
-    """For every enabled keyword on `platform`, queues a comments crawl for
-    that keyword's top `top_n`-by-engagement posts that still have zero
-    comments stored - same selection scripts/trigger_recent_keyword_comments.py
-    already does by hand, just run on a schedule instead of manually."""
+    """Với mỗi từ khoá đang bật trên `platform`, xếp hàng một lượt crawl comment cho các bài
+    top `top_n` theo tương tác của từ khoá đó mà vẫn chưa có comment nào được lưu - đúng
+    cách chọn mà scripts/trigger_recent_keyword_comments.py vẫn làm bằng tay, chỉ là chạy
+    theo lịch thay vì bằng tay."""
     keywords = await get_enabled_keywords(platform=platform)
     if not keywords:
         logger.info("scheduled_comments_no_keywords", platform=platform)
@@ -190,9 +185,9 @@ async def _comments_tick() -> None:
         platform = sched["platform"]
         await db.mark_comment_crawl_schedule_triggered(platform, today)
         logger.info("scheduled_comments_firing", platform=platform, run_time=sched["run_time"], fired_at=current_hm)
-        # Don't await inline - same reasoning as _tick below: a slow sweep
-        # for one platform shouldn't delay checking every other platform's
-        # schedule (posts or comments) in the same tick.
+        # Không await tại chỗ - cùng lý do như _tick bên dưới: một lượt quét chậm cho một nền
+        # tảng không được làm trễ việc kiểm tra lịch (bài hay comment) của mọi nền tảng khác
+        # trong cùng lượt.
         _spawn(_trigger_comments_platform(platform, top_n=int(sched.get("top_n") or 100)))
 
 
@@ -201,9 +196,8 @@ _purge_running = False
 
 
 async def _run_purge(triggered_by: str = "schedule") -> None:
-    """One purge run (cleanup.run_purge records the history row and holds
-    the cross-process lock). The in-process `_purge_running` flag is what
-    the dashboard's "running" indicator reads."""
+    """Một lượt dọn (cleanup.run_purge ghi dòng lịch sử và giữ khoá liên tiến trình). Cờ
+    `_purge_running` trong tiến trình là thứ mà chỉ báo "running" của dashboard đọc."""
     global _purge_running
     try:
         await run_purge(triggered_by=triggered_by)
@@ -217,9 +211,9 @@ async def _cleanup_tick() -> None:
     global _purge_running
     if _purge_running:
         return
-    # Dashboard-stored knobs take precedence over the env defaults baked
-    # into the Settings object; an unset/empty cleanup_settings row falls
-    # back to those env values via resolve_cleanup_settings().
+    # Tham số lưu trên dashboard được ưu tiên hơn mặc định từ env có sẵn trong object
+    # Settings; dòng cleanup_settings chưa đặt/rỗng thì quay về các giá trị env đó qua
+    # resolve_cleanup_settings().
     cfg = await resolve_cleanup_settings()
     if not cfg["enabled"]:
         return
@@ -237,10 +231,9 @@ async def _cleanup_tick() -> None:
 
 
 async def run_purge_now() -> bool:
-    """Manual trigger from the dashboard. Returns False if a run is already
-    in flight (the dashboard should surface that to the user instead of
-    spinning forever waiting for a result) - the schedule tick does the
-    same _purge_running check above."""
+    """Kích hoạt tay từ dashboard. Trả về False nếu đang có lượt chạy (dashboard nên báo
+    điều đó cho người dùng thay vì quay vòng chờ kết quả mãi) - lượt theo lịch cũng làm
+    cùng phép kiểm tra _purge_running ở trên."""
     global _purge_running
     if _purge_running:
         return False
@@ -253,20 +246,18 @@ def purge_in_progress() -> bool:
     return _purge_running
 
 
-# --- Auto-login scheduler tick ---
-# Different cadence than crawl/cleanup/comments: hourly-by-default rather
-# than daily. Rather than checking on every 30s poll whether an hour has
-# elapsed (which would force the scheduler.py loop to track timestamps),
-# we run an inner tick that:
-#   * Reads the operator-configured interval_seconds from auto_login_settings
-#     each time it wakes up, so changing the interval in the dashboard
-#     takes effect on the next wake (no API restart needed).
-#   * Compares an in-memory "last tick at" against the current time.
-# Falls back to a default 3600s if the settings row is empty/missing
-# (matches the env-var fallback auto_login_scheduler.py has used since
-# day one). Errors inside run_auto_login_tick are caught + logged +
-# persisted to auto_login_run_history by the service; this loop just
-# sleeps and reschedules.
+# --- Lượt của bộ lập lịch auto-login ---
+# Nhịp khác với crawl/cleanup/comments: mặc định mỗi giờ thay vì mỗi ngày. Thay vì ở
+# mỗi lần kiểm tra 30s lại xem đã đủ một giờ chưa (buộc vòng lặp của scheduler.py phải
+# theo dõi mốc thời gian), ta chạy một lượt bên trong:
+#   * Đọc interval_seconds do người vận hành cấu hình trong auto_login_settings mỗi lần
+#     thức dậy, nên đổi chu kỳ trên dashboard có hiệu lực ở lần thức tiếp theo (không
+#     cần restart API).
+#   * So một mốc "lượt gần nhất lúc" trong bộ nhớ với thời gian hiện tại.
+# Quay về mặc định 3600s nếu dòng setting rỗng/thiếu (khớp với giá trị dự phòng từ env
+# mà auto_login/scheduler.py của spider-hub dùng từ ngày đầu). Lỗi bên trong
+# run_auto_login_tick được service bắt + log + lưu vào auto_login_run_history; vòng lặp
+# này chỉ ngủ rồi lên lịch lại.
 _auto_login_last_tick_at: float | None = None
 
 
@@ -275,23 +266,22 @@ async def _auto_login_tick() -> None:
     try:
         cfg = await resolve_auto_login_settings()
     except Exception:
-        # Settings table doesn't exist yet / Supabase hiccup / etc. -
-        # log and skip this 30s window, the next tick will try again.
+        # Bảng settings chưa tồn tại / Supabase trục trặc / v.v. - log rồi bỏ qua khung 30s
+        # này, lượt sau sẽ thử lại.
         logger.error("scheduler_auto_login_settings_read_failed")
         return
     if not cfg.enabled:
-        # Don't even sleep - the operator wants auto-login off, we
-        # just stop checking. Re-enabling the toggle reads the row
-        # again on the next 30s poll, so flipping it in the
-        # dashboard takes effect within 30s.
+        # Không cần ngủ - người vận hành muốn tắt auto-login, ta chỉ ngừng kiểm tra. Bật lại
+        # công tắc thì dòng đó được đọc lại ở lần kiểm tra 30s kế tiếp, nên lật công tắc trên
+        # dashboard có hiệu lực trong vòng 30s.
         _auto_login_last_tick_at = None
         return
     interval = int(cfg.interval_seconds or 3600)
     now = datetime.now(TIMEZONE).timestamp()
     if _auto_login_last_tick_at is None:
-        # Seed from the last recorded run instead of firing right away - the
-        # API restarts on every code save under `uvicorn --reload`, and each
-        # restart would otherwise publish a fresh round of real logins.
+        # Lấy mốc từ lượt chạy đã ghi gần nhất thay vì bắn ngay - API restart mỗi lần lưu code
+        # khi chạy `uvicorn --reload`, và nếu không thì mỗi lần restart sẽ publish một loạt
+        # đăng nhập thật mới.
         history = await db.list_auto_login_run_history(limit=1)
         if history:
             _auto_login_last_tick_at = history[0]["started_at"].timestamp()
@@ -304,11 +294,10 @@ async def _auto_login_tick() -> None:
         platforms=list(cfg.platforms),
         dry_run=cfg.dry_run,
     )
-    # Fire and forget - a slow per-account Kafka publish (one per
-    # dead account, up to a few hundred per platform) shouldn't block
-    # the scheduler loop's other ticks (crawl/comments/cleanup). The
-    # service's _in_flight guard prevents a second scheduled tick
-    # from racing the first even though we don't await here.
+    # Bắn-rồi-quên - publish Kafka chậm theo từng tài khoản (mỗi tài khoản chết một lần, có
+    # thể tới vài trăm mỗi nền tảng) không được chặn các lượt khác của vòng lặp scheduler
+    # (crawl/comments/cleanup). Cờ _in_flight của service ngăn lượt theo lịch thứ hai đua
+    # với lượt đầu dù ở đây không await.
     _spawn(run_auto_login_tick(triggered_by="schedule", force=True))
 
 
@@ -319,9 +308,8 @@ async def _loop() -> None:
         except TimeoutError:
             logger.error("scheduler_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
         except Exception as exc:
-            # A bad tick (D1/Kafka/DB hiccup) must not kill the loop - the
-            # next scheduled run, possibly for a different platform, still
-            # needs its chance to fire.
+            # Một lượt lỗi (D1/Kafka/DB trục trặc) không được giết vòng lặp - lượt theo lịch kế
+            # tiếp, có thể cho nền tảng khác, vẫn cần có cơ hội chạy.
             logger.error("scheduler_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_cleanup_tick(), timeout=_TICK_TIMEOUT_SECONDS)
@@ -340,8 +328,7 @@ async def _loop() -> None:
         except TimeoutError:
             logger.error("scheduler_auto_login_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
         except Exception as exc:
-            # A bad auto_login_settings read or a thrown-from-create_task
-            # error must not kill the loop.
+            # Đọc auto_login_settings lỗi hoặc lỗi ném ra từ create_task không được giết vòng lặp.
             logger.error("scheduler_auto_login_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 

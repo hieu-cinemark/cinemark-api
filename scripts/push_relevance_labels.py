@@ -1,28 +1,24 @@
-"""Pushes posts.relevance_label / relevance_confidence / relevance_labeled_at
-from the local D1 mirror up to the real remote D1 - the data half of
-today's "gán nhãn AI" migration (schema half already applied directly via
-3 ALTER TABLE statements against remote).
+"""Đẩy posts.relevance_label / relevance_confidence / relevance_labeled_at từ bản sao D1
+local lên D1 remote thật - nửa dữ liệu của lần migrate "gán nhãn AI" hôm đó (nửa
+schema đã được áp thẳng bằng 3 câu ALTER TABLE trên remote).
 
-Scope: only posts that already exist on remote (matched by id) actually
-get updated - a plain UPDATE ... WHERE id IN (...) simply matches zero
-rows for any id not present on remote, no error, so there's no need to
-pre-fetch remote's id set to filter locally first (the first version of
-this script did that via 44 paginated SELECTs - each one apparently doing
-an increasingly expensive OFFSET scan over the posts table, since that
-alone hadn't finished after 11 minutes when this was rewritten - not
-worth the cost when D1 already does the filtering for free). Posts that
-exist locally but were never pushed to remote at all are a separate
-concern (see scripts/push_local_data_to_remote.py) - this script does not
-create rows, only updates existing ones.
+Phạm vi: chỉ các bài đã có trên remote (khớp theo id) mới thực sự được cập nhật - một
+câu UPDATE ... WHERE id IN (...) thường chỉ đơn giản khớp 0 dòng với id không có trên
+remote, không lỗi, nên không cần lấy trước tập id của remote để lọc ở local (bản đầu
+tiên của script này làm vậy bằng 44 câu SELECT phân trang - mỗi câu có vẻ quét OFFSET
+ngày càng tốn kém trên bảng posts, vì riêng phần đó đã chạy hơn 11 phút chưa xong khi
+script được viết lại - không đáng khi D1 vốn đã lọc miễn phí). Bài có ở local nhưng
+chưa từng được đẩy lên remote là chuyện khác (xem scripts/push_local_data_to_remote.py)
+- script này không tạo dòng, chỉ cập nhật dòng có sẵn.
 
-Batches multiple rows into one UPDATE via CASE/WHEN (there's no multi-row
-UPDATE syntax the way INSERT has multi-row VALUES) - same D1 bound-
-parameter ceiling push_local_data_to_remote.py's own _MAX_PARAMS_PER_BATCH
-comment documents, so ROWS_PER_BATCH is sized the same conservative way
-(rows * params_per_row comfortably under it).
+Gom nhiều dòng vào một UPDATE bằng CASE/WHEN (không có cú pháp UPDATE nhiều dòng như
+INSERT có VALUES nhiều dòng) - cùng trần tham số bind của D1 mà comment
+_MAX_PARAMS_PER_BATCH trong push_local_data_to_remote.py ghi lại, nên ROWS_PER_BATCH
+được chọn theo cùng cách thận trọng (dòng * tham số mỗi dòng nằm thoải mái dưới mức
+đó).
 
-Safe to re-run - every row is a plain UPDATE ... WHERE id = one of these,
-so re-running just re-writes the same values.
+Chạy lại an toàn - mỗi dòng chỉ là UPDATE ... WHERE id = một trong số này, nên chạy
+lại chỉ ghi lại đúng các giá trị đó.
 
     python -m scripts.push_relevance_labels
 """
@@ -38,11 +34,11 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# 7 params per row (id+label, id+confidence, id+labeled_at for the 3 CASE
-# WHENs, plus one more id for the IN clause) - confirmed live: 20 rows/batch
-# (140 params) got "too many SQL variables" from D1, so its real ceiling is
-# below that, consistent with push_local_data_to_remote.py's own
-# _MAX_PARAMS_PER_BATCH=90 comment. 10 rows (70 params) stays safely under it.
+# 7 tham số mỗi dòng (id+label, id+confidence, id+labeled_at cho 3 CASE WHEN, cộng
+# thêm một id cho mệnh đề IN) - đã xác nhận thực tế: 20 dòng/lô (140 tham số) bị D1 báo
+# "too many SQL variables", nên trần thật thấp hơn mức đó, khớp với comment
+# _MAX_PARAMS_PER_BATCH=90 trong push_local_data_to_remote.py. 10 dòng (70 tham số) nằm
+# an toàn dưới mức đó.
 ROWS_PER_BATCH = 10
 
 
@@ -74,8 +70,8 @@ async def _push_batch(d1_query, batch: list[sqlite3.Row]) -> bool:
 
 
 async def push() -> None:
-    settings.db_mode = "remote"  # writes target real D1; reads come from the local file directly below
-    from app.services.d1 import d1_query  # imported after forcing remote, not at module load
+    settings.db_mode = "remote"  # ghi vào D1 thật; đọc thẳng từ file local bên dưới
+    from app.services.d1 import d1_query  # import sau khi đã ép remote, không phải lúc nạp module
 
     if not (settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id):
         raise RuntimeError(

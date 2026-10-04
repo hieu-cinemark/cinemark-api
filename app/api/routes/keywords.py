@@ -1,9 +1,8 @@
-"""Shared GET/POST /<platform>/keywords routes - GET lists every enabled
-keyword for a platform (with its movie's title) so the dashboard's
-crawl-trigger form can offer a real keyword picker instead of only "every
-enabled keyword"; POST lets that same form create a new one inline (typed
-in the keyword select, not found in the list) without leaving the page.
-Same shared-builder shape as platform_scraper.build_run_route /
+"""Các route GET/POST /<platform>/keywords dùng chung - GET liệt kê mọi từ khoá đang
+bật của một nền tảng (kèm tên phim), để form kích hoạt crawl trên dashboard có ô
+chọn từ khoá thật thay vì chỉ có "mọi từ khoá đang bật"; POST cho phép chính form đó
+tạo từ khoá mới ngay tại chỗ (gõ vào ô chọn, không có trong danh sách) mà không phải
+rời trang. Cùng kiểu builder dùng chung như platform_scraper.build_run_route /
 token_refresh.build_token_refresh_routes."""
 
 from __future__ import annotations

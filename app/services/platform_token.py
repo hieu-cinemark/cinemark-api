@@ -6,29 +6,27 @@ _DEFAULT_ACCOUNT_KEY = "default"
 
 
 def account_key(account: dict) -> str:
-    """The Redis session key spider-hub actually stores/looks this account
-    up under - email-preferring, lowercased. Must match facebook/threads
-    auth/accounts.py's own account_key() (`user.strip().lower()`) exactly,
-    or a caller using a differently-cased/shaped key here (e.g. a raw
-    platform_accounts.account_id) silently misses spider-hub's session and
-    no-ops instead of acting on the intended account. Shared by
-    app/api/routes/token_refresh.py and settings.py's nurture-accounts route
-    so both sides can never drift apart again."""
+    """Key session Redis mà spider-hub thực sự dùng để lưu/tra tài khoản này - ưu tiên
+    email, chữ thường. Phải khớp chính xác với account_key() trong auth/accounts.py của
+    facebook/threads (`user.strip().lower()`), nếu không một chỗ gọi dùng key khác hoa
+    thường/khác dạng ở đây (ví dụ platform_accounts.account_id thô) sẽ âm thầm trượt
+    session của spider-hub và không làm gì thay vì tác động lên đúng tài khoản. Dùng
+    chung cho app/api/routes/token_refresh.py và route nurture-accounts của settings.py
+    để hai bên không bao giờ lệch nhau nữa."""
     return (account.get("email") or account.get("account_id") or "").strip().lower()
 
 
-# TikTok has no GraphQL session_cache TTL. A positive synthetic value makes
-# TokenStatus.valid=True for the dashboard after identity/cookie refresh;
-# the UI hides the countdown for tiktok.
+# TikTok không có TTL session_cache GraphQL. Một giá trị synthetic dương làm
+# TokenStatus.valid=True cho dashboard sau khi refresh danh tính/cookie; giao diện ẩn
+# đồng hồ đếm ngược với tiktok.
 _TIKTOK_VALID_TTL_SECONDS = 7 * 24 * 3600
 
 
 async def _tiktok_session_status() -> tuple[str | None, int | None]:
-    """Usable TikTok identity = enabled row, not checkpointed, cookie has sessionid.
+    """Danh tính TikTok dùng được = dòng đang bật, không bị checkpoint, cookie có sessionid.
 
-    Written by spider-hub's tiktok auth bootstrap / cookie import
-    (update_tiktok_identity + reactivate_account) — there is no
-    tiktok:session_cache Redis key like Facebook/Threads.
+    Do bootstrap auth tiktok / import cookie của spider-hub ghi (update_tiktok_identity +
+    reactivate_account) — không có key Redis tiktok:session_cache như Facebook/Threads.
     """
     from app.services.platform_config_db import list_accounts
 
@@ -53,10 +51,10 @@ async def _tiktok_session_status() -> tuple[str | None, int | None]:
 
 
 async def get_token_status(platform: str) -> tuple[str | None, int | None]:
-    """Whether the platform has a usable collection session right now.
+    """Nền tảng hiện có session thu thập dùng được hay không.
 
-    Facebook/Threads: spider-hub Redis session_cache TTL (graphql_client).
-    TikTok: enabled platform_accounts row with a live sessionid cookie.
+    Facebook/Threads: TTL session_cache trong Redis của spider-hub (graphql_client).
+    TikTok: dòng platform_accounts đang bật có cookie sessionid còn sống.
     """
     if platform == "tiktok":
         return await _tiktok_session_status()

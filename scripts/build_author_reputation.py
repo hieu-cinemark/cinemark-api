@@ -1,24 +1,21 @@
-"""Builds/refreshes the author_reputation table: for every post with
-relevance_label='related', re-checks it against movie_hashtag_present's
-STRONG signals only (is_reputable_author defaults to False - see that
-function's own docstring) and counts, per (platform, author), how many
-DISTINCT movies they're confirmed for that way.
+"""Dựng/làm mới bảng author_reputation: với mỗi bài có relevance_label='related', kiểm
+tra lại bằng CHỈ các tín hiệu MẠNH của movie_hashtag_present (is_reputable_author mặc
+định False - xem docstring của hàm đó) và đếm, theo từng (platform, author), số phim
+KHÁC NHAU mà họ được xác nhận theo cách đó.
 
-An author confirmed across >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR different
-movies gets to corroborate movie_hashtag_present's weakest signal (a bare
-literal title match, no hashtag backing it) for OTHER movies whose title
-happens to also be ordinary vocabulary - see that function's own module
-docstring, the "Huyết Thống" incident this whole table exists to close.
-No circularity: reputation is only ever earned via the hashtag-based
-signals, never the literal-title-alone one it's meant to corroborate.
+Tác giả được xác nhận trên >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR phim khác nhau thì được
+dùng để củng cố tín hiệu yếu nhất của movie_hashtag_present (chỉ khớp tên phim nguyên
+văn, không có hashtag hỗ trợ) cho các phim KHÁC có tên trùng là từ vựng thông thường -
+xem docstring module của hàm đó, sự cố "Huyết Thống" mà cả bảng này sinh ra để xử lý.
+Không có vòng lặp: uy tín chỉ có được qua các tín hiệu dựa trên hashtag, không bao giờ
+qua tín hiệu chỉ-khớp-tên-phim mà nó dùng để củng cố.
 
-Full rebuild every run (not incremental) - cheap enough (one pass over
-relevance_label='related' posts, paginated) to just re-derive from
-scratch each time rather than tracking deltas. Re-run periodically as
-more posts accumulate; this is a batch job, not something request paths
-call.
+Dựng lại toàn bộ mỗi lần chạy (không tăng dần) - đủ rẻ (một lượt qua các bài
+relevance_label='related', có phân trang) để cứ suy ra lại từ đầu thay vì theo dõi
+phần thay đổi. Chạy lại định kỳ khi có thêm bài; đây là job theo lô, không phải thứ
+mà các đường request gọi.
 
-Usage:
+Cách dùng:
   .venv/bin/python -m scripts.build_author_reputation
 """
 
@@ -36,10 +33,9 @@ from app.repositories.d1.posts import (
 from app.services.d1 import d1_query
 
 PAGE_SIZE = 2000
-# 7 params/row (platform, author, distinct_movies, confirmed_posts, updated_at
-# - see push_relevance_labels.py's own ROWS_PER_BATCH comment for the same
-# D1 bound-parameter ceiling reasoning) - 15 rows/batch stays comfortably
-# under it.
+# 7 tham số/dòng (platform, author, distinct_movies, confirmed_posts, updated_at - xem
+# comment ROWS_PER_BATCH trong push_relevance_labels.py cho cùng lý do về trần tham số
+# bind của D1) - 15 dòng/lô vẫn nằm thoải mái dưới mức đó.
 ROWS_PER_INSERT_BATCH = 15
 
 

@@ -1,16 +1,16 @@
-"""Read-only reference for the few jobs still driven by a plain OS crontab
-(spider-hub's scripts/refresh_token.sh) - nothing here is stored in a
-database, so this is just a static list plus, where a local log file
-exists, that file's last-modified time as a "last run" signal. Not editable
-from here - see each job's `source` to change it.
+"""Danh sách tham khảo (chỉ đọc) các job còn chạy bằng crontab của hệ điều hành
+(scripts/refresh_token.sh của spider-hub) - không có gì ở đây được lưu trong
+database, nên đây chỉ là một danh sách cố định cộng với, nếu có file log local,
+thời điểm sửa đổi cuối của file đó làm tín hiệu "lần chạy gần nhất". Không sửa được
+từ đây - xem `source` của từng job để biết chỗ sửa.
 
-Platform crawl scheduling (Facebook/Threads/TikTok - previously a mix of
-cinemark-api's own crontab and cinemark-scraper's Cloudflare Cron Triggers,
-none of it editable without a deploy) moved to app/services/scheduler.py,
-an in-process daily scheduler driven by the dashboard's "Crawl schedule"
-card (GET/PUT /settings/crawl-schedule) - that one's a real DB-backed,
-dashboard-editable resource, not a fixed list like this file, so it isn't
-listed here."""
+Lịch crawl theo nền tảng (Facebook/Threads/TikTok - trước đây lẫn lộn giữa crontab
+riêng của cinemark-api và Cloudflare Cron Triggers của cinemark-scraper, chỗ nào
+cũng phải deploy mới sửa được) đã chuyển sang app/services/scheduler.py, một bộ lập
+lịch hằng ngày chạy trong tiến trình, điều khiển bằng thẻ "Crawl schedule" trên
+dashboard (GET/PUT /settings/crawl-schedule) - đó là tài nguyên thật lưu trong DB và
+sửa được từ dashboard, không phải danh sách cố định như file này, nên không liệt kê
+ở đây."""
 
 from __future__ import annotations
 

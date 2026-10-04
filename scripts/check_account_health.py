@@ -1,20 +1,18 @@
-"""Runs evaluate_account_health() for every account and persists the
-result - the automated counterpart to the dashboard's manual "Check" button
-(see app/api/routes/settings.py's POST /settings/accounts/{id}/check, which
-does the same two steps for one account). Without this, the health signal
-only ever updates when someone remembers to click the button - exactly the
-"nobody was watching" gap that let TikTok's missing mapper (and Threads'
-accounts) go unnoticed before (see app/workers/ingest_consumer/main.py's
-own _note_drop for the same lesson applied to a different signal).
+"""Chạy evaluate_account_health() cho mọi tài khoản và lưu kết quả - bản tự động tương
+ứng với nút "Check" bấm tay trên dashboard (xem POST
+/settings/accounts/{id}/check trong app/api/routes/settings.py, làm đúng hai bước đó
+cho một tài khoản). Không có script này thì tín hiệu sức khoẻ chỉ cập nhật khi có người
+nhớ bấm nút - đúng lỗ hổng "không ai theo dõi" đã để việc thiếu mapper của TikTok (và
+các tài khoản Threads) bị bỏ sót trước đây (xem _note_drop trong
+app/workers/ingest_consumer/main.py cho cùng bài học áp dụng với một tín hiệu khác).
 
-Alerts on Telegram only on a *transition* into warning/disabled - not on
-every run - so a sustained outage doesn't re-alert on every single cron
-cycle it stays broken (same "alert once, not every occurrence" reasoning as
-_note_drop). A manual disable via the dashboard also alerts on its next
-cron cycle, once - that's expected, not a bug: it's still true that the
-account is now disabled.
+Chỉ cảnh báo Telegram khi *chuyển sang* warning/disabled - không phải mỗi lần chạy -
+để một sự cố kéo dài không cảnh báo lại ở mỗi chu kỳ cron mà nó còn hỏng (cùng lý do
+"cảnh báo một lần, không phải mỗi lần xảy ra" như _note_drop). Tắt tay qua dashboard
+cũng sẽ cảnh báo một lần ở chu kỳ cron kế tiếp - đó là chuyện bình thường, không phải
+lỗi: tài khoản quả thật đang bị tắt.
 
-Run periodically via cron (see scripts/trigger_scheduled_crawl.sh):
+Chạy định kỳ qua cron (xem scripts/trigger_scheduled_crawl.sh):
     python -m scripts.check_account_health
 """
 
