@@ -36,7 +36,17 @@ COMMON = {
 # Every platform must map exactly these columns - see _check_mapping. A
 # misspelt name would otherwise survive UNION ALL BY NAME as a silently
 # NULL column.
-POST_COLUMNS = {"post_id", "content", "posted_at", "author_username", "hashtags", "likes", "comments", "shares", "views"}
+POST_COLUMNS = {
+    "post_id",
+    "content",
+    "posted_at",
+    "author_username",
+    "hashtags",
+    "likes",
+    "comments",
+    "shares",
+    "views",
+}
 
 POST_FIELDS = {
     "facebook": {
@@ -144,7 +154,7 @@ def build_posts(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: st
         f"""CREATE OR REPLACE VIEW decisions AS
         SELECT payload->>'platform' AS platform, payload->>'post_id' AS post_id,
                payload->>'decision' AS decision, payload->>'reason' AS reason
-        FROM {_read(bronze, 'decisions')}
+        FROM {_read(bronze, "decisions")}
         WHERE payload->>'post_id' IS NOT NULL
         QUALIFY row_number() OVER (
             PARTITION BY payload->>'platform', payload->>'post_id' ORDER BY payload->>'decided_at' DESC) = 1"""

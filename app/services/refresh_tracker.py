@@ -88,7 +88,9 @@ def _parse_log_line(line: str) -> tuple[str, str | None, str | None] | None:
             event = str(obj.get("event", ""))
             run_id = obj.get("run_id")
             details = " ".join(
-                f"{k}={v}" for k, v in obj.items() if k not in {"event", "timestamp", "level", "run_id", "service", "logger"}
+                f"{k}={v}"
+                for k, v in obj.items()
+                if k not in {"event", "timestamp", "level", "run_id", "service", "logger"}
             )
             display = f"{obj.get('timestamp', '')} [{obj.get('level', '')}] {event} {details}".strip()
             return display, str(run_id) if run_id is not None else None, event
@@ -212,7 +214,9 @@ def start_refresh(platform: str, run_id: str) -> bool:
 
     path = Path(settings.spider_hub_consumer_log_path)
     start_offset = path.stat().st_size if path.is_file() else 0
-    logger.info("refresh_watch_started", platform=platform, run_id=run_id, log_path=str(path), start_offset=start_offset)
+    logger.info(
+        "refresh_watch_started", platform=platform, run_id=run_id, log_path=str(path), start_offset=start_offset
+    )
     state.task = asyncio.create_task(_tail_until_done(platform, run_id, path, start_offset))
     return True
 
@@ -234,7 +238,7 @@ async def _redis_refresh_result(run_id: str) -> bool | None:
         return None
     try:
         return bool(json.loads(raw).get("ok"))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -292,7 +296,11 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
                         return
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
-        _finish(platform, "failed", extra_line=f"(dashboard) gave up watching after {_WATCH_TIMEOUT_SECONDS}s - check the log directly")
+        _finish(
+            platform,
+            "failed",
+            extra_line=f"(dashboard) gave up watching after {_WATCH_TIMEOUT_SECONDS}s - check the log directly",
+        )
     except asyncio.CancelledError:
         return
     except Exception as exc:

@@ -98,7 +98,11 @@ def _verdict(entry: Any) -> Verdict | None:
         confidence = float(entry.get("score") or 0.0)
     except TypeError, ValueError:
         confidence = 0.0
-    return {"label": _LABELS[entry["classification"]], "confidence": confidence, "reason": str(entry.get("reason") or "")[:200]}
+    return {
+        "label": _LABELS[entry["classification"]],
+        "confidence": confidence,
+        "reason": str(entry.get("reason") or "")[:200],
+    }
 
 
 async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
@@ -223,5 +227,7 @@ async def classify_post_relevance_kira(
     if not await _within_daily_cap():
         return None
     future: asyncio.Future[Verdict | None] = asyncio.get_running_loop().create_future()
-    job = _Job(content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles, future=future)
+    job = _Job(
+        content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles, future=future
+    )
     return await _batcher.submit(job)

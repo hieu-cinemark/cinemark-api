@@ -148,9 +148,7 @@ async def _insert_batch(
         if len(rows) > 1:
             inserted = 0
             for row in rows:
-                inserted += await _insert_batch(
-                    d1_query, table, columns, [row], movie_id_remap, keyword_id_remap
-                )
+                inserted += await _insert_batch(d1_query, table, columns, [row], movie_id_remap, keyword_id_remap)
             return inserted
         logger.warning("row_skipped_fk", table=table, row_id=rows[0]["id"])
         return 0
@@ -215,13 +213,9 @@ async def push() -> None:
         movies_pushed = await _push_new_rows(d1_query, local_conn, "movies")
         movie_id_remap = await _movie_id_remap(d1_query, local_conn)
         keyword_id_remap = await _keyword_id_remap(d1_query, local_conn, movie_id_remap)
-        keywords_pushed = await _push_new_rows(
-            d1_query, local_conn, "keywords", movie_id_remap, keyword_id_remap
-        )
+        keywords_pushed = await _push_new_rows(d1_query, local_conn, "keywords", movie_id_remap, keyword_id_remap)
         keyword_id_remap = await _keyword_id_remap(d1_query, local_conn, movie_id_remap)
-        posts_pushed = await _push_new_rows(
-            d1_query, local_conn, "posts", movie_id_remap, keyword_id_remap
-        )
+        posts_pushed = await _push_new_rows(d1_query, local_conn, "posts", movie_id_remap, keyword_id_remap)
         comments_pushed = await _push_new_rows(d1_query, local_conn, "comments")
     finally:
         local_conn.close()

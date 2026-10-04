@@ -31,7 +31,6 @@ import sys
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.clients import d1 as d1_client  # noqa: E402
@@ -96,10 +95,12 @@ async def _run_with_client(mock_client: AsyncMock) -> list[dict[str, Any]] | Non
     cm.__aenter__ = AsyncMock(return_value=None)
     cm.__aexit__ = AsyncMock(return_value=None)
 
-    with patch.object(d1_client, "_get_http_client", AsyncMock(return_value=mock_client)), \
-         patch.object(d1_client, "_remote_sem", cm), \
-         patch.object(d1_client, "_configured", return_value=True), \
-         patch.object(d1_client, "_logged_db_target", True, create=True):
+    with (
+        patch.object(d1_client, "_get_http_client", AsyncMock(return_value=mock_client)),
+        patch.object(d1_client, "_remote_sem", cm),
+        patch.object(d1_client, "_configured", return_value=True),
+        patch.object(d1_client, "_logged_db_target", True, create=True),
+    ):
         # Reset the module's one-time info-log flag so it doesn't
         # silently short-circuit our patched _get_http_client on the
         # second test run.
@@ -142,9 +143,7 @@ async def test_7429_persistent_exhausts_retries() -> None:
     4th retry (default max_retries=4 -> 5 total attempts: 1 initial +
     4 retries) and return None. Sleep count should be 4 (one per
     retry), with backoff doubles 2s, 4s, 8s, 16s."""
-    bodies = [
-        _FakeResp(429, '{"success":false,"errors":[{"code":7429,"message":"..."}]}')
-    ] * 5
+    bodies = [_FakeResp(429, '{"success":false,"errors":[{"code":7429,"message":"..."}]}')] * 5
     mock = _make_client_mock(bodies)
     sleeps: list[float] = []
 
@@ -164,9 +163,7 @@ async def test_non_7429_429_returns_immediately() -> None:
     no 7429 code) should NOT retry - the existing failure-handling
     paths treat None as failure and we don't want to silently mask a
     quota problem behind a retry loop."""
-    mock = _make_client_mock(
-        [_FakeResp(429, '{"success":false,"errors":[{"code":10000,"message":"Rate limit"}]}')]
-    )
+    mock = _make_client_mock([_FakeResp(429, '{"success":false,"errors":[{"code":10000,"message":"Rate limit"}]}')])
     with patch("asyncio.sleep", new=AsyncMock()) as fake_sleep:
         out = await _run_with_client(mock)
     assert out is None, f"expected None, got {out}"

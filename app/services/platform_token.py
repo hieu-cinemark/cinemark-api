@@ -15,6 +15,8 @@ def account_key(account: dict) -> str:
     app/api/routes/token_refresh.py and settings.py's nurture-accounts route
     so both sides can never drift apart again."""
     return (account.get("email") or account.get("account_id") or "").strip().lower()
+
+
 # TikTok has no GraphQL session_cache TTL. A positive synthetic value makes
 # TokenStatus.valid=True for the dashboard after identity/cookie refresh;
 # the UI hides the countdown for tiktok.

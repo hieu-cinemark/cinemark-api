@@ -10,7 +10,16 @@ from __future__ import annotations
 from fastapi import APIRouter, Query
 
 from app.repositories.d1 import comment_repo, post_repo
-from app.schemas.stats import Comment, CommentPage, CommentWithPost, KeywordVolume, PlatformStat, Post, PostPage, TimeseriesPoint
+from app.schemas.stats import (
+    Comment,
+    CommentPage,
+    CommentWithPost,
+    KeywordVolume,
+    PlatformStat,
+    Post,
+    PostPage,
+    TimeseriesPoint,
+)
 from app.services.d1 import (
     get_comment_counts_by_platform,
     get_comment_timeseries,

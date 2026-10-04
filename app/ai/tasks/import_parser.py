@@ -142,6 +142,8 @@ _SYSTEM_PROMPTS: dict[ImportTarget, str] = {
 
 def default_import_system_prompts() -> dict[str, str]:
     return dict(_SYSTEM_PROMPTS)
+
+
 _FIELDS: dict[ImportTarget, tuple[str, ...]] = {
     "accounts": ACCOUNT_FIELDS,
     "proxies": PROXY_FIELDS,

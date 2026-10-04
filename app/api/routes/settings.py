@@ -348,7 +348,9 @@ async def list_comment_schedule() -> list[CommentScheduleOut]:
 async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) -> CommentScheduleOut:
     """Upsert - a platform has no row here until its comments sweep is
     first saved, same as /crawl-schedule/{platform} above."""
-    row = await db.upsert_comment_crawl_schedule(platform, run_time=payload.run_time, enabled=payload.enabled, top_n=payload.top_n)
+    row = await db.upsert_comment_crawl_schedule(
+        platform, run_time=payload.run_time, enabled=payload.enabled, top_n=payload.top_n
+    )
     return CommentScheduleOut(**row)
 
 
@@ -407,7 +409,9 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
     )
     invalidate_provider_cache("kira")
     invalidate_ai_runtime_cache()
-    logger.info("ai_settings_updated", enabled=payload.enabled, model=payload.model.strip(), prompt_tasks=sorted(prompts))
+    logger.info(
+        "ai_settings_updated", enabled=payload.enabled, model=payload.model.strip(), prompt_tasks=sorted(prompts)
+    )
     return await _ai_settings_out(row)
 
 
@@ -437,7 +441,9 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     from app.ai.client import invalidate_provider_cache
 
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
-    row = await db.upsert_ai_provider(key, base_url=payload.base_url.strip(), api_key=api_key, model=payload.model.strip())
+    row = await db.upsert_ai_provider(
+        key, base_url=payload.base_url.strip(), api_key=api_key, model=payload.model.strip()
+    )
     invalidate_provider_cache(key)
     logger.info("ai_provider_updated", key=key, base_url=payload.base_url.strip(), model=payload.model.strip())
     return _ai_provider_out(row)

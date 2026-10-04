@@ -75,9 +75,7 @@ def build_token_refresh_routes(router: APIRouter, platform: str) -> None:
         if account is None or account["platform"] != platform:
             raise NotFoundError(f"No {platform} account {payload.account_id}")
         if not await _has_saved_session(platform, account):
-            raise NoSavedSessionError(
-                "This account has no saved login to reuse. Paste cookies from a real browser."
-            )
+            raise NoSavedSessionError("This account has no saved login to reuse. Paste cookies from a real browser.")
         run_id = str(uuid.uuid4())
         if not refresh_tracker.start_refresh(platform, run_id):
             return TriggerTokenRefreshResponse(ok=False)

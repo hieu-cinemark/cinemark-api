@@ -34,7 +34,8 @@ async def test_transition_into_warning_alerts_once() -> None:
 async def test_staying_in_warning_does_not_re_alert() -> None:
     with (
         patch(
-            "scripts.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status="warning")])
+            "scripts.check_account_health.list_accounts",
+            AsyncMock(return_value=[_account(last_check_status="warning")]),
         ),
         patch("scripts.check_account_health.evaluate_account_health", AsyncMock(return_value="warning")),
         patch("scripts.check_account_health.update_account_check_result", AsyncMock()),
@@ -48,7 +49,8 @@ async def test_staying_in_warning_does_not_re_alert() -> None:
 async def test_recovering_to_ok_does_not_alert() -> None:
     with (
         patch(
-            "scripts.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status="warning")])
+            "scripts.check_account_health.list_accounts",
+            AsyncMock(return_value=[_account(last_check_status="warning")]),
         ),
         patch("scripts.check_account_health.evaluate_account_health", AsyncMock(return_value="ok")),
         patch("scripts.check_account_health.update_account_check_result", AsyncMock()),
@@ -63,9 +65,7 @@ async def test_first_ever_check_landing_on_warning_still_alerts() -> None:
     """previous_status is None (never checked) - still a transition into a
     degraded state, not something to treat as "already known about"."""
     with (
-        patch(
-            "scripts.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])
-        ),
+        patch("scripts.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])),
         patch("scripts.check_account_health.evaluate_account_health", AsyncMock(return_value="disabled")),
         patch("scripts.check_account_health.update_account_check_result", AsyncMock()),
         patch("scripts.check_account_health.send_telegram_message", AsyncMock()) as mock_telegram,

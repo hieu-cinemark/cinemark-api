@@ -94,7 +94,9 @@ async def main(movie_id: str) -> None:
             break
         for row in rows:
             is_reputable = (row["platform"], row["author"]) in reputable
-            if movie_hashtag_present(row.get("content"), movie_title, row.get("keyword"), is_reputable_author=is_reputable):
+            if movie_hashtag_present(
+                row.get("content"), movie_title, row.get("keyword"), is_reputable_author=is_reputable
+            ):
                 kept += 1
             else:
                 to_downgrade.append(row["id"])

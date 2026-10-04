@@ -68,7 +68,7 @@ async def load_ai_runtime() -> dict[str, Any]:
 
 
 async def active_report_provider() -> str:
-    """"kira" or "bee" - which provider app/ai/tasks/report.py's
+    """ "kira" or "bee" - which provider app/ai/tasks/report.py's
     generate_topics_and_verbatims/generate_narrative should call, switchable
     from the dashboard's AI settings tab without touching ai_providers'
     own credentials. Defaults to "kira" if unset/unrecognized - Bee ran out

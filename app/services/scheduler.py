@@ -65,6 +65,7 @@ def _is_due(run_time: str, now: datetime) -> bool:
     late = (now.hour * 60 + now.minute) - (hour * 60 + minute)
     return 0 <= late <= _CATCH_UP_MINUTES
 
+
 _task: asyncio.Task[None] | None = None
 # Strong refs for fire-and-forget tasks - the event loop only keeps weak
 # ones, so an unreferenced task can be garbage-collected mid-run.
@@ -165,7 +166,9 @@ async def _trigger_comments_platform(platform: str, *, top_n: int) -> None:
             )
             if ok:
                 published += 1
-    logger.info("scheduled_comments_triggered", platform=platform, keywords=len(keywords), published=published, telegram=True)
+    logger.info(
+        "scheduled_comments_triggered", platform=platform, keywords=len(keywords), published=published, telegram=True
+    )
 
 
 async def _comments_tick() -> None:

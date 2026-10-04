@@ -31,11 +31,7 @@ def _quoted_media(payload: dict[str, Any]) -> dict[str, Any] | None:
     quoted = payload.get("quoted")
     if not isinstance(quoted, dict):
         return None
-    out = {
-        key: quoted.get(key)
-        for key in ("author", "content", "url", "media_url")
-        if quoted.get(key)
-    }
+    out = {key: quoted.get(key) for key in ("author", "content", "url", "media_url") if quoted.get(key)}
     return out or None
 
 

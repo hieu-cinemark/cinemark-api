@@ -42,7 +42,13 @@ def fake_redis(monkeypatch: pytest.MonkeyPatch) -> _FakeRedis:
 
 
 def _classify(content: str = "Và đây là Lan Trinh trong Án Mạng Xém Hoàn Hảo", **kwargs):
-    defaults = {"content": content, "movie": MOVIE, "keyword": "Án Mạng Karaoke", "platform": "threads", "other_titles": OTHER}
+    defaults = {
+        "content": content,
+        "movie": MOVIE,
+        "keyword": "Án Mạng Karaoke",
+        "platform": "threads",
+        "other_titles": OTHER,
+    }
     return post_relevance.classify_post_relevance_kira(**{**defaults, **kwargs})
 
 
@@ -65,7 +71,11 @@ def _reply_with(monkeypatch: pytest.MonkeyPatch, answer, seen: list | None = Non
 def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
     seen: list = []
     labels = ["irrelevant", "relevant", "uncertain"]
-    _reply_with(monkeypatch, lambda n: [{"i": i + 1, "classification": labels[i], "score": 0.1 * (i + 1), "reason": "r"} for i in range(n)], seen)
+    _reply_with(
+        monkeypatch,
+        lambda n: [{"i": i + 1, "classification": labels[i], "score": 0.1 * (i + 1), "reason": "r"} for i in range(n)],
+        seen,
+    )
 
     async def run():
         return await asyncio.gather(*(_classify(f"bài {n}") for n in range(3)))
@@ -77,14 +87,19 @@ def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
     assert call["task"] == "post_relevance"
     assert "force" not in call  # respects the dashboard's Kira on/off toggle
     assert "[1] TARGET FILM: Án Mạng Karaoke" in call["user_prompt"]
-    assert "OTHER TRACKED FILMS (a post about one of these is not about its target): Án Mạng Xém Hoàn Hảo" in call["user_prompt"]
+    assert (
+        "OTHER TRACKED FILMS (a post about one of these is not about its target): Án Mạng Xém Hoàn Hảo"
+        in call["user_prompt"]
+    )
     assert '"results"' in call["user_prompt"]
 
 
 def test_batches_split_at_batch_size(monkeypatch, fake_redis) -> None:
     monkeypatch.setattr(post_relevance, "BATCH_SIZE", 2)
     seen: list = []
-    _reply_with(monkeypatch, lambda n: [{"i": i + 1, "classification": "relevant", "score": 0.9} for i in range(n)], seen)
+    _reply_with(
+        monkeypatch, lambda n: [{"i": i + 1, "classification": "relevant", "score": 0.9} for i in range(n)], seen
+    )
 
     async def run():
         return await asyncio.gather(*(_classify(f"bài {n}") for n in range(5)))
@@ -94,7 +109,10 @@ def test_batches_split_at_batch_size(monkeypatch, fake_redis) -> None:
 
 
 def test_missing_entry_fails_open_for_that_post_only(monkeypatch, fake_redis) -> None:
-    _reply_with(monkeypatch, lambda n: [{"i": 2, "classification": "relevant", "score": 0.8}, {"i": 1, "classification": "maybe"}])
+    _reply_with(
+        monkeypatch,
+        lambda n: [{"i": 2, "classification": "relevant", "score": 0.8}, {"i": 1, "classification": "maybe"}],
+    )
 
     async def run():
         return await asyncio.gather(_classify("a"), _classify("b"))
@@ -120,7 +138,9 @@ def test_cap_zero_disables(monkeypatch, fake_redis) -> None:
     assert asyncio.run(_classify()) is None and seen == []
 
 
-@pytest.mark.parametrize("answer", [RuntimeError("kira_temporarily_disabled"), "not json", '{"classification": "relevant"}'])
+@pytest.mark.parametrize(
+    "answer", [RuntimeError("kira_temporarily_disabled"), "not json", '{"classification": "relevant"}']
+)
 def test_failures_fail_open(monkeypatch, fake_redis, answer) -> None:
     _reply_with(monkeypatch, answer)
     assert asyncio.run(_classify()) is None

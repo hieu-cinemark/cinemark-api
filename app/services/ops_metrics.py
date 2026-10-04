@@ -101,7 +101,7 @@ async def record_and_list_samples() -> dict[str, Any]:
             latest = json.loads(raw_latest)
             if sample["ts"] - int(latest.get("ts") or 0) < SAMPLE_MIN_INTERVAL_SECONDS:
                 should_append = False
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except json.JSONDecodeError, TypeError, ValueError:
             pass
 
     if should_append:

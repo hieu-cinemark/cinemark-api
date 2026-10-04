@@ -154,7 +154,10 @@ async def _list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
     try:
         from app.services.platform_config_db import _connect
 
-        async with await _connect() as conn, conn.cursor(row_factory=__import__("psycopg.rows", fromlist=["dict_row"]).dict_row) as cur:
+        async with (
+            await _connect() as conn,
+            conn.cursor(row_factory=__import__("psycopg.rows", fromlist=["dict_row"]).dict_row) as cur,
+        ):
             await cur.execute(
                 """
                 SELECT id, account_id, platform, last_check_status, last_checked_at
@@ -174,9 +177,7 @@ async def _list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
         return []
 
 
-async def _tick_one_platform(
-    platform: str, *, dry_run: bool
-) -> tuple[dict[str, int], int, int]:
+async def _tick_one_platform(platform: str, *, dry_run: bool) -> tuple[dict[str, int], int, int]:
     """Runs the auto-login flow for one platform: query Supabase for
     candidates, publish one Kafka message per account, count outcomes.
     Returns (per_status_counters, kafka_published, kafka_publish_failed).

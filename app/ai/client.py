@@ -280,11 +280,22 @@ async def call_ai(
                     raise
                 delay = _RETRY_BASE_SECONDS * attempt + random.uniform(0, 1)
                 logger.warning(
-                    "ai_rate_limited_retrying", provider=provider, attempt=attempt, delay_seconds=round(delay, 1), task=task
+                    "ai_rate_limited_retrying",
+                    provider=provider,
+                    attempt=attempt,
+                    delay_seconds=round(delay, 1),
+                    task=task,
                 )
                 await asyncio.sleep(delay)
             except Exception as exc:
-                logger.error("ai_call_failed", provider=provider, task=task, model=resolved_model, platform=platform, error=str(exc))
+                logger.error(
+                    "ai_call_failed",
+                    provider=provider,
+                    task=task,
+                    model=resolved_model,
+                    platform=platform,
+                    error=str(exc),
+                )
                 raise
 
 

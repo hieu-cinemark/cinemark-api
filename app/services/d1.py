@@ -108,7 +108,7 @@ async def _related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, li
             continue
         try:
             parsed = json.loads(raw)
-        except (TypeError, json.JSONDecodeError):
+        except TypeError, json.JSONDecodeError:
             continue
         if not isinstance(parsed, list):
             continue
@@ -519,7 +519,9 @@ async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in rows or []:
         is_reputable = (row.get("platform"), row.get("post_author")) in reputable
-        if not movie_hashtag_present(row.get("post_content"), movie_title, row.get("post_keyword"), is_reputable_author=is_reputable):
+        if not movie_hashtag_present(
+            row.get("post_content"), movie_title, row.get("post_keyword"), is_reputable_author=is_reputable
+        ):
             continue
         counts[row["sentiment"]] = counts.get(row["sentiment"], 0) + 1
     return counts

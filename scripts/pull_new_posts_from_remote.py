@@ -55,7 +55,11 @@ async def _movie_id_remap_from_remote(d1_query, local_conn: sqlite3.Connection) 
     if remote is None:
         raise RuntimeError("Could not read remote movies - check D1 credentials/quota.")
     local_id_by_slug = {row["slug"]: row["id"] for row in local_conn.execute("SELECT id, slug FROM movies")}
-    remap = {r["id"]: local_id_by_slug[r["slug"]] for r in remote if r["slug"] in local_id_by_slug and local_id_by_slug[r["slug"]] != r["id"]}
+    remap = {
+        r["id"]: local_id_by_slug[r["slug"]]
+        for r in remote
+        if r["slug"] in local_id_by_slug and local_id_by_slug[r["slug"]] != r["id"]
+    }
     if remap:
         logger.info("movie_ids_remapped_from_remote", count=len(remap))
     return remap
@@ -83,9 +87,7 @@ async def _keyword_id_remap_from_remote(
     return remap
 
 
-def _remap_row(
-    row: dict[str, Any], movie_id_remap: dict[str, str], keyword_id_remap: dict[str, str]
-) -> dict[str, Any]:
+def _remap_row(row: dict[str, Any], movie_id_remap: dict[str, str], keyword_id_remap: dict[str, str]) -> dict[str, Any]:
     remapped = dict(row)
     if remapped.get("movie_id") in movie_id_remap:
         remapped["movie_id"] = movie_id_remap[remapped["movie_id"]]

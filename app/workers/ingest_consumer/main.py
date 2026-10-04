@@ -114,7 +114,9 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
     if _tracked_movies_cache is not None and now - _tracked_movies_cache[0] < _TRACKED_MOVIES_TTL_SECONDS:
         return _tracked_movies_cache[1]
     try:
-        rows = await d1_query('SELECT id, title, director, "cast", distributor, released_at FROM movies', quiet=True) or []
+        rows = (
+            await d1_query('SELECT id, title, director, "cast", distributor, released_at FROM movies', quiet=True) or []
+        )
     except Exception as exc:  # noqa: BLE001 - the rules/Kira just sit out this round
         logger.warning("tracked_movies_load_failed", error=exc)
         return _tracked_movies_cache[1] if _tracked_movies_cache else {}
@@ -145,7 +147,9 @@ async def _note_drop(platform: str, reason: str, **context: Any) -> None:
         )
 
 
-async def _decide(*, platform: str | None, post_id: Any, keyword_id: Any, decision: str, reason: str, **extra: Any) -> None:
+async def _decide(
+    *, platform: str | None, post_id: Any, keyword_id: Any, decision: str, reason: str, **extra: Any
+) -> None:
     """One event per post on the ingest_decisions topic - archived to the R2
     lake by app/workers/lake_writer, so every keep/drop and why is on record."""
     await publish_ingest_decision(
@@ -208,7 +212,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # replaying the corresponding ingest_decisions NDJSON file.
     foreign = foreign_language_reason(draft.get("content"), payload.get("text_language"))
     if foreign:
-        logger.info("post_dropped_foreign_language", platform=platform, post_id=post_id, keyword_id=keyword_id, rule=foreign)
+        logger.info(
+            "post_dropped_foreign_language", platform=platform, post_id=post_id, keyword_id=keyword_id, rule=foreign
+        )
         await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=foreign)
         return
 
@@ -227,7 +233,13 @@ async def handle_post(payload: dict[str, Any]) -> None:
         if other_film:
             # Names another tracked film and never this one - no need to pay
             # for a Kira call to confirm it.
-            logger.info("post_dropped_other_film", platform=platform, post_id=post_id, keyword_id=keyword_id, other_film=other_film)
+            logger.info(
+                "post_dropped_other_film",
+                platform=platform,
+                post_id=post_id,
+                keyword_id=keyword_id,
+                other_film=other_film,
+            )
             await _drop(
                 platform=platform, post_id=post_id, reason="other_film", keyword_id=keyword_id, other_film=other_film
             )
@@ -297,6 +309,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         confidence=relevance_confidence,
         has_keyword=has_keyword,
     )
+
 
 async def handle_comment(payload: dict[str, Any]) -> None:
     platform = payload.get("platform")
@@ -368,7 +381,9 @@ class _OffsetTracker:
         return {tp: advanced + 1}
 
 
-async def _process_message(message: Any, semaphore: asyncio.Semaphore, tracker: _OffsetTracker, consumer: AIOKafkaConsumer) -> None:
+async def _process_message(
+    message: Any, semaphore: asyncio.Semaphore, tracker: _OffsetTracker, consumer: AIOKafkaConsumer
+) -> None:
     tp = TopicPartition(message.topic, message.partition)
     async with semaphore:
         try:
@@ -511,15 +526,18 @@ async def run() -> None:
 
 async def _run_loops() -> None:
     loops = {
-        asyncio.create_task(_run_topic_consumer(RAW_POSTS_TOPIC, CONSUMER_GROUP_POSTS, _POST_MESSAGE_CONCURRENCY), name="posts"),
         asyncio.create_task(
-            _run_topic_consumer(RAW_COMMENTS_TOPIC, CONSUMER_GROUP_COMMENTS, _COMMENT_MESSAGE_CONCURRENCY), name="comments"
+            _run_topic_consumer(RAW_POSTS_TOPIC, CONSUMER_GROUP_POSTS, _POST_MESSAGE_CONCURRENCY), name="posts"
+        ),
+        asyncio.create_task(
+            _run_topic_consumer(RAW_COMMENTS_TOPIC, CONSUMER_GROUP_COMMENTS, _COMMENT_MESSAGE_CONCURRENCY),
+            name="comments",
         ),
         asyncio.create_task(sweep_forever(), name="sentiment_sweep"),
     }
     try:
         done, pending = await asyncio.wait(loops, return_when=asyncio.FIRST_COMPLETED)
-    except (asyncio.CancelledError, KeyboardInterrupt):
+    except asyncio.CancelledError, KeyboardInterrupt:
         for task in loops:
             task.cancel()
         await asyncio.gather(*loops, return_exceptions=True)

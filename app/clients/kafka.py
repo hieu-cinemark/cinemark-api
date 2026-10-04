@@ -164,6 +164,7 @@ async def publish_crawl_request(
     await enqueue_published(value)
     return True
 
+
 # Shared dashboard/API default for comments crawls. Threads root feeds on
 # large posts often need 40+ pages before paging_tokens ends; Facebook
 # Comet pages ~10 comments each so 10 pages only covers ~100 top-level.
@@ -318,7 +319,9 @@ async def publish_tiktok_identity_reset(account_id: int) -> bool:
     type="refresh_token" so crawl_request_consumer.py's existing dispatch/
     job-tracking (dashboard "refreshing..."/Stop button) just works, no
     separate action type needed."""
-    return await publish_action_request("tiktok", "refresh_token", {"account_id": account_id, "run_id": str(uuid.uuid4())})
+    return await publish_action_request(
+        "tiktok", "refresh_token", {"account_id": account_id, "run_id": str(uuid.uuid4())}
+    )
 
 
 async def publish_nurture_request(
@@ -365,7 +368,9 @@ async def publish_cookie_import_request(
     the caller feeds it straight into refresh_tracker.start_refresh so the
     dashboard's live log panel/status badge track this run."""
     run_id = run_id or str(uuid.uuid4())
-    ok = await publish_action_request(platform, "cookie_import", {"account_key": account_key, "cookies": cookies, "run_id": run_id})
+    ok = await publish_action_request(
+        platform, "cookie_import", {"account_key": account_key, "cookies": cookies, "run_id": run_id}
+    )
     return run_id if ok else None
 
 
@@ -374,9 +379,7 @@ async def publish_restore_session_request(platform: str, account_key: str, run_i
     recaptures GraphQL tokens from Redis storage_state / the cookie column
     without a human paste and without rotating to a different pool row."""
     run_id = run_id or str(uuid.uuid4())
-    ok = await publish_action_request(
-        platform, "refresh_token", {"account_key": account_key, "run_id": run_id}
-    )
+    ok = await publish_action_request(platform, "refresh_token", {"account_key": account_key, "run_id": run_id})
     return run_id if ok else None
 
 
@@ -432,7 +435,9 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
         for label, topic, group_id in CONSUMER_GROUPS:
             partitions = partitions_by_topic.get(topic)
             if not partitions:
-                results.append({"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "topic_not_found"})
+                results.append(
+                    {"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "topic_not_found"}
+                )
                 continue
             try:
                 tps = [TopicPartition(topic, p) for p in partitions]

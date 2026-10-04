@@ -30,8 +30,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from app.clients.d1 import _configured, d1_query
 from app.core.logging import get_logger
-from app.clients.d1 import d1_query, _configured
 from app.services.platforms import PostDraft, registered_platforms
 
 logger = get_logger(__name__)
@@ -64,7 +64,6 @@ _HASHTAG_STRIP = re.compile(r"[\s._-]+")
 # NULL-labeled post, so its report said "not enough comments". A label a
 # classifier or rule did write (not_related/uncertain) still wins.
 RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NULL AND p.keyword_match > 0))"
-
 
 
 # --- indexes -------------------------------------------------------------

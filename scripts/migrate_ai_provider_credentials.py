@@ -60,7 +60,9 @@ async def main() -> None:
     for key in ("kira", "bee"):
         row = await get_ai_provider(key)
         if row:
-            print(f"verify {key}: base_url={row['base_url']!r} model={row['model']!r} api_key_set={bool(row['api_key'])}")
+            print(
+                f"verify {key}: base_url={row['base_url']!r} model={row['model']!r} api_key_set={bool(row['api_key'])}"
+            )
             if not row["model"]:
                 print(f"  -> {key} has no model yet: set it in the dashboard (Settings > AI providers)")
         else:

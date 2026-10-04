@@ -35,7 +35,9 @@ logger = get_logger(__name__)
 T = TypeVar("T")
 
 
-async def _call_provider(provider: str, *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float) -> str:
+async def _call_provider(
+    provider: str, *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
+) -> str:
     if provider == "kira":
         return await call_kira(
             task=task,
@@ -150,7 +152,12 @@ async def generate_topics_and_verbatims(movie_title: str, comments: list[dict[st
 
 
 async def generate_narrative(
-    movie_title: str, *, positive_percent: float, negative_percent: float, neutral_percent: float, topic_names: list[str]
+    movie_title: str,
+    *,
+    positive_percent: float,
+    negative_percent: float,
+    neutral_percent: float,
+    topic_names: list[str],
 ) -> str | None:
     """Returns the "analysis" blurb string, or None on failure - the caller
     should fall back to an empty string rather than block the report."""

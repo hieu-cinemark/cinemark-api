@@ -36,7 +36,9 @@ SAMPLE_COMMENTS = [
 ]
 
 TOPICS_RESULT = {
-    "top_10_topics": [{"topic_name": "Diễn xuất", "sentiment": "Positive", "insight_summary": "...", "evidence_comments": []}],
+    "top_10_topics": [
+        {"topic_name": "Diễn xuất", "sentiment": "Positive", "insight_summary": "...", "evidence_comments": []}
+    ],
     "top_10_verbatims": [{"text": "Hay quá", "likes": 50, "why_it_matters": "..."}],
 }
 

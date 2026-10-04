@@ -1,7 +1,7 @@
 """Rebuilds the lake's silver tables from bronze (see app/lake/silver.py).
 
-    .venv/bin/python -m scripts.build_silver            # write to R2 silver/
-    .venv/bin/python -m scripts.build_silver --local    # write to ./.lake-local/silver to inspect first
+.venv/bin/python -m scripts.build_silver            # write to R2 silver/
+.venv/bin/python -m scripts.build_silver --local    # write to ./.lake-local/silver to inspect first
 """
 
 from __future__ import annotations

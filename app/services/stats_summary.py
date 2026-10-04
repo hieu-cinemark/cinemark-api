@@ -59,7 +59,7 @@ async def _note_rollup_failure(table: str, **context: Any) -> None:
 def _as_int(value: Any) -> int:
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 

@@ -17,7 +17,15 @@ def _write_bronze(root: Path, entity: str, platform: str, dt: str, rows: list[di
     folder = root / f"entity={entity}" / f"platform={platform}" / f"dt={dt}"
     folder.mkdir(parents=True, exist_ok=True)
     lines = [
-        json.dumps({"topic": f"t_{entity}", "partition": 0, "offset": r["offset"], "kafka_ts": r["ts"] * 1000, "payload": r["payload"]})
+        json.dumps(
+            {
+                "topic": f"t_{entity}",
+                "partition": 0,
+                "offset": r["offset"],
+                "kafka_ts": r["ts"] * 1000,
+                "payload": r["payload"],
+            }
+        )
         for r in rows
     ]
     with gzip.open(folder / f"p0-{len(list(folder.iterdir())):012d}.ndjson.gz", "wt") as fh:
@@ -27,36 +35,138 @@ def _write_bronze(root: Path, entity: str, platform: str, dt: str, rows: list[di
 @pytest.fixture
 def bronze(tmp_path: Path) -> Path:
     root = tmp_path / "bronze"
-    fb = {"platform": "facebook", "keyword_id": "kw_fb", "post_id": "fb1", "message": "Phim hay", "timestamp": 1790000000,
-          "author_id": "a1", "author_name": "An", "hashtags": ["villah%E1%BB%99ian"], "reactions_count": 12,
-          "comments_count": 1, "shares_count": 0}
-    _write_bronze(root, "posts", "facebook", "2026-10-01", [
-        {"offset": 1, "ts": 1790000100, "payload": fb},
-        {"offset": 1, "ts": 1790000100, "payload": fb},  # same Kafka message written twice
-        {"offset": 2, "ts": 1790009000, "payload": {**fb, "reactions_count": 40}},
-    ])
-    _write_bronze(root, "posts", "threads", "2026-10-01", [
-        {"offset": 3, "ts": 1790000200, "payload": {"platform": "threads", "keyword_id": "kw_th", "post_id": "th1",
-         "message": "Xem chưa", "timestamp": 1790000000, "author_username": "th_user", "like_count": 5,
-         "reply_count": 2, "repost_count": 1}},
-    ])
-    _write_bronze(root, "posts", "tiktok", "2026-10-01", [
-        {"offset": 4, "ts": 1790000300, "payload": {"platform": "tiktok", "keyword_id": "kw_tt", "video_id": "tt1",
-         "desc": "Trailer", "create_time": 1790000000, "author_username": "tt_user", "hashtags": ["conmatthuba"],
-         "like_count": 7, "comment_count": 3, "share_count": 1, "play_count": 3_000_000_000}},
-    ])
-    _write_bronze(root, "decisions", "facebook", "2026-10-01", [
-        {"offset": 5, "ts": 1790000101, "payload": {"platform": "facebook", "post_id": "fb1", "decision": "kept",
-         "reason": "keyword", "decided_at": "2026-10-01T00:00:01+00:00"}},
-        {"offset": 6, "ts": 1790009001, "payload": {"platform": "facebook", "post_id": "fb1", "decision": "dropped",
-         "reason": "kira_irrelevant", "decided_at": "2026-10-01T02:30:00+00:00"}},
-    ])
-    _write_bronze(root, "decisions", "tiktok", "2026-10-01", [
-        {"offset": 7, "ts": 1790000301, "payload": {"platform": "tiktok", "post_id": "tt1", "decision": "kept",
-         "reason": "kira", "decided_at": "2026-10-01T00:00:05+00:00"}},
-        {"offset": 8, "ts": 1790000302, "payload": {"platform": "tiktok", "post_id": None, "decision": "dropped",
-         "reason": "pre-fix event without an id", "decided_at": "2026-10-01T00:00:06+00:00"}},
-    ])
+    fb = {
+        "platform": "facebook",
+        "keyword_id": "kw_fb",
+        "post_id": "fb1",
+        "message": "Phim hay",
+        "timestamp": 1790000000,
+        "author_id": "a1",
+        "author_name": "An",
+        "hashtags": ["villah%E1%BB%99ian"],
+        "reactions_count": 12,
+        "comments_count": 1,
+        "shares_count": 0,
+    }
+    _write_bronze(
+        root,
+        "posts",
+        "facebook",
+        "2026-10-01",
+        [
+            {"offset": 1, "ts": 1790000100, "payload": fb},
+            {"offset": 1, "ts": 1790000100, "payload": fb},  # same Kafka message written twice
+            {"offset": 2, "ts": 1790009000, "payload": {**fb, "reactions_count": 40}},
+        ],
+    )
+    _write_bronze(
+        root,
+        "posts",
+        "threads",
+        "2026-10-01",
+        [
+            {
+                "offset": 3,
+                "ts": 1790000200,
+                "payload": {
+                    "platform": "threads",
+                    "keyword_id": "kw_th",
+                    "post_id": "th1",
+                    "message": "Xem chưa",
+                    "timestamp": 1790000000,
+                    "author_username": "th_user",
+                    "like_count": 5,
+                    "reply_count": 2,
+                    "repost_count": 1,
+                },
+            },
+        ],
+    )
+    _write_bronze(
+        root,
+        "posts",
+        "tiktok",
+        "2026-10-01",
+        [
+            {
+                "offset": 4,
+                "ts": 1790000300,
+                "payload": {
+                    "platform": "tiktok",
+                    "keyword_id": "kw_tt",
+                    "video_id": "tt1",
+                    "desc": "Trailer",
+                    "create_time": 1790000000,
+                    "author_username": "tt_user",
+                    "hashtags": ["conmatthuba"],
+                    "like_count": 7,
+                    "comment_count": 3,
+                    "share_count": 1,
+                    "play_count": 3_000_000_000,
+                },
+            },
+        ],
+    )
+    _write_bronze(
+        root,
+        "decisions",
+        "facebook",
+        "2026-10-01",
+        [
+            {
+                "offset": 5,
+                "ts": 1790000101,
+                "payload": {
+                    "platform": "facebook",
+                    "post_id": "fb1",
+                    "decision": "kept",
+                    "reason": "keyword",
+                    "decided_at": "2026-10-01T00:00:01+00:00",
+                },
+            },
+            {
+                "offset": 6,
+                "ts": 1790009001,
+                "payload": {
+                    "platform": "facebook",
+                    "post_id": "fb1",
+                    "decision": "dropped",
+                    "reason": "kira_irrelevant",
+                    "decided_at": "2026-10-01T02:30:00+00:00",
+                },
+            },
+        ],
+    )
+    _write_bronze(
+        root,
+        "decisions",
+        "tiktok",
+        "2026-10-01",
+        [
+            {
+                "offset": 7,
+                "ts": 1790000301,
+                "payload": {
+                    "platform": "tiktok",
+                    "post_id": "tt1",
+                    "decision": "kept",
+                    "reason": "kira",
+                    "decided_at": "2026-10-01T00:00:05+00:00",
+                },
+            },
+            {
+                "offset": 8,
+                "ts": 1790000302,
+                "payload": {
+                    "platform": "tiktok",
+                    "post_id": None,
+                    "decision": "dropped",
+                    "reason": "pre-fix event without an id",
+                    "decided_at": "2026-10-01T00:00:06+00:00",
+                },
+            },
+        ],
+    )
     return root
 
 

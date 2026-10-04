@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from app.clients.d1 import d1_query, _configured
+from app.clients.d1 import _configured, d1_query
 from app.services.platforms import CommentDraft
 
 # Above this many rows, list_comments stops returning more - an admin

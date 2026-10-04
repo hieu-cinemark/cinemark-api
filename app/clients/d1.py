@@ -221,7 +221,9 @@ async def d1_query(
                         attempts=attempt - 1,
                     )
                 return None
-            sleep_seconds = min(_D1_STORAGE_BACKOFF_CAP_SECONDS, _D1_STORAGE_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+            sleep_seconds = min(
+                _D1_STORAGE_BACKOFF_CAP_SECONDS, _D1_STORAGE_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
+            )
             logger.warning(
                 "d1_storage_backoff_retry",
                 status=resp.status_code,
@@ -250,5 +252,5 @@ async def d1_query(
 def _as_int(value: Any) -> int:
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0

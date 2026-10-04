@@ -57,7 +57,9 @@ async def _ensure_pool_columns() -> None:
     if _pool_columns_ready:
         return
     async with await _connect() as conn, conn.cursor() as cur:
-        await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'")
+        await cur.execute(
+            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'"
+        )
         await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS cooldown_until timestamptz")
         await cur.execute(
             "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS consecutive_failures int NOT NULL DEFAULT 0"
@@ -146,7 +148,9 @@ async def create_account(fields: dict[str, Any]) -> dict[str, Any]:
             await conn.commit()
             return row  # type: ignore[return-value]
     except psycopg.errors.UniqueViolation as exc:
-        raise ConflictError(f"An account for {fields.get('platform')}/{fields.get('account_id')} already exists") from exc
+        raise ConflictError(
+            f"An account for {fields.get('platform')}/{fields.get('account_id')} already exists"
+        ) from exc
 
 
 async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, Any]:
@@ -604,8 +608,7 @@ async def _ensure_ai_settings_table() -> None:
         # essentially idle in production - the only real per-call-volume
         # LLM task left was report generation, which was hardcoded to Bee).
         await cur.execute(
-            "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider "
-            "text NOT NULL DEFAULT 'kira'"
+            "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider text NOT NULL DEFAULT 'kira'"
         )
         await cur.execute(
             """
