@@ -3,6 +3,7 @@
 
     silver/posts_snapshots/platform=<p>/dt=<d>/  mỗi lần crawl một bài là một dòng (lịch sử tương tác)
     silver/posts/platform=<p>/                    mỗi bài một dòng: lần crawl mới nhất + quyết định của ingest
+    silver/comments/platform=<p>/                 mỗi comment một dòng: lần crawl mới nhất
 
 Mỗi bước là một view/table DuckDB có tên (raw -> deduped -> snapshots -> posts),
 được kiểm tra trước khi ghi bất cứ thứ gì. Mỗi lần chạy là dựng lại toàn bộ: cùng
@@ -19,75 +20,22 @@ import duckdb
 
 from app.clients.lake import delete_prefix
 from app.core.config import settings
+from app.core.logging import get_logger
+from app.lake.constants import (
+    BRONZE,
+    COLS,
+    COMMENT_COLUMNS,
+    COMMENT_COMMON,
+    COMMENT_FIELDS,
+    COMMON,
+    MAX_NULL_SHARE,
+    POST_COLUMNS,
+    POST_FIELDS,
+    SILVER,
+    WRITABLE_PREFIXES,
+)
 
-BRONZE = f"r2://{settings.lake_bucket}/bronze"
-SILVER = f"r2://{settings.lake_bucket}/silver"
-COLS = """{topic: 'VARCHAR', "partition": 'INTEGER', "offset": 'BIGINT', kafka_ts: 'BIGINT', payload: 'JSON'}"""
-
-# Biểu thức giống nhau trên mọi nền tảng.
-COMMON = {
-    "keyword_id": "payload->>'keyword_id'",
-    "url": "payload->>'url'",
-    "author_id": "payload->>'author_id'",
-    "author_name": "payload->>'author_name'",
-    "scraped_at": "to_timestamp(kafka_ts / 1000)",
-}
-
-# Mỗi nền tảng phải ánh xạ đúng đủ các cột này - xem _check_mapping. Nếu không,
-# một tên viết sai sẽ lọt qua UNION ALL BY NAME thành một cột NULL mà không ai biết.
-POST_COLUMNS = {
-    "post_id",
-    "content",
-    "posted_at",
-    "author_username",
-    "hashtags",
-    "likes",
-    "comments",
-    "shares",
-    "views",
-}
-
-POST_FIELDS = {
-    "facebook": {
-        "post_id": "payload->>'post_id'",
-        "content": "payload->>'message'",
-        "posted_at": "to_timestamp(CAST(payload->>'timestamp' AS BIGINT))",
-        "author_username": "NULL::VARCHAR",
-        # Spider lưu hashtag Facebook ở dạng URL-encoded (villah%E1%BB%99ian).
-        "hashtags": "list_transform(CAST(payload->'hashtags' AS VARCHAR[]), tag -> url_decode(tag))",
-        "likes": "CAST(payload->>'reactions_count' AS INT)",
-        "comments": "CAST(payload->>'comments_count' AS INT)",
-        "shares": "CAST(payload->>'shares_count' AS INT)",
-        "views": "NULL::BIGINT",
-    },
-    "threads": {
-        "post_id": "payload->>'post_id'",
-        "content": "payload->>'message'",
-        "posted_at": "to_timestamp(CAST(payload->>'timestamp' AS BIGINT))",
-        "author_username": "payload->>'author_username'",
-        "hashtags": "NULL::VARCHAR[]",
-        "likes": "CAST(payload->>'like_count' AS INT)",
-        "comments": "CAST(payload->>'reply_count' AS INT)",
-        "shares": "CAST(payload->>'repost_count' AS INT)",
-        "views": "NULL::BIGINT",
-    },
-    "tiktok": {
-        "post_id": "payload->>'video_id'",
-        "content": "payload->>'desc'",
-        "posted_at": "to_timestamp(CAST(payload->>'create_time' AS BIGINT))",
-        "author_username": "payload->>'author_username'",
-        "hashtags": "CAST(payload->'hashtags' AS VARCHAR[])",
-        "likes": "CAST(payload->>'like_count' AS INT)",
-        "comments": "CAST(payload->>'comment_count' AS INT)",
-        "shares": "CAST(payload->>'share_count' AS INT)",
-        # BIGINT: lượt xem của video viral có thể vượt giới hạn 2,1 tỉ của INT.
-        "views": "CAST(payload->>'play_count' AS BIGINT)",
-    },
-}
-
-# Nếu một nền tảng có hơn tỉ lệ này số dòng thiếu content/posted_at thì gần như
-# chắc chắn đang ánh xạ sai tên trường.
-MAX_NULL_SHARE = 0.5
+logger = get_logger(__name__)
 
 
 def connect() -> duckdb.DuckDBPyConnection:
@@ -105,17 +53,17 @@ def connect() -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _check_mapping() -> None:
-    for platform, fields in POST_FIELDS.items():
-        if set(fields) != POST_COLUMNS:
+def _check_mapping(mapping: dict[str, dict[str, str]], columns: set[str]) -> None:
+    for platform, fields in mapping.items():
+        if set(fields) != columns:
             raise ValueError(
-                f"{platform} mapping: missing {sorted(POST_COLUMNS - set(fields))}, "
-                f"unexpected {sorted(set(fields) - POST_COLUMNS)}"
+                f"{platform} mapping: missing {sorted(columns - set(fields))}, "
+                f"unexpected {sorted(set(fields) - columns)}"
             )
 
 
-def _platform_select(platform: str, fields: dict[str, str]) -> str:
-    cols = ",\n    ".join(f"{expr} AS {name}" for name, expr in {**COMMON, **fields}.items())
+def _platform_select(platform: str, fields: dict[str, str], common=COMMON) -> str:
+    cols = ",\n    ".join(f"{expr} AS {name}" for name, expr in {**common, **fields}.items())
     return f"SELECT '{platform}' AS platform, dt,\n    {cols}\nFROM deduped WHERE platform = '{platform}'"
 
 
@@ -129,7 +77,7 @@ def _read(bronze: str, entity: str) -> str:
 def build_posts(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: str = SILVER) -> dict[str, int]:
     """Dựng lại silver posts_snapshots + posts từ bronze. `bronze`/`out` có thể
     là thư mục local (khi test, khi thử) hoặc đường dẫn r2://."""
-    _check_mapping()
+    _check_mapping(POST_FIELDS, POST_COLUMNS)
 
     # 1. raw: một view - chưa đọc gì cho tới khi có bước sau cần dùng.
     con.execute(f"CREATE OR REPLACE VIEW raw AS SELECT * FROM {_read(bronze, 'posts')}")
@@ -201,17 +149,95 @@ def _check(con: duckdb.DuckDBPyConnection) -> None:
         raise ValueError("silver posts check failed: " + "; ".join(problems))
 
 
-def _write(con: duckdb.DuckDBPyConnection, table: str, dest: str, *, partition_by: str) -> None:
+def _write(con: duckdb.DuckDBPyConnection, table: str, dest: str, *, partition_by: str | None = None) -> None:
+    if partition_by:
+        target, options = dest, f"FORMAT parquet, PARTITION_BY ({partition_by})"
+    else:
+        target, options = f"{dest}/{Path(dest).name}.parquet", "FORMAT parquet"
+
     if not dest.startswith("r2://"):
         # DuckDB tự tạo các thư mục partition nhưng không tạo thư mục cha còn thiếu.
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        con.execute(f"COPY {table} TO '{dest}' (FORMAT parquet, PARTITION_BY ({partition_by}), OVERWRITE)")
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        overwrite = ", OVERWRITE" if partition_by else ""
+        con.execute(f"COPY {table} TO '{target}' ({options}{overwrite})")
         return
     # OVERWRITE của DuckDB không hỗ trợ file system từ xa, còn OVERWRITE_OR_IGNORE
     # để lại file của lần chạy trước (dòng bị đếm hai lần) - nên phải xoá đích trước.
-    # Chỉ được xoá dưới silver/.
+    # Chỉ được xoá dưới silver/gold.
     prefix = dest.split(f"r2://{settings.lake_bucket}/", 1)[1].rstrip("/") + "/"
-    if not prefix.startswith("silver/"):
-        raise ValueError(f"refusing to clear {prefix!r} - silver writes stay under silver/")
+    if not prefix.startswith(WRITABLE_PREFIXES):
+        raise ValueError(f"refusing to clear {prefix!r} - lake writes stay under silver/ or gold/")
     asyncio.run(delete_prefix(prefix))
-    con.execute(f"COPY {table} TO '{dest}' (FORMAT parquet, PARTITION_BY ({partition_by}), OVERWRITE_OR_IGNORE)")
+    overwrite = ", OVERWRITE_OR_IGNORE" if partition_by else ""
+    con.execute(f"COPY {table} TO '{target}' ({options}{overwrite})")
+
+
+def build_comments(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: str = SILVER) -> dict[str, int]:
+    """Dựng lại silver comments từ bronze. Chạy sau build_posts: phần kiểm tra
+    comment mồ côi đọc silver/posts vừa ghi ở `out`."""
+    _check_mapping(COMMENT_FIELDS, COMMENT_COLUMNS)
+
+    # 1-2. raw + deduped: giống build_posts.
+    con.execute(f"CREATE OR REPLACE VIEW raw AS SELECT * FROM {_read(bronze, 'comments')}")
+    con.execute(
+        """CREATE OR REPLACE VIEW deduped AS SELECT * FROM raw
+        QUALIFY row_number() OVER (PARTITION BY topic, "partition", "offset" ORDER BY kafka_ts) = 1"""
+    )
+
+    # 3. comment_snapshots: mỗi lần crawl một comment là một dòng. Tên riêng để không
+    #    đè bảng snapshots của posts trong cùng connection.
+    con.execute(
+        "CREATE OR REPLACE TABLE comment_snapshots AS\n"
+        + "\nUNION ALL BY NAME\n".join(_platform_select(p, f, common=COMMENT_COMMON) for p, f in COMMENT_FIELDS.items())
+    )
+
+    # 4. comments: mỗi comment một dòng, lần crawl mới nhất thắng.
+    con.execute(
+        """CREATE OR REPLACE TABLE comments AS SELECT * EXCLUDE (dt) FROM comment_snapshots
+        QUALIFY row_number() OVER (PARTITION BY platform, comment_id ORDER BY scraped_at DESC) = 1"""
+    )
+
+    # 5. kiểm tra xong mới ghi.
+    orphans = _check_comments(con, posts=f"{out}/posts")
+
+    # 6. ghi.
+    _write(con, "comments", f"{out}/comments", partition_by="platform")
+    return {"comments": con.sql("SELECT count(*) FROM comments").fetchone()[0], "orphans": orphans}
+
+
+def _check_comments(con: duckdb.DuckDBPyConnection, *, posts: str) -> int:
+    """Raise khi dữ liệu sai rõ ràng; trả về số comment mồ côi (post_id không có
+    trong silver/posts) - chỉ log, vì comment có thể được crawl cho bài có từ
+    trước khi có lake."""
+    problems = []
+    no_id = con.sql("SELECT count(*) FROM comment_snapshots WHERE comment_id IS NULL OR post_id IS NULL").fetchone()[0]
+    if no_id:
+        problems.append(f"{no_id} comment rows without comment_id/post_id")
+    dupes = con.sql(
+        "SELECT count(*) FROM (SELECT platform, comment_id FROM comments GROUP BY ALL HAVING count(*) > 1)"
+    ).fetchone()[0]
+    if dupes:
+        problems.append(f"{dupes} duplicate comments")
+    for platform, rows, null_share in con.sql(
+        """SELECT platform, count(*),
+                  count(*) FILTER (WHERE content IS NULL OR posted_at IS NULL) / count(*)
+           FROM comment_snapshots GROUP BY platform"""
+    ).fetchall():
+        if null_share > MAX_NULL_SHARE:
+            problems.append(f"{platform}: {null_share:.0%} of {rows} comment rows have no content/posted_at")
+    if problems:
+        raise ValueError("silver comments check failed: " + "; ".join(problems))
+
+    try:
+        by_platform = con.sql(
+            f"""SELECT platform, count(*) FROM comments c
+            ANTI JOIN read_parquet('{posts}/*/*.parquet', hive_partitioning=true) p USING (platform, post_id)
+            GROUP BY platform ORDER BY platform"""
+        ).fetchall()
+    except duckdb.IOException:
+        logger.warning("silver_comments_orphan_check_skipped", reason="no silver posts", posts=posts)
+        return 0
+    orphans = sum(n for _, n in by_platform)
+    if orphans:
+        logger.info("silver_comments_orphans", total=orphans, by_platform=dict(by_platform))
+    return orphans
