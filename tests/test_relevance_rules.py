@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.relevance_rules import foreign_language_reason, has_film_context, mentions_other_film
+from app.services.relevance_rules import (
+    foreign_language_reason,
+    has_film_context,
+    mentions_keyword_or_title,
+    mentions_other_film,
+)
 
 TRACKED = ["Án Mạng Karaoke", "Án Mạng Xém Hoàn Hảo", "Trại Buôn Người", "Trại Giam Hạnh Phúc", "Út Lan", "Út Lan 2"]
 
@@ -130,3 +135,41 @@ def test_has_film_context_accepts_cast_name() -> None:
 
 def test_has_film_context_needs_a_title() -> None:
     assert not has_film_context("Phim điện ảnh khởi chiếu tại rạp tháng 11", {})
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "Bộ phim #PhimNguoiDuocChon khởi chiếu 06.11",
+        "Hóng phim Người Được Chọn quá trời",
+        "NGƯỜI ĐƯỢC CHỌN - phim điện ảnh về hầu đồng",  # đủ tên phim dù thiếu chữ "phim" của từ khoá
+    ],
+)
+def test_mentions_keyword_or_title_accepts_full_keyword_or_title(content: str) -> None:
+    assert mentions_keyword_or_title(content, ["#PhimNguoiDuocChon"], "Người Được Chọn")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Bài phim truyền hình khác lọt qua tìm kiếm Facebook ngày 2026-10-05, Kira gán "related".
+        "PHƯƠNG VỪA CHỐT CHỌN KHÁNH, TÙNG ĐÃ NHẬN 400 TRIỆU TỪ VƯƠNG? CHUYỆN GÌ ĐÂY?",
+        "Người ấy đã được chọn làm nữ chính",  # đủ chữ nhưng không liền thành tên phim
+        "",
+    ],
+)
+def test_mentions_keyword_or_title_rejects_partial_matches(content: str) -> None:
+    assert not mentions_keyword_or_title(content, ["#PhimNguoiDuocChon"], "Người Được Chọn")
+
+
+def test_mentions_keyword_or_title_needs_every_plus_part() -> None:
+    assert mentions_keyword_or_title("Đất Rừng Phương Nam bản phim điện ảnh", ["đất rừng+điện ảnh"], None)
+    assert not mentions_keyword_or_title("Đất Rừng Phương Nam bản truyền hình", ["đất rừng+điện ảnh"], None)
+
+
+def test_mentions_keyword_or_title_accepts_another_keyword_of_the_movie() -> None:
+    title = "Thám Tử Kiên: Lời Nguyền Hoàng Kim"
+    content = "Thám Tử Kiên 2 tung trailer mới"
+    assert mentions_keyword_or_title(content, ["#ThamTuKien"], title)  # "thamtukien" có trong bài
+    assert mentions_keyword_or_title(content, ["Thám Tử Kiên 2"], title)
+    assert not mentions_keyword_or_title("Thám tử lừng danh Conan", ["Thám Tử Kiên 2"], title)

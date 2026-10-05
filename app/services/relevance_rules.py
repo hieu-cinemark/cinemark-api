@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 
 _STRIP_RE = re.compile(r"(?:#|@)\S+|https?://\S+|www\.\S+")
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
@@ -412,3 +413,26 @@ def _strong_phrase_near_title(tokens: list[str], title: list[str]) -> bool:
                 if gap <= _STRONG_PHRASE_WINDOW:
                     return True
     return False
+
+
+def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None], title: str | None) -> bool:
+    """Bài có chứa ĐẦY ĐỦ một trong các từ khoá của phim, hoặc đầy đủ tên phim không - so sau
+    khi bỏ dấu/hoa thường/khoảng trắng/dấu câu, nên "#PhimNguoiDuocChon", "phim Người Được
+    Chọn" và "PHIM NGƯỜI ĐƯỢC CHỌN" đều khớp từ khoá "#PhimNguoiDuocChon". Từ khoá nối bằng "+"
+    cần đủ mọi phần (giống contains_keyword). `keywords` nên gồm mọi từ khoá đang bật của phim
+    (mọi nền tảng): tên dài hay được viết theo từ khoá ngắn ("Thám Tử Kiên 2" cho "Thám Tử Kiên:
+    Lời Nguyền Hoàng Kim").
+
+    Cổng đầu tiên của ingest, trước Kira: ngày 2026-10-05 tìm kiếm Facebook trả về bài bàn về
+    một phim truyền hình khác (không có chữ nào của "Người Được Chọn") và Kira vẫn gán
+    "related" 0,65-0,72. Không chứa từ khoá lẫn tên phim thì loại luôn, không tốn lời gọi Kira."""
+    text = _squash(normalize_title(content))
+    if not text:
+        return False
+    for keyword in keywords:
+        parts = [_squash(normalize_title(part)) for part in (keyword or "").split("+")]
+        parts = [part for part in parts if part]
+        if parts and all(part in text for part in parts):
+            return True
+    folded_title = _squash(normalize_title(title))
+    return bool(folded_title) and folded_title in text

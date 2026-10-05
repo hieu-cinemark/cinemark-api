@@ -47,7 +47,12 @@ from app.services.d1 import (
     persist_post,
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
-from app.services.relevance_rules import foreign_language_reason, has_film_context, mentions_other_film
+from app.services.relevance_rules import (
+    foreign_language_reason,
+    has_film_context,
+    mentions_keyword_or_title,
+    mentions_other_film,
+)
 from app.services.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
@@ -116,7 +121,15 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001 - quy tắc/Kira tạm đứng ngoài lượt này
         logger.warning("tracked_movies_load_failed", error=exc)
         return _tracked_movies_cache[1] if _tracked_movies_cache else {}
-    movies = {r["id"]: r for r in rows if r.get("title")}
+    movies = {r["id"]: {**r, "keywords": []} for r in rows if r.get("title")}
+    # Mọi từ khoá đang bật của mỗi phim, cho cổng mentions_keyword_or_title. Lỗi thì chỉ còn từ
+    # khoá đã tìm ra bài + tên phim.
+    try:
+        for row in await d1_query("SELECT movie_id, keyword FROM keywords WHERE enabled = 1", quiet=True) or []:
+            if row["movie_id"] in movies and row.get("keyword"):
+                movies[row["movie_id"]]["keywords"].append(row["keyword"])
+    except Exception as exc:  # noqa: BLE001 - cổng vẫn chạy với từ khoá của bài
+        logger.warning("tracked_keywords_load_failed", error=exc)
     _tracked_movies_cache = (now, movies)
     return movies
 
@@ -214,6 +227,26 @@ async def handle_post(payload: dict[str, Any]) -> None:
         await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=foreign)
         return
 
+    # Bài phải chứa đầy đủ từ khoá (hoặc dạng hashtag của nó) hoặc đầy đủ tên phim - kết quả
+    # tìm kiếm của nền tảng có cả bài không hề nhắc tới phim, và Kira từng gán "related" cho
+    # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi Kira.
+    movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
+    movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
+    if not mentions_keyword_or_title(draft.get("content"), movie_keywords, keyword.get("movie_title")):
+        other_film = mentions_other_film(
+            draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
+        )
+        reason = "other_film" if other_film else "keyword_absent"
+        logger.info(
+            "post_dropped_other_film" if other_film else "post_dropped_keyword_absent",
+            platform=platform,
+            post_id=post_id,
+            keyword_id=keyword_id,
+            other_film=other_film,
+        )
+        await _drop(platform=platform, post_id=post_id, reason=reason, keyword_id=keyword_id, other_film=other_film)
+        return
+
     # Kira phân loại mọi bài đã qua được các quy tắc. Kiểm tra chuỗi con theo từ khoá chỉ
     # là phương án dự phòng khi Kira không đưa ra phán quyết - bị tắt trên dashboard, vượt
     # settings.kira_post_relevance_daily_cap, hoặc lỗi - để một lần sự cố không bao giờ
@@ -222,26 +255,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     relevance_label = None
     relevance_confidence = None
     has_keyword = contains_keyword(draft.get("content"), keyword["keyword"])
-    if not has_keyword:
-        other_film = mentions_other_film(
-            draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
-        )
-        if other_film:
-            # Nêu tên một phim đang theo dõi khác và không hề nhắc phim này - không cần tốn một lời
-            # gọi Kira để xác nhận.
-            logger.info(
-                "post_dropped_other_film",
-                platform=platform,
-                post_id=post_id,
-                keyword_id=keyword_id,
-                other_film=other_film,
-            )
-            await _drop(
-                platform=platform, post_id=post_id, reason="other_film", keyword_id=keyword_id, other_film=other_film
-            )
-            return
 
-    movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
     verdict = await classify_post_relevance_kira(
         content=draft.get("content"),
         movie=movie,
