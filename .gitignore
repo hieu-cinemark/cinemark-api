@@ -14,3 +14,6 @@ scripts/_*.csv
 
 # Local silver/gold output when trying the lake jobs out (scripts/build_silver.py --local).
 .lake-local/
+
+# Rotated log files (enable_file_logging rotates <name>.log -> <name>.log.1)
+*.log.1

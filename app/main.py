@@ -10,6 +10,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.auth import router as auth_router
 from app.api.routes.cron import router as cron_router
 from app.api.routes.facebook import router as facebook_router
 from app.api.routes.health import router as health_router
@@ -21,17 +22,23 @@ from app.api.routes.stats import router as stats_router
 from app.api.routes.threads import router as threads_router
 from app.api.routes.tiktok import router as tiktok_router
 from app.clients.kafka import start_kafka_producer, stop_kafka_producer
+from app.core.auth import ApiKeyMiddleware
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import get_logger
 from app.core.middleware import RequestContextMiddleware
-from app.services import platform_config_db, refresh_tracker, scheduler
+from app.services import ops_metrics, platform_config_db, refresh_tracker, scheduler
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
 
 logger = get_logger(__name__)
 
 app = FastAPI(title="spider-api")
 
+# Thêm trước CORS => nằm bên trong CORS, nên cả phản hồi 401 cũng mang header CORS (nếu
+# không trình duyệt chỉ thấy "CORS error" thay vì 401).
+if not settings.api_auth_key:
+    logger.warning("api_auth_disabled", hint="set API_AUTH_KEY in .env to require X-API-Key")
+app.add_middleware(ApiKeyMiddleware, api_key=settings.api_auth_key)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -43,6 +50,7 @@ app.add_middleware(RequestContextMiddleware)
 register_exception_handlers(app)
 
 app.include_router(health_router)
+app.include_router(auth_router)
 app.include_router(jobs_router)
 app.include_router(facebook_router)
 app.include_router(threads_router)
@@ -81,6 +89,7 @@ async def on_startup() -> None:
     except Exception as exc:
         logger.warning("comment_crawl_schedule_seed_failed", error=str(exc))
     scheduler.start()
+    ops_metrics.start_sampler()
     asyncio.create_task(_build_tab_filter_indexes())
     logger.info("app_started")
 
@@ -108,6 +117,11 @@ async def on_shutdown() -> None:
     # động) vào 2026-09-30.
     refresh_tracker.shutdown()
     scheduler.stop()
+    ops_metrics.stop_sampler()
+    try:
+        await asyncio.wait_for(platform_config_db.close_pool(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning("shutdown_step_timeout", step="db_pool")
     try:
         await asyncio.wait_for(stop_kafka_producer(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
     except TimeoutError:

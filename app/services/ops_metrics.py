@@ -2,12 +2,16 @@
 
 Lấy mẫu tải của máy + RSS của tiến trình API này + độ sâu hàng đợi crawl, và giữ một
 ring buffer ngắn trong Redis để trang Overview vẽ được biểu đồ đường trực tiếp mà
-không cần dựng riêng Prometheus. Mỗi lần GET /health/metrics thêm tối đa một mẫu (có
-giới hạn tần suất) rồi trả về chuỗi số liệu.
+không cần dựng riêng Prometheus. Một vòng lặp nền (start_sampler, gọi từ startup của
+app) thêm một mẫu mỗi SAMPLE_MIN_INTERVAL_SECONDS - trước đây chỉ GET /health/metrics
+mới thêm mẫu, nên biểu đồ chỉ có dữ liệu trong lúc có người mở dashboard và bị đứt
+thành từng cụm cách nhau hàng giờ. GET vẫn thêm mẫu (cùng giới hạn tần suất) rồi trả
+về chuỗi số liệu.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import resource
@@ -16,11 +20,15 @@ import time
 from typing import Any
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.logging import get_logger
 from app.services.task_queue import PLATFORMS, list_history, list_pending
 
 SAMPLES_KEY = f"{REDIS_KEY_PREFIX}ops_metrics_samples"
-SAMPLES_LIMIT = 90
-SAMPLE_MIN_INTERVAL_SECONDS = 15
+logger = get_logger(__name__)
+
+# 240 mẫu x 60s = 4 giờ gần nhất, liên tục.
+SAMPLES_LIMIT = 240
+SAMPLE_MIN_INTERVAL_SECONDS = 60
 HISTORY_WINDOW_SECONDS = 15 * 60
 
 
@@ -89,25 +97,26 @@ async def collect_sample() -> dict[str, Any]:
     }
 
 
+async def _append_if_due(client: Any, sample: dict[str, Any]) -> None:
+    raw_latest = await client.lindex(SAMPLES_KEY, 0)
+    if raw_latest:
+        try:
+            latest = json.loads(raw_latest)
+            # Chừa 5s để vòng lặp nền (đúng 60s) không bị lệch nhịp mà bỏ mẫu.
+            if sample["ts"] - int(latest.get("ts") or 0) < SAMPLE_MIN_INTERVAL_SECONDS - 5:
+                return
+        except json.JSONDecodeError, TypeError, ValueError:
+            pass
+    await client.lpush(SAMPLES_KEY, json.dumps(sample, ensure_ascii=False))
+    await client.ltrim(SAMPLES_KEY, 0, SAMPLES_LIMIT - 1)
+
+
 async def record_and_list_samples() -> dict[str, Any]:
     """Thêm mẫu mới nhất (có giới hạn tần suất), rồi trả về giá trị hiện tại + chuỗi số
     liệu."""
     client = get_redis_client()
     sample = await collect_sample()
-
-    raw_latest = await client.lindex(SAMPLES_KEY, 0)
-    should_append = True
-    if raw_latest:
-        try:
-            latest = json.loads(raw_latest)
-            if sample["ts"] - int(latest.get("ts") or 0) < SAMPLE_MIN_INTERVAL_SECONDS:
-                should_append = False
-        except json.JSONDecodeError, TypeError, ValueError:
-            pass
-
-    if should_append:
-        await client.lpush(SAMPLES_KEY, json.dumps(sample, ensure_ascii=False))
-        await client.ltrim(SAMPLES_KEY, 0, SAMPLES_LIMIT - 1)
+    await _append_if_due(client, sample)
 
     raw_items = await client.lrange(SAMPLES_KEY, 0, SAMPLES_LIMIT - 1)
     series: list[dict[str, Any]] = []
@@ -118,3 +127,29 @@ async def record_and_list_samples() -> dict[str, Any]:
             continue
 
     return {"current": sample, "series": series}
+
+
+_sampler_task: asyncio.Task | None = None
+
+
+async def _sampler_loop() -> None:
+    while True:
+        try:
+            await _append_if_due(get_redis_client(), await collect_sample())
+        except Exception as exc:
+            # Redis trục trặc không được giết vòng lặp - lượt sau thử lại.
+            logger.warning("ops_metrics_sample_failed", error=str(exc) or repr(exc))
+        await asyncio.sleep(SAMPLE_MIN_INTERVAL_SECONDS)
+
+
+def start_sampler() -> None:
+    global _sampler_task
+    if _sampler_task is None:
+        _sampler_task = asyncio.create_task(_sampler_loop())
+
+
+def stop_sampler() -> None:
+    global _sampler_task
+    if _sampler_task is not None:
+        _sampler_task.cancel()
+        _sampler_task = None

@@ -13,6 +13,8 @@ from app.schemas.stats import (
     Comment,
     CommentPage,
     CommentWithPost,
+    HourlyPoint,
+    IngestFunnel,
     KeywordVolume,
     PlatformStat,
     Post,
@@ -26,6 +28,7 @@ from app.services.d1 import (
     get_post_counts_by_platform,
     get_post_timeseries,
 )
+from app.services.stats_summary import get_hourly_counts, get_ingest_funnel
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 
@@ -40,6 +43,19 @@ async def platform_stats() -> list[PlatformStat]:
 async def timeseries_stats(days: int = Query(default=14, ge=1, le=90)) -> list[TimeseriesPoint]:
     rows = await get_post_timeseries(days)
     return [TimeseriesPoint(**row) for row in rows]
+
+
+@router.get("/hourly", response_model=list[HourlyPoint])
+async def hourly_stats(hours: int = Query(default=24, ge=1, le=72)) -> list[HourlyPoint]:
+    # Bộ đếm Redis (xem stats_summary.get_hourly_counts), không đụng tới D1.
+    rows = await get_hourly_counts(hours)
+    return [HourlyPoint(**row) for row in rows]
+
+
+@router.get("/ingest-funnel", response_model=list[IngestFunnel])
+async def ingest_funnel(hours: int = Query(default=24, ge=1, le=72)) -> list[IngestFunnel]:
+    # Nhận về -> mới / cập nhật / bị loại theo lý do (Redis, xem stats_summary).
+    return [IngestFunnel(**row) for row in await get_ingest_funnel(hours)]
 
 
 @router.get("/comment-counts", response_model=list[PlatformStat])

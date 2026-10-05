@@ -19,6 +19,10 @@ cùng hợp đồng này - giữ hai bên đồng bộ):
     terminal thật - file log không bao giờ có mã escape ANSI.
   - LOG_LEVEL (mặc định INFO) lọc bỏ các mức thấp hơn.
 
+`enable_file_logging(path)` cho một tiến trình ghi thêm mọi dòng log ra file (vẫn in ra
+terminal như cũ) - ingest_consumer dùng nó để trang Nhật ký của dashboard đọc được
+(xem settings.ingest_consumer_log_path và routes/logs.py).
+
 `bind_request_context()` / `clear_request_context()` được middleware log request
 dùng để gắn request_id vào mọi dòng log phát ra trong lúc xử lý một request, mà
 không phải truyền nó qua từng lời gọi.
@@ -27,7 +31,10 @@ không phải truyền nó qua từng lời gọi.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sys
+import threading
 
 import structlog
 
@@ -36,6 +43,59 @@ from app.core.config import settings
 SERVICE_NAME = "cinemark-api"
 
 _configured = False
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Trang Nhật ký chỉ đọc vài trăm dòng cuối - 20MB là dư, và một bản .1 giữ lượt trước.
+_LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
+
+
+class _TeeStream:
+    """Đích ghi của PrintLogger: luôn ghi ra stdout, và thêm vào file (đã bỏ mã màu
+    ANSI) sau khi enable_file_logging() được gọi. Xoay file khi vượt
+    _LOG_FILE_MAX_BYTES (đổi tên thành <file>.1, ghi đè bản cũ)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._path: str | None = None
+        self._file = None
+
+    def attach(self, path: str) -> None:
+        with self._lock:
+            if self._file is not None:
+                self._file.close()
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            self._path = path
+            self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115 - sống cùng tiến trình
+
+    def write(self, text: str) -> int:
+        sys.stdout.write(text)
+        if self._file is not None:
+            with self._lock:
+                self._file.write(_ANSI_RE.sub("", text))
+        return len(text)
+
+    def flush(self) -> None:
+        sys.stdout.flush()
+        if self._file is None:
+            return
+        with self._lock:
+            self._file.flush()
+            try:
+                if self._path and os.path.getsize(self._path) > _LOG_FILE_MAX_BYTES:
+                    self._file.close()
+                    os.replace(self._path, f"{self._path}.1")
+                    self._file = open(self._path, "a", encoding="utf-8")  # noqa: SIM115
+            except OSError:
+                pass
+
+
+_tee = _TeeStream()
+
+
+def enable_file_logging(path: str) -> None:
+    """Ghi thêm mọi dòng log của tiến trình này vào `path` (vẫn in ra terminal)."""
+    _configure_once()
+    _tee.attach(path)
 
 
 def _add_service_field(_logger, _method_name, event_dict):
@@ -86,7 +146,7 @@ def _configure_once() -> None:
         wrapper_class=structlog.make_filtering_bound_logger(
             logging.getLevelNamesMapping().get(settings.log_level.upper(), logging.INFO)
         ),
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=_tee),
         cache_logger_on_first_use=True,
     )
 

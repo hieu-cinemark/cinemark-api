@@ -41,6 +41,10 @@ class Settings(BaseSettings):
 
     cors_origins: str = "http://localhost:3000"
 
+    # Khoá dùng chung cho mọi request (header X-API-Key) - xem app/core/auth.py. Để trống
+    # thì API không yêu cầu xác thực (hành vi cũ).
+    api_auth_key: str | None = None
+
     # Cloudflare D1 - cho ingest consumer đọc/ghi database D1 của cinemark-scraper qua
     # HTTP query API của Cloudflare (binding D1 chỉ có bên trong Worker; đây là cách duy
     # nhất để vào từ một tiến trình VPS thường). Xem app/services/d1.py. Tất cả đều không

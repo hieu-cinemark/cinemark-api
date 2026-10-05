@@ -37,7 +37,7 @@ from app.clients.kafka import publish_ingest_decision, start_kafka_producer, sto
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.telegram import send_telegram_message
 from app.core.config import settings
-from app.core.logging import get_logger
+from app.core.logging import enable_file_logging, get_logger
 from app.services.d1 import (
     contains_keyword,
     d1_query,
@@ -48,6 +48,7 @@ from app.services.d1 import (
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.relevance_rules import foreign_language_reason, mentions_other_film
+from app.services.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
@@ -145,7 +146,9 @@ async def _decide(
     *, platform: str | None, post_id: Any, keyword_id: Any, decision: str, reason: str, **extra: Any
 ) -> None:
     """Mỗi bài một event trên topic ingest_decisions - được app/workers/lake_writer lưu lên
-    lake R2, nên mọi quyết định giữ/loại và lý do đều có hồ sơ."""
+    lake R2, nên mọi quyết định giữ/loại và lý do đều có hồ sơ. Đồng thời cộng phễu ingest
+    theo giờ cho dashboard (stats_summary.bump_ingest_decision)."""
+    await bump_ingest_decision(platform, decision, reason)
     await publish_ingest_decision(
         {
             "post_id": post_id,
@@ -538,4 +541,6 @@ async def _run_loops() -> None:
 
 
 if __name__ == "__main__":
+    # Trang Nhật ký của dashboard đọc file này (GET /logs/ingest).
+    enable_file_logging(settings.ingest_consumer_log_path)
     asyncio.run(run())

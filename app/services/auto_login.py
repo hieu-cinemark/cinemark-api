@@ -142,7 +142,7 @@ async def _list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
         from app.services.platform_config_db import _connect
 
         async with (
-            await _connect() as conn,
+            _connect() as conn,
             conn.cursor(row_factory=__import__("psycopg.rows", fromlist=["dict_row"]).dict_row) as cur,
         ):
             await cur.execute(

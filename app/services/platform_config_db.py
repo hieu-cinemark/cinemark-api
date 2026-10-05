@@ -11,10 +11,14 @@ query."""
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from app.core.config import settings
 from app.core.errors import ConflictError, NotFoundError, UpstreamError
@@ -51,7 +55,7 @@ async def _ensure_pool_columns() -> None:
     global _pool_columns_ready
     if _pool_columns_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'"
         )
@@ -85,45 +89,120 @@ _ACCOUNT_CREATE_COLUMNS = (
 _PROXY_CREATE_COLUMNS = ("platform", "proxy_url", "username", "password", "login_use_proxy", "enabled")
 
 
-async def _connect() -> psycopg.AsyncConnection[Any]:
+# Một pool dùng chung cho cả tiến trình thay vì mở kết nối mới cho mỗi query: mỗi lần
+# connect tới Supabase (TLS + auth qua pooler) mất ~1.6s từ VN, nên mọi trang Settings
+# từng tốn 2.5-3s mỗi request. Pool giữ sẵn vài kết nối ấm.
+#
+# DATABASE_URL trỏ tới transaction pooler của Supabase (cổng 6543, pgbouncer) - các kết
+# nối phía sau được chia sẻ giữa các transaction, nên prepared statement phía server
+# không dùng được: prepare_threshold=None tắt hẳn (psycopg mặc định tự prepare một query
+# sau 5 lần chạy, trước đây không bao giờ chạm tới vì mỗi kết nối chỉ chạy 1-2 query).
+_POOL_MIN_SIZE = 1
+_POOL_MAX_SIZE = 6
+_POOL_ACQUIRE_TIMEOUT_SECONDS = 10.0
+_pool: AsyncConnectionPool | None = None
+_pool_lock = asyncio.Lock()
+
+
+async def _get_pool() -> AsyncConnectionPool:
+    global _pool
+    if _pool is not None:
+        return _pool
     if not settings.database_url:
         raise UpstreamError("DATABASE_URL is not configured on cinemark-api")
+    async with _pool_lock:
+        if _pool is None:
+            pool = AsyncConnectionPool(
+                settings.database_url,
+                min_size=_POOL_MIN_SIZE,
+                max_size=_POOL_MAX_SIZE,
+                timeout=_POOL_ACQUIRE_TIMEOUT_SECONDS,
+                # Đóng kết nối rảnh lâu để không giữ socket chết sau khi laptop ngủ/đổi
+                # mạng; keepalive bên dưới phát hiện socket chết trong ~1 phút.
+                max_idle=120,
+                max_lifetime=1800,
+                open=False,
+                kwargs={
+                    "row_factory": dict_row,
+                    "prepare_threshold": None,
+                    # Mỗi round trip tới pooler ~0.25s; ở chế độ transaction mặc định một
+                    # SELECT tốn 3 lượt (BEGIN, query, COMMIT). Không hàm nào ở đây cần
+                    # nhiều câu lệnh trong cùng một transaction (không có FOR UPDATE; các
+                    # hàm nhiều câu chỉ là DDL IF NOT EXISTS hoặc đọc-rồi-ghi một dòng
+                    # settings), nên autocommit cắt mỗi request còn một lượt.
+                    "autocommit": True,
+                    "connect_timeout": 5,
+                    "keepalives": 1,
+                    "keepalives_idle": 30,
+                    "keepalives_interval": 10,
+                    "keepalives_count": 3,
+                },
+            )
+            # wait=False: mở pool không được chặn request đầu tiên (hay startup) quá lâu khi
+            # Supabase chậm - kết nối được tạo nền, connection() sẽ chờ tối đa timeout.
+            await pool.open(wait=False)
+            _pool = pool
+    return _pool
+
+
+async def close_pool() -> None:
+    global _pool
+    if _pool is not None:
+        pool, _pool = _pool, None
+        await pool.close()
+
+
+@asynccontextmanager
+async def _connect() -> AsyncIterator[psycopg.AsyncConnection[Any]]:
+    """Mượn một kết nối (autocommit, xem _get_pool) từ pool, trả lại khi khối thoát - các
+    lời gọi conn.commit() sẵn có thành no-op. Chỉ lỗi lúc *lấy* kết nối
+    mới bị đổi thành UpstreamError - lỗi của chính query (UniqueViolation...) đi nguyên
+    ra cho nơi gọi tự xử lý như cũ."""
+    pool = await _get_pool()
+    borrowed = pool.connection()
     try:
-        # Keepalive giúp một socket còn sót từ mạng trước (laptop đổi Wi-Fi / vừa thức dậy từ
-        # chế độ ngủ) lỗi trong khoảng 1 phút thay vì chặn mãi query đang chờ - và cả vòng lặp
-        # scheduler.
-        return await psycopg.AsyncConnection.connect(
-            settings.database_url,
-            row_factory=dict_row,
-            connect_timeout=5,
-            keepalives=1,
-            keepalives_idle=30,
-            keepalives_interval=10,
-            keepalives_count=3,
-        )
-    except psycopg.Error as exc:
+        conn = await borrowed.__aenter__()
+    except (PoolTimeout, psycopg.OperationalError) as exc:
         logger.error("db_connect_failed", error=str(exc))
         raise UpstreamError("Could not connect to the settings database") from exc
+    try:
+        yield conn
+    except BaseException as exc:
+        if not await borrowed.__aexit__(type(exc), exc, exc.__traceback__):
+            raise
+    else:
+        await borrowed.__aexit__(None, None, None)
 
 
 # --- tài khoản ---------------------------------------------------------
 
 
-async def list_accounts(platform: str | None = None) -> list[dict[str, Any]]:
+_ACCOUNT_SECRET_COLUMNS = ("password", "totp_secret", "cookie", "token", "email_password")
+
+# Như ACCOUNT_COLUMNS nhưng không kéo giá trị bí mật về: mỗi cột bí mật thành chuỗi rỗng
+# kèm cờ has_<cột>. Cookie/token của vài chục tài khoản là phần lớn payload từ Supabase
+# (~0.3s mỗi lần tải danh sách) mà danh sách trên dashboard vốn che hết (AccountOut.masked).
+_ACCOUNT_LIST_COLUMNS = ACCOUNT_COLUMNS
+for _col in _ACCOUNT_SECRET_COLUMNS:
+    _ACCOUNT_LIST_COLUMNS = _ACCOUNT_LIST_COLUMNS.replace(
+        f" {_col},", f" '' AS {_col}, (COALESCE({_col}, '') <> '') AS has_{_col},", 1
+    )
+
+
+async def list_accounts(platform: str | None = None, *, with_secrets: bool = True) -> list[dict[str, Any]]:
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    columns = ACCOUNT_COLUMNS if with_secrets else _ACCOUNT_LIST_COLUMNS
+    async with _connect() as conn, conn.cursor() as cur:
         if platform:
-            await cur.execute(
-                f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts WHERE platform = %s ORDER BY id", (platform,)
-            )
+            await cur.execute(f"SELECT {columns} FROM platform_accounts WHERE platform = %s ORDER BY id", (platform,))
         else:
-            await cur.execute(f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts ORDER BY platform, id")
+            await cur.execute(f"SELECT {columns} FROM platform_accounts ORDER BY platform, id")
         return await cur.fetchall()
 
 
 async def get_account(account_id: int) -> dict[str, Any] | None:
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts WHERE id = %s", (account_id,))
         return await cur.fetchone()
 
@@ -133,7 +212,7 @@ async def create_account(fields: dict[str, Any]) -> dict[str, Any]:
     columns = [c for c in _ACCOUNT_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
     try:
-        async with await _connect() as conn, conn.cursor() as cur:
+        async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
                 f"INSERT INTO platform_accounts ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
                 f"RETURNING {ACCOUNT_COLUMNS}",
@@ -155,7 +234,7 @@ async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, A
     set_clause = ", ".join(f"{c} = %s" for c in columns)
     values = [fields[c] for c in columns] + [account_id]
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"UPDATE platform_accounts SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
             values,
@@ -173,7 +252,7 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
     động, người dùng không bao giờ sửa qua form tài khoản, nên chúng hoàn toàn không nằm
     trong _ACCOUNT_CREATE_COLUMNS."""
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"UPDATE platform_accounts SET last_checked_at = now(), last_check_status = %s "
             f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
@@ -193,7 +272,7 @@ async def reset_account_proxy(account_id: int) -> dict[str, Any]:
     khi bỏ một proxy đang được ghim, hoặc để tự cân bằng lại sau khi thêm proxy mới vào
     pool."""
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"UPDATE platform_accounts SET assigned_proxy_id = NULL, updated_at = now() "
             f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
@@ -215,7 +294,7 @@ async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
     proxy_id không tồn tại - lỗi hiện ra ở đây là lỗi psycopg thường, không xử lý riêng,
     vì ô chọn proxy trên dashboard chỉ đưa ra id thật."""
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"UPDATE platform_accounts SET assigned_proxy_id = %s, updated_at = now() "
             f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
@@ -229,7 +308,7 @@ async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
 
 
 async def delete_account(account_id: int) -> None:
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM platform_accounts WHERE id = %s", (account_id,))
         deleted = cur.rowcount
         await conn.commit()
@@ -253,7 +332,7 @@ _PROXY_LIST_COLUMNS = (
 
 async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         if platform:
             await cur.execute(
                 f"SELECT {_PROXY_LIST_COLUMNS} FROM platform_proxies pp WHERE pp.platform = %s ORDER BY pp.id",
@@ -269,7 +348,7 @@ async def create_proxy(fields: dict[str, Any]) -> dict[str, Any]:
     columns = [c for c in _PROXY_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
     try:
-        async with await _connect() as conn, conn.cursor() as cur:
+        async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
                 f"INSERT INTO platform_proxies ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
                 f"RETURNING {PROXY_COLUMNS}",
@@ -289,7 +368,7 @@ async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:
     set_clause = ", ".join(f"{c} = %s" for c in columns)
     values = [fields[c] for c in columns] + [proxy_id]
     await _ensure_pool_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"UPDATE platform_proxies SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {PROXY_COLUMNS}",
             values,
@@ -302,7 +381,7 @@ async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:
 
 
 async def delete_proxy(proxy_id: int) -> None:
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM platform_proxies WHERE id = %s", (proxy_id,))
         deleted = cur.rowcount
         await conn.commit()
@@ -321,7 +400,7 @@ _FILTER_KEYWORD_CREATE_COLUMNS = ("keyword", "category", "enabled")
 
 
 async def list_filter_keywords(category: str | None = None) -> list[dict[str, Any]]:
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         if category:
             await cur.execute(
                 f"SELECT {FILTER_KEYWORD_COLUMNS} FROM filter_keywords WHERE category = %s ORDER BY id",
@@ -336,7 +415,7 @@ async def create_filter_keyword(fields: dict[str, Any]) -> dict[str, Any]:
     columns = [c for c in _FILTER_KEYWORD_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
     try:
-        async with await _connect() as conn, conn.cursor() as cur:
+        async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
                 f"INSERT INTO filter_keywords ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
                 f"RETURNING {FILTER_KEYWORD_COLUMNS}",
@@ -356,7 +435,7 @@ async def update_filter_keyword(keyword_id: int, fields: dict[str, Any]) -> dict
     set_clause = ", ".join(f"{c} = %s" for c in columns)
     values = [fields[c] for c in columns] + [keyword_id]
     try:
-        async with await _connect() as conn, conn.cursor() as cur:
+        async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
                 f"UPDATE filter_keywords SET {set_clause}, updated_at = now() WHERE id = %s "
                 f"RETURNING {FILTER_KEYWORD_COLUMNS}",
@@ -372,7 +451,7 @@ async def update_filter_keyword(keyword_id: int, fields: dict[str, Any]) -> dict
 
 
 async def delete_filter_keyword(keyword_id: int) -> None:
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM filter_keywords WHERE id = %s", (keyword_id,))
         deleted = cur.rowcount
         await conn.commit()
@@ -398,7 +477,7 @@ async def _ensure_crawl_schedule_nurture_columns() -> None:
     global _nurture_columns_ready
     if _nurture_columns_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "ALTER TABLE crawl_schedules ADD COLUMN IF NOT EXISTS nurture_before boolean NOT NULL DEFAULT false"
         )
@@ -411,7 +490,7 @@ async def _ensure_crawl_schedule_nurture_columns() -> None:
 
 async def list_crawl_schedules() -> list[dict[str, Any]]:
     await _ensure_crawl_schedule_nurture_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {CRAWL_SCHEDULE_COLUMNS} FROM crawl_schedules ORDER BY platform")
         return await cur.fetchall()
 
@@ -428,7 +507,7 @@ async def ensure_default_crawl_schedules(platforms: set[str]) -> None:
     NOTHING để một nền tảng người vận hành đã cấu hình (hoặc cố ý tắt) từ dashboard không
     bao giờ bị đụng tới."""
     await _ensure_crawl_schedule_nurture_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         for platform in platforms:
             await cur.execute(
                 "INSERT INTO crawl_schedules (platform) VALUES (%s) ON CONFLICT (platform) DO NOTHING",
@@ -444,7 +523,7 @@ async def upsert_crawl_schedule(
     dashboard không cần biết dòng của nền tảng đã có hay chưa (mọi nền tảng ban đầu đều
     không có dòng nào cho tới khi lịch của nó được lưu lần đầu)."""
     await _ensure_crawl_schedule_nurture_columns()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"INSERT INTO crawl_schedules (platform, run_time, enabled, nurture_before, nurture_after) "
             f"VALUES (%s, %s, %s, %s, %s) "
@@ -462,7 +541,7 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
     """Lần ghi chống chạy lặp của chính scheduler.py - xem comment của cột
     crawl_schedules.last_triggered_date. Không dành cho người dùng, không route nào gọi
     thẳng hàm này."""
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "UPDATE crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
             (triggered_date, platform),
@@ -489,7 +568,7 @@ async def _ensure_comment_crawl_schedules_table() -> None:
     global _comment_schedule_ready
     if _comment_schedule_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             CREATE TABLE IF NOT EXISTS comment_crawl_schedules (
@@ -508,7 +587,7 @@ async def _ensure_comment_crawl_schedules_table() -> None:
 
 async def list_comment_crawl_schedules() -> list[dict[str, Any]]:
     await _ensure_comment_crawl_schedules_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {COMMENT_SCHEDULE_COLUMNS} FROM comment_crawl_schedules ORDER BY platform")
         return await cur.fetchall()
 
@@ -519,7 +598,7 @@ async def ensure_default_comment_crawl_schedules(platforms: set[str]) -> None:
     có gì báo ra lỗ hổng đó. ON CONFLICT DO NOTHING để một nền tảng người vận hành đã cấu
     hình (hoặc cố ý tắt) không bao giờ bị đụng tới."""
     await _ensure_comment_crawl_schedules_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         for platform in platforms:
             await cur.execute(
                 "INSERT INTO comment_crawl_schedules (platform) VALUES (%s) ON CONFLICT (platform) DO NOTHING",
@@ -532,7 +611,7 @@ async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled
     """Lần ghi phía dashboard - ON CONFLICT để dashboard không cần biết dòng của nền tảng
     này đã có hay chưa."""
     await _ensure_comment_crawl_schedules_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""
             INSERT INTO comment_crawl_schedules (platform, run_time, enabled, top_n)
@@ -551,7 +630,7 @@ async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled
 async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: str) -> None:
     """Lần ghi chống chạy lặp của chính scheduler.py - xem comment của cột
     comment_crawl_schedules.last_triggered_date ở trên."""
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "UPDATE comment_crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
             (triggered_date, platform),
@@ -573,7 +652,7 @@ async def _ensure_ai_settings_table() -> None:
     global _ai_settings_ready
     if _ai_settings_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_settings (
@@ -609,7 +688,7 @@ async def _ensure_ai_settings_table() -> None:
 
 async def get_ai_settings() -> dict[str, Any]:
     await _ensure_ai_settings_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_SETTINGS_COLUMNS} FROM ai_settings WHERE id = 1")
         row = await cur.fetchone()
     return row or {
@@ -630,7 +709,7 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_r
     from psycopg.types.json import Json
 
     await _ensure_ai_settings_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             f"""
             INSERT INTO ai_settings (id, enabled, prompts, active_report_provider)
@@ -666,7 +745,7 @@ async def _ensure_ai_providers_table() -> None:
     global _ai_providers_ready
     if _ai_providers_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_providers (
@@ -684,14 +763,14 @@ async def _ensure_ai_providers_table() -> None:
 
 async def list_ai_providers() -> list[dict[str, Any]]:
     await _ensure_ai_providers_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_PROVIDER_COLUMNS} FROM ai_providers ORDER BY key")
         return await cur.fetchall()
 
 
 async def get_ai_provider(key: str) -> dict[str, Any] | None:
     await _ensure_ai_providers_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_PROVIDER_COLUMNS} FROM ai_providers WHERE key = %s", (key,))
         return await cur.fetchone()
 
@@ -700,7 +779,7 @@ async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, mo
     """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà
     không phải gửi lại secret mỗi lần."""
     await _ensure_ai_providers_table()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         if api_key is None:
             await cur.execute(
                 f"""
@@ -747,7 +826,7 @@ async def _ensure_proxy_settings_tables() -> None:
     global _proxy_settings_ready
     if _proxy_settings_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             CREATE TABLE IF NOT EXISTS proxy_settings (
@@ -776,7 +855,7 @@ async def get_proxy_settings() -> dict[str, Any]:
     """{"settings": {...chỉ các key đã lưu...}, "updated_at": ...} - việc trộn lên trên giá
     trị mặc định là việc của schema (ProxySettings)."""
     await _ensure_proxy_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM proxy_settings WHERE id = 1")
         row = await cur.fetchone()
     return row or {"settings": {}, "updated_at": None}
@@ -786,7 +865,7 @@ async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
     from psycopg.types.json import Json
 
     await _ensure_proxy_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             INSERT INTO proxy_settings (id, settings) VALUES (1, %s)
@@ -805,7 +884,7 @@ PROXY_PROVIDER_COLUMNS = "key, api_url, token, ip_allowlist, updated_at"
 
 async def list_proxy_providers() -> list[dict[str, Any]]:
     await _ensure_proxy_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {PROXY_PROVIDER_COLUMNS} FROM proxy_providers ORDER BY key")
         return await cur.fetchall()
 
@@ -814,7 +893,7 @@ async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None, ip
     """token=None thì giữ nguyên token đã lưu (cùng hợp đồng với api_key của
     upsert_ai_provider)."""
     await _ensure_proxy_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         if token is None:
             await cur.execute(
                 f"""
@@ -855,7 +934,7 @@ async def _ensure_cleanup_settings_tables() -> None:
     global _cleanup_settings_ready
     if _cleanup_settings_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             CREATE TABLE IF NOT EXISTS cleanup_settings (
@@ -892,7 +971,7 @@ async def get_cleanup_settings() -> dict[str, Any]:
     """{"settings": {...chỉ các key đã lưu...}, "updated_at": ...} - việc trộn lên trên giá
     trị mặc định của CleanupSettings là việc của schema."""
     await _ensure_cleanup_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM cleanup_settings WHERE id = 1")
         row = await cur.fetchone()
     return row or {"settings": {}, "updated_at": None}
@@ -904,7 +983,7 @@ async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
     from psycopg.types.json import Json
 
     await _ensure_cleanup_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings FROM cleanup_settings WHERE id = 1")
         existing = await cur.fetchone()
         merged: dict[str, Any] = dict((existing or {}).get("settings") or {})
@@ -927,7 +1006,7 @@ async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
 
 async def record_cleanup_run_start(*, dry_run: bool, triggered_by: str) -> int:
     await _ensure_cleanup_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "INSERT INTO cleanup_run_history (dry_run, triggered_by) VALUES (%s, %s) RETURNING id",
             (dry_run, triggered_by),
@@ -944,7 +1023,7 @@ async def record_cleanup_run_finish(
     error: str | None = None,
 ) -> None:
     await _ensure_cleanup_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             UPDATE cleanup_run_history SET
@@ -972,7 +1051,7 @@ async def record_cleanup_run_finish(
 
 async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
     await _ensure_cleanup_settings_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             SELECT id, started_at, finished_at, dry_run, triggered_by,
@@ -1008,7 +1087,7 @@ async def _ensure_auto_login_tables() -> None:
     global _auto_login_settings_ready
     if _auto_login_settings_ready:
         return
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             CREATE TABLE IF NOT EXISTS auto_login_settings (
@@ -1075,7 +1154,7 @@ async def _ensure_auto_login_tables() -> None:
 
 async def get_auto_login_settings() -> dict[str, Any]:
     await _ensure_auto_login_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM auto_login_settings WHERE id = 1")
         row = await cur.fetchone()
     return row or {"settings": {}, "updated_at": None}
@@ -1088,7 +1167,7 @@ async def upsert_auto_login_settings(values: dict[str, Any]) -> dict[str, Any]:
     from psycopg.types.json import Json
 
     await _ensure_auto_login_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings FROM auto_login_settings WHERE id = 1")
         existing = await cur.fetchone()
         merged: dict[str, Any] = dict((existing or {}).get("settings") or {})
@@ -1117,7 +1196,7 @@ async def record_auto_login_run_start(
     platforms: list[str],
 ) -> int:
     await _ensure_auto_login_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             INSERT INTO auto_login_run_history
@@ -1151,7 +1230,7 @@ async def record_auto_login_run_finish(
     total_failed = sum(p.get("failed", 0) for p in per_platform.values())
     total_error = sum(p.get("error", 0) for p in per_platform.values())
     await _ensure_auto_login_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             UPDATE auto_login_run_history SET
@@ -1185,7 +1264,7 @@ async def record_auto_login_run_finish(
 
 async def list_auto_login_run_history(limit: int = 20) -> list[dict[str, Any]]:
     await _ensure_auto_login_tables()
-    async with await _connect() as conn, conn.cursor() as cur:
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
             SELECT id, started_at, finished_at, triggered_by, dry_run,

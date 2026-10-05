@@ -39,6 +39,32 @@ class AccountOut(BaseModel):
     consecutive_failures: int | None = 0
     last_used_at: datetime | None = None
     assigned_proxy_id: int | None = None
+    # Tên các trường bí mật đang có giá trị. Các trường đó luôn trả về rỗng ở đây (xem
+    # AccountOut.masked) - giá trị thật chỉ lấy qua GET /settings/accounts/{id}/credentials.
+    secrets_set: list[str] = Field(default_factory=list)
+
+    @classmethod
+    def masked(cls, row: dict[str, Any]) -> AccountOut:
+        data = dict(row)
+        # Danh sách tải bằng list_accounts(with_secrets=False) chỉ có cờ has_<trường>.
+        data["secrets_set"] = [
+            name for name in ACCOUNT_SECRET_FIELDS if data.pop(f"has_{name}", False) or data.get(name)
+        ]
+        for name in ACCOUNT_SECRET_FIELDS:
+            data[name] = ""
+        return cls(**data)
+
+
+ACCOUNT_SECRET_FIELDS = ("password", "totp_secret", "cookie", "token", "email_password")
+
+
+class AccountCredentialsOut(BaseModel):
+    id: int
+    password: str = ""
+    totp_secret: str = ""
+    cookie: str = ""
+    token: str = ""
+    email_password: str = ""
 
 
 class AccountCreate(BaseModel):

@@ -41,6 +41,23 @@ class TimeseriesPoint(BaseModel):
     count: int
 
 
+class IngestFunnel(BaseModel):
+    platform: str
+    received: int = 0
+    new: int = 0
+    updated: int = 0
+    # lý do -> số bài (non_vietnamese, kira_irrelevant, other_film, d1_write_failed, ...)
+    dropped: dict[str, int] = {}
+
+
+class HourlyPoint(BaseModel):
+    # Đầu giờ theo UTC, ISO 8601 ("2026-10-05T08:00:00Z").
+    hour: str
+    platform: str
+    posts: int = 0
+    comments: int = 0
+
+
 class QuotedPost(BaseModel):
     author: str | None = None
     content: str | None = None

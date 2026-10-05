@@ -18,7 +18,9 @@ from app.clients.kafka import publish_nurture_request, publish_tiktok_identity_r
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.schemas.settings import (
+    ACCOUNT_SECRET_FIELDS,
     AccountCreate,
+    AccountCredentialsOut,
     AccountOut,
     AccountSetProxy,
     AccountUpdate,
@@ -72,20 +74,41 @@ _background_tasks: set[asyncio.Task] = set()
 
 @router.get("/accounts", response_model=list[AccountOut])
 async def list_accounts(platform: str | None = Query(default=None)) -> list[AccountOut]:
-    rows = await db.list_accounts(platform)
-    return [AccountOut(**row) for row in rows]
+    rows = await db.list_accounts(platform, with_secrets=False)
+    return [AccountOut.masked(row) for row in rows]
 
 
 @router.post("/accounts", response_model=AccountOut)
 async def create_account(payload: AccountCreate) -> AccountOut:
     row = await db.create_account(payload.model_dump())
-    return AccountOut(**row)
+    return AccountOut.masked(row)
 
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
 async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
-    row = await db.update_account(account_id, payload.model_dump(exclude_unset=True))
-    return AccountOut(**row)
+    changes = payload.model_dump(exclude_unset=True)
+    # Danh sách tài khoản không còn trả giá trị bí mật (AccountOut.masked), nên form sửa
+    # trên dashboard nhận về chuỗi rỗng - chuỗi rỗng ở đây nghĩa là "giữ nguyên", không
+    # phải "xoá", để một lần lưu không vô tình xoá mật khẩu/cookie đang có.
+    for name in ACCOUNT_SECRET_FIELDS:
+        if changes.get(name) == "":
+            changes.pop(name)
+    if not changes:
+        row = await db.get_account(account_id)
+        if row is None:
+            raise NotFoundError(f"Account {account_id} not found.")
+        return AccountOut.masked(row)
+    row = await db.update_account(account_id, changes)
+    return AccountOut.masked(row)
+
+
+@router.get("/accounts/{account_id}/credentials", response_model=AccountCredentialsOut)
+async def get_account_credentials(account_id: int) -> AccountCredentialsOut:
+    row = await db.get_account(account_id)
+    if row is None:
+        raise NotFoundError(f"Account {account_id} not found.")
+    logger.info("account_credentials_viewed", account_id=account_id)
+    return AccountCredentialsOut(id=row["id"], **{name: row.get(name) or "" for name in ACCOUNT_SECRET_FIELDS})
 
 
 @router.delete("/accounts/{account_id}")
@@ -143,7 +166,7 @@ async def check_account(account_id: int) -> AccountOut:
         raise NotFoundError(f"Account {account_id} not found")
     status = await evaluate_account_health(account)
     row = await db.update_account_check_result(account_id, status=status)
-    return AccountOut(**row)
+    return AccountOut.masked(row)
 
 
 @router.post("/accounts/{account_id}/totp-code", response_model=TotpCodeResponse)
@@ -170,7 +193,7 @@ async def reset_account_proxy(account_id: int) -> AccountOut:
     nó sẽ được ghim lại vào proxy đang có ít tài khoản nhất. Dùng từ dashboard khi bỏ một
     proxy hoặc cân bằng lại sau khi thêm proxy mới."""
     row = await db.reset_account_proxy(account_id)
-    return AccountOut(**row)
+    return AccountOut.masked(row)
 
 
 @router.post("/accounts/{account_id}/set-proxy", response_model=AccountOut)
@@ -179,7 +202,7 @@ async def set_account_proxy(account_id: int, payload: AccountSetProxy) -> Accoun
     app/services/platform_config_db.set_account_proxy. Ngược với reset-proxy phía trên
     (xoá ghim để quay về tự gán)."""
     row = await db.set_account_proxy(account_id, payload.proxy_id)
-    return AccountOut(**row)
+    return AccountOut.masked(row)
 
 
 @router.post("/accounts/{account_id}/reset-cookies")
