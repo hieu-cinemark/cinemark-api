@@ -255,3 +255,160 @@ def mentions_other_film(
         if _contains_phrase(text, other) or other.replace(" ", "") in squashed:
             return title
     return None
+
+
+# Từ vựng điện ảnh *mạnh* (đã bỏ dấu, chữ thường): đi cùng tên phim đích thì gần như chắc chắn
+# là bài về phim chiếu rạp. Cố ý KHÔNG có "phim" đứng một mình - bài review phim khác ("PHIM:
+# LAN HƯƠNG NHƯ CỐ") hay tóm tắt phim truyền hình cũng có chữ đó, và đã lọt như vậy ngày
+# 2026-10-05. Cũng không có "rap": bỏ dấu thì "rạp" trùng "rap" (nhạc).
+_STRONG_FILM_PHRASES = (
+    "dien anh",
+    "man anh",
+    "ra rap",
+    "tai rap",
+    "rap chieu",
+    "phong chieu",
+    "khoi chieu",
+    "cong chieu",
+    "suat chieu",
+    "lich chieu",
+    "chieu rap",
+    "phong ve",
+    "dat ve",
+    "mua ve",
+    "trailer",
+    "teaser",
+    "poster",
+    "hau truong",
+    "ban dung",
+    "cung may",
+    "dong may",
+    "dao dien",
+    "nha san xuat",
+    "nha phat hanh",
+    "box office",
+    "cgv",
+    "lotte cinema",
+    "galaxy cinema",
+    "beta cinemas",
+    "cinestar",
+    "premiere",
+    "showtime",
+)
+# Từ điện ảnh mạnh phải cách tên phim đích không quá chừng này từ: "Người Được Chọn dự kiến
+# khởi chiếu" là về phim này, còn "...chưa phải người được chọn. Phim Madam T | Khởi chiếu
+# 25.09" là bài của phim khác chỉ dùng cụm từ đó (gặp thật 2026-10-05).
+_STRONG_PHRASE_WINDOW = 4
+_QUOTE_PAIRS = (('"', '"'), ("“", "”"), ("'", "'"), ("‘", "’"), ("«", "»"))
+
+
+def _squash(value: str) -> str:
+    return value.replace(" ", "")
+
+
+# Từ vựng âm nhạc (đã bỏ dấu): tên phim trùng tên bài hát rất hay gặp ("Người Được Chọn" của Ali
+# Hoàng Dương). Bài có các từ này chỉ được giữ bằng tín hiệu phim trực tiếp, không bằng ngoặc kép.
+_MUSIC_PHRASES = (
+    "bai hat",
+    "ca khuc",
+    "nghe nhac",
+    "am nhac",
+    "giai dieu",
+    "ca tu",
+    "lyric",
+    "lyrics",
+    "stream",
+    "karaoke",
+    "beat",
+    "cover",
+    "album",
+    "single",
+    "mv",
+    "outnow",
+    "out now",
+    "rap",
+    "rapviet",
+    "trinh dien",
+    "trinh bay",
+    "san khau",
+)
+
+
+def film_context_reason(content: str | None, movie: dict | None = None) -> str | None:
+    """Lý do bài được coi là nói về ĐÚNG phim đích (movie["title"]) như một phim chiếu rạp, hoặc
+    None. Theo thứ tự:
+      - "cast"/"director": tên đạo diễn/diễn viên (từ hai chữ trở lên);
+      - "phim_title": "phim <tên>" / "điện ảnh <tên>", kể cả dạng hashtag (#PhimNguoiDuocChon);
+      - "strong_near_title": một từ điện ảnh mạnh (khởi chiếu, ra rạp, trailer, phòng vé...) cách
+        tên phim không quá _STRONG_PHRASE_WINDOW từ;
+      - "quoted_title": tên phim trong ngoặc kép VÀ bài có chữ "phim"/"điện ảnh" VÀ không có từ
+        vựng âm nhạc - ngoặc kép đánh dấu tên tác phẩm, nhưng tác phẩm đó có thể là bài hát.
+
+    Dùng khi Kira không đưa ra phán quyết (tắt, vượt hạn mức ngày, lỗi) hoặc chỉ trả
+    "uncertain". Trước 2026-10-05 lúc đó chỉ còn kiểm tra chuỗi con theo từ khoá, nên với tên
+    phim là cụm từ thường ngày ("Người Được Chọn") mọi bài hát, bài tâm linh, bài tóm tắt phim
+    khác dùng cụm từ đó đều lọt lên dashboard. Thà ẩn nhầm một bài thật (vẫn lưu, gán nhãn lại
+    được) còn hơn để rác lên dashboard."""
+    text = normalize_title(content)
+    if not text:
+        return None
+    movie = movie or {}
+    for key in ("director", "cast"):
+        for name in re.split(r"[,;/|]", str(movie.get(key) or "")):
+            folded = normalize_title(name)
+            # Tên một chữ quá dễ trùng ("Hiếu", "Linh") - chỉ tin tên từ hai chữ trở lên.
+            if len(folded.split()) >= 2 and _contains_phrase(text, folded):
+                return key
+
+    title = normalize_title(movie.get("title"))
+    if not title:
+        return None
+    squashed_text = _squash(text)
+    if not (_contains_phrase(text, title) or _squash(title) in squashed_text):
+        return None
+    if any(_squash(prefix + title) in squashed_text for prefix in ("phim ", "dien anh ", "movie ", "film ")):
+        return "phim_title"
+    tokens = text.split()
+    if _strong_phrase_near_title(tokens, title.split()):
+        return "strong_near_title"
+    has_film_word = any(token.startswith("phim") for token in tokens) or _contains_phrase(text, "dien anh")
+    has_music = any(_contains_phrase(text, phrase) for phrase in _MUSIC_PHRASES)
+    if has_film_word and not has_music and _quoted_title(content, title):
+        return "quoted_title"
+    return None
+
+
+def has_film_context(content: str | None, movie: dict | None = None) -> bool:
+    """Xem film_context_reason."""
+    return film_context_reason(content, movie) is not None
+
+
+def _quoted_title(content: str | None, title: str) -> bool:
+    raw = unicodedata.normalize("NFC", content or "")
+    for left, right in _QUOTE_PAIRS:
+        pattern = re.escape(left) + r"([^" + re.escape(right) + r"\n]{2,80})" + re.escape(right)
+        if any(normalize_title(quoted) == title for quoted in re.findall(pattern, raw)):
+            return True
+    return False
+
+
+def _phrase_spans(tokens: list[str], phrase: list[str]) -> list[tuple[int, int]]:
+    """(vị trí bắt đầu, vị trí kết thúc + 1) của mọi lần `phrase` xuất hiện trong `tokens`."""
+    size = len(phrase)
+    spans = [(i, i + size) for i in range(len(tokens) - size + 1) if tokens[i : i + size] == phrase]
+    if size > 1:
+        # Dạng hashtag dính liền (#nguoiduocchon) là một token.
+        joined = "".join(phrase)
+        spans += [(i, i + 1) for i, token in enumerate(tokens) if joined in token]
+    return spans
+
+
+def _strong_phrase_near_title(tokens: list[str], title: list[str]) -> bool:
+    title_spans = _phrase_spans(tokens, title)
+    for phrase in _STRONG_FILM_PHRASES:
+        for start, end in _phrase_spans(tokens, phrase.split()):
+            for t_start, t_end in title_spans:
+                gap = start - t_end if start >= t_end else t_start - end
+                if gap <= _STRONG_PHRASE_WINDOW:
+                    return True
+    return False

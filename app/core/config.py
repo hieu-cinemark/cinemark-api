@@ -88,11 +88,11 @@ class Settings(BaseSettings):
     kira_enabled: bool = False
 
     # Kira là bộ phân loại độ liên quan của bài lúc ingest (app/ai/tasks/post_relevance.py):
-    # tối đa chừng này lời gọi mỗi ngày UTC (khoảng 950 token mỗi lời gọi trên quota 10
-    # triệu/ngày của Kira, chừa chỗ cho các task khác của Kira); vượt quá thì bài quay về
-    # kiểm tra chuỗi con theo từ khoá. 0 là tắt Kira cho bài. Cảm xúc comment cũng chạy
-    # trên Kira (app/ai/tasks/sentiment.py) - không có model local.
-    kira_post_relevance_daily_cap: int = 9000
+    # tối đa chừng này bài mỗi ngày UTC. Gom lô nên mỗi bài tốn khoảng 330 token (đo
+    # 2026-10-05: ~2.000 token vào + ~435 token ra cho mỗi lô ~7 bài) - cùng tài khoản Kira còn
+    # chạy cảm xúc comment (app/ai/tasks/sentiment.py), nên giữ chỗ cho task đó. Vượt hạn mức
+    # thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 là tắt Kira cho bài.
+    kira_post_relevance_daily_cap: int = 30000
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ

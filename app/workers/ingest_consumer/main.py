@@ -47,7 +47,7 @@ from app.services.d1 import (
     persist_post,
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
-from app.services.relevance_rules import foreign_language_reason, mentions_other_film
+from app.services.relevance_rules import foreign_language_reason, has_film_context, mentions_other_film
 from app.services.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
@@ -279,6 +279,16 @@ async def handle_post(payload: dict[str, Any]) -> None:
         # "uncertain" (ví dụ caption chỉ có hashtag): ai_relevant giữ None, nên persist_post
         # quay về kiểm tra chuỗi con theo từ khoá, và nhãn được lưu để thấy rõ bài chưa được
         # phân định.
+    if ai_relevant is None and has_keyword and not has_film_context(draft.get("content"), movie):
+        # Kira không kết luận (tắt / vượt hạn mức ngày / lỗi / "uncertain") và bài chỉ khớp từ khoá
+        # mà không có tín hiệu phim nào - với tên phim là cụm từ thường ngày đây gần như luôn là
+        # rác (bài hát, tâm linh, truyền động lực trùng tên). Vẫn lưu (để lượt gán nhãn sau xem
+        # lại được) nhưng keyword_match = 0 nên không lên dashboard.
+        ai_relevant = False
+        relevance_label = relevance_label or "uncertain"
+        no_film_context = True
+    else:
+        no_film_context = False
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
@@ -301,7 +311,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
         post_id=post_id,
         keyword_id=keyword_id,
         decision="kept",
-        reason=f"kira_{relevance_label}" if relevance_label else "no_verdict",
+        reason="no_film_context"
+        if no_film_context
+        else (f"kira_{relevance_label}" if relevance_label else "no_verdict"),
         confidence=relevance_confidence,
         has_keyword=has_keyword,
     )
