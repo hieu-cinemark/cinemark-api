@@ -96,6 +96,8 @@ NGUOI_DUOC_CHON = {"title": "Người Được Chọn"}
         "NSUT Hoài Linh góp mặt trong phim “Người Được Chọn”, dự án điện ảnh về hầu đồng",
         "+1 phim điện ảnh tham gia đường đua phòng vé 2026 #nguoiduocchon #haudong",
         'Chút hậu trường của NSƯT Hạnh Thuý "Người Được Chọn" là phim điện ảnh đầu tiên về hầu đồng',
+        'Chúc mừng dự án "Người được chọn" góp mặt tại LHP Cannes 2026✨',
+        "Bùng Cháy hoyy🔥♥️ Con chúc mừng Lão và cả ekip NGƯỜI ĐƯỢC CHỌN #nguoiduocchon #TheChosenOne",
     ],
 )
 def test_has_film_context_keeps_target_film_posts(content: str) -> None:
@@ -119,6 +121,12 @@ def test_has_film_context_keeps_target_film_posts(content: str) -> None:
             "Yêu là mong người ấy hạnh phúc, kể cả những năm tháng mình chưa phải người được chọn.\n\n"
             "Phim Madam T Xuất Chiêu | Khởi chiếu 25.09.2026 #MDTXC #MadamTXuatChieu"
         ),
+        # Review phim khác dùng cụm từ - Kira từng gán "related" 0,95 (2026-10-05).
+        (
+            "CÁI KẾT KHÓ CHỊU NHẤT CỦA BỘ PHIM!!! Lâm tốt — tốt đến mức chấp nhận đứng ngoài câu chuyện. "
+            "Còn Thương… lại chọn quay về. Đôi khi người được chọn không phải người tốt nhất"
+        ),
+        "Quốc Bảo và áp lực của người được chọn. Bận xù đầu mà nghe nói phim sắp hết chiếu nên phải đi coi.",
         # Có chữ phim nhưng không nhắc phim đích.
         "#PhimNgan #KhoaHocVienTuong #PhimVienTuong #ThucTinh",
     ],

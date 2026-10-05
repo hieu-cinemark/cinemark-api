@@ -116,7 +116,8 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
         return _tracked_movies_cache[1]
     try:
         rows = (
-            await d1_query('SELECT id, title, director, "cast", distributor, released_at FROM movies', quiet=True) or []
+            await d1_query('SELECT id, title, slug, director, "cast", distributor, released_at FROM movies', quiet=True)
+            or []
         )
     except Exception as exc:  # noqa: BLE001 - quy tắc/Kira tạm đứng ngoài lượt này
         logger.warning("tracked_movies_load_failed", error=exc)
@@ -293,13 +294,15 @@ async def handle_post(payload: dict[str, Any]) -> None:
         # "uncertain" (ví dụ caption chỉ có hashtag): ai_relevant giữ None, nên persist_post
         # quay về kiểm tra chuỗi con theo từ khoá, và nhãn được lưu để thấy rõ bài chưa được
         # phân định.
-    if ai_relevant is None and has_keyword and not has_film_context(draft.get("content"), movie):
-        # Kira không kết luận (tắt / vượt hạn mức ngày / lỗi / "uncertain") và bài chỉ khớp từ khoá
-        # mà không có tín hiệu phim nào - với tên phim là cụm từ thường ngày đây gần như luôn là
-        # rác (bài hát, tâm linh, truyền động lực trùng tên). Vẫn lưu (để lượt gán nhãn sau xem
-        # lại được) nhưng keyword_match = 0 nên không lên dashboard.
+    # Cần tín hiệu phim khi: Kira không kết luận (tắt / vượt hạn mức ngày / lỗi / "uncertain") mà
+    # bài chỉ khớp từ khoá, HOẶC phim nằm trong danh sách "chặt" (tên trùng cụm từ thông dụng -
+    # Kira vẫn gán "related" cho review phim khác dùng cụm từ đó, xem settings.strict_relevance_movie_slugs).
+    strict_movie = movie.get("slug") in settings.strict_relevance_movies
+    needs_film_context = (ai_relevant is None and has_keyword) or (ai_relevant is True and strict_movie)
+    if needs_film_context and not has_film_context(draft.get("content"), movie):
+        # Vẫn lưu (để lượt gán nhãn sau xem lại được) nhưng không lên dashboard.
         ai_relevant = False
-        relevance_label = relevance_label or "uncertain"
+        relevance_label = "uncertain" if strict_movie else (relevance_label or "uncertain")
         no_film_context = True
     else:
         no_film_context = False

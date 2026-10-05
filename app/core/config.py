@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 là tắt Kira cho bài.
     kira_post_relevance_daily_cap: int = 30000
 
+    # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài Kira gán "related" cũng phải có
+    # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
+    # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.
+    # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
+    strict_relevance_movie_slugs: str = "nguoi-duoc-chon"
+
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
     # Asia/Ho_Chi_Minh). Bài gắn nhãn not_related được giữ qua thời gian ân hạn trước để
@@ -111,6 +117,10 @@ class Settings(BaseSettings):
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None
     lake_bucket: str = "cinemark-lake"
+
+    @property
+    def strict_relevance_movies(self) -> frozenset[str]:
+        return frozenset(slug.strip() for slug in self.strict_relevance_movie_slugs.split(",") if slug.strip())
 
     @property
     def cors_origins_list(self) -> list[str]:
