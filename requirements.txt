@@ -39,3 +39,4 @@ websockets==17.0.1
 ruff==0.16.4
 aioboto3==13.4.0
 duckdb==1.2.1
+orjson==3.12.0

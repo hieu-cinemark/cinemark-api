@@ -23,12 +23,12 @@ sentiment_sweep.sweep_forever(), gắn nhãn comment mới theo lô qua Kira."""
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections import defaultdict, deque
 from datetime import UTC, datetime
 from typing import Any
 
+import orjson
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 
@@ -488,7 +488,7 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
         topic,
         bootstrap_servers=settings.kafka_bootstrap_servers,
         group_id=group_id,
-        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+        value_deserializer=orjson.loads,
         # Group không có offset đã commit dùng được thì bắt đầu ở CUỐI, không phải đầu: ngày
         # 2026-09-29 một lần khôi phục Kafka làm cả hai group mất vị trí và "earliest" đã xếp
         # lại khoảng 264 nghìn message đã ingest để chạy qua Kira và D1. Bỏ qua là kiểu lỗi rẻ
