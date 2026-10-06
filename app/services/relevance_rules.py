@@ -346,15 +346,33 @@ _MUSIC_PHRASES = (
 )
 
 
-def film_context_reason(content: str | None, movie: dict | None = None) -> str | None:
+def _hashtags(content: str | None) -> set[str]:
+    """Các hashtag của bài ở dạng bỏ dấu, viết liền ("#TrạiBuônNgười" -> "traibuonnguoi")."""
+    raw = unicodedata.normalize("NFC", content or "")
+    return {_squash(normalize_title(tag)) for tag in re.findall(r"#(\w+)", raw)} - {""}
+
+
+def _distinctive_title(title: str) -> bool:
+    """Tên đủ đặc trưng để hashtag của nó là tín hiệu phim: từ ba chữ, hoặc viết liền dài từ 10 ký
+    tự. Tên ngắn như "Anh Hùng"/"Loạn Thế" là cụm từ thường ngày, hashtag của chúng không nói lên gì."""
+    return len(title.split()) >= 3 or len(_squash(title)) >= 10
+
+
+def film_context_reason(
+    content: str | None, movie: dict | None = None, *, allow_title_hashtag: bool = False, allow_names: bool = True
+) -> str | None:
     """Lý do bài được coi là nói về ĐÚNG phim đích (movie["title"]) như một phim chiếu rạp, hoặc
     None. Theo thứ tự:
-      - "cast"/"director": tên đạo diễn/diễn viên (từ hai chữ trở lên);
+      - "cast"/"director": tên đạo diễn/diễn viên (từ hai chữ trở lên), kể cả dạng hashtag
+        (#StevenNguyen) - bỏ qua khi `allow_names=False` (tin đời tư của diễn viên cũng nhắc tên);
       - "phim_title": "phim <tên>" / "điện ảnh <tên>", kể cả dạng hashtag (#PhimNguoiDuocChon);
       - "strong_near_title": một từ điện ảnh mạnh (khởi chiếu, ra rạp, trailer, phòng vé...) cách
         tên phim không quá _STRONG_PHRASE_WINDOW từ;
       - "quoted_title": tên phim trong ngoặc kép VÀ bài có chữ "phim"/"điện ảnh" VÀ không có từ
-        vựng âm nhạc - ngoặc kép đánh dấu tên tác phẩm, nhưng tác phẩm đó có thể là bài hát.
+        vựng âm nhạc - ngoặc kép đánh dấu tên tác phẩm, nhưng tác phẩm đó có thể là bài hát;
+      - "title_hashtag": chỉ khi `allow_title_hashtag` - hashtag đúng bằng tên phim (#traibuonnguoi)
+        và tên đủ đặc trưng. Caption TikTok/Threads thường chỉ có vậy, còn nội dung phim nằm trong
+        video. Bên gọi tắt cờ này cho phim tên là cụm từ thông dụng (settings.strict_relevance_movie_slugs).
 
     Dùng khi Kira không đưa ra phán quyết (tắt, vượt hạn mức ngày, lỗi) hoặc chỉ trả
     "uncertain". Trước 2026-10-05 lúc đó chỉ còn kiểm tra chuỗi con theo từ khoá, nên với tên
@@ -365,11 +383,12 @@ def film_context_reason(content: str | None, movie: dict | None = None) -> str |
     if not text:
         return None
     movie = movie or {}
-    for key in ("director", "cast"):
+    tags = _hashtags(content)
+    for key in ("director", "cast") if allow_names else ():
         for name in re.split(r"[,;/|]", str(movie.get(key) or "")):
             folded = normalize_title(name)
             # Tên một chữ quá dễ trùng ("Hiếu", "Linh") - chỉ tin tên từ hai chữ trở lên.
-            if len(folded.split()) >= 2 and _contains_phrase(text, folded):
+            if len(folded.split()) >= 2 and (_contains_phrase(text, folded) or _squash(folded) in tags):
                 return key
 
     title = normalize_title(movie.get("title"))
@@ -387,6 +406,8 @@ def film_context_reason(content: str | None, movie: dict | None = None) -> str |
     has_music = any(_contains_phrase(text, phrase) for phrase in _MUSIC_PHRASES)
     if has_film_word and not has_music and _quoted_title(content, title):
         return "quoted_title"
+    if allow_title_hashtag and _distinctive_title(title) and _squash(title) in tags:
+        return "title_hashtag"
     return None
 
 

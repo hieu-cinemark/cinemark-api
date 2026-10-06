@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.relevance_rules import (
+    film_context_reason,
     foreign_language_reason,
     has_film_context,
     mentions_keyword_or_title,
@@ -181,3 +182,51 @@ def test_mentions_keyword_or_title_accepts_another_keyword_of_the_movie() -> Non
     assert mentions_keyword_or_title(content, ["#ThamTuKien"], title)  # "thamtukien" có trong bài
     assert mentions_keyword_or_title(content, ["Thám Tử Kiên 2"], title)
     assert not mentions_keyword_or_title("Thám tử lừng danh Conan", ["Thám Tử Kiên 2"], title)
+
+
+TRAI_BUON_NGUOI = {"title": "Trại Buôn Người", "cast": "Steven Nguyễn, Quách Ngọc Ngoan"}
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Caption TikTok thật (2026-10-06) - Kira trả "uncertain", nội dung phim nằm trong video.
+        "#traibuonnguoi ",
+        "Cổ khổ  #traibuonnguoi",
+        "Ba ơi cứu em 😥😥😥 #traibuonnguoi ",
+        "Trả lời @Ủn ỉn bay lên Trời video cận cảnh kkk #traibuonnguoi #cinetour #xuhuong",
+        "Ảnh ngầu ảnh đẹp #TraiBuonNguoi",
+    ],
+)
+def test_title_hashtag_counts_when_allowed(content: str) -> None:
+    assert film_context_reason(content, TRAI_BUON_NGUOI, allow_title_hashtag=True) == "title_hashtag"
+    # Mặc định (phim "chặt") hashtag tên phim không đủ.
+    assert film_context_reason(content, {"title": "Trại Buôn Người"}) is None
+
+
+def test_title_hashtag_ignores_short_common_titles() -> None:
+    assert film_context_reason("Hôm nay vui quá #anhhung", {"title": "Anh Hùng"}, allow_title_hashtag=True) is None
+    # Tên ba chữ dù ngắn vẫn đặc trưng.
+    assert film_context_reason("Cười xỉu #utlan2", {"title": "Út Lan 2"}, allow_title_hashtag=True) == "title_hashtag"
+
+
+def test_title_hashtag_needs_the_whole_title_as_one_tag() -> None:
+    # Tên phim nằm rải trong câu chữ thường, không phải hashtag: không tính.
+    assert (
+        film_context_reason("trại buôn người là vấn nạn xã hội", {"title": "Trại Buôn Người"}, allow_title_hashtag=True)
+        is None
+    )
+
+
+def test_cast_hashtag_counts() -> None:
+    assert film_context_reason("Đỉnh. #stevennguyen #fyp", TRAI_BUON_NGUOI) == "cast"
+    assert film_context_reason("Chúc đủ thứ #QuachNgocNgoan", TRAI_BUON_NGUOI) == "cast"
+    assert film_context_reason("Đỉnh. #steven #fyp", TRAI_BUON_NGUOI) is None
+
+
+def test_names_can_be_ignored_for_strict_movies() -> None:
+    gossip = "Thanh Hương chia sẻ về nguyên nhân đổ vỡ hôn nhân #nguoiduocchon"
+    movie = {"title": "Người Được Chọn", "cast": "Hoài Linh, Thanh Hương"}
+    assert film_context_reason(gossip, movie) == "cast"
+    assert film_context_reason(gossip, movie, allow_names=False) is None
+    assert film_context_reason("Phim Người Được Chọn có Thanh Hương", movie, allow_names=False) == "phim_title"

@@ -48,6 +48,7 @@ from app.services.d1 import (
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.relevance_rules import (
+    film_context_reason,
     foreign_language_reason,
     has_film_context,
     mentions_keyword_or_title,
@@ -291,21 +292,34 @@ async def handle_post(payload: dict[str, Any]) -> None:
                 kira_reason=verdict["reason"],
             )
             return
-        # "uncertain" (ví dụ caption chỉ có hashtag): ai_relevant giữ None, nên persist_post
-        # quay về kiểm tra chuỗi con theo từ khoá, và nhãn được lưu để thấy rõ bài chưa được
-        # phân định.
-    # Cần tín hiệu phim khi: Kira không kết luận (tắt / vượt hạn mức ngày / lỗi / "uncertain") mà
-    # bài chỉ khớp từ khoá, HOẶC phim nằm trong danh sách "chặt" (tên trùng cụm từ thông dụng -
-    # Kira vẫn gán "related" cho review phim khác dùng cụm từ đó, xem settings.strict_relevance_movie_slugs).
+        # "uncertain": ai_relevant giữ None - tín hiệu phim bên dưới quyết định.
+    # Kira "uncertain" (caption chỉ có hashtag, nội dung phim nằm trong video) hoặc không kết luận
+    # (tắt / vượt hạn mức ngày / lỗi): tín hiệu phim trong bài quyết định thay. Có tín hiệu -> bài
+    # lên dashboard (nhãn "uncertain" được nâng thành "related", lý do ghi ở decision context_*);
+    # không có -> vẫn lưu nhưng ẩn (no_film_context). Hashtag đúng tên phim chỉ tính với phim tên
+    # đặc trưng; phim "chặt" (tên trùng cụm từ thông dụng, settings.strict_relevance_movie_slugs) cần
+    # tín hiệu mạnh hơn, và với chúng kể cả bài Kira gán "related" cũng phải có tín hiệu phim.
     strict_movie = movie.get("slug") in settings.strict_relevance_movies
-    needs_film_context = (ai_relevant is None and has_keyword) or (ai_relevant is True and strict_movie)
-    if needs_film_context and not has_film_context(draft.get("content"), movie):
-        # Vẫn lưu (để lượt gán nhãn sau xem lại được) nhưng không lên dashboard.
+    context = None
+    no_film_context = False
+    if ai_relevant is None:
+        # Phim "chặt": chỉ tín hiệu mạnh (phim <tên>, từ điện ảnh cạnh tên, tên trong ngoặc kép) -
+        # hashtag tên phim và tên diễn viên đều hay gặp trong bài không liên quan.
+        context = film_context_reason(
+            draft.get("content"), movie, allow_title_hashtag=not strict_movie, allow_names=not strict_movie
+        )
+        if context:
+            ai_relevant = True
+            if relevance_label == "uncertain":
+                relevance_label = "related"
+        elif has_keyword or relevance_label == "uncertain":
+            ai_relevant = False
+            relevance_label = relevance_label or "uncertain"
+            no_film_context = True
+    elif strict_movie and not has_film_context(draft.get("content"), movie):
         ai_relevant = False
-        relevance_label = "uncertain" if strict_movie else (relevance_label or "uncertain")
+        relevance_label = "uncertain"
         no_film_context = True
-    else:
-        no_film_context = False
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
@@ -321,8 +335,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
         return
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
-    # kira_related / kira_uncertain, hoặc no_verdict khi Kira đứng ngoài (tắt, vượt hạn mức
-    # ngày, lỗi) và chỉ mình kiểm tra từ khoá quyết định.
+    # kira_related, context_<lý do> khi tín hiệu phim quyết định thay Kira, hoặc no_verdict khi Kira
+    # đứng ngoài (tắt, vượt hạn mức ngày, lỗi) và chỉ mình kiểm tra từ khoá quyết định.
     await _decide(
         platform=platform,
         post_id=post_id,
@@ -330,6 +344,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         decision="kept",
         reason="no_film_context"
         if no_film_context
+        else f"context_{context}"
+        if context
         else (f"kira_{relevance_label}" if relevance_label else "no_verdict"),
         confidence=relevance_confidence,
         has_keyword=has_keyword,
