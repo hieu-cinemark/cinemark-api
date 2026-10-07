@@ -64,6 +64,7 @@ async def classify_pending(
     *,
     limit: int,
     since: datetime | None = None,
+    before: datetime | None = None,
     platform: str | None = None,
     exclude: set[str] | frozenset[str] = frozenset(),
     dry_run: bool = False,
@@ -77,6 +78,9 @@ async def classify_pending(
     if since is not None:
         sql += " AND scraped_at >= ?"
         params.append(since.astimezone(UTC).isoformat())  # scraped_at là ISO-8601 UTC
+    if before is not None:
+        sql += " AND scraped_at < ?"
+        params.append(before.astimezone(UTC).isoformat())
     if platform:
         sql += " AND platform = ?"
         params.append(platform)

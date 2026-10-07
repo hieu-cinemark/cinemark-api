@@ -19,15 +19,20 @@ Fail open: lời gọi lỗi thì kết quả của cả lô là None, và comme
 
 from __future__ import annotations
 
+from collections import Counter
+
 from app.ai.kira import call_kira, kira_is_enabled, parse_json_response
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
+from app.ai.tasks.sentiment_rules import cached_labels, remember_labels, rule_sentiment
 from app.core.logging import get_logger
 from app.services.d1 import MIN_CONTENT_LENGTH
 
 logger = get_logger(__name__)
 
 VALID_SENTIMENTS = {"positive", "negative", "neutral"}
-BATCH_SIZE = 25
+# 10 thay vì 25 (2026-10-06): khi Kira tải cao, một lô 25 comment mất ~170-180s (model suy luận ẩn) và gateway
+# của Kira cắt ở ~180s -> 504, mất trắng cả lô. Lô 10 xong khoảng 1 phút; đổi lại tốn thêm token system prompt.
+BATCH_SIZE = 10
 MAX_MESSAGE_CHARS = 600
 MAX_TOKENS = 6000
 
@@ -81,12 +86,36 @@ async def classify_sentiments(messages: list[str | None]) -> list[str | None]:
     tin nhắn quá ngắn để phân loại, khi Kira đang tắt, hoặc khi lời gọi của lô đó lỗi."""
     labels: list[str | None] = [None] * len(messages)
     todo = [(i, m.strip()) for i, m in enumerate(messages) if m is not None and _classifiable(m)]
-    if not todo or not await kira_is_enabled():
-        return labels
-    for start in range(0, len(todo), BATCH_SIZE):
-        chunk = todo[start : start + BATCH_SIZE]
-        for (i, _), label in zip(chunk, await _classify_batch([m for _, m in chunk]), strict=True):
+    routed: Counter[str] = Counter()
+
+    # 1. Luật (chỉ emoji, quá ngắn, chỉ tag bạn bè) - chạy cả khi Kira tắt.
+    rest = []
+    for i, m in todo:
+        if (label := rule_sentiment(m)) is not None:
             labels[i] = label
+            routed["rule"] += 1
+        else:
+            rest.append((i, m))
+    # 2. Nhãn Kira đã gắn cho đúng nội dung này trước đó (Redis).
+    if rest:
+        for (i, _), hit in zip(rest, await cached_labels([m for _, m in rest]), strict=True):
+            if hit in VALID_SENTIMENTS:
+                labels[i] = hit
+                routed["cache"] += 1
+        rest = [(i, m) for i, m in rest if labels[i] is None]
+
+    # 3. Phần còn lại mới gửi Kira, rồi ghi nhãn vào cache cho lần gặp lại.
+    if rest and await kira_is_enabled():
+        for start in range(0, len(rest), BATCH_SIZE):
+            chunk = rest[start : start + BATCH_SIZE]
+            for (i, _), label in zip(chunk, await _classify_batch([m for _, m in chunk]), strict=True):
+                labels[i] = label
+        done = [(m, labels[i]) for i, m in rest if labels[i] is not None]
+        await remember_labels(done)
+        routed["kira"] = len(done)
+        routed["kira_failed"] = len(rest) - len(done)
+    if routed:
+        logger.info("sentiment_routed", **routed)
     return labels
 
 

@@ -8,6 +8,7 @@ Cách dùng:
     python -m scripts.backfill_comment_sentiment
     python -m scripts.backfill_comment_sentiment --platform facebook
     python -m scripts.backfill_comment_sentiment --limit 50 --dry-run
+    python -m scripts.backfill_comment_sentiment --older-than-hours 48   # chỉ phần lượt quét không tới
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 
 from app.core.logging import get_logger
 from app.workers.ingest_consumer.sentiment_sweep import classify_pending
@@ -27,14 +29,18 @@ MAX_BACKOFF_SECONDS = 60.0
 MAX_FAILED_PAGES = 5
 
 
-async def backfill(platform: str | None, limit: int | None, dry_run: bool) -> None:
-    logger.info("backfill_sentiment_started", platform=platform, limit=limit, dry_run=dry_run)
+async def backfill(
+    platform: str | None, limit: int | None, dry_run: bool, older_than_hours: float | None = None
+) -> None:
+    # Chỉ comment cũ hơn cửa sổ của lượt quét (48 giờ): không chấm trùng với ingest consumer đang chạy.
+    before = datetime.now(tz=UTC) - timedelta(hours=older_than_hours) if older_than_hours else None
+    logger.info("backfill_sentiment_started", platform=platform, limit=limit, dry_run=dry_run, before=before)
     totals: Counter[str] = Counter()
     given_up: set[str] = set()
     failed_pages = 0
     while limit is None or totals["selected"] < limit:
         page = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - totals["selected"])
-        result = await classify_pending(limit=page, platform=platform, exclude=given_up, dry_run=dry_run)
+        result = await classify_pending(limit=page, platform=platform, before=before, exclude=given_up, dry_run=dry_run)
         failed_ids = result.pop("failed_ids")
         totals.update(result)
         logger.info("backfill_sentiment_page", **result, totals=dict(totals))
@@ -60,5 +66,8 @@ if __name__ == "__main__":
     parser.add_argument("--platform", help="Only backfill this platform")
     parser.add_argument("--limit", type=int, help="Max rows to process this run")
     parser.add_argument("--dry-run", action="store_true", help="Classify one page and log it, write nothing")
+    parser.add_argument(
+        "--older-than-hours", type=float, help="Only comments scraped more than N hours ago (sweep covers 48)"
+    )
     args = parser.parse_args()
-    asyncio.run(backfill(args.platform, args.limit, args.dry_run))
+    asyncio.run(backfill(args.platform, args.limit, args.dry_run, args.older_than_hours))

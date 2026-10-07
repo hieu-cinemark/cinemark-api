@@ -9,8 +9,26 @@ import json
 import re
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.ai.tasks import sentiment
 from app.ai.tasks.sentiment import classify_sentiment, classify_sentiments
+
+
+@pytest.fixture(autouse=True)
+def _no_redis_cache(monkeypatch):
+    """Cache nhãn theo nội dung nằm trên Redis thật - test không được đọc/ghi vào đó (và không được thấy
+    nhãn mà test trước ghi)."""
+
+    async def empty(messages):
+        return [None] * len(messages)
+
+    async def skip(pairs):
+        return None
+
+    monkeypatch.setattr(sentiment, "cached_labels", empty)
+    monkeypatch.setattr(sentiment, "remember_labels", skip)
+
 
 LONG = "Phim này hay quá, xem xong muốn coi lại lần nữa"
 
