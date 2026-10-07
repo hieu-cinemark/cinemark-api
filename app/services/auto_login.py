@@ -164,7 +164,9 @@ async def _list_accounts_needing_relogin(platform: str) -> list[dict[str, Any]]:
         return []
 
 
-async def _tick_one_platform(platform: str, *, dry_run: bool) -> tuple[dict[str, int], int, int]:
+async def _tick_one_platform(
+    platform: str, *, dry_run: bool, max_logins: int | None = None
+) -> tuple[dict[str, int], int, int]:
     """Chạy luồng auto-login cho một nền tảng: query Supabase lấy ứng viên, publish mỗi tài
     khoản một message Kafka, đếm kết quả. Trả về (per_status_counters, kafka_published,
     kafka_publish_failed).
@@ -192,6 +194,10 @@ async def _tick_one_platform(platform: str, *, dry_run: bool) -> tuple[dict[str,
     kafka_publish_failed = 0
 
     rows = await _list_accounts_needing_relogin(platform)
+    if max_logins is not None and len(rows) > max_logins:
+        # Thứ tự của query là chờ lâu nhất trước, nên phần bị hoãn sẽ tới lượt ở các tick sau.
+        logger.info("auto_login_tick_capped", platform=platform, candidates=len(rows), max_logins=max_logins)
+        rows = rows[:max_logins]
     per_status["attempted"] = len(rows)
     if not rows:
         return per_status, kafka_published, kafka_publish_failed
@@ -283,7 +289,9 @@ async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = F
         )
         for platform in platforms:
             try:
-                per_status, kafka_published, kafka_publish_failed = await _tick_one_platform(platform, dry_run=dry_run)
+                per_status, kafka_published, kafka_publish_failed = await _tick_one_platform(
+                    platform, dry_run=dry_run, max_logins=settings.max_logins_per_tick
+                )
                 per_platform[platform] = per_status
                 kafka_published_total += kafka_published
                 kafka_publish_failed_total += kafka_publish_failed

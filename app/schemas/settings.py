@@ -436,6 +436,10 @@ class AutoLoginSettings(BaseModel):
     # tắt auto-login thì cron vẫn phát hiện + báo Telegram để nạp cookie tay.
     cookie_check_enabled: bool = True
     cookie_check_interval_hours: int = Field(default=6, ge=1, le=48)
+    # Tối đa bấy nhiêu lần đăng nhập lại mỗi nền tảng mỗi lượt (2026-10-07): một lượt cookie check có thể đánh dấu
+    # chết cả chục tài khoản, và đăng nhập lại hết trong vài phút qua 2 proxy (consumer chỉ nghỉ 5-10s giữa các lần)
+    # là kiểu đăng nhập hàng loạt từ một IP mà FB gắn cờ. Phần còn lại chờ các lượt sau (mỗi interval_seconds).
+    max_logins_per_tick: int = Field(default=2, ge=1, le=20)
 
 
 class AutoLoginSettingsOut(BaseModel):
@@ -455,6 +459,7 @@ class AutoLoginSettingsUpdate(BaseModel):
     telegram_alert: bool | None = None
     cookie_check_enabled: bool | None = None
     cookie_check_interval_hours: int | None = Field(default=None, ge=1, le=48)
+    max_logins_per_tick: int | None = Field(default=None, ge=1, le=20)
 
 
 class AutoLoginRunHistoryEntry(BaseModel):
