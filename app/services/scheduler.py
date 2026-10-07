@@ -28,11 +28,17 @@ scripts/trigger_recent_keyword_comments.py vẫn làm bằng tay."""
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.clients.kafka import publish_comments_crawl_request, publish_crawl_request, publish_nurture_request
-from app.clients.redis import get_redis_client
+from app.clients.kafka import (
+    publish_comments_crawl_request,
+    publish_cookie_check_request,
+    publish_crawl_request,
+    publish_nurture_request,
+)
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
@@ -301,6 +307,35 @@ async def _auto_login_tick() -> None:
     _spawn(run_auto_login_tick(triggered_by="schedule", force=True))
 
 
+# Mốc lần xếp cookie_check gần nhất nằm trong Redis, không trong biến của tiến trình: `uvicorn --reload` khởi động lại
+# tiến trình mỗi lần sửa code, và mốc trong bộ nhớ sẽ khiến mỗi lần restart lại xếp thêm một lượt kiểm tra.
+_COOKIE_CHECK_LAST_KEY = f"{REDIS_KEY_PREFIX}scheduler:cookie_check:last_published_at"
+
+
+async def _cookie_check_tick() -> None:
+    """Mỗi cookie_check_interval_hours xếp một lượt kiểm tra cookie Facebook (xem publish_cookie_check_request).
+    stale_hours nhỏ hơn chu kỳ 1 giờ để tài khoản kiểm tra ở lượt trước (lệch vài phút) vẫn được kiểm tra lại."""
+    cfg = await resolve_auto_login_settings()
+    if not cfg.cookie_check_enabled or "facebook" not in cfg.platforms:
+        return
+    interval_seconds = cfg.cookie_check_interval_hours * 3600
+    client = get_redis_client()
+    last = await client.get(_COOKIE_CHECK_LAST_KEY)
+    if last is not None and time.time() - float(last) < interval_seconds:
+        return
+    await client.set(_COOKIE_CHECK_LAST_KEY, str(time.time()), ex=interval_seconds * 2)
+    stale_hours = max(1, cfg.cookie_check_interval_hours - 1)
+    ok = await publish_cookie_check_request("facebook", stale_hours=stale_hours)
+    if not ok:
+        await client.delete(_COOKIE_CHECK_LAST_KEY)  # Kafka lỗi: thử lại ở vòng 30s kế tiếp
+    logger.info(
+        "scheduler_cookie_check_published",
+        ok=ok,
+        interval_hours=cfg.cookie_check_interval_hours,
+        stale_hours=stale_hours,
+    )
+
+
 async def _loop() -> None:
     while True:
         try:
@@ -330,6 +365,12 @@ async def _loop() -> None:
         except Exception as exc:
             # Đọc auto_login_settings lỗi hoặc lỗi ném ra từ create_task không được giết vòng lặp.
             logger.error("scheduler_auto_login_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_cookie_check_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_cookie_check_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
+        except Exception as exc:
+            logger.error("scheduler_cookie_check_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 

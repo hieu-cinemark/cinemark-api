@@ -220,7 +220,7 @@ class NurtureRequest(BaseModel):
     platform: Literal["facebook", "threads", "all"] = "all"
     account_id: int | None = None
     like: bool = True
-    comment: bool = True
+    comment: bool = False  # tắt mặc định - xem --comment trong nurture_accounts.py của spider-hub
     visits: int = Field(default=3, ge=0, le=8)
 
 
@@ -430,6 +430,12 @@ class AutoLoginSettings(BaseModel):
     # khoản "chết" ở mỗi lượt (hành vi ban đầu).
     min_age_seconds: int = Field(default=0, ge=0, le=3600)
     telegram_alert: bool = True
+    # Cron kiểm tra cookie (2026-10-07): mỗi cookie_check_interval_hours xếp một request type=cookie_check để
+    # spider-hub chạy scripts/check_facebook_cookies.py (không đăng nhập, chỉ mở FB bằng phiên sẵn có). Tài khoản bị
+    # FB đăng xuất được ghi last_check_status='dead' -> lượt auto-login kế tiếp nạp cookie mới. Độc lập với `enabled`:
+    # tắt auto-login thì cron vẫn phát hiện + báo Telegram để nạp cookie tay.
+    cookie_check_enabled: bool = True
+    cookie_check_interval_hours: int = Field(default=6, ge=1, le=48)
 
 
 class AutoLoginSettingsOut(BaseModel):
@@ -447,6 +453,8 @@ class AutoLoginSettingsUpdate(BaseModel):
     dry_run: bool | None = None
     min_age_seconds: int | None = Field(default=None, ge=0, le=3600)
     telegram_alert: bool | None = None
+    cookie_check_enabled: bool | None = None
+    cookie_check_interval_hours: int | None = Field(default=None, ge=1, le=48)
 
 
 class AutoLoginRunHistoryEntry(BaseModel):

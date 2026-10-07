@@ -312,7 +312,7 @@ async def publish_nurture_request(
     account: str | None = None,
     *,
     like: bool = True,
-    comment: bool = True,
+    comment: bool = False,
     visits: int = 3,
 ) -> bool:
     """Xếp hàng type=nurture để crawl_request_consumer của spider-hub chạy
@@ -330,6 +330,16 @@ async def publish_nurture_request(
     if account:
         payload["account"] = account
     return await publish_action_request(platform, "nurture", payload)
+
+
+async def publish_cookie_check_request(platform: str = "facebook", *, stale_hours: float | None = None) -> bool:
+    """Xếp hàng type=cookie_check để crawl_request_consumer của spider-hub chạy scripts/check_facebook_cookies.py
+    (chỉ tài khoản chưa được kiểm tra trong `stale_hours` giờ). Chung hàng đợi với crawl nên không mở cùng một
+    session song song với một lượt crawl. Xem cookie_check_* trong AutoLoginSettings."""
+    payload: dict[str, Any] = {"run_id": str(uuid.uuid4())}
+    if stale_hours:
+        payload["stale_hours"] = stale_hours
+    return await publish_action_request(platform, "cookie_check", payload)
 
 
 async def publish_cookie_import_request(
