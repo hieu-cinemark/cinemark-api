@@ -9,6 +9,11 @@ Cách dùng:
     python -m scripts.backfill_comment_sentiment --platform facebook
     python -m scripts.backfill_comment_sentiment --limit 50 --dry-run
     python -m scripts.backfill_comment_sentiment --older-than-hours 48   # chỉ phần lượt quét không tới
+
+--insights: thay vào đó gán khía cạnh khen/chê + giai đoạn khán giả (app/ai/aspects.py) cho comment ĐÃ có
+sentiment từ trước 2026-10-07 - giữ nguyên nhãn cảm xúc cũ, chỉ ghi aspects/audience_stage. Nên chạy theo phim
+(--movie-id) cho phim sắp làm report thay vì cả kho:
+    python -m scripts.backfill_comment_sentiment --insights --movie-id movie_... --limit 2000
 """
 
 from __future__ import annotations
@@ -30,17 +35,39 @@ MAX_FAILED_PAGES = 5
 
 
 async def backfill(
-    platform: str | None, limit: int | None, dry_run: bool, older_than_hours: float | None = None
+    platform: str | None,
+    limit: int | None,
+    dry_run: bool,
+    older_than_hours: float | None = None,
+    *,
+    insights: bool = False,
+    movie_id: str | None = None,
 ) -> None:
     # Chỉ comment cũ hơn cửa sổ của lượt quét (48 giờ): không chấm trùng với ingest consumer đang chạy.
     before = datetime.now(tz=UTC) - timedelta(hours=older_than_hours) if older_than_hours else None
-    logger.info("backfill_sentiment_started", platform=platform, limit=limit, dry_run=dry_run, before=before)
+    logger.info(
+        "backfill_sentiment_started",
+        platform=platform,
+        limit=limit,
+        dry_run=dry_run,
+        before=before,
+        insights=insights,
+        movie_id=movie_id,
+    )
     totals: Counter[str] = Counter()
     given_up: set[str] = set()
     failed_pages = 0
     while limit is None or totals["selected"] < limit:
         page = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - totals["selected"])
-        result = await classify_pending(limit=page, platform=platform, before=before, exclude=given_up, dry_run=dry_run)
+        result = await classify_pending(
+            limit=page,
+            platform=platform,
+            before=before,
+            exclude=given_up,
+            dry_run=dry_run,
+            insights_only=insights,
+            movie_id=movie_id,
+        )
         failed_ids = result.pop("failed_ids")
         totals.update(result)
         logger.info("backfill_sentiment_page", **result, totals=dict(totals))
@@ -69,5 +96,18 @@ if __name__ == "__main__":
     parser.add_argument(
         "--older-than-hours", type=float, help="Only comments scraped more than N hours ago (sweep covers 48)"
     )
+    parser.add_argument(
+        "--insights", action="store_true", help="Tag aspects/stage on already-classified comments instead"
+    )
+    parser.add_argument("--movie-id", help="Only comments under this movie's posts")
     args = parser.parse_args()
-    asyncio.run(backfill(args.platform, args.limit, args.dry_run, args.older_than_hours))
+    asyncio.run(
+        backfill(
+            args.platform,
+            args.limit,
+            args.dry_run,
+            args.older_than_hours,
+            insights=args.insights,
+            movie_id=args.movie_id,
+        )
+    )

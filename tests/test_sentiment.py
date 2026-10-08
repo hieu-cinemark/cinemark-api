@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.ai.tasks import sentiment
-from app.ai.tasks.sentiment import classify_sentiment, classify_sentiments
+from app.ai.tasks.sentiment import classify_comments, classify_sentiment, classify_sentiments
 
 
 @pytest.fixture(autouse=True)
@@ -26,8 +26,8 @@ def _no_redis_cache(monkeypatch):
     async def skip(pairs):
         return None
 
-    monkeypatch.setattr(sentiment, "cached_labels", empty)
-    monkeypatch.setattr(sentiment, "remember_labels", skip)
+    monkeypatch.setattr(sentiment, "cached_comment_labels", empty)
+    monkeypatch.setattr(sentiment, "remember_comment_labels", skip)
 
 
 LONG = "Phim này hay quá, xem xong muốn coi lại lần nữa"
@@ -51,7 +51,11 @@ async def test_batch_maps_results_by_number_and_skips_short() -> None:
         result = await classify_sentiments(["Kịch bản dở quá, phí tiền vé", "ok", None, LONG])
     assert result == ["negative", None, None, "positive"]
     prompt = mock_call.await_args.kwargs["user_prompt"]
-    assert "1. Kịch bản dở quá" in prompt and "2. Phim này hay" in prompt and "ok" not in prompt.split("COMMENTS:")[1]
+    assert (
+        "1. Kịch bản dở quá" in prompt
+        and "2. Phim này hay" in prompt
+        and "ok" not in prompt.split("COMMENTS (")[1].split("FILMS (")[0]
+    )
 
 
 async def test_splits_into_batches_of_batch_size() -> None:
@@ -111,3 +115,47 @@ async def test_unnumbered_results_map_by_order_when_counts_match() -> None:
     call, configured = _kira(json.dumps({"results": [{"sentiment": "positive"}, {"sentiment": "negative"}]}))
     with call, configured:
         assert await classify_sentiments([LONG, LONG]) == ["positive", "negative"]
+
+
+async def test_aspects_and_stage_are_parsed_and_unknown_keys_dropped() -> None:
+    reply = json.dumps(
+        {
+            "results": [
+                {
+                    "i": 1,
+                    "sentiment": "negative",
+                    "aspects": ["kich_ban:-", "dien_xuat:+", "made_up:+", "kich_ban:-"],
+                    "stage": "da_xem",
+                },
+                {"i": 2, "sentiment": "positive", "aspects": [{"a": "quang_ba", "p": "+"}], "stage": "hong"},
+                {"i": 3, "sentiment": "neutral"},
+            ]
+        }
+    )
+    call, configured = _kira(reply)
+    with call as mock_call, configured:
+        result = await classify_comments([LONG, LONG, LONG, "@Nguyễn Văn An"])
+    assert result == [
+        {"sentiment": "negative", "aspects": ["kich_ban:-", "dien_xuat:+"], "stage": "da_xem"},
+        {"sentiment": "positive", "aspects": ["quang_ba:+"], "stage": "hong"},
+        {"sentiment": "neutral", "aspects": [], "stage": "khac"},  # thiếu aspects/stage -> rỗng/khác, vẫn giữ sentiment
+        {"sentiment": "neutral", "aspects": [], "stage": "khac"},  # chỉ tag bạn bè: luật, không gọi Kira
+    ]
+    prompt = mock_call.await_args.kwargs["user_prompt"]
+    assert '"dien_xuat"' in prompt and '"da_xem"' in prompt  # danh sách khía cạnh/giai đoạn nằm trong user prompt
+
+
+async def test_film_context_is_tagged_per_comment_and_described_once() -> None:
+    film = {
+        "title": "Mẹ Mìn",
+        "director": "Jack Carry On",
+        "cast": '["Minh Hằng", "Đại Nghĩa"]',
+        "released_at": "2026-10-23",
+    }
+    call, configured = _kira(_reply("positive", "positive", "neutral"))
+    with call as mock_call, configured:
+        await classify_comments([LONG, f"{LONG} 2", f"{LONG} 3"], [film, film, None])
+    prompt = mock_call.await_args.kwargs["user_prompt"]
+    assert "1. [F1] Phim này hay" in prompt and "2. [F1] " in prompt and "3. Phim này hay" in prompt
+    assert prompt.count("TARGET FILM: Mẹ Mìn") == 1
+    assert "Cast: Minh Hằng, Đại Nghĩa" in prompt and "Release date: 2026-10-23" in prompt

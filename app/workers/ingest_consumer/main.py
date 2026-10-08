@@ -117,7 +117,10 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
         return _tracked_movies_cache[1]
     try:
         rows = (
-            await d1_query('SELECT id, title, slug, director, "cast", distributor, released_at FROM movies', quiet=True)
+            await d1_query(
+                'SELECT id, title, slug, director, "cast", distributor, released_at, description FROM movies',
+                quiet=True,
+            )
             or []
         )
     except Exception as exc:  # noqa: BLE001 - quy tắc/Kira tạm đứng ngoài lượt này

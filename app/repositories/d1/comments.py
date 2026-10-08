@@ -91,6 +91,29 @@ async def _ensure_comments_parent_column() -> None:
         _comments_parent_column_ready = True
 
 
+_comment_insight_columns_ready = False
+_comment_insight_columns_lock = asyncio.Lock()
+# Khía cạnh khen/chê (JSON list "key:+"), giai đoạn khán giả và thời điểm gán - xem app/ai/aspects.py. Thêm 2026-10-07.
+COMMENT_INSIGHT_COLUMNS = ("aspects", "audience_stage", "insights_classified_at")
+
+
+async def ensure_comment_insight_columns() -> None:
+    """Thêm các cột COMMENT_INSIGHT_COLUMNS còn thiếu, một lần mỗi tiến trình - cùng kiểu với
+    _ensure_comments_parent_column: kiểm tra PRAGMA trước để không ALTER khi cột đã có."""
+    global _comment_insight_columns_ready
+    if _comment_insight_columns_ready:
+        return
+    async with _comment_insight_columns_lock:
+        if _comment_insight_columns_ready:
+            return
+        cols = await d1_query("PRAGMA table_info(comments)")
+        existing = {row.get("name") for row in cols or []}
+        for column in COMMENT_INSIGHT_COLUMNS:
+            if column not in existing:
+                await d1_query(f"ALTER TABLE comments ADD COLUMN {column} TEXT", quiet=True)
+        _comment_insight_columns_ready = True
+
+
 class CommentRepository:
     """Giữ mọi query trên `comments`. Một instance cho cả tiến trình (`comment_repo` bên
     dưới), cùng dạng với PostRepository."""
@@ -115,6 +138,7 @@ class CommentRepository:
             """,
             [post_id, MAX_COMMENTS_PER_POST],
         )
+        print(f"list_comments({post_id}): {len(rows)} rows")
         return rows or []
 
     async def list_all_comments(

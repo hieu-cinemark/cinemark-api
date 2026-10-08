@@ -5,7 +5,7 @@ còn qua được thành 'not_related'.
 Tồn tại vì bản thân relevance_label là một snapshot tại một thời điểm: nó được đặt bởi
 phán quyết nào (AI hoặc kiểm tra chuỗi con theo từ khoá cũ) đang chạy lúc ingest, và
 không bao giờ được đánh giá lại khi logic của movie_hashtag_present được cải thiện.
-list_posts(sort="engagement")/get_comment_sample_for_movie vốn đã chạy lại
+list_posts(sort="engagement")/get_report_sample_for_movie vốn đã chạy lại
 movie_hashtag_present lúc query nên output CỦA CHÚNG sạch, nhưng relevance_label trên
 đĩa vẫn sai cho tới khi có gì đó ghi lại - và get_movie_sentiment_counts
 (app/services/d1.py) đếm thẳng trên relevance_label mà không kiểm tra lại như vậy,

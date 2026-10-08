@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.ai.kira import call_kira, parse_json_response
+from app.ai.movie_context import movie_context_block
 from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -51,13 +52,8 @@ Verdict = dict[str, Any]
 
 
 def movie_block(movie: dict[str, Any]) -> str:
-    lines = [f"TARGET FILM: {movie.get('title') or ''}"]
-    for key, label in (("director", "Director"), ("cast", "Cast"), ("distributor", "Distributor")):
-        if movie.get(key):
-            lines.append(f"{label}: {str(movie[key])[:300]}")
-    if movie.get("released_at"):
-        lines.append(f"Release date: {str(movie['released_at'])[:10]}")
-    return "\n".join(lines)
+    # Logline ngắn: đủ để nhận ra tên nhân vật/bối cảnh của phim mà không phình prompt của cả lô BATCH_SIZE bài.
+    return movie_context_block(movie, logline_chars=250)
 
 
 @dataclass

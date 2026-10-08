@@ -47,6 +47,16 @@ Do NOT invent an opinion the comment doesn't express - when genuinely
 ambiguous or purely factual, classify as "neutral" rather than guessing
 positive or negative.
 
+ASPECTS AND STAGE:
+
+Besides sentiment, tag each comment with:
+- "aspects": which parts of the movie it praises (+) or criticizes (-),
+  from the fixed list given with the comments, as "key:+" / "key:-". Only
+  tag what the comment actually talks about; most comments have 0-2
+  aspects; an empty list is fine. Never invent new keys.
+- "stage": whether the writer has watched the movie ("da_xem"), has not
+  watched it yet ("hong"), or neither/unclear ("khac").
+
 OUTPUT FORMAT:
 
 Return ONLY valid JSON. Do not return Markdown. Do not wrap the JSON in a
@@ -56,8 +66,8 @@ Use exactly this structure, one entry per input comment, keyed by its number:
 
 {
   "results": [
-    {"i": 1, "sentiment": "positive"},
-    {"i": 2, "sentiment": "neutral"}
+    {"i": 1, "sentiment": "positive", "aspects": ["dien_xuat:+"], "stage": "da_xem"},
+    {"i": 2, "sentiment": "neutral", "aspects": [], "stage": "hong"}
   ]
 }
 
@@ -68,18 +78,29 @@ FIELD RULES:
 other value, no combination, no explanation text mixed in.
 """
 
-# Định dạng đầu ra được lặp lại ở đây, trong user prompt, là cố ý: system prompt có
-# thể bị thay từ dashboard (ai_settings prompts), và một bản ghi đè viết cho định
-# dạng cũ (mỗi lời gọi một comment) không được làm hỏng bộ parse theo lô.
+# Định dạng đầu ra (và danh sách khía cạnh/giai đoạn) được lặp lại ở đây, trong user prompt, là cố ý: system
+# prompt có thể bị thay từ dashboard (ai_settings prompts), và một bản ghi đè viết cho định dạng cũ (mỗi lời gọi
+# một comment, hoặc chỉ có sentiment) không được làm hỏng bộ parse theo lô. {aspects}/{stages} được điền từ
+# app/ai/aspects.py.
 SENTIMENT_DATA_PROMPT = """
-Classify the sentiment of each of the following {count} comments, left under
-movie-related posts.
+Classify each of the following {count} comments, left under movie-related posts.
 
-COMMENTS:
+COMMENTS (a "[F1]" tag names the film the comment was left under):
 {comments}
+
+FILMS (use this to recognize the cast, characters and story the comments refer to, and the release date: today
+is {today}, so nobody can have watched a film released after today - such comments are "hong", not "da_xem"):
+{films}
+
+ASPECT KEYS (tag as "key:+" for praise or "key:-" for criticism; only these keys):
+{aspects}
+
+STAGE VALUES:
+{stages}
 
 Return ONLY valid JSON with exactly {count} entries in "results", one per
 comment, where "i" is the comment's number above:
 
-{{"results": [{{"i": 1, "sentiment": "positive"}}, {{"i": 2, "sentiment": "neutral"}}]}}
+{{"results": [{{"i": 1, "sentiment": "positive", "aspects": ["dien_xuat:+", "kich_ban:-"], "stage": "da_xem"}},
+{{"i": 2, "sentiment": "neutral", "aspects": [], "stage": "khac"}}]}}
 """

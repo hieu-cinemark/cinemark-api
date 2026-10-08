@@ -1,10 +1,12 @@
 """Gán nhãn cảm xúc không cần Kira (bình luận chỉ emoji / quá ngắn / chỉ tag bạn bè) và cache nhãn Kira
-theo nội dung - xem classify_sentiments trong app/ai/tasks/sentiment.py."""
+theo nội dung - xem classify_comments trong app/ai/tasks/sentiment.py."""
 
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+from typing import Any
 
 import emoji
 
@@ -74,3 +76,35 @@ async def remember_labels(pairs: list[tuple[str, str]]) -> None:
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - không ghi được cache thì lần sau gọi Kira lại, không sao
         logger.warning("sentiment_cache_write_failed", error=exc)
+
+
+# Nhãn đầy đủ (sentiment + aspects + stage) từ 2026-10-07 - key riêng, vì cache cũ ở trên chỉ có sentiment: dùng nó
+# thì comment trùng nội dung sẽ không bao giờ có khía cạnh.
+def _label_cache_key(message: str) -> str:
+    normalized = " ".join(message.lower().split())
+    return f"{REDIS_KEY_PREFIX}comment_label_cache:{hashlib.sha1(normalized.encode()).hexdigest()}"
+
+
+async def cached_comment_labels(messages: list[str]) -> list[dict[str, Any] | None]:
+    try:
+        values = await get_redis_client().mget([_label_cache_key(m) for m in messages])
+    except Exception:  # noqa: BLE001 - Redis lỗi thì coi như cache trống
+        return [None] * len(messages)
+    result: list[dict[str, Any] | None] = []
+    for value in values:
+        try:
+            parsed = json.loads(value) if value else None
+        except TypeError, ValueError:
+            parsed = None
+        result.append(parsed if isinstance(parsed, dict) else None)
+    return result
+
+
+async def remember_comment_labels(pairs: list[tuple[str, dict[str, Any]]]) -> None:
+    try:
+        pipe = get_redis_client().pipeline()
+        for message, label in pairs:
+            pipe.set(_label_cache_key(message), json.dumps(label, ensure_ascii=False), ex=CACHE_TTL)
+        await pipe.execute()
+    except Exception as exc:  # noqa: BLE001 - không ghi được cache thì lần sau gọi Kira lại, không sao
+        logger.warning("comment_label_cache_write_failed", error=exc)

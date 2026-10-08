@@ -150,6 +150,10 @@ async def publish_crawl_request(
         )
     if bfs_depth:
         value["bfs_depth"] = int(bfs_depth)
+    # Spider hashtag của TikTok hỏi Kira hashtag nào đi cùng là của phim (BFS) - kèm thông tin phim để nó nhận ra tên
+    # diễn viên/nhân vật (2026-10-07: "#nadechkugimiya", diễn viên chính Quỷ Ăn Tạng 4, bị chấm "generic").
+    if platform == "tiktok" and (movie_context := await _movie_context_for_keyword(keyword_id)):
+        value["movie_context"] = movie_context
     try:
         await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{platform}:{keyword_id}", value=value)
     except KafkaError as exc:
@@ -157,6 +161,25 @@ async def publish_crawl_request(
         return False
     await enqueue_published(value)
     return True
+
+
+async def _movie_context_for_keyword(keyword_id: str) -> str | None:
+    """Khối thông tin phim (app/ai/movie_context.py) của phim sở hữu từ khoá này, hoặc None khi không tra được -
+    thiếu nó thì spider vẫn chạy, chỉ là Kira chấm hashtag kém hơn."""
+    from app.ai.movie_context import movie_context_block
+    from app.services.d1 import d1_query
+
+    try:
+        rows = await d1_query(
+            "SELECT m.title, m.director, m.`cast` AS `cast`, m.distributor, m.released_at, m.description "
+            "FROM keywords k JOIN movies m ON m.id = k.movie_id WHERE k.id = ?",
+            [keyword_id],
+            quiet=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - không chặn việc publish vì thiếu thông tin phim
+        logger.warning("movie_context_lookup_failed", keyword_id=keyword_id, error=str(exc))
+        return None
+    return movie_context_block(rows[0], logline_chars=250) if rows else None
 
 
 # Mặc định dùng chung cho dashboard/API khi crawl comment. Feed reply gốc của Threads

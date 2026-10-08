@@ -4,8 +4,9 @@ và nút "Tạo report" bấm tay trên dashboard (POST /movies/{id}/generate-re
 app/api/routes/movies.py).
 
 Với một phim:
-1. Lấy một mẫu có giới hạn, xếp theo tương tác, gồm các comment đã phân loại cảm xúc
-   của phim (get_comment_sample_for_movie) cho lời gọi gom topic.
+1. Rút ngẫu nhiên một mẫu có giới hạn gồm comment đã phân loại cảm xúc và bài viết của
+   khán giả (get_report_sample_for_movie) cho lời gọi gom topic - AI dùng bài viết vừa làm
+   ngữ cảnh cho comment vừa làm bằng chứng riêng (trừ bài của kênh/studio).
 2. Riêng ra, đếm MỌI comment đã phân loại của phim theo cảm xúc
    (get_movie_sentiment_counts) - tỉ lệ của overall_sentiment được tính từ đây, không
    phải từ mẫu có giới hạn, nên số liệu trên màn hình phản ánh đúng toàn bộ tập
@@ -28,8 +29,9 @@ from app.core.logging import get_logger
 from app.services.d1 import (
     MIN_COMMENTS_FOR_REPORT,
     d1_query,
-    get_comment_sample_for_movie,
+    get_movie_aspect_stats,
     get_movie_sentiment_counts,
+    get_report_sample_for_movie,
     upsert_social_topic_report,
 )
 
@@ -58,6 +60,11 @@ def _source_fields(comment: dict) -> dict:
     }
 
 
+# Nội dung đầy đủ của bài viết làm bằng chứng được cắt tới bấy nhiêu ký tự - AI chỉ thấy bản cắt ngắn
+# (REPORT_POST_TEXT_CHARS), dashboard hiện bản dài hơn này.
+_POST_EVIDENCE_TEXT_CHARS = 1500
+
+
 def _lookup_sample_comment(item: dict, by_id: dict[str, dict], by_text: dict[str, dict]) -> dict | None:
     comment_id = item.get("id")
     if isinstance(comment_id, str) and comment_id in by_id:
@@ -65,10 +72,44 @@ def _lookup_sample_comment(item: dict, by_id: dict[str, dict], by_text: dict[str
     return by_text.get(_norm_comment_text(item.get("text") or item.get("message")))
 
 
-def hydrate_report_comments(topics_result: dict, sample: list[dict]) -> dict:
+def _hydrate_item(item: dict, comments: tuple[dict, dict], posts_by_id: dict[str, dict]) -> dict:
+    item_id = item.get("id")
+    post = posts_by_id.get(item_id) if isinstance(item_id, str) else None
+    if post is not None and (item.get("source") == "post" or item_id not in comments[0]):
+        text = (post.get("post_content") or "").strip()
+        return {
+            **item,
+            "source": "post",
+            "text": text[:_POST_EVIDENCE_TEXT_CHARS] if text else item.get("text"),
+            "author_name": post.get("post_author"),
+            "author_url": None,
+            "author_profile_picture": None,
+            "post_url": post.get("post_url"),
+            "post_content": None,
+            "post_author": post.get("post_author"),
+            "platform": post.get("platform"),
+        }
+    match = _lookup_sample_comment(item, *comments)
+    if match is None:
+        return {**item, "source": "comment"}
+    # AI chỉ thấy bản cắt ngắn của comment dài - hiện lại nguyên văn.
+    return {**item, "source": "comment", "text": match.get("message") or item.get("text"), **_source_fields(match)}
+
+
+def hydrate_report_comments(topics_result: dict, sample: list[dict], posts: list[dict] | None = None) -> dict:
     """Gắn thêm các trường tác giả + bài cha mà dashboard hiển thị cạnh evidence/verbatims.
     LLM chỉ thấy id/message/likes; phần còn lại được ghép lại từ chính mẫu đó sau lời
-    gọi, để các report đã có cũng có thể được bổ sung lúc đọc bằng cùng cách khớp text."""
+    gọi, để các report đã có cũng có thể được bổ sung lúc đọc bằng cùng cách khớp text.
+    Bằng chứng là bài viết (source="post", tra theo id trong `posts` hoặc bài cha của một
+    comment trong mẫu) lấy tác giả/link từ chính bài đó và hiện nội dung đầy đủ hơn bản
+    AI thấy."""
+    posts_by_id: dict[str, dict] = {}
+    for comment in sample:
+        if comment.get("post_id") and comment.get("post_content"):
+            posts_by_id.setdefault(comment["post_id"], comment)
+    for post in posts or []:
+        posts_by_id[post["id"]] = post
+
     by_id = {c["id"]: c for c in sample if c.get("id")}
     by_text: dict[str, dict] = {}
     for comment in sample:
@@ -79,28 +120,43 @@ def hydrate_report_comments(topics_result: dict, sample: list[dict]) -> dict:
         if previous is None or (comment.get("reactions_count") or 0) > (previous.get("reactions_count") or 0):
             by_text[key] = comment
 
+    comments = (by_id, by_text)
     topics = []
     for topic in topics_result.get("top_10_topics") or []:
-        evidence = []
-        for item in topic.get("evidence_comments") or []:
-            if not isinstance(item, dict):
-                continue
-            match = _lookup_sample_comment(item, by_id, by_text)
-            evidence.append({**item, **(_source_fields(match) if match else {})})
+        evidence = [
+            _hydrate_item(item, comments, posts_by_id)
+            for item in topic.get("evidence_comments") or []
+            if isinstance(item, dict)
+        ]
         topics.append({**topic, "evidence_comments": evidence})
 
-    verbatims = []
-    for item in topics_result.get("top_10_verbatims") or []:
-        if not isinstance(item, dict):
-            continue
-        match = _lookup_sample_comment(item, by_id, by_text)
-        verbatims.append({**item, **(_source_fields(match) if match else {})})
+    verbatims = [
+        _hydrate_item(item, comments, posts_by_id)
+        for item in topics_result.get("top_10_verbatims") or []
+        if isinstance(item, dict)
+    ]
 
     return {**topics_result, "top_10_topics": topics, "top_10_verbatims": verbatims}
 
 
+async def _latest_accuracy() -> dict | None:
+    """Lần chấm độ chính xác gần nhất (ai_accuracy_runs), hoặc None - report vẫn tạo được khi Supabase lỗi."""
+    try:
+        from app.services.platform_config_db import get_latest_accuracy_run
+
+        run = await get_latest_accuracy_run()
+    except Exception as exc:  # noqa: BLE001 - thiếu ghi chú độ chính xác không được chặn cả report
+        logger.warning("report_accuracy_unavailable", error=str(exc))
+        return None
+    if not run:
+        return None
+    return {"labeled_at": str(run["labeled_at"]), "sample_size": run["sample_size"], **run["metrics"]}
+
+
 async def get_movie_for_report(movie_id: str) -> dict | None:
-    rows = await d1_query("SELECT id, title FROM movies WHERE id = ?", [movie_id])
+    rows = await d1_query(
+        "SELECT id, title, director, `cast`, distributor, released_at, description FROM movies WHERE id = ?", [movie_id]
+    )
     return rows[0] if rows else None
 
 
@@ -113,15 +169,18 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         logger.info("report_skip_insufficient_data", movie_id=movie_id, classified=total_classified)
         return "insufficient_data"
 
-    sample = await get_comment_sample_for_movie(movie_id)
-    post_count = len({c["post_id"] for c in sample})
+    report_sample = await get_report_sample_for_movie(movie_id)
+    sample, posts = report_sample["comments"], report_sample["posts"]
+    post_count = len({c["post_id"] for c in sample} | {p["id"] for p in posts})
 
-    topics_result = await generate_topics_and_verbatims(movie_title, sample)
+    topics_result = await generate_topics_and_verbatims(movie_title, sample, posts, movie=movie)
     if topics_result is None:
         logger.warning("report_skip_topics_failed", movie_id=movie_id)
         return "topics_failed"
 
-    topics_result = hydrate_report_comments(topics_result, sample)
+    topics_result = hydrate_report_comments(topics_result, sample, posts)
+    aspect_stats = await get_movie_aspect_stats(movie_id)
+    accuracy = await _latest_accuracy()
 
     positive_percent = _percent(counts.get("positive", 0), total_classified)
     negative_percent = _percent(counts.get("negative", 0), total_classified)
@@ -134,6 +193,8 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         negative_percent=negative_percent,
         neutral_percent=neutral_percent,
         topic_names=topic_names,
+        aspect_stats=aspect_stats,
+        movie=movie,
     )
 
     dashboard_data = {
@@ -146,6 +207,16 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         },
         "top_10_topics": topics_result.get("top_10_topics", []),
         "top_10_verbatims": topics_result.get("top_10_verbatims", []),
+        # Đếm thẳng trên mọi comment đã gán khía cạnh (không phải mẫu) - xem get_movie_aspect_stats.
+        "aspects": aspect_stats,
+        # Để người đọc biết topic/verbatim đến từ mẫu nào, và máy chấm đúng bao nhiêu (scripts/accuracy_sample.py).
+        "sampling": {
+            "classified_comments": total_classified,
+            "sample_comments": len(sample),
+            "sample_posts": len(posts),
+            "method": "random",
+        },
+        "accuracy": accuracy,
     }
 
     if dry_run:
