@@ -43,7 +43,16 @@ MIN_CONTENT_LENGTH = 10
 # "tương tác" - nếu không, số lượt xem lớn sẽ áp đảo hoàn toàn thứ tự sắp xếp, vì nó
 # thường lớn gấp 10-100 lần tổng số like/reply/repost/quote/reshare cộng lại, biến
 # cách sắp xếp này thành "xem nhiều nhất" khoác nhãn "tương tác".
-_ENGAGEMENT_SCORE_SQL = "(p.like_count + p.reply_count + p.repost_count + p.quote_count + p.reshare_count)"
+#
+# Mỗi comment (reply_count) nặng gấp COMMENT_WEIGHT lần một like/share (2026-10-07): bài nhiều comment
+# nhưng ít like trước đây rơi khỏi top 100, nên lượt lấy comment hằng ngày (list_posts_needing_comments)
+# bỏ qua đúng những bài có nhiều ý kiến khán giả nhất. Mô phỏng trên D1 thật: với hệ số 3, top 100 của các
+# từ khoá Facebook có thêm ~13.300 comment, đổi lại mất ~1.400. Danh sách top 100 trên dashboard dùng
+# chung công thức này để thứ tự hiển thị khớp với thứ tự crawl.
+COMMENT_WEIGHT = 3
+ENGAGEMENT_SCORE_SQL = (
+    f"(p.like_count + {COMMENT_WEIGHT} * p.reply_count + p.repost_count + p.quote_count + p.reshare_count)"
+)
 
 # Bỏ khoảng trắng / dấu câu để "#Anh Hùng" và "#AnhHung" đều khớp tên phim "Anh Hùng".
 _HASHTAG_STRIP = re.compile(r"[\s._-]+")
@@ -57,6 +66,40 @@ _HASHTAG_STRIP = re.compile(r"[\s._-]+")
 # tất cả đều nằm dưới bài có nhãn NULL, nên report của phim báo "không đủ comment".
 # Nhãn mà bộ phân loại hoặc quy tắc đã ghi (not_related/uncertain) vẫn được ưu tiên.
 RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NULL AND p.keyword_match > 0))"
+
+
+# --- cột "tiếng nói" của bài + trạng thái quét comment -----------------------
+# Thêm 2026-10-08. Nội dung bài cũng là tiếng nói khán giả (trên Threads phần lớn cảm nhận nằm ở chính bài, ít
+# comment), nên bài được gắn nhãn cảm xúc/khía cạnh/giai đoạn y như comment (sentiment_sweep.classify_pending_posts).
+# comments_crawled_at / comments_crawled_replies / comments_crawl_reason: lần cuối xếp hàng crawl comment cho bài,
+# reply_count lúc đó và lý do (hot/sample) - để app/services/comment_planner.py biết bài nào cần quét lại.
+POST_VOICE_COLUMNS = (
+    ("sentiment", "TEXT"),
+    ("aspects", "TEXT"),
+    ("audience_stage", "TEXT"),
+    ("insights_classified_at", "TEXT"),
+    ("comments_crawled_at", "TEXT"),
+    ("comments_crawled_replies", "INTEGER"),
+    ("comments_crawl_reason", "TEXT"),
+)
+_post_voice_columns_ready = False
+_post_voice_columns_lock = asyncio.Lock()
+
+
+async def ensure_post_voice_columns() -> None:
+    """Thêm các cột POST_VOICE_COLUMNS còn thiếu, một lần mỗi tiến trình (PRAGMA trước, không ALTER khi đã có)."""
+    global _post_voice_columns_ready
+    if _post_voice_columns_ready:
+        return
+    async with _post_voice_columns_lock:
+        if _post_voice_columns_ready:
+            return
+        cols = await d1_query("PRAGMA table_info(posts)")
+        existing = {row.get("name") for row in cols or []}
+        for column, kind in POST_VOICE_COLUMNS:
+            if column not in existing:
+                await d1_query(f"ALTER TABLE posts ADD COLUMN {column} {kind}", quiet=True)
+        _post_voice_columns_ready = True
 
 
 # --- index ---------------------------------------------------------------
@@ -435,7 +478,7 @@ class PostRepository:
         hàm này hiện vẫn là API đang dùng dù đã có method kia.
 
         sort="recent" (mặc định): crawl gần nhất trước, như trước giờ. sort="engagement":
-        tương tác cao nhất trước (xem _ENGAGEMENT_SCORE_SQL) - ví dụ keyword_id +
+        tương tác cao nhất trước (xem ENGAGEMENT_SCORE_SQL) - ví dụ keyword_id +
         sort="engagement" + limit=100 là màn hình "top 100 bài của từ khoá này" trên
         dashboard. Màn hình đó đòi relevance_label='related' (đặt lúc ingest, xem
         app/ai/tasks/post_relevance.py) VÀ kiểm tra độc lập của movie_hashtag_present -
@@ -466,7 +509,7 @@ class PostRepository:
         if sort == "engagement":
             where.append(RELEVANT_POST_SQL)
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        order_sql = f"{_ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
+        order_sql = f"{ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
         # movie_hashtag_present chạy bằng Python sau khi lấy dữ liệu và loại bỏ một số dòng mà
         # riêng relevance_label='related' lẽ ra đã cho qua - nên lấy nhiều hơn `limit` ngay từ
         # đầu để sau khi lọc rồi cắt lại thì trang không bị thiếu/rỗng.
@@ -619,7 +662,7 @@ class PostRepository:
             LEFT JOIN movies m ON m.id = p.movie_id
             LEFT JOIN (SELECT post_id, COUNT(*) AS n FROM comments GROUP BY post_id) c ON c.post_id = p.id
             WHERE p.platform = ? AND p.keyword_id = ? AND {RELEVANT_POST_SQL}
-            ORDER BY {_ENGAGEMENT_SCORE_SQL} DESC
+            ORDER BY {ENGAGEMENT_SCORE_SQL} DESC
             LIMIT ?
             """,
             [platform, keyword_id, overfetch],

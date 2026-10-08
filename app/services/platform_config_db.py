@@ -321,7 +321,7 @@ _PROXY_LIST_COLUMNS = (
     "pp.created_at, pp.updated_at, pp.status AS pool_status, pp.cooldown_until, pp.consecutive_failures, "
     "pp.last_used_at, "
     # Số dòng platform_accounts còn sống đang được ghim cố định vào proxy này (đang bật,
-    # không bị checkpoint) - khớp với get_least_loaded_proxy của spider-hub để con số "tài
+    # không bị checkpoint) - khớp với pin_account_to_least_loaded_proxy của spider-hub để con số "tài
     # khoản đã ghim" trên dashboard đúng bằng mức tải mà pool thực sự cân bằng theo. Các
     # ghim chết vẫn nằm trên assigned_proxy_id nhưng không được làm một IP trông như đã
     # đầy.
@@ -550,14 +550,9 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
 
 
 # --- lịch crawl comment -------------------------------------------------
-# comment_crawl_schedules: giờ "quét top comment" hằng ngày theo nền tảng - tách khỏi
-# crawl_schedules (bài) ở trên vì lượt quét comment của một nền tảng chạy theo nhịp
-# riêng, độc lập với lúc crawl bài của nền tảng đó. Tới run_time, với mỗi từ khoá đang
-# bật của nền tảng, xếp hàng một lượt crawl comment (publish_comments_crawl_request
-# trong app/clients/kafka.py) cho các bài top `top_n` theo tương tác của từ khoá mà vẫn
-# chưa có comment nào được lưu (list_posts_needing_comments trong app/services/d1.py) -
-# xem _comments_tick trong app/services/scheduler.py, đúng cùng dạng kiểm tra định kỳ/
-# kích hoạt/chặn bằng last_triggered_date như _tick dùng cho crawl_schedules.
+# comment_crawl_schedules: bật/tắt crawl comment theo nền tảng. Từ 2026-10-08 chạy MỖI GIỜ (xem _comments_tick trong
+# app/services/scheduler.py và app/services/comment_planner.py): top_n = số bài nóng mỗi phim được theo dõi, run_time
+# = giờ chạy lượt mẫu phân tầng (và 12 tiếng sau). last_triggered_date không còn dùng cho lượt mỗi giờ.
 
 COMMENT_SCHEDULE_COLUMNS = "platform, run_time, enabled, top_n, last_triggered_date, updated_at"
 
@@ -575,7 +570,7 @@ async def _ensure_comment_crawl_schedules_table() -> None:
                 platform text PRIMARY KEY,
                 run_time text NOT NULL DEFAULT '08:00',
                 enabled boolean NOT NULL DEFAULT false,
-                top_n integer NOT NULL DEFAULT 100,
+                top_n integer NOT NULL DEFAULT 15,
                 last_triggered_date date,
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
@@ -637,11 +632,6 @@ async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: s
         )
         await conn.commit()
 
-
-# --- AI settings -------------------------------------------------------
-# Dòng singleton (id=1): prompt hệ thống theo từng task mà tab AI trong Settings của
-# dashboard sửa. Được đọc ở mỗi lời gọi Kira (cache ngắn trong app.ai.kira) nên lưu
-# xong là áp dụng ngay, không cần restart ingest/spider-hub.
 
 AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, updated_at"
 
@@ -1279,3 +1269,53 @@ async def list_auto_login_run_history(limit: int = 20) -> list[dict[str, Any]]:
             (limit,),
         )
         return await cur.fetchall()
+
+
+# --- ai_accuracy_runs --------------------------------------------------------------------------------------
+# Mỗi lần chấm độ chính xác của máy (scripts/accuracy_sample.py score --save) so với nhãn người làm một dòng: độ
+# chính xác cảm xúc, F1 từng nhãn, F1 khía cạnh, độ chính xác giai đoạn khán giả. Report Social Topic gắn lần mới
+# nhất vào dashboard_data["accuracy"] để người đọc biết nên tin các con số tới đâu (2026-10-07, học từ Kompa).
+
+_accuracy_runs_ready = False
+
+
+async def _ensure_accuracy_runs_table() -> None:
+    global _accuracy_runs_ready
+    if _accuracy_runs_ready:
+        return
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_accuracy_runs (
+                id bigserial PRIMARY KEY,
+                labeled_at date NOT NULL,
+                sample_size integer NOT NULL,
+                metrics jsonb NOT NULL,
+                note text,
+                created_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.commit()
+    _accuracy_runs_ready = True
+
+
+async def insert_accuracy_run(*, labeled_at: str, sample_size: int, metrics: dict[str, Any], note: str | None) -> None:
+    from psycopg.types.json import Json
+
+    await _ensure_accuracy_runs_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO ai_accuracy_runs (labeled_at, sample_size, metrics, note) VALUES (%s, %s, %s, %s)",
+            (labeled_at, sample_size, Json(metrics), note),
+        )
+        await conn.commit()
+
+
+async def get_latest_accuracy_run() -> dict[str, Any] | None:
+    await _ensure_accuracy_runs_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT labeled_at, sample_size, metrics, note, created_at FROM ai_accuracy_runs ORDER BY id DESC LIMIT 1"
+        )
+        return await cur.fetchone()

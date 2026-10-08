@@ -19,11 +19,10 @@ Dùng lại đúng các lời gọi get_enabled_keywords + publish_crawl_request
 bật" - một lượt chạy theo lịch và một lần bấm nút "chạy tất cả" là cùng một thao tác,
 chỉ khác cách kích hoạt.
 
-_comments_tick bên dưới cùng dạng cho comment_crawl_schedules - một giờ hằng ngày
-thứ hai, độc lập, theo từng nền tảng, quét các bài tương tác cao của mọi từ khoá đang
-bật để tìm bài còn thiếu comment (xem list_posts_needing_comments trong
-app/services/d1.py) và xếp hàng một lượt crawl comment cho mỗi bài, đúng cách chọn mà
-scripts/trigger_recent_keyword_comments.py vẫn làm bằng tay."""
+_comments_tick bên dưới chạy crawl comment MỖI GIỜ cho các nền tảng có comment_crawl_schedules đang bật (từ
+2026-10-08; trước đó là một lượt mỗi ngày, top 100 theo tương tác của từng từ khoá, mỗi bài chỉ một lần): theo dõi
+bài nóng của từng phim mỗi giờ (top_n của lịch = số bài nóng mỗi phim), và thêm lượt mẫu phân tầng ở run_time và
+run_time + 12 giờ - xem app/services/comment_planner.py."""
 
 from __future__ import annotations
 
@@ -43,7 +42,8 @@ from app.core.logging import get_logger
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
-from app.services.d1 import get_enabled_keywords, list_posts_needing_comments
+from app.services.comment_planner import run_comment_round
+from app.services.d1 import get_enabled_keywords
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 
 logger = get_logger(__name__)
@@ -147,54 +147,46 @@ async def _tick() -> None:
         )
 
 
-async def _trigger_comments_platform(platform: str, *, top_n: int) -> None:
-    """Với mỗi từ khoá đang bật trên `platform`, xếp hàng một lượt crawl comment cho các bài
-    top `top_n` theo tương tác của từ khoá đó mà vẫn chưa có comment nào được lưu - đúng
-    cách chọn mà scripts/trigger_recent_keyword_comments.py vẫn làm bằng tay, chỉ là chạy
-    theo lịch thay vì bằng tay."""
-    keywords = await get_enabled_keywords(platform=platform)
-    if not keywords:
-        logger.info("scheduled_comments_no_keywords", platform=platform)
-        return
-    published = 0
-    for keyword in keywords:
-        posts = await list_posts_needing_comments(platform=platform, keyword_id=keyword["id"], top_n=top_n)
-        for post in posts:
-            if not post.get("url"):
-                continue
-            ok = await publish_comments_crawl_request(
-                platform=platform, post_external_id=post["external_id"], post_url=post["url"], bypass_drain=False
-            )
-            if ok:
-                published += 1
-    logger.info(
-        "scheduled_comments_triggered", platform=platform, keywords=len(keywords), published=published, telegram=True
-    )
+# Lượt comment mỗi giờ chạy từ phút này (cho lượt crawl bài đầu giờ kịp đổ bài mới về) - và giờ đã chạy của mỗi nền
+# tảng, để vòng 30 giây không bắn lặp. Mất khi khởi động lại tiến trình: tệ nhất chạy thêm một lượt, các bài vừa xếp
+# hàng đã được đánh dấu comments_crawled_at nên không bị quét trùng.
+_COMMENT_ROUND_MINUTE = 5
+_comment_round_done: dict[str, str] = {}
+# Số bài nóng mỗi phim = top_n của lịch, kẹp trong khoảng này. top_n trước 2026-10-08 nghĩa là "top N bài mỗi từ
+# khoá" (mặc định 100) - giá trị lớn hơn mức trần đó coi là cấu hình cũ và dùng _HOT_PER_MOVIE_DEFAULT.
+_HOT_PER_MOVIE_RANGE = (3, 30)
+_HOT_PER_MOVIE_DEFAULT = 15
+
+
+def _sample_hours(run_time: str) -> set[int]:
+    """Giờ chạy lượt mẫu phân tầng: giờ của run_time và 12 tiếng sau đó."""
+    try:
+        hour = int(run_time.split(":")[0]) % 24
+    except (ValueError, AttributeError):
+        hour = 8
+    return {hour, (hour + 12) % 24}
 
 
 async def _comments_tick() -> None:
     now = datetime.now(TIMEZONE)
-    current_hm = now.strftime("%H:%M")
-    today = now.date().isoformat()
-
+    if now.minute < _COMMENT_ROUND_MINUTE:
+        return
+    hour_key = now.strftime("%Y-%m-%dT%H")
     schedules = await db.list_comment_crawl_schedules()
     for sched in schedules:
-        if not sched["enabled"]:
-            continue
-        if sched["platform"] not in COMMENT_CRAWL_PLATFORMS:
-            continue
-        if not _is_due(sched["run_time"], now):
-            continue
-        last = sched["last_triggered_date"]
-        if last is not None and last.isoformat() == today:
-            continue
         platform = sched["platform"]
-        await db.mark_comment_crawl_schedule_triggered(platform, today)
-        logger.info("scheduled_comments_firing", platform=platform, run_time=sched["run_time"], fired_at=current_hm)
-        # Không await tại chỗ - cùng lý do như _tick bên dưới: một lượt quét chậm cho một nền
-        # tảng không được làm trễ việc kiểm tra lịch (bài hay comment) của mọi nền tảng khác
-        # trong cùng lượt.
-        _spawn(_trigger_comments_platform(platform, top_n=int(sched.get("top_n") or 100)))
+        if not sched["enabled"] or platform not in COMMENT_CRAWL_PLATFORMS:
+            continue
+        if _comment_round_done.get(platform) == hour_key:
+            continue
+        _comment_round_done[platform] = hour_key
+        low, high = _HOT_PER_MOVIE_RANGE
+        top_n = int(sched.get("top_n") or _HOT_PER_MOVIE_DEFAULT)
+        hot_per_movie = max(top_n, low) if top_n <= high else _HOT_PER_MOVIE_DEFAULT
+        with_sample = now.hour in _sample_hours(sched.get("run_time") or "08:00")
+        logger.info("scheduled_comments_firing", platform=platform, hour=hour_key, hot_per_movie=hot_per_movie, with_sample=with_sample)
+        # Không await tại chỗ - một lượt chọn bài chậm cho một nền tảng không được làm trễ lịch của nền tảng khác.
+        _spawn(run_comment_round(platform, hot_per_movie=hot_per_movie, with_sample=with_sample))
 
 
 _PURGE_KEY = "cinemark_api:cleanup:irrelevant_posts:last_run"

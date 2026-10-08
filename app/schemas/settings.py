@@ -187,9 +187,9 @@ class CommentScheduleOut(BaseModel):
 class CommentScheduleUpdate(BaseModel):
     run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
-    # Với mỗi từ khoá đang bật, số bài tương tác cao nhất cần kiểm tra thiếu comment mỗi
-    # lượt chạy - xem list_posts_needing_comments trong app/services/d1.py.
-    top_n: int = Field(default=100, ge=1, le=500)
+    # Từ 2026-10-08: số bài NÓNG mỗi phim được theo dõi comment mỗi giờ (3-30); run_time là giờ chạy lượt mẫu
+    # phân tầng (và 12 tiếng sau) - xem app/services/comment_planner.py.
+    top_n: int = Field(default=15, ge=1, le=500)
 
 
 # --- Import tài khoản/proxy có AI hỗ trợ - xem app/ai/tasks/import_parser.py ---
