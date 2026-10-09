@@ -20,6 +20,7 @@ import random
 import re
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import openai
@@ -181,7 +182,22 @@ def _invoke(
     }
     if max_tokens is not None:
         params["max_tokens"] = max_tokens
-    return client.chat.completions.create(**params)
+    # Stream rồi ghép lại: gateway của Kira (nginx) cắt request im lặng quá 60 giây (504) - một lô sentiment với qwen
+    # mất khoảng 120 giây nên không-stream thì lô nào cũng 504. Stream thì token về liên tục, gateway không cắt.
+    content: list[str] = []
+    finish_reason = None
+    usage = None
+    for chunk in client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True}):
+        if getattr(chunk, "usage", None) is not None:
+            usage = chunk.usage
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        if choice.delta and choice.delta.content:
+            content.append(choice.delta.content)
+        finish_reason = choice.finish_reason or finish_reason
+    message = SimpleNamespace(content="".join(content))
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)], usage=usage)
 
 
 async def call_ai(
