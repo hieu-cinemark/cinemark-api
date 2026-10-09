@@ -100,10 +100,11 @@ Chỉ trả "film" khi hashtag gọi ĐÍCH DANH phim này:
 - tên phim viết liền, có/không dấu, có tiền tố/hậu tố như phim, movie, film, năm, số phần (#phimholinhtrangsi, #holinhtrangsimovie, #holinhtrangsi2026);
 - tên viết tắt RIÊNG của phim mà nhìn vào biết ngay là phim này (#hlts cho "Hộ Linh Tráng Sĩ") - nếu viết tắt có thể là thứ khác thì KHÔNG;
 - tên phim kèm nhà phát hành/đạo diễn/chiến dịch ra mắt (#traibuonnguoibymoli);
+- tên diễn viên/đạo diễn/nhân vật GHÉP CÙNG tên phim, ở bất kỳ thứ tự nào (#minhhangmemin, #meminminhhang, #tranthanhholinhtrangsi) - có tên phim trong hashtag là đủ;
 - tên tiếng Anh chính thức của phim, hoặc hashtag chiến dịch truyền thông chỉ dùng cho phim này.
 
 Trả "generic" cho: tag xu hướng/nền tảng (#fyp, #xuhuong), thể loại (#phimkinhdi), từ thông dụng, tên rạp/chuỗi rạp, tag review/trailer chung.
-Trả "other" cho: tên một phim/series/chương trình khác, tên bài hát, tên diễn viên/nhân vật đứng một mình (diễn viên đóng nhiều thứ khác), tên nhân vật trong truyện/game.
+Trả "other" cho: tên một phim/series/chương trình khác, tên bài hát, tên diễn viên/nhân vật đứng một mình, KHÔNG kèm tên phim (diễn viên đóng nhiều thứ khác), tên nhân vật trong truyện/game.
 Trả "unrelated" cho mọi thứ không liên quan tới phim.
 Tên phim trùng cụm từ thông dụng (vd. "Người Được Chọn", "Loạn Thế") thì hashtag chỉ gồm đúng cụm từ đó là "generic" trừ khi có thêm tiền tố/hậu tố phim (#phimnguoiduocchon).
 Không chắc thì KHÔNG trả "film" - bỏ sót một hashtag rẻ hơn nhiều so với kéo về video rác.
