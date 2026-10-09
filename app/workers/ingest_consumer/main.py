@@ -48,11 +48,10 @@ from app.services.d1 import (
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.relevance_rules import (
-    film_context_reason,
     foreign_language_reason,
-    has_film_context,
     mentions_keyword_or_title,
     mentions_other_film,
+    resolve_relevance,
 )
 from app.services.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
@@ -256,73 +255,58 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # là phương án dự phòng khi Kira không đưa ra phán quyết - bị tắt trên dashboard, vượt
     # settings.kira_post_relevance_daily_cap, hoặc lỗi - để một lần sự cố không bao giờ
     # loại hay giấu đi những bài lẽ ra được giữ.
-    ai_relevant = None
     relevance_label = None
     relevance_confidence = None
     has_keyword = contains_keyword(draft.get("content"), keyword["keyword"])
 
-    verdict = await classify_post_relevance_kira(
-        content=draft.get("content"),
-        movie=movie,
-        keyword=keyword["keyword"],
-        platform=platform,
-        other_titles=await _tracked_titles(),
+    # settings.kira_ingest_relevance tắt: ingest không chờ Kira (qwen có lúc 60-180 giây một lô, đủ làm
+    # Kafka tồn hàng chục nghìn message) - bài vào theo tín hiệu phim/từ khoá như lúc Kira không kết luận, rồi
+    # scripts/relabel_post_relevance.py gán lại nhãn Kira ở nền.
+    verdict = (
+        await classify_post_relevance_kira(
+            content=draft.get("content"),
+            movie=movie,
+            keyword=keyword["keyword"],
+            platform=platform,
+            other_titles=await _tracked_titles(),
+        )
+        if settings.kira_ingest_relevance
+        else None
     )
     if verdict is not None:
         relevance_label = verdict["label"]
         relevance_confidence = verdict["confidence"]
-        if relevance_label == "related":
-            ai_relevant = True
-        elif relevance_label == "not_related":
-            # Quyết định được ghi qua _drop() -> topic ingest_decisions -> lake
-            # (bronze/entity=decisions/). Khôi phục một nhãn sai bằng cách phát lại NDJSON trong
-            # lake, không phải từ D1.
-            logger.info(
-                "post_dropped_irrelevant",
-                platform=platform,
-                post_id=post_id,
-                keyword_id=keyword_id,
-                has_keyword=has_keyword,
-                confidence=relevance_confidence,
-                reason=verdict["reason"],
-            )
-            await _drop(
-                platform=platform,
-                post_id=post_id,
-                reason="kira_irrelevant",
-                keyword_id=keyword_id,
-                confidence=relevance_confidence,
-                kira_reason=verdict["reason"],
-            )
-            return
-        # "uncertain": ai_relevant giữ None - tín hiệu phim bên dưới quyết định.
-    # Kira "uncertain" (caption chỉ có hashtag, nội dung phim nằm trong video) hoặc không kết luận
-    # (tắt / vượt hạn mức ngày / lỗi): tín hiệu phim trong bài quyết định thay. Có tín hiệu -> bài
-    # lên dashboard (nhãn "uncertain" được nâng thành "related", lý do ghi ở decision context_*);
-    # không có -> vẫn lưu nhưng ẩn (no_film_context). Hashtag đúng tên phim chỉ tính với phim tên
-    # đặc trưng; phim "chặt" (tên trùng cụm từ thông dụng, settings.strict_relevance_movie_slugs) cần
-    # tín hiệu mạnh hơn, và với chúng kể cả bài Kira gán "related" cũng phải có tín hiệu phim.
-    strict_movie = movie.get("slug") in settings.strict_relevance_movies
-    context = None
-    no_film_context = False
-    if ai_relevant is None:
-        # Phim "chặt": chỉ tín hiệu mạnh (phim <tên>, từ điện ảnh cạnh tên, tên trong ngoặc kép) -
-        # hashtag tên phim và tên diễn viên đều hay gặp trong bài không liên quan.
-        context = film_context_reason(
-            draft.get("content"), movie, allow_title_hashtag=not strict_movie, allow_names=not strict_movie
+    if relevance_label == "not_related":
+        # Quyết định được ghi qua _drop() -> topic ingest_decisions -> lake
+        # (bronze/entity=decisions/). Khôi phục một nhãn sai bằng cách phát lại NDJSON trong
+        # lake, không phải từ D1.
+        logger.info(
+            "post_dropped_irrelevant",
+            platform=platform,
+            post_id=post_id,
+            keyword_id=keyword_id,
+            has_keyword=has_keyword,
+            confidence=relevance_confidence,
+            reason=verdict["reason"],
         )
-        if context:
-            ai_relevant = True
-            if relevance_label == "uncertain":
-                relevance_label = "related"
-        elif has_keyword or relevance_label == "uncertain":
-            ai_relevant = False
-            relevance_label = relevance_label or "uncertain"
-            no_film_context = True
-    elif strict_movie and not has_film_context(draft.get("content"), movie):
-        ai_relevant = False
-        relevance_label = "uncertain"
-        no_film_context = True
+        await _drop(
+            platform=platform,
+            post_id=post_id,
+            reason="kira_irrelevant",
+            keyword_id=keyword_id,
+            confidence=relevance_confidence,
+            kira_reason=verdict["reason"],
+        )
+        return
+    # Kira "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
+    ai_relevant, relevance_label, context = resolve_relevance(
+        relevance_label,
+        draft.get("content"),
+        movie,
+        has_keyword=has_keyword,
+        strict=movie.get("slug") in settings.strict_relevance_movies,
+    )
+    no_film_context = ai_relevant is False
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,

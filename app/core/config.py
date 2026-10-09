@@ -94,6 +94,11 @@ class Settings(BaseSettings):
     # thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 là tắt Kira cho bài.
     kira_post_relevance_daily_cap: int = 30000
 
+    # False: ingest consumer KHÔNG hỏi Kira độ liên quan mà lưu bài ngay theo tín hiệu phim/từ khoá (như khi Kira không
+    # kết luận); scripts/relabel_post_relevance.py --follow gán lại nhãn Kira ở nền. Dùng khi model Kira chậm (qwen có
+    # lúc 60-180 giây một lô) - chờ Kira ngay trong ingest từng làm Kafka tồn hàng chục nghìn message.
+    kira_ingest_relevance: bool = True
+
     # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài Kira gán "related" cũng phải có
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
     # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.

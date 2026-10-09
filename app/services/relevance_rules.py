@@ -468,3 +468,27 @@ def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None
             return True
     folded_title = _squash(normalize_title(title))
     return bool(folded_title) and folded_title in text
+
+
+def resolve_relevance(
+    label: str | None, content: str | None, movie: dict, *, has_keyword: bool, strict: bool
+) -> tuple[bool | None, str | None, str | None]:
+    """Nhãn Kira (related/uncertain hoặc None khi Kira không kết luận - "not_related" do bên gọi xử lý trước)
+    -> (ai_relevant, relevance_label, context). Dùng chung cho ingest consumer và
+    scripts/relabel_post_relevance.py.
+
+    "uncertain" (caption chỉ có hashtag, nội dung phim nằm trong video) hoặc không kết luận: tín hiệu phim
+    trong bài quyết định thay. Có tín hiệu -> bài lên dashboard ("uncertain" được nâng thành "related", lý do
+    trả ra ở context); không có -> vẫn lưu nhưng ẩn (ai_relevant False, nhãn "uncertain"). Phim "chặt" (strict:
+    tên trùng cụm từ thông dụng) chỉ nhận tín hiệu mạnh, và kể cả bài Kira gán "related" cũng phải có tín hiệu
+    phim. ai_relevant None = chỉ kiểm tra từ khoá quyết định."""
+    if label == "related":
+        if strict and not has_film_context(content, movie):
+            return False, "uncertain", None
+        return True, label, None
+    context = film_context_reason(content, movie, allow_title_hashtag=not strict, allow_names=not strict)
+    if context:
+        return True, "related" if label == "uncertain" else label, context
+    if has_keyword or label == "uncertain":
+        return False, label or "uncertain", None
+    return None, label, None
