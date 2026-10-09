@@ -37,6 +37,7 @@ from app.clients.kafka import (
     publish_nurture_request,
 )
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
 from app.services import platform_config_db as db
@@ -44,6 +45,7 @@ from app.services.auto_login import resolve_auto_login_settings, run_auto_login_
 from app.services.cleanup import resolve_cleanup_settings, run_purge
 from app.services.comment_planner import run_comment_round
 from app.services.d1 import get_enabled_keywords
+from app.services.hashtag_discovery import run_discovery
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 
 logger = get_logger(__name__)
@@ -354,6 +356,31 @@ async def _cookie_check_tick() -> None:
     )
 
 
+# AI tìm thêm hashtag TikTok mỗi ngày một lần ở settings.hashtag_discovery_time (xem app/services/hashtag_discovery.py).
+_HASHTAG_DISCOVERY_KEY = f"{REDIS_KEY_PREFIX}scheduler:hashtag_discovery:last_run"
+
+
+async def _run_hashtag_discovery() -> None:
+    try:
+        await run_discovery()
+    except Exception as exc:  # noqa: BLE001 - một lượt lỗi chỉ để mai chạy lại
+        logger.error("hashtag_discovery_failed", error=str(exc)[:300])
+
+
+async def _hashtag_tick() -> None:
+    run_time = (settings.hashtag_discovery_time or "").strip()
+    now = datetime.now(TIMEZONE)
+    if not run_time or not _is_due(run_time, now):
+        return
+    today = now.date().isoformat()
+    redis = get_redis_client()
+    if await redis.get(_HASHTAG_DISCOVERY_KEY) == today:
+        return
+    await redis.set(_HASHTAG_DISCOVERY_KEY, today, ex=3 * 24 * 3600)
+    logger.info("hashtag_discovery_firing", run_time=run_time)
+    _spawn(_run_hashtag_discovery())
+
+
 async def _loop() -> None:
     while True:
         try:
@@ -389,6 +416,12 @@ async def _loop() -> None:
             logger.error("scheduler_cookie_check_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
         except Exception as exc:
             logger.error("scheduler_cookie_check_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_hashtag_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_hashtag_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - như các lượt khác: không được giết vòng lặp
+            logger.error("scheduler_hashtag_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 
