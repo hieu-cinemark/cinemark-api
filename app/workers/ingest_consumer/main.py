@@ -49,8 +49,10 @@ from app.services.d1 import (
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.relevance_rules import (
     foreign_language_reason,
+    mentions_film_manual,
     mentions_keyword_or_title,
     mentions_other_film,
+    no_diacritics_reason,
     resolve_relevance,
 )
 from app.services.stats_summary import bump_ingest_decision
@@ -230,13 +232,18 @@ async def handle_post(payload: dict[str, Any]) -> None:
         )
         await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=foreign)
         return
+    if settings.relevance_rules_only and (no_marks := no_diacritics_reason(draft.get("content"))):
+        logger.info("post_dropped_no_diacritics", platform=platform, post_id=post_id, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=no_marks)
+        return
 
     # Bài phải chứa đầy đủ từ khoá (hoặc dạng hashtag của nó) hoặc đầy đủ tên phim - kết quả
     # tìm kiếm của nền tảng có cả bài không hề nhắc tới phim, và Kira từng gán "related" cho
     # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi Kira.
     movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
     movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
-    if not mentions_keyword_or_title(draft.get("content"), movie_keywords, keyword.get("movie_title")):
+    mentions = mentions_film_manual if settings.relevance_rules_only else mentions_keyword_or_title
+    if not mentions(draft.get("content"), movie_keywords, keyword.get("movie_title")):
         other_film = mentions_other_film(
             draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
         )
@@ -270,7 +277,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             platform=platform,
             other_titles=await _tracked_titles(),
         )
-        if settings.kira_ingest_relevance
+        if settings.kira_ingest_relevance and not settings.relevance_rules_only
         else None
     )
     if verdict is not None:
@@ -299,13 +306,17 @@ async def handle_post(payload: dict[str, Any]) -> None:
         )
         return
     # Kira "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
-    ai_relevant, relevance_label, context = resolve_relevance(
-        relevance_label,
-        draft.get("content"),
-        movie,
-        has_keyword=has_keyword,
-        strict=movie.get("slug") in settings.strict_relevance_movies,
-    )
+    if settings.relevance_rules_only:
+        # Đã qua cổng tên phim/viết tắt/từ khoá ở trên - chế độ thủ công coi vậy là liên quan.
+        ai_relevant, relevance_label, context = True, "related", "manual_rules"
+    else:
+        ai_relevant, relevance_label, context = resolve_relevance(
+            relevance_label,
+            draft.get("content"),
+            movie,
+            has_keyword=has_keyword,
+            strict=movie.get("slug") in settings.strict_relevance_movies,
+        )
     no_film_context = ai_relevant is False
     ok = await persist_post(
         movie_id=keyword["movie_id"],

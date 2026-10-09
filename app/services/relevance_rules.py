@@ -492,3 +492,34 @@ def resolve_relevance(
     if has_keyword or label == "uncertain":
         return False, label or "uncertain", None
     return None, label, None
+
+
+# --- Chế độ lọc thủ công (settings.relevance_rules_only, từ 2026-10-09) ---
+# Bỏ hẳn AI ở bước lọc bài để ingest nhanh: bài liên quan = chứa tên phim (mọi dạng dấu/hoa thường/viết liền như
+# #HoLinhTrangSi), tên viết tắt (HLTS) hoặc từ khoá của phim; phần chữ (đã bỏ hashtag/mention/link) dài mà không có
+# dấu tiếng Việt nào thì coi là tiếng nước ngoài và loại thẳng. Hashtag-only ("#HoLinhTrangSi #fyp") không bị luật dấu
+# loại - phần chữ của nó rỗng.
+
+
+def title_acronym(title: str | None) -> str | None:
+    """Chữ đầu các từ của tên phim, khi tên có từ ba chữ trở lên ("Hộ Linh Tráng Sĩ" -> "hlts"). Tên ngắn hơn thì
+    viết tắt quá dễ trùng nên không dùng."""
+    words = normalize_title(title).split()
+    return "".join(word[0] for word in words) if len(words) >= 3 else None
+
+
+def mentions_film_manual(content: str | None, keywords: Iterable[str | None], title: str | None) -> bool:
+    """mentions_keyword_or_title, cộng thêm tên viết tắt đứng thành một từ riêng hoặc hashtag ("HLTS", "#HLTS")."""
+    if mentions_keyword_or_title(content, keywords, title):
+        return True
+    acronym = title_acronym(title)
+    return bool(acronym) and _contains_phrase(normalize_title(content), acronym)
+
+
+def no_diacritics_reason(text: str | None) -> str | None:
+    """ "no_diacritics" khi phần chữ của bài đủ dài (_MIN_LETTERS) mà không có một chữ có dấu tiếng Việt nào."""
+    body = _body(text).lower()
+    if any(ch in _VI_CHARS for ch in body):
+        return None
+    letters = sum(1 for ch in body if ch.isalpha())
+    return "no_diacritics" if letters >= _MIN_LETTERS else None

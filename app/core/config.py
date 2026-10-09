@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # lúc 60-180 giây một lô) - chờ Kira ngay trong ingest từng làm Kafka tồn hàng chục nghìn message.
     kira_ingest_relevance: bool = True
 
+    # True: lọc bài liên quan hoàn toàn bằng luật, không AI (relevance_rules.mentions_film_manual/no_diacritics_reason):
+    # khớp tên phim / viết tắt / từ khoá thì liên quan, phần chữ không có dấu tiếng Việt thì loại thẳng.
+    # scripts/relabel_post_relevance.py khi đó tạm dừng phần Kira; --rules áp luật cho bài đang chờ.
+    relevance_rules_only: bool = False
+
     # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài Kira gán "related" cũng phải có
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
     # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.
