@@ -32,13 +32,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.clients.kafka import (
-    publish_comments_crawl_request,
     publish_cookie_check_request,
     publish_crawl_request,
     publish_nurture_request,
 )
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
+from app.schemas.settings import parse_run_times
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -117,6 +117,28 @@ async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurt
         logger.info("scheduled_nurture_skipped_platform", platform=platform, when="after")
 
 
+# Từ 2026-10-09 một nền tảng có thể chạy tối đa 3 lần mỗi ngày (run_time = "HH:MM,HH:MM,HH:MM"). last_triggered_date chỉ
+# chống chạy lặp theo NGÀY nên không đủ: mỗi giờ chạy có cờ riêng trong Redis (sống qua restart), kèm bản trong bộ nhớ
+# phòng khi Redis trục trặc.
+_CRAWL_FIRED_PREFIX = f"{REDIS_KEY_PREFIX}scheduler:crawl_fired:"
+_crawl_fired: set[str] = set()
+
+
+async def _claim_crawl_slot(platform: str, today: str, slot: str) -> bool:
+    key = f"{platform}:{today}:{slot}"
+    if key in _crawl_fired:
+        return False
+    _crawl_fired.add(key)
+    if len(_crawl_fired) > 500:
+        _crawl_fired.clear()
+        _crawl_fired.add(key)
+    try:
+        return bool(await get_redis_client().set(f"{_CRAWL_FIRED_PREFIX}{key}", "1", nx=True, ex=2 * 24 * 3600))
+    except Exception as exc:  # noqa: BLE001 - không có Redis thì cờ trong bộ nhớ vẫn chặn lặp trong tiến trình này
+        logger.warning("scheduler_crawl_slot_redis_failed", error=str(exc))
+        return True
+
+
 async def _tick() -> None:
     now = datetime.now(TIMEZONE)
     current_hm = now.strftime("%H:%M")
@@ -126,16 +148,14 @@ async def _tick() -> None:
     for sched in schedules:
         if not sched["enabled"]:
             continue
-        if not _is_due(sched["run_time"], now):
-            continue
-        last = sched["last_triggered_date"]
-        # dict_row của psycopg trả về object date thật, không phải chuỗi - so sánh với cùng
-        # dạng thay vì chuỗi ISO.
-        if last is not None and last.isoformat() == today:
+        due = [slot for slot in parse_run_times(sched["run_time"]) if _is_due(slot, now)]
+        if not due:
             continue
         platform = sched["platform"]
+        if not await _claim_crawl_slot(platform, today, due[0]):
+            continue
         await db.mark_crawl_schedule_triggered(platform, today)
-        logger.info("scheduled_crawl_firing", platform=platform, run_time=sched["run_time"], fired_at=current_hm)
+        logger.info("scheduled_crawl_firing", platform=platform, run_time=due[0], fired_at=current_hm)
         # Không await tại chỗ - một lần publish Kafka hoặc query D1 chậm cho một nền tảng không
         # được làm trễ việc kiểm tra (hoặc bắn) lịch của mọi nền tảng khác trong cùng lượt.
         _spawn(
@@ -162,7 +182,7 @@ def _sample_hours(run_time: str) -> set[int]:
     """Giờ chạy lượt mẫu phân tầng: giờ của run_time và 12 tiếng sau đó."""
     try:
         hour = int(run_time.split(":")[0]) % 24
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         hour = 8
     return {hour, (hour + 12) % 24}
 
@@ -184,7 +204,13 @@ async def _comments_tick() -> None:
         top_n = int(sched.get("top_n") or _HOT_PER_MOVIE_DEFAULT)
         hot_per_movie = max(top_n, low) if top_n <= high else _HOT_PER_MOVIE_DEFAULT
         with_sample = now.hour in _sample_hours(sched.get("run_time") or "08:00")
-        logger.info("scheduled_comments_firing", platform=platform, hour=hour_key, hot_per_movie=hot_per_movie, with_sample=with_sample)
+        logger.info(
+            "scheduled_comments_firing",
+            platform=platform,
+            hour=hour_key,
+            hot_per_movie=hot_per_movie,
+            with_sample=with_sample,
+        )
         # Không await tại chỗ - một lượt chọn bài chậm cho một nền tảng không được làm trễ lịch của nền tảng khác.
         _spawn(run_comment_round(platform, hot_per_movie=hot_per_movie, with_sample=with_sample))
 

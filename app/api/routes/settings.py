@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from typing import Any
 
 from fastapi import APIRouter, Query
 from pydantic import ValidationError as PydanticValidationError
@@ -57,6 +58,7 @@ from app.schemas.settings import (
     ProxySettingsOut,
     ProxyUpdate,
     TotpCodeResponse,
+    parse_run_times,
 )
 from app.services import auto_login as auto_login_svc
 from app.services import platform_config_db as db
@@ -338,7 +340,12 @@ async def delete_filter_keyword(keyword_id: int) -> dict[str, bool]:
 @router.get("/crawl-schedule", response_model=list[CrawlScheduleOut])
 async def list_crawl_schedule() -> list[CrawlScheduleOut]:
     rows = await db.list_crawl_schedules()
-    return [CrawlScheduleOut(**row) for row in rows]
+    return [_crawl_schedule_out(row) for row in rows]
+
+
+def _crawl_schedule_out(row: dict[str, Any]) -> CrawlScheduleOut:
+    times = parse_run_times(row["run_time"]) or ["07:00"]
+    return CrawlScheduleOut(**{**row, "run_time": times[0], "run_times": times})
 
 
 @router.put("/crawl-schedule/{platform}", response_model=CrawlScheduleOut)
@@ -348,12 +355,12 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
     là "mỗi nửa đêm" hay một mặc định ngầm nào khác)."""
     row = await db.upsert_crawl_schedule(
         platform,
-        run_time=payload.run_time,
+        run_time=",".join(payload.run_times or []),
         enabled=payload.enabled,
         nurture_before=payload.nurture_before,
         nurture_after=payload.nurture_after,
     )
-    return CrawlScheduleOut(**row)
+    return _crawl_schedule_out(row)
 
 
 @router.get("/comment-schedule", response_model=list[CommentScheduleOut])

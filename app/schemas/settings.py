@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
+from itertools import pairwise
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 FilterKeywordCategory = Literal["movie_relevant", "spam_offtopic"]
 
@@ -155,9 +157,23 @@ class FilterKeywordUpdate(BaseModel):
     enabled: bool | None = None
 
 
+MAX_CRAWL_RUNS_PER_DAY = 3
+# Hai giờ chạy cách nhau ít nhất chừng này phút: scheduler.py còn bắn bù một lượt bị lỡ tới 30 phút sau giờ của nó.
+MIN_CRAWL_RUN_GAP_MINUTES = 60
+_HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
+
+
+def parse_run_times(value: str | None) -> list[str]:
+    """Cột crawl_schedules.run_time: một hoặc tối đa MAX_CRAWL_RUNS_PER_DAY giờ "HH:MM" cách nhau bằng dấu phẩy
+    (từ 2026-10-09 - trước đó chỉ một giờ), đã sắp xếp."""
+    return sorted({part.strip() for part in (value or "").split(",") if part.strip()})
+
+
 class CrawlScheduleOut(BaseModel):
     platform: str
+    # Giờ chạy đầu tiên trong ngày (giữ cho client cũ) - đủ danh sách ở run_times.
     run_time: str
+    run_times: list[str] = []
     enabled: bool
     last_triggered_date: date | None = None
     nurture_before: bool = False
@@ -169,10 +185,29 @@ class CrawlScheduleUpdate(BaseModel):
     # "HH:MM", 24 giờ, được app/services/scheduler.py hiểu theo giờ Asia/Ho_Chi_Minh - xem
     # module đó để biết vì sao một múi giờ cố định là đủ (một người vận hành, không cần múi
     # giờ riêng theo nền tảng).
-    run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    # Client cũ gửi một giờ ở run_time; mới gửi run_times (1-3 giờ). Validator gộp về run_times.
+    run_time: str | None = Field(default=None, pattern=_HHMM)
+    run_times: list[str] | None = None
     enabled: bool = True
     nurture_before: bool = False
     nurture_after: bool = False
+
+    @model_validator(mode="after")
+    def _merge_run_times(self) -> CrawlScheduleUpdate:
+        times = sorted(set(self.run_times or ([self.run_time] if self.run_time else [])))
+        if not times:
+            raise ValueError("Cần ít nhất một giờ chạy")
+        if len(times) > MAX_CRAWL_RUNS_PER_DAY:
+            raise ValueError(f"Tối đa {MAX_CRAWL_RUNS_PER_DAY} giờ chạy mỗi ngày")
+        if any(not re.match(_HHMM, t) for t in times):
+            raise ValueError("Giờ chạy phải có dạng HH:MM")
+        minutes = [int(t[:2]) * 60 + int(t[3:]) for t in times]
+        gaps = [b - a for a, b in pairwise(minutes)] + [minutes[0] + 1440 - minutes[-1]]
+        if len(times) > 1 and min(gaps) < MIN_CRAWL_RUN_GAP_MINUTES:
+            raise ValueError(f"Các giờ chạy phải cách nhau ít nhất {MIN_CRAWL_RUN_GAP_MINUTES} phút")
+        self.run_times = times
+        self.run_time = times[0]
+        return self
 
 
 class CommentScheduleOut(BaseModel):
