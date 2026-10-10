@@ -15,6 +15,11 @@ Giờ chia hai lớp, theo TỪNG PHIM đang theo dõi (không theo từ khoá):
    khung 6 giờ x loại nguồn (chính chủ / trang tin / cá nhân) và lấy ngẫu nhiên SAMPLE_PER_CELL bài chưa quét mỗi
    ô - để phần "khán giả nói gì" không bị bài quảng bá chi phối. Phía hiển thị cân lại theo tỷ trọng thật.
 
+3. AI chọn (mỗi giờ, từ 2026-10-10): Kira chấm nội dung các bài nhiều comment trong 7 ngày (app/services/comment_value.py).
+   Bài điểm >= VALUE_PICK_SCORE (review, tranh luận, hỏi đáp về phim) chưa quét thì quét sâu (VALUE_PAGES trang), tối
+   đa VALUE_PER_MOVIE bài mỗi phim mỗi giờ; bài điểm < VALUE_SKIP_SCORE (minigame tag bạn bè, quảng cáo đặt vé) bị bỏ khỏi
+   cả lớp 1 và 2 để không tốn lượt quét vào comment rác. Kira tắt/lỗi thì bài không có điểm và mọi thứ chạy như cũ.
+
 MAX_PUBLISH_PER_ROUND giới hạn số request mỗi nền tảng mỗi giờ để không vắt kiệt pool tài khoản/proxy.
 """
 
@@ -30,6 +35,7 @@ from typing import Any
 from app.clients.kafka import publish_comments_crawl_request
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL, ensure_post_voice_columns, reputable_authors
+from app.services.comment_value import judge_new_posts, load_scores
 from app.services.d1 import d1_query
 
 logger = get_logger(__name__)
@@ -54,6 +60,12 @@ YOUNG_REFRESH_EVERY = timedelta(hours=6)
 # Phim "đang theo dõi": ra rạp trong khoảng này quanh hôm nay (cùng định nghĩa "đang chiếu" với trang Social Topic).
 SHOWING_BEFORE = timedelta(days=60)
 SHOWING_AFTER = timedelta(days=30)
+# Lớp 3 (AI chọn): xét bài trong VALUE_WINDOW, quét bài điểm cao, bỏ bài điểm thấp khỏi mọi lớp.
+VALUE_WINDOW = timedelta(days=7)
+VALUE_PICK_SCORE = 70
+VALUE_SKIP_SCORE = 20
+VALUE_PER_MOVIE = 8
+VALUE_PAGES = 5
 
 SOURCE_OFFICIAL = "chinh_chu"
 SOURCE_MEDIA = "trang_tin"
@@ -90,7 +102,7 @@ def _parse_time(value: str | None) -> datetime | None:
 def _num(value: Any) -> int:
     try:
         return int(value or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -193,6 +205,41 @@ def pick_sample(
     return picks
 
 
+def pick_valuable(
+    rows: list[dict[str, Any]], scores: dict[str, int], *, per_movie: int, now: datetime
+) -> list[CrawlPick]:
+    """Lớp 3: mỗi phim, các bài AI chấm >= VALUE_PICK_SCORE - chưa quét thì quét sâu, đã quét thì quét lại khi đến hạn
+    (refresh_due). Điểm cao trước, rồi nhiều comment trước."""
+    by_movie: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if scores.get(row["id"], -1) >= VALUE_PICK_SCORE and _num(row.get("reply_count")) > 0:
+            by_movie.setdefault(row["movie_id"], []).append(row)
+    picks: list[CrawlPick] = []
+    for movie_rows in by_movie.values():
+        ranked = sorted(movie_rows, key=lambda r: (scores[r["id"]], _num(r.get("reply_count"))), reverse=True)
+        chosen = 0
+        for row in ranked:
+            if chosen >= per_movie:
+                break
+            first = not row.get("comments_crawled_at")
+            if not first and not refresh_due(row, now):
+                continue
+            chosen += 1
+            picks.append(
+                CrawlPick(
+                    post_id=row["id"],
+                    external_id=row["external_id"],
+                    url=row["url"],
+                    platform=row["platform"],
+                    movie_id=row["movie_id"],
+                    max_pages=VALUE_PAGES if first else HOT_REFRESH_PAGES,
+                    reason="ai_value",
+                    reply_count=_num(row.get("reply_count")),
+                )
+            )
+    return picks
+
+
 async def _candidates(platform: str, window: timedelta, now: datetime) -> list[dict[str, Any]]:
     """Bài liên quan, có URL, của các phim đang theo dõi, đăng trong `window`."""
     await ensure_post_voice_columns()
@@ -202,7 +249,8 @@ async def _candidates(platform: str, window: timedelta, now: datetime) -> list[d
         SELECT p.id, p.external_id, p.url, p.platform, p.movie_id, p.author, p.posted_at,
                p.like_count, p.reply_count,
                COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) + COALESCE(p.quote_count, 0) AS shares,
-               p.comments_crawled_at, p.comments_crawled_replies, m.title AS movie_title
+               p.comments_crawled_at, p.comments_crawled_replies, m.title AS movie_title,
+               substr(p.content, 1, 400) AS content
         FROM posts p JOIN movies m ON m.id = p.movie_id
         WHERE p.platform = ? AND m.enabled = 1 AND m.released_at BETWEEN ? AND ?
           AND p.posted_at >= ? AND p.url IS NOT NULL AND {RELEVANT_POST_SQL}
@@ -232,17 +280,36 @@ async def _mark(picks: list[CrawlPick], now: datetime) -> None:
 async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: bool) -> dict[str, int]:
     """Một lượt mỗi giờ cho một nền tảng: lớp bài nóng, và lớp mẫu nếu `with_sample`. Trả về thống kê."""
     now = datetime.now(tz=UTC)
-    hot_rows = await _candidates(platform, HOT_WINDOW, now)
-    picks = pick_hot(hot_rows, per_movie=hot_per_movie, now=now)
+    week_rows = await _candidates(platform, VALUE_WINDOW, now)
+    scores: dict[str, int] = {}
+    try:
+        scores = await load_scores([row["id"] for row in week_rows if _num(row.get("reply_count")) > 0])
+        scores.update(await judge_new_posts(week_rows, scores))
+    except Exception as exc:  # noqa: BLE001 - không có điểm AI thì chạy như trước
+        logger.warning("comment_value_unavailable", platform=platform, error=str(exc)[:300])
+    # Bài AI chấm là rác comment (minigame tag bạn, quảng cáo) bị bỏ khỏi mọi lớp.
+    usable = [row for row in week_rows if scores.get(row["id"], 100) >= VALUE_SKIP_SCORE]
+    hot_rows = [row for row in usable if (_parse_time(row.get("posted_at")) or now) >= now - HOT_WINDOW]
+    picks = pick_valuable(usable, scores, per_movie=VALUE_PER_MOVIE, now=now)
+    chosen = {pick.post_id for pick in picks}
+    picks += [pick for pick in pick_hot(hot_rows, per_movie=hot_per_movie, now=now) if pick.post_id not in chosen]
     if with_sample:
         chosen = {pick.post_id for pick in picks}
         sample_rows = [row for row in hot_rows if (_parse_time(row.get("posted_at")) or now) >= now - SAMPLE_WINDOW]
-        picks += [pick for pick in pick_sample(sample_rows, now=now, reputable=await reputable_authors()) if pick.post_id not in chosen]
+        picks += [
+            pick
+            for pick in pick_sample(sample_rows, now=now, reputable=await reputable_authors())
+            if pick.post_id not in chosen
+        ]
     picks = picks[:MAX_PUBLISH_PER_ROUND]
     published: list[CrawlPick] = []
     for pick in picks:
         ok = await publish_comments_crawl_request(
-            platform=platform, post_external_id=pick.external_id, post_url=pick.url, max_pages=pick.max_pages, bypass_drain=False
+            platform=platform,
+            post_external_id=pick.external_id,
+            post_url=pick.url,
+            max_pages=pick.max_pages,
+            bypass_drain=False,
         )
         if ok:
             published.append(pick)
@@ -253,6 +320,8 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
         "hot": sum(1 for p in published if p.reason == "hot"),
         "hot_refresh": sum(1 for p in published if p.reason == "hot_refresh"),
         "sample": sum(1 for p in published if p.reason == "sample"),
+        "ai_value": sum(1 for p in published if p.reason == "ai_value"),
+        "skipped_low_value": len(week_rows) - len(usable),
     }
     logger.info("comment_round_finished", platform=platform, with_sample=with_sample, **stats)
     return stats
