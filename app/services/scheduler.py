@@ -47,6 +47,7 @@ from app.services.comment_planner import run_comment_round
 from app.services.d1 import get_enabled_keywords
 from app.services.hashtag_discovery import run_discovery
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
+from app.services.query_discovery import run_query_discovery
 
 logger = get_logger(__name__)
 
@@ -361,10 +362,12 @@ _HASHTAG_DISCOVERY_KEY = f"{REDIS_KEY_PREFIX}scheduler:hashtag_discovery:last_ru
 
 
 async def _run_hashtag_discovery() -> None:
-    try:
-        await run_discovery()
-    except Exception as exc:  # noqa: BLE001 - một lượt lỗi chỉ để mai chạy lại
-        logger.error("hashtag_discovery_failed", error=str(exc)[:300])
+    # Hashtag TikTok rồi câu tìm kiếm Facebook/Threads (app/services/query_discovery.py); lỗi phần này không chặn phần kia.
+    for name, job in (("hashtag_discovery", run_discovery), ("query_discovery", run_query_discovery)):
+        try:
+            await job()
+        except Exception as exc:  # noqa: BLE001 - một lượt lỗi chỉ để mai chạy lại
+            logger.error(f"{name}_failed", error=str(exc)[:300])
 
 
 async def _hashtag_tick() -> None:

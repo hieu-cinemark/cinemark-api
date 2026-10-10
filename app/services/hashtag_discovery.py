@@ -261,8 +261,11 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
         for d in decisions
         if d["status"] != "rejected" or str(d["decided_at"]) >= recheck_before
     }
-    # Tag đã là từ khoá của BẤT KỲ phim nào (mọi nền tảng, kể cả đang tắt) thì không thêm nữa.
-    existing = {_squash(k["keyword"].lstrip("#")) for k in keywords}
+    # Tag đã là từ khoá hashtag của BẤT KỲ phim nào (kể cả đang tắt) thì không thêm nữa. Chỉ so từ khoá dạng "#..." /
+    # của TikTok: câu tìm kiếm Facebook "phim Bò Sữa Bay" (query_discovery) không được chặn hashtag #PhimBoSuaBay.
+    existing = {
+        _squash(k["keyword"].lstrip("#")) for k in keywords if k["platform"] == "tiktok" or k["keyword"].startswith("#")
+    }
 
     stats = {"movies": 0, "candidates": 0, "asked": 0, "added": 0, "rejected": 0, "pruned": pruned, "failed": 0}
     added_total = 0
