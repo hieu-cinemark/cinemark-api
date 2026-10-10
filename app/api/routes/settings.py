@@ -16,6 +16,7 @@ from pyotp import TOTP
 
 from app.ai.tasks.import_parser import parse_import
 from app.clients.kafka import publish_nurture_request, publish_tiktok_identity_reset
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.schemas.settings import (
@@ -113,9 +114,24 @@ async def get_account_credentials(account_id: int) -> AccountCredentialsOut:
     return AccountCredentialsOut(id=row["id"], **{name: row.get(name) or "" for name in ACCOUNT_SECRET_FIELDS})
 
 
+# Key Redis của spider-hub gắn theo từng tài khoản (constants/facebook.py, constants/threads.py) - xoá cùng tài khoản.
+_ACCOUNT_REDIS_KEYS = ("session_cache", "storage_state", "comments_query", "replies_query", "adaptive_interval")
+
+
 @router.delete("/accounts/{account_id}")
 async def delete_account(account_id: int) -> dict[str, bool]:
+    account = await db.get_account(account_id)
     await db.delete_account(account_id)
+    if account is not None and account.get("platform") in ("facebook", "threads"):
+        # Không dọn thì session cache + con trỏ active_account của tài khoản đã xoá vẫn còn: token-status vẫn báo tài
+        # khoản đó và crawler vẫn dùng tiếp session của nó.
+        platform, key = account["platform"], _account_key(account).strip().lower()
+        client = get_redis_client()
+        await client.delete(*(f"{REDIS_KEY_PREFIX}{platform}:{name}:{key}" for name in _ACCOUNT_REDIS_KEYS))
+        active_key = f"{REDIS_KEY_PREFIX}{platform}:active_account"
+        if ((await client.get(active_key)) or "").strip('"').strip().lower() == key:
+            await client.delete(active_key)
+        logger.info("account_deleted_sessions_purged", platform=platform, account=key)
     return {"ok": True}
 
 
