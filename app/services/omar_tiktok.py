@@ -94,17 +94,21 @@ def map_aweme(item: dict[str, Any]) -> dict[str, Any] | None:
 
 
 class _Pacer:
-    """Giữ khoảng cách tối thiểu giữa hai request để không vượt giới hạn mỗi phút."""
+    """Rải đều thời điểm BẮT ĐẦU các request theo giới hạn mỗi phút của gói - dùng chung cho mọi worker chạy song song
+    (request chạy chồng lên nhau, chỉ lúc bắt đầu bị giãn cách), nên tận dụng hết giới hạn mà không bị 429."""
 
     def __init__(self, per_minute: int) -> None:
-        self.gap = 60.0 / max(per_minute, 1) + 0.3
-        self.last = 0.0
+        self.gap = 60.0 / max(per_minute, 1) + 0.05
+        self.next_at = 0.0
+        self.lock = asyncio.Lock()
 
     async def wait(self) -> None:
-        delay = self.last + self.gap - time.monotonic()
-        if delay > 0:
-            await asyncio.sleep(delay)
-        self.last = time.monotonic()
+        async with self.lock:
+            now = time.monotonic()
+            start = max(now, self.next_at)
+            self.next_at = start + self.gap
+        if start > now:
+            await asyncio.sleep(start - now)
 
 
 async def _fetch_page(
@@ -352,8 +356,13 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 )
             return videos, next_cursor
 
+        reserved = 0  # request đã giữ chỗ trong ngân sách (trước khi gọi) - chạy song song không vượt budget
+        halted = False
+
         async def crawl(kw: dict[str, Any], pages: int) -> bool:
-            """Tối đa `pages` trang tiếp theo của hashtag. True khi hashtag còn trang để lượt sau / vòng sau đi tiếp."""
+            """Tối đa `pages` trang tiếp theo của hashtag (tuần tự - trang sau cần cursor của trang trước). True khi hashtag
+            còn trang để vòng sau / lượt sau đi tiếp."""
+            nonlocal reserved
             entry = state.get(kw["id"]) or {}
             if entry.get("done_at"):  # đến hạn cào lại từ đầu
                 entry = {}
@@ -361,8 +370,9 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             cursor = entry.get("cursor") or "0"
             empty = int(entry.get("empty") or 0)
             for _ in range(pages):
-                if stats["requests"] >= budget or _stop_requested:
+                if reserved >= budget or _stop_requested or halted:
                     return True
+                reserved += 1
                 result = await fetch(kw, cursor)
                 if result is None:
                     return False  # trang lỗi: con trỏ giữ nguyên, lượt sau thử lại
@@ -380,27 +390,51 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 await save(kw["id"], entry)
             return True
 
-        try:
-            # Vòng 1: chia đều. Các vòng sau: phần ngân sách hashtag cào xong/lỗi để lại, mỗi hashtag còn trang thêm 1 trang.
-            active = []
-            for i, kw in enumerate(deep):
-                pages = quota + (1 if i < extra else 0)
-                if pages <= 0 or stats["requests"] >= budget or _stop_requested:
-                    break
-                stats["keywords"] += 1
-                if await crawl(kw, pages):
-                    active.append(kw)
-            while active and stats["requests"] < budget and not _stop_requested:
-                active = [kw for kw in active if stats["requests"] < budget and await crawl(kw, 1)]
-            # Còn dư ngân sách: trang 1 của các hashtag đã cào hết, lâu chưa làm mới nhất trước.
-            for kw in fresh:
-                if stats["requests"] >= budget or _stop_requested:
-                    break
-                if await fetch(kw, "0") is not None:
-                    await save(kw["id"], {**(state.get(kw["id"]) or {}), "fresh_at": datetime.now(tz=UTC).isoformat()})
-        except OmarStop as exc:
-            logger.error("omar_round_stopped", error=str(exc), telegram=True)
-            stats["stopped"] = str(exc)[:100]
+        async def refresh_first_page(kw: dict[str, Any], _pages: int) -> bool:
+            nonlocal reserved
+            if reserved >= budget or _stop_requested or halted:
+                return False
+            reserved += 1
+            if await fetch(kw, "0") is not None:
+                await save(kw["id"], {**(state.get(kw["id"]) or {}), "fresh_at": datetime.now(tz=UTC).isoformat()})
+            return False
+
+        async def pool(job, items: list[tuple[dict[str, Any], int]]) -> list[dict[str, Any]]:
+            """Chạy `items` (hashtag, số trang) trên tối đa settings.omar_concurrency worker song song - mỗi hashtag chỉ
+            nằm ở một worker. Trả về các hashtag còn trang."""
+            nonlocal halted
+            queue: asyncio.Queue[tuple[dict[str, Any], int]] = asyncio.Queue()
+            for item in items:
+                queue.put_nowait(item)
+            still: list[dict[str, Any]] = []
+
+            async def worker() -> None:
+                nonlocal halted
+                while not queue.empty() and not halted and not _stop_requested and reserved < budget:
+                    kw, pages = queue.get_nowait()
+                    try:
+                        if await job(kw, pages):
+                            still.append(kw)
+                    except OmarStop as exc:
+                        if not halted:
+                            halted = True
+                            stats["stopped"] = str(exc)[:100]
+                            logger.error("omar_round_stopped", error=str(exc), telegram=True)
+
+            await asyncio.gather(*(worker() for _ in range(max(1, min(settings.omar_concurrency, len(items))))))
+            return still
+
+        # Vòng 1 chia đều; các vòng sau: phần ngân sách hashtag cào xong/lỗi để lại, mỗi hashtag còn trang thêm 1 trang;
+        # cuối cùng ngân sách dư làm mới trang 1 của các hashtag đã cào hết.
+        first = [(kw, quota + (1 if i < extra else 0)) for i, kw in enumerate(deep)]
+        first = [(kw, pages) for kw, pages in first if pages > 0]
+        stats["keywords"] = len(first)
+        stats["concurrency"] = settings.omar_concurrency
+        active = await pool(crawl, first)
+        while active and reserved < budget and not halted and not _stop_requested:
+            active = await pool(crawl, [(kw, 1) for kw in active])
+        if fresh and reserved < budget and not halted and not _stop_requested:
+            await pool(refresh_first_page, [(kw, 1) for kw in fresh])
 
     try:
         # Mọi hashtag đều có phần (quota > 0): dịch đúng số hashtag vừa nhận trang dư, để lượt sau trang dư rơi vào
@@ -413,5 +447,5 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     stats["pending_keywords"] = pending
     if _stop_requested:
         stats["stopped"] = "manual_stop"
-    logger.info("omar_round_finished", total_keywords=len(keywords), pending_keywords=pending, **stats)
+    logger.info("omar_round_finished", total_keywords=len(keywords), **stats)
     return {**stats, "pending_keywords": pending}

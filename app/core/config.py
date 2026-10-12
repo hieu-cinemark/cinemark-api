@@ -131,6 +131,8 @@ class Settings(BaseSettings):
     omar_daily_reserve: int = 50
     # False (mặc định): mỗi lượt dùng hết hạn mức còn lại liên tục; True: rải đều hạn mức ngày theo giờ.
     omar_spread_daily: bool = False
+    # Số request Omar chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
+    omar_concurrency: int = 8
     omar_recrawl_days: int = 7
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
