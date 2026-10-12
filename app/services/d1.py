@@ -32,7 +32,7 @@ import re
 import unicodedata
 import uuid
 from collections import Counter
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.ai.aspects import ASPECTS, STAGES
@@ -94,43 +94,60 @@ __all_reexports__ = (
 )
 
 
-async def _related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """Các tag TikTok xuất hiện cùng mà spider-hub đã lưu sau một lượt crawl (Redis
-    tiktok:related_hashtags:{keyword_id}). Thiếu Redis hoặc key rỗng chỉ có nghĩa là
-    dashboard chưa có chip nào để duyệt."""
+# Redis khoá chung với spider-hub (cùng prefix social_crawler:). Spider: list top hashtag đi kèm sau mỗi lượt crawl
+# (constants/tiktok.py RELATED_HASHTAGS_KEY_TMPL). Omar: hash hashtag -> số video, cộng dồn qua các lượt
+# (app/services/omar_tiktok.py) - giữ nguyên dấu, chữ thường.
+SPIDER_RELATED_KEY_TMPL = f"{REDIS_KEY_PREFIX}tiktok:related_hashtags:{{keyword_id}}"
+OMAR_COOCCUR_KEY_TMPL = f"{REDIS_KEY_PREFIX}omar:cooccur:{{keyword_id}}"
+# Hashtag Omar thấy đi kèm từ chừng này video trở lên mới tính là liên quan; tối đa chừng này mỗi từ khoá.
+OMAR_RELATED_MIN_VIDEOS = 3
+OMAR_RELATED_PER_KEYWORD = 15
+
+
+async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Hashtag TikTok xuất hiện cùng hashtag của từng từ khoá - gộp từ spider-hub (list sau mỗi lượt crawl) và Omar
+    (số video cộng dồn), cùng tag (không phân biệt hoa thường) lấy count lớn hơn. Dùng chung cho chip duyệt trên
+    dashboard (stats_summary) và ứng viên Kira duyệt (hashtag_discovery). Thiếu Redis / key rỗng = chưa có gì."""
     if not keyword_ids:
         return {}
     try:
         client = get_redis_client()
-        keys = [f"{REDIS_KEY_PREFIX}tiktok:related_hashtags:{kid}" for kid in keyword_ids]
-        values = await client.mget(keys)
+        values = await client.mget([SPIDER_RELATED_KEY_TMPL.format(keyword_id=kid) for kid in keyword_ids])
+        pipe = client.pipeline()
+        for kid in keyword_ids:
+            pipe.hgetall(OMAR_COOCCUR_KEY_TMPL.format(keyword_id=kid))
+        omar_values = await pipe.execute()
     except Exception as exc:
         logger.warning("related_hashtags_redis_failed", error=str(exc))
         return {}
     out: dict[str, list[dict[str, Any]]] = {}
-    for kid, raw in zip(keyword_ids, values or []):
-        if not raw:
-            continue
+    for kid, raw, omar_raw in zip(keyword_ids, values or [], omar_values or [], strict=False):
+        merged: dict[str, dict[str, Any]] = {}
         try:
-            parsed = json.loads(raw)
+            parsed = json.loads(raw) if raw else []
         except TypeError, json.JSONDecodeError:
-            continue
-        if not isinstance(parsed, list):
-            continue
-        cleaned: list[dict[str, Any]] = []
-        for item in parsed:
+            parsed = []
+        for item in parsed if isinstance(parsed, list) else []:
             if not isinstance(item, dict) or not item.get("title"):
                 continue
-            cleaned.append(
-                {
-                    "id": str(item.get("id") or ""),
-                    "title": str(item["title"]).lstrip("#"),
-                    "count": int(item.get("count") or 0),
-                    "bfs_depth": int(item.get("bfs_depth") or 1),
-                }
-            )
-        if cleaned:
-            out[kid] = cleaned
+            title = str(item["title"]).lstrip("#")
+            merged[title.lower()] = {
+                "id": str(item.get("id") or ""),
+                "title": title,
+                "count": int(item.get("count") or 0),
+                "bfs_depth": int(item.get("bfs_depth") or 1),
+            }
+        omar_items = sorted(
+            ((tag.decode() if isinstance(tag, bytes) else tag, int(n)) for tag, n in (omar_raw or {}).items()),
+            key=lambda pair: -pair[1],
+        )
+        for tag, count in [pair for pair in omar_items if pair[1] >= OMAR_RELATED_MIN_VIDEOS][
+            :OMAR_RELATED_PER_KEYWORD
+        ]:
+            entry = merged.setdefault(tag.lower(), {"id": "", "title": tag, "count": 0, "bfs_depth": 1})
+            entry["count"] = max(entry["count"], count)
+        if merged:
+            out[kid] = sorted(merged.values(), key=lambda item: -item["count"])
     return out
 
 
@@ -236,10 +253,10 @@ async def create_movie(fields: dict[str, Any]) -> dict[str, Any] | None:
     slug = await _unique_movie_slug(movie_slug(requested or title))
     if slug is None:
         return None
-    now = datetime.now(tz=timezone.utc).isoformat()
+    now = datetime.now(tz=UTC).isoformat()
     movie_id = f"movie_{uuid.uuid4()}"
     inserted = await d1_query(
-        f"""
+        """
         INSERT INTO movies (
             id, title, slug, enabled, created_at, updated_at,
             released_at, poster_url, description, director, `cast`, distributor
@@ -282,7 +299,7 @@ async def update_movie(movie_id: str, fields: dict[str, Any]) -> dict[str, Any] 
                 return None
             slug = unique
 
-    now = datetime.now(tz=timezone.utc).isoformat()
+    now = datetime.now(tz=UTC).isoformat()
 
     def pick(key: str) -> str | None:
         if key not in fields:
@@ -290,7 +307,7 @@ async def update_movie(movie_id: str, fields: dict[str, Any]) -> dict[str, Any] 
         return _blank_to_none(fields.get(key))
 
     updated = await d1_query(
-        f"""
+        """
         UPDATE movies SET
             title = ?, slug = ?, updated_at = ?,
             released_at = ?, poster_url = ?, description = ?,
@@ -323,7 +340,7 @@ async def disable_movie(movie_id: str) -> bool | None:
         if rows is None:
             return None
         return False
-    now = datetime.now(tz=timezone.utc).isoformat()
+    now = datetime.now(tz=UTC).isoformat()
     result = await d1_query(
         "UPDATE movies SET enabled = 0, updated_at = ? WHERE id = ? AND enabled = 1",
         [now, movie_id],
@@ -755,7 +772,7 @@ async def upsert_social_topic_report(
     if not _configured():
         return False
 
-    generated_at = datetime.now(tz=timezone.utc).isoformat()
+    generated_at = datetime.now(tz=UTC).isoformat()
     existing_rows = await d1_query("SELECT id FROM social_topic_reports WHERE movie_id = ?", [movie_id])
     if existing_rows:
         updated = await d1_query(
@@ -800,7 +817,7 @@ async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> d
     movie_title = movie_rows[0]["title"]
 
     keyword_id = f"kw_{uuid.uuid4()}"
-    created_at = datetime.now(tz=timezone.utc).isoformat()
+    created_at = datetime.now(tz=UTC).isoformat()
     inserted = await d1_query(
         "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)",
         [keyword_id, movie_id, platform, keyword, created_at],

@@ -27,7 +27,7 @@ from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import d1_query, get_enabled_keywords
+from app.services.d1 import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
 from app.services.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
@@ -156,14 +156,22 @@ _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
 _MAX_EMPTY_PAGES = 3
 
 
-async def _usage(client: httpx.AsyncClient, api_key: str) -> tuple[int, int, int] | None:
-    """(request còn lại trong ngày, số giây tới lúc reset, giới hạn mỗi phút của gói) từ GET /usage, hoặc None khi không
-    đọc được. Đọc giới hạn của GÓI mỗi lượt nên nâng gói Omar thì cào nhanh/nhiều hơn mà không phải sửa gì."""
+async def fetch_usage(api_key: str, client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
+    """GET /usage: {"plan", "status", "expires_at", "day": {...}, "minute": {...}} hoặc None khi không đọc được. Đọc giới hạn
+    của GÓI mỗi lượt nên nâng gói Omar thì cào nhanh/nhiều hơn mà không phải sửa gì. Dùng cho cả lượt cào và tab Omar."""
     try:
-        resp = await client.get(f"{settings.omar_api_base_url.rstrip('/')}/usage", headers={"X-API-Key": api_key})
-        usage = (((resp.json() or {}).get("data") or {}).get("usage")) or {}
-        day, minute = usage.get("day") or {}, usage.get("minute") or {}
-        return int(day.get("remaining")), int(day.get("resets_in") or 0), int(minute.get("limit") or 0)
+        if client is None:
+            async with httpx.AsyncClient(timeout=20) as own:
+                resp = await own.get(f"{settings.omar_api_base_url.rstrip('/')}/usage", headers={"X-API-Key": api_key})
+        else:
+            resp = await client.get(f"{settings.omar_api_base_url.rstrip('/')}/usage", headers={"X-API-Key": api_key})
+        data = (resp.json() or {}).get("data") or {}
+        return {
+            "plan": data.get("plan"),
+            "status": data.get("status"),
+            "expires_at": data.get("expires_at"),
+            **(data.get("usage") or {}),
+        }
     except Exception as exc:  # noqa: BLE001 - không đọc được thì dùng ngân sách mặc định
         logger.warning("omar_usage_failed", error=str(exc)[:200])
         return None
@@ -184,9 +192,52 @@ async def _movie_priority() -> dict[str, float]:
 
 _ROTATE_KEY = f"{REDIS_KEY_PREFIX}omar:rotation_offset"
 _SEEN_PREFIX = f"{REDIS_KEY_PREFIX}omar:seen:"
-# BFS: hashtag đi kèm trong video Omar lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày - hashtag_discovery
-# đọc làm ứng viên cho Kira duyệt (nguồn "omar_bfs"), duyệt xong thành từ khoá mới của cùng phim và Omar cào tiếp.
-COOCCUR_PREFIX = f"{REDIS_KEY_PREFIX}omar:cooccur:"
+# Set video TikTok đã gửi lên raw_posts của spider-hub (constants/tiktok.py SEEN_POSTS_KEY, cùng prefix) - dùng chung để
+# spider không gửi lại video Omar đã gửi và ngược lại.
+_SPIDER_SEEN_VIDEOS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_video_ids"
+
+
+async def _claim_unseen(video_ids: list[str]) -> set[str]:
+    """Video cần gửi lên raw_posts: video MỚI (chưa có trong set đã gửi dùng chung với spider) hoặc video cũ đã quá
+    settings.omar_republish_hours giờ chưa gửi lại (cập nhật tương tác). Đánh dấu luôn những video đó. Với gói lớn (~1 triệu
+    video/ngày, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải. Redis lỗi thì coi như mới hết (thà ghi trùng còn
+    hơn mất bài)."""
+    if not video_ids:
+        return set()
+    ttl = int(settings.omar_republish_hours * 3600)
+    try:
+        pipe = get_redis_client().pipeline()
+        for video_id in video_ids:
+            pipe.sadd(_SPIDER_SEEN_VIDEOS_KEY, video_id)
+            if ttl > 0:
+                pipe.set(f"{_SEEN_PREFIX}{video_id}", "1", nx=True, ex=ttl)
+        results = await pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("omar_seen_check_failed", error=str(exc)[:200])
+        return set(video_ids)
+    step = 2 if ttl > 0 else 1
+    out = set()
+    for i, video_id in enumerate(video_ids):
+        is_new = bool(results[i * step])
+        refresh_due = bool(results[i * step + 1]) if ttl > 0 else True
+        if is_new or refresh_due:
+            out.add(video_id)
+    return out
+
+
+async def _forget_seen(video_id: str) -> None:
+    """Gửi Kafka lỗi: bỏ đánh dấu để lần sau gửi lại."""
+    try:
+        pipe = get_redis_client().pipeline()
+        pipe.srem(_SPIDER_SEEN_VIDEOS_KEY, video_id)
+        pipe.delete(f"{_SEEN_PREFIX}{video_id}")
+        await pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("omar_seen_forget_failed", error=str(exc)[:200])
+
+
+# BFS: hashtag đi kèm trong video Omar lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày. d1.related_hashtags_for_keywords
+# gộp với hashtag liên quan của spider - cùng một nguồn cho chip duyệt trên dashboard và cho Kira duyệt (hashtag_discovery).
 _COOCCUR_TTL_SECONDS = 14 * 24 * 3600
 
 
@@ -201,7 +252,7 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
                 counts[tag] = counts.get(tag, 0) + 1
     if not counts:
         return
-    key = f"{COOCCUR_PREFIX}{keyword_id}"
+    key = OMAR_COOCCUR_KEY_TMPL.format(keyword_id=keyword_id)
     try:
         pipe = get_redis_client().pipeline()
         for tag, n in counts.items():
@@ -210,55 +261,6 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - thiếu số đếm chỉ làm BFS chậm hơn
         logger.warning("omar_cooccur_failed", error=str(exc)[:200])
-
-
-async def top_cooccurring(keyword_ids: list[str], *, min_count: int, limit: int) -> dict[str, list[dict[str, Any]]]:
-    """keyword_id -> [{"title": hashtag, "count": số video}] nhiều nhất trước, chỉ hashtag có từ min_count video."""
-    out: dict[str, list[dict[str, Any]]] = {}
-    if not keyword_ids:
-        return out
-    try:
-        pipe = get_redis_client().pipeline()
-        for keyword_id in keyword_ids:
-            pipe.hgetall(f"{COOCCUR_PREFIX}{keyword_id}")
-        results = await pipe.execute()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_cooccur_read_failed", error=str(exc)[:200])
-        return out
-    for keyword_id, raw in zip(keyword_ids, results, strict=True):
-        items = []
-        for tag, n in (raw or {}).items():
-            tag = tag.decode() if isinstance(tag, bytes) else tag
-            if int(n) >= min_count:
-                items.append({"title": tag, "count": int(n)})
-        if items:
-            out[keyword_id] = sorted(items, key=lambda item: -item["count"])[:limit]
-    return out
-
-
-async def _claim_unseen(video_ids: list[str]) -> set[str]:
-    """Các video chưa gửi lên raw_posts trong settings.omar_republish_hours giờ qua (và đánh dấu chúng là đã gửi). Với gói
-    lớn (50.000 request/ngày ~ 1 triệu video, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải vì mỗi video đã có
-    vẫn tốn vài lệnh ghi; lọc ở đây thì video mới đi ngay, video cũ chỉ cập nhật tương tác tối đa mỗi N giờ.
-    Redis lỗi thì coi như mới hết (thà ghi trùng còn hơn mất bài)."""
-    if not video_ids or settings.omar_republish_hours <= 0:
-        return set(video_ids)
-    try:
-        pipe = get_redis_client().pipeline()
-        for video_id in video_ids:
-            pipe.set(f"{_SEEN_PREFIX}{video_id}", "1", nx=True, ex=int(settings.omar_republish_hours * 3600))
-        results = await pipe.execute()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_seen_check_failed", error=str(exc)[:200])
-        return set(video_ids)
-    return {video_id for video_id, created in zip(video_ids, results, strict=True) if created}
-
-
-async def _forget_seen(video_id: str) -> None:
-    try:
-        await get_redis_client().delete(f"{_SEEN_PREFIX}{video_id}")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_seen_forget_failed", error=str(exc)[:200])
 
 
 # Trạng thái lượt đang/vừa chạy - cho tab Omar trên dashboard (app/api/routes/omar.py) và scheduler (không mở lượt chồng).
@@ -376,13 +378,14 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             logger.warning("omar_state_save_failed", error=str(exc)[:200])
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        usage = await _usage(client, api_key)
-        per_minute = (usage[2] if usage and usage[2] > 0 else 0) or settings.omar_requests_per_minute
+        usage = await fetch_usage(api_key, client)
+        day = (usage or {}).get("day") or {}
+        per_minute = int(((usage or {}).get("minute") or {}).get("limit") or 0) or settings.omar_requests_per_minute
         hour_cap = per_minute * 55
         if settings.omar_requests_per_hour > 0:
             hour_cap = min(hour_cap, settings.omar_requests_per_hour)
-        if usage is not None:
-            remaining, resets_in, _ = usage
+        if day.get("remaining") is not None:
+            remaining, resets_in = int(day["remaining"]), int(day.get("resets_in") or 0)
             spendable = max(0, remaining - settings.omar_daily_reserve)
             if settings.omar_spread_daily:
                 # Rải đều: phần còn lại chia cho số giờ tới lúc reset, trần một giờ.
@@ -396,7 +399,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         stats["budget"] = budget
         stats["per_minute"] = per_minute
         if budget <= 0:
-            logger.info("omar_round_no_budget", remaining=usage[0] if usage else None)
+            logger.info("omar_round_no_budget", remaining=day.get("remaining"))
             return {**stats, "skipped": "no_budget"}
         pacer = _Pacer(per_minute)
 

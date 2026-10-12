@@ -190,17 +190,14 @@ DEFAULT_COMMENTS_MAX_PAGES = 80
 
 
 async def publish_channel_videos_request(
-    *, username: str, max_pages: int | None = None, keyword_id: str | None = None, use_omar_api: bool = False
+    *, username: str, max_pages: int | None = None, keyword_id: str | None = None
 ) -> bool:
     """Xếp hàng type=channel_videos cho spider tiktok_channel_videos của TikTok (lưới video
-    của một kênh @username). Handle nhập tự do - chưa có bảng "kênh theo dõi" trong D1.
-
-    use_omar_api=True: spider-hub nhận message nhưng bỏ qua (omar_api_mode=True), cinemark-api
-    sẽ gọi trực tiếp Omar API rồi ingest kết quả."""
+    của một kênh @username). Handle nhập tự do - chưa có bảng "kênh theo dõi" trong D1."""
     handle = username.lstrip("@").strip()
     if not handle:
         return False
-    payload: dict[str, Any] = {"username": handle, "run_id": str(uuid.uuid4()), "use_omar_api": use_omar_api}
+    payload: dict[str, Any] = {"username": handle, "run_id": str(uuid.uuid4())}
     if max_pages is not None:
         payload["max_pages"] = max_pages
     if keyword_id:

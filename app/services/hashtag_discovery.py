@@ -12,10 +12,10 @@ Mỗi ngày một lượt (scheduler._hashtag_tick, hoặc scripts.discover_hash
 4. Ràng buộc khi thêm: verdict "film" + confidence >= MIN_CONFIDENCE, tối đa settings.hashtag_discovery_max_per_movie
    mỗi phim mỗi lượt và settings.hashtag_discovery_max_per_run cả lượt; thêm thành từ khoá TikTok đang bật và xếp crawl ngay.
 
-BFS từ Omar (từ 2026-10-12): Omar đếm hashtag đi kèm trong mọi video nó lấy về, theo từ khoá (omar_tiktok._count_cooccur).
-Hashtag đi kèm từ OMAR_BFS_MIN_VIDEOS video trở lên là ứng viên nguồn "omar_bfs" - Kira duyệt như mọi ứng viên, duyệt xong
-thành từ khoá mới của CÙNG phim (ghi parent_keyword_id + depth) và Omar cào nó ở lượt sau. Từ khoá mới lại góp ứng viên
-của nó, tới BFS_MAX_DEPTH tầng. Ngoài lượt buổi sáng, scheduler chạy thêm một lượt duyệt sau mỗi lượt Omar.
+BFS (từ 2026-10-12): hashtag đi kèm do spider TikTok và Omar đếm được (d1.related_hashtags_for_keywords - cùng nguồn với chip
+duyệt trên dashboard) là ứng viên "related"; Kira duyệt như mọi ứng viên, duyệt xong thành từ khoá mới của CÙNG phim (ghi
+parent_keyword_id + depth) và Omar/spider cào nó ở lượt sau. Từ khoá mới lại góp ứng viên của nó, tới BFS_MAX_DEPTH tầng.
+Ngoài lượt buổi sáng, scheduler chạy thêm một lượt duyệt sau mỗi lượt Omar.
 5. Tự dọn: tag AI đã thêm mà sau PRUNE_AFTER_DAYS ngày không đem về bài nào thì tắt (status "pruned").
 
 Mọi quyết định (thêm/bỏ/dọn, kèm lý do và độ tự tin) nằm trong bảng hashtag_ai_decisions (D1 scraper) - tag bị bỏ
@@ -34,8 +34,7 @@ from app.ai.movie_context import movie_context_block
 from app.clients.kafka import publish_crawl_request
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import _related_hashtags_for_keywords, d1_query
-from app.services.omar_tiktok import top_cooccurring
+from app.services.d1 import d1_query, related_hashtags_for_keywords
 from app.services.relevance_rules import normalize_title, title_acronym
 
 logger = get_logger(__name__)
@@ -43,10 +42,7 @@ logger = get_logger(__name__)
 TASK = "hashtag_discovery"
 MIN_CONFIDENCE = 80
 MAX_CANDIDATES_PER_MOVIE = 30
-# BFS từ Omar: hashtag đi kèm từ chừng này video trở lên mới làm ứng viên; tối đa chừng này tầng tính từ từ khoá gốc
-# (gốc = 0) để không lan sang chủ đề khác.
-OMAR_BFS_MIN_VIDEOS = 3
-OMAR_BFS_PER_KEYWORD = 15
+# BFS: tối đa chừng này tầng tính từ từ khoá gốc (người nhập = 0) để không lan sang chủ đề khác.
 BFS_MAX_DEPTH = 2
 PRUNE_AFTER_DAYS = 3
 RECHECK_REJECTED_DAYS = 14
@@ -272,9 +268,8 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
     )
     # Tầng BFS của mỗi từ khoá: từ khoá AI thêm mang depth đã ghi, từ khoá người nhập là 0.
     depth_of = {d["keyword_id"]: int(d.get("depth") or 0) for d in decisions if d.get("keyword_id")}
-    tiktok_ids = [k["id"] for k in keywords if k["platform"] == "tiktok" and k["enabled"]]
-    omar_related = await top_cooccurring(tiktok_ids, min_count=OMAR_BFS_MIN_VIDEOS, limit=OMAR_BFS_PER_KEYWORD)
-    related = await _related_hashtags_for_keywords(
+
+    related = await related_hashtags_for_keywords(
         [k["id"] for k in keywords if k["platform"] == "tiktok" and k["enabled"]]
     )
 
@@ -306,22 +301,18 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
         for kw in keywords:
             if kw["movie_id"] != movie["id"]:
                 continue
-            for item in related.get(kw["id"], []):
-                tag = _squash(item["title"])
-                entry = cands.setdefault(tag, {"tag": tag, "display": item["title"], "source": "related", "seen": 0})
-                entry["seen"] = max(entry["seen"], int(item.get("count") or 0))
-            # BFS từ video Omar lấy về - chỉ khi từ khoá cha chưa ở tầng sâu nhất.
+            # Hashtag đi kèm (spider + Omar, d1.related_hashtags_for_keywords) - chỉ khi từ khoá cha chưa ở tầng sâu nhất.
             parent_depth = depth_of.get(kw["id"], 0)
             if parent_depth >= BFS_MAX_DEPTH:
                 continue
-            for item in omar_related.get(kw["id"], []):
+            for item in related.get(kw["id"], []):
                 tag = _squash(item["title"])
                 entry = cands.setdefault(
                     tag,
                     {
                         "tag": tag,
                         "display": item["title"],
-                        "source": "omar_bfs",
+                        "source": "related",
                         "seen": 0,
                         "parent_keyword_id": kw["id"],
                         "depth": parent_depth + 1,

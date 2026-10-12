@@ -380,7 +380,7 @@ async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
 
 async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
     """Cùng dạng response với phép join toàn bảng cũ, lấy dữ liệu từ bảng tổng hợp theo ngày."""
-    from app.services.d1 import _related_hashtags_for_keywords
+    from app.services.d1 import related_hashtags_for_keywords
 
     await ensure_stats_tables()
     platform_sql = "AND k.platform = ?" if platform else ""
@@ -443,7 +443,7 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
                 "related_hashtags": [],
             }
         )
-    related_by_kw = await _related_hashtags_for_keywords(
+    related_by_kw = await related_hashtags_for_keywords(
         [row["keyword_id"] for row in out if row.get("platform") == "tiktok"]
     )
     for row in out:
