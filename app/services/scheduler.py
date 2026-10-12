@@ -46,7 +46,8 @@ from app.services.cleanup import resolve_cleanup_settings, run_purge
 from app.services.comment_planner import run_comment_round
 from app.services.d1 import get_enabled_keywords
 from app.services.hashtag_discovery import run_discovery
-from app.services.omar_tiktok import run_omar_round
+from app.services.omar_tiktok import is_running as omar_is_running
+from app.services.omar_tiktok import run_omar_round_tracked
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.query_discovery import run_query_discovery
 
@@ -387,35 +388,37 @@ async def _hashtag_tick() -> None:
 
 # --- Omar API: hashtag TikTok mỗi giờ (app/services/omar_tiktok.py) ---------------------------------------------
 _OMAR_ROUND_KEY = f"{REDIS_KEY_PREFIX}scheduler:omar_round:last_hour"
-_omar_running = False
 
 
-async def _run_omar_round() -> None:
-    global _omar_running
+async def _run_omar_round(trigger: str) -> None:
     try:
-        await run_omar_round()
+        await run_omar_round_tracked(trigger)
     except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để giờ sau chạy lại
         logger.error("omar_round_failed", error=str(exc)[:300])
-    finally:
-        _omar_running = False
+
+
+def trigger_omar_now() -> bool:
+    """Nút "Chạy ngay" của tab Omar (app/api/routes/omar.py). False khi đang có lượt chạy."""
+    if omar_is_running():
+        return False
+    _spawn(_run_omar_round("manual"))
+    return True
 
 
 async def _omar_tick() -> None:
     """Mỗi giờ một lượt, từ phút settings.omar_round_minute. Lượt trước chưa xong (chế độ chạy liên tục: một lượt có thể
     kéo dài nhiều giờ tới khi hết hạn mức) thì không mở lượt chồng lên; xong thì lượt kế bắt đầu ở lần kiểm tra sau. Khoá
     theo giờ trong Redis để restart API không chạy lặp."""
-    global _omar_running
     now = datetime.now(TIMEZONE)
-    if _omar_running or now.minute < settings.omar_round_minute:
+    if omar_is_running() or now.minute < settings.omar_round_minute:
         return
     hour_key = now.strftime("%Y-%m-%dT%H")
     redis = get_redis_client()
     if await redis.get(_OMAR_ROUND_KEY) == hour_key:
         return
     await redis.set(_OMAR_ROUND_KEY, hour_key, ex=2 * 3600)
-    _omar_running = True
     logger.info("omar_round_firing", hour=hour_key)
-    _spawn(_run_omar_round())
+    _spawn(_run_omar_round("schedule"))
 
 
 async def _loop() -> None:

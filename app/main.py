@@ -17,6 +17,7 @@ from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.logs import router as logs_router
 from app.api.routes.movies import router as movies_router
+from app.api.routes.omar import router as omar_router
 from app.api.routes.settings import router as settings_router
 from app.api.routes.stats import router as stats_router
 from app.api.routes.threads import router as threads_router
@@ -59,6 +60,7 @@ app.include_router(stats_router)
 app.include_router(logs_router)
 app.include_router(movies_router)
 app.include_router(settings_router)
+app.include_router(omar_router)
 app.include_router(cron_router)
 
 

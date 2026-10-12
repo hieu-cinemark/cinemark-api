@@ -180,8 +180,71 @@ async def _movie_priority() -> dict[str, float]:
 
 _ROTATE_KEY = f"{REDIS_KEY_PREFIX}omar:rotation_offset"
 
+# Trạng thái lượt đang/vừa chạy - cho tab Omar trên dashboard (app/api/routes/omar.py) và scheduler (không mở lượt chồng).
+_round: dict[str, Any] = {"running": False, "trigger": None, "started_at": None, "finished_at": None, "stats": {}}
+_stop_requested = False
 
-async def run_omar_round() -> dict[str, Any]:
+
+def round_status() -> dict[str, Any]:
+    return {**_round, "stop_requested": _stop_requested}
+
+
+def is_running() -> bool:
+    return bool(_round["running"])
+
+
+def request_stop() -> bool:
+    """Dừng lượt đang chạy sau request hiện tại (con trỏ đã lưu sau mỗi trang). False khi không có lượt nào chạy."""
+    global _stop_requested
+    if not _round["running"]:
+        return False
+    _stop_requested = True
+    return True
+
+
+async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
+    """run_omar_round kèm cờ đang chạy / thời điểm / thống kê sống cho dashboard. Gọi khi chưa có lượt nào chạy."""
+    global _stop_requested
+    _stop_requested = False
+    _round.update(
+        running=True, trigger=trigger, started_at=datetime.now(tz=UTC).isoformat(), finished_at=None, stats={}
+    )
+    try:
+        return await run_omar_round(live=_round["stats"])
+    finally:
+        _round.update(running=False, finished_at=datetime.now(tz=UTC).isoformat())
+        _stop_requested = False
+
+
+async def hashtag_progress() -> list[dict[str, Any]]:
+    """Mỗi hashtag TikTok đang bật: tên, phim, số trang đã lấy, cursor, đã cào xong lúc nào (từ Redis omar:hashtag_state)."""
+    keywords = [k for k in await get_enabled_keywords(platform="tiktok") if str(k["keyword"]).startswith("#")]
+    titles = {row["id"]: row["title"] for row in await d1_query("SELECT id, title FROM movies", quiet=True) or []}
+    raw = await get_redis_client().hgetall(_STATE_KEY) or {}
+    state = {}
+    for key, value in raw.items():
+        try:
+            state[key.decode() if isinstance(key, bytes) else key] = json.loads(value)
+        except TypeError, ValueError:
+            continue
+    out = []
+    for kw in keywords:
+        entry = state.get(kw["id"]) or {}
+        out.append(
+            {
+                "keyword_id": kw["id"],
+                "hashtag": kw["keyword"],
+                "movie": titles.get(kw["movie_id"]),
+                "pages": int(entry.get("pages") or 0),
+                "cursor": entry.get("cursor"),
+                "done_at": entry.get("done_at"),
+                "fresh_at": entry.get("fresh_at"),
+            }
+        )
+    return sorted(out, key=lambda row: (row["done_at"] is not None, -row["pages"]))
+
+
+async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     """Một lượt mỗi giờ, CHIA ĐỀU cho mọi hashtag chưa cào xong (xoay vòng): mỗi hashtag được budget // số hashtag trang,
     phần dư +1 trang cho vài hashtag - vị trí bắt đầu xoay qua từng lượt (Redis omar:rotation_offset) để công bằng.
     Hashtag nào cào xong giữa lượt thì phần trang còn lại chia tiếp cho các hashtag khác. Con trỏ mỗi hashtag lưu trong
@@ -194,7 +257,8 @@ async def run_omar_round() -> dict[str, Any]:
     Nhịp gọi cũng theo giới hạn mỗi phút của gói - nâng gói Omar thì tự chạy nhanh/nhiều hơn."""
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
-    stats: dict[str, Any] = {"keywords": 0, "requests": 0, "videos": 0, "published": 0, "failed": 0, "finished": 0}
+    stats: dict[str, Any] = live if live is not None else {}
+    stats.update(keywords=0, requests=0, videos=0, published=0, failed=0, finished=0)
     if not api_key:
         logger.info("omar_round_skipped_no_key")
         return {**stats, "skipped": "no_key"}
@@ -297,7 +361,7 @@ async def run_omar_round() -> dict[str, Any]:
             cursor = entry.get("cursor") or "0"
             empty = int(entry.get("empty") or 0)
             for _ in range(pages):
-                if stats["requests"] >= budget:
+                if stats["requests"] >= budget or _stop_requested:
                     return True
                 result = await fetch(kw, cursor)
                 if result is None:
@@ -321,16 +385,16 @@ async def run_omar_round() -> dict[str, Any]:
             active = []
             for i, kw in enumerate(deep):
                 pages = quota + (1 if i < extra else 0)
-                if pages <= 0 or stats["requests"] >= budget:
+                if pages <= 0 or stats["requests"] >= budget or _stop_requested:
                     break
                 stats["keywords"] += 1
                 if await crawl(kw, pages):
                     active.append(kw)
-            while active and stats["requests"] < budget:
+            while active and stats["requests"] < budget and not _stop_requested:
                 active = [kw for kw in active if stats["requests"] < budget and await crawl(kw, 1)]
             # Còn dư ngân sách: trang 1 của các hashtag đã cào hết, lâu chưa làm mới nhất trước.
             for kw in fresh:
-                if stats["requests"] >= budget:
+                if stats["requests"] >= budget or _stop_requested:
                     break
                 if await fetch(kw, "0") is not None:
                     await save(kw["id"], {**(state.get(kw["id"]) or {}), "fresh_at": datetime.now(tz=UTC).isoformat()})
@@ -346,5 +410,8 @@ async def run_omar_round() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("omar_rotation_save_failed", error=str(exc)[:200])
     pending = sum(1 for kw in keywords if todo(kw))
+    stats["pending_keywords"] = pending
+    if _stop_requested:
+        stats["stopped"] = "manual_stop"
     logger.info("omar_round_finished", total_keywords=len(keywords), pending_keywords=pending, **stats)
     return {**stats, "pending_keywords": pending}
