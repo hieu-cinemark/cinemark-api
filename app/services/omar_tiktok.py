@@ -116,19 +116,21 @@ class Budget:
     """Ngân sách request của một lượt, dùng chung cho mọi việc trong lượt (bình luận tuần, hashtag, làm mới trang 1) và
     mọi worker song song - giữ chỗ TRƯỚC khi gọi nên chạy song song không vượt."""
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, parent: Budget | None = None) -> None:
         self.limit = limit
         self.used = 0
+        # Ngân sách con (vd. phần bình luận tuần): mỗi request trừ cả vào ngân sách cha của lượt.
+        self.parent = parent
 
     def take(self) -> bool:
-        if self.used >= self.limit:
+        if self.used >= self.limit or (self.parent is not None and not self.parent.take()):
             return False
         self.used += 1
         return True
 
     @property
     def exhausted(self) -> bool:
-        return self.used >= self.limit
+        return self.used >= self.limit or (self.parent is not None and self.parent.exhausted)
 
 
 async def omar_get(
@@ -463,19 +465,24 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             return _stop_requested or halted
 
         halted = False
-        # 1. Bình luận tuần (app/services/omar_comments.py) - hàng đợi có thì làm trước, nhưng tối đa
-        # settings.omar_comments_budget_share ngân sách: hàng đợi tuần cần hàng chục nghìn request, không được ăn hết phần
-        # hashtag (12/10/2026).
-        comment_budget = Budget(int(budget * settings.omar_comments_budget_share))
-        try:
-            await omar_comments.process_queue(client, pacer, api_key, comment_budget, stats, should_stop)
-        except OmarStop as exc:
-            halted = True
-            stats["stopped"] = str(exc)[:100]
-            logger.error("omar_round_stopped", error=str(exc), telegram=True)
-        except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
-            logger.error("omar_comments_failed", error=str(exc)[:300])
-        spend.used += comment_budget.used
+        # Bình luận tuần (app/services/omar_comments.py) chạy SONG SONG với phần hashtag, tối đa
+        # settings.omar_comments_budget_share ngân sách. Trước 12/10/2026 nó chạy trước và hàng đợi tuần (hàng chục nghìn
+        # request, vài giờ) chặn mọi hashtag - hashtag mới đứng "Chưa bắt đầu" cả buổi.
+        comment_budget = Budget(int(budget * settings.omar_comments_budget_share), parent=spend)
+
+        async def run_comments() -> None:
+            nonlocal halted
+            try:
+                await omar_comments.process_queue(client, pacer, api_key, comment_budget, stats, should_stop)
+            except OmarStop as exc:
+                if not halted:
+                    halted = True
+                    stats["stopped"] = str(exc)[:100]
+                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
+            except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
+                logger.error("omar_comments_failed", error=str(exc)[:300])
+
+        comments_task = asyncio.create_task(run_comments())
         # 2. Tổng video / lượt xem của từng hashtag (hashtag_info), làm mới mỗi settings.omar_hashtag_info_days ngày.
         info_before = (now - timedelta(days=settings.omar_hashtag_info_days)).isoformat()
         stale_info = [kw for kw in keywords if ((state.get(kw["id"]) or {}).get("info_at") or "") < info_before]
@@ -601,14 +608,6 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             await asyncio.gather(*(worker() for _ in range(max(1, min(settings.omar_concurrency, len(items))))))
             return still
 
-        if stale_info and not should_stop():
-            info_jobs = [(kw, 1) for kw in stale_info]
-
-            async def info_job(kw: dict[str, Any], _pages: int) -> bool:
-                await refresh_info(kw)
-                return False
-
-            await pool(info_job, info_jobs)
         # Mỗi worker nhận một hashtag và cào tới hết rồi mới nhận hashtag kế (settings.omar_concurrency hashtag song song);
         # hashtag chưa bắt đầu đứng đầu hàng nên hashtag mới thêm được cào ngay.
         stats["keywords"] = len(deep)
@@ -619,6 +618,14 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         stats["recrawl_keywords"] = len(fresh)
         if not spend.exhausted and not should_stop():
             await pool(crawl, [(kw, 0) for kw in fresh])
+        if stale_info and not should_stop():
+
+            async def info_job(kw: dict[str, Any], _pages: int) -> bool:
+                await refresh_info(kw)
+                return False
+
+            await pool(info_job, [(kw, 1) for kw in stale_info])
+        await comments_task
 
     pending = sum(1 for kw in keywords if todo(kw))
     stats["pending_keywords"] = pending
