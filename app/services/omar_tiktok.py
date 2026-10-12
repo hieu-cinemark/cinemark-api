@@ -27,7 +27,7 @@ from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services import omar_comments
+from app.services import omar_comments, omar_search
 from app.services.d1 import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -55,9 +55,11 @@ def map_aweme(item: dict[str, Any]) -> dict[str, Any] | None:
     music = item.get("music") or {}
     username = author.get("unique_id")
     duration_ms = video.get("duration") or 0
+    # Bài ảnh/slideshow có image_post_info - link /photo/ (trước 12/10/2026 mọi bài đều lưu /video/).
+    kind = "photo" if item.get("image_post_info") else "video"
     return {
         "video_id": video_id,
-        "url": f"https://www.tiktok.com/@{username}/video/{video_id}" if username else item.get("share_url"),
+        "url": f"https://www.tiktok.com/@{username}/{kind}/{video_id}" if username else item.get("share_url"),
         "desc": item.get("desc"),
         "text_language": item.get("desc_language"),
         "location_created": item.get("region"),
@@ -92,6 +94,73 @@ def map_aweme(item: dict[str, Any]) -> dict[str, Any] | None:
         or ((item.get("commerce_info") or {}).get("branded_content_type") or 0) > 0,
         "source": "omar",
     }
+
+
+def map_web_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Một kết quả tìm kiếm của Omar (search_videos / search_photos trả dạng TikTok WEB: id, createTime, author.uniqueId,
+    stats.diggCount...) -> cùng tên trường với map_aweme. Port của extract_video ở spider-hub
+    (spiders/tiktok/features/hashtag_search/extract.py)."""
+    video_id = str(item.get("id") or "").strip()
+    if not video_id:
+        return None
+    author = item.get("author") or {}
+    stats = item.get("statsV2") or item.get("stats") or {}
+    video = item.get("video") or {}
+    username = author.get("uniqueId")
+    kind = "photo" if item.get("imagePost") else "video"
+
+    def num(key: str) -> int | None:
+        try:
+            return int(stats.get(key)) if stats.get(key) is not None else None
+        except TypeError, ValueError:
+            return None
+
+    return {
+        "video_id": video_id,
+        "url": f"https://www.tiktok.com/@{username}/{kind}/{video_id}" if username else None,
+        "desc": item.get("desc"),
+        "text_language": item.get("textLanguage"),
+        "location_created": item.get("locationCreated"),
+        "create_time": item.get("createTime"),
+        "author_id": author.get("id"),
+        "author_username": username,
+        "author_name": author.get("nickname"),
+        "author_avatar_url": author.get("avatarThumb"),
+        "duration": video.get("duration") or None,
+        "cover_url": video.get("originCover") or video.get("cover"),
+        "play_url": video.get("playAddr") or None,
+        "music_title": (item.get("music") or {}).get("title"),
+        "hashtags": [
+            extra["hashtagName"]
+            for content in item.get("contents") or []
+            for extra in content.get("textExtra") or []
+            if extra.get("hashtagName")
+        ],
+        "play_count": num("playCount"),
+        "like_count": num("diggCount"),
+        "comment_count": num("commentCount"),
+        "share_count": num("shareCount"),
+        "collect_count": num("collectCount"),
+        "author_followers": (item.get("authorStats") or {}).get("followerCount") or None,
+        "author_verified": bool(author.get("verified")),
+        "is_ad": bool(item.get("isAd")),
+        "source": "omar_search",
+    }
+
+
+async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: dict[str, Any]) -> None:
+    """Gửi video đã map lên raw_posts như spider (chống trùng qua tập seen dùng chung với spider, _claim_unseen)."""
+    fresh_ids = await _claim_unseen([video["video_id"] for video in mapped])
+    for video in mapped:
+        if video["video_id"] not in fresh_ids:
+            stats["skipped_seen"] = int(stats.get("skipped_seen") or 0) + 1
+            continue
+        ok = await publish_raw_post(
+            key=f"tiktok:{video['video_id']}", value={"platform": "tiktok", "keyword_id": keyword_id, **video}
+        )
+        stats["published"] = int(stats.get("published") or 0) + int(ok)
+        if not ok:
+            await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
 
 
 class _Pacer:
@@ -510,6 +579,22 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 logger.error("omar_comments_failed", error=str(exc)[:300])
 
         comments_task = asyncio.create_task(run_comments())
+        # Tìm theo từ khoá (app/services/omar_search.py) mỗi ngày một lần mỗi câu - bắt bài không gắn/gắn sai hashtag phim.
+        search_budget = Budget(int(budget * settings.omar_search_budget_share), parent=spend)
+
+        async def run_search() -> None:
+            nonlocal halted
+            try:
+                await omar_search.run_search(client, pacer, api_key, search_budget, stats, should_stop)
+            except OmarStop as exc:
+                if not halted:
+                    halted = True
+                    stats["stopped"] = str(exc)[:100]
+                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
+            except Exception as exc:  # noqa: BLE001 - phần tìm kiếm lỗi không chặn phần hashtag
+                logger.error("omar_search_failed", error=str(exc)[:300])
+
+        search_task = asyncio.create_task(run_search())
         # 2. Tổng video / lượt xem của từng hashtag (hashtag_info), làm mới mỗi settings.omar_hashtag_info_days ngày.
         info_before = (now - timedelta(days=settings.omar_hashtag_info_days)).isoformat()
         stale_info = [kw for kw in keywords if ((state.get(kw["id"]) or {}).get("info_at") or "") < info_before]
@@ -571,17 +656,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             mapped = [video for video in (map_aweme(raw) for raw in videos) if video is not None]
             stats["videos"] += len(mapped)
             await _count_cooccur(str(kw["keyword"]), kw["id"], mapped)
-            fresh_ids = await _claim_unseen([video["video_id"] for video in mapped])
-            for video in mapped:
-                if video["video_id"] not in fresh_ids:
-                    stats["skipped_seen"] += 1
-                    continue
-                ok = await publish_raw_post(
-                    key=f"tiktok:{video['video_id']}", value={"platform": "tiktok", "keyword_id": kw["id"], **video}
-                )
-                stats["published"] += int(ok)
-                if not ok:
-                    await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
+            await publish_videos(mapped, kw["id"], stats)
             return videos, next_cursor, hashtag_id
 
         async def crawl(kw: dict[str, Any], _pages: int) -> bool:
@@ -675,6 +750,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
             await pool(info_job, [(kw, 1) for kw in stale_info])
         await comments_task
+        await search_task
 
     pending = sum(1 for kw in keywords if todo(kw))
     stats["pending_keywords"] = pending

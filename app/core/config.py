@@ -152,6 +152,10 @@ class Settings(BaseSettings):
     omar_comments_budget_share: float = 0.5
     # Hashtag không có trên TikTok (trang 1 luôn lỗi 424) được kiểm tra lại sau chừng này giờ.
     omar_missing_recheck_hours: float = 24
+    # Tìm theo từ khoá qua Omar (app/services/omar_search.py): mỗi câu (tên phim có dấu / không dấu + câu tìm kiếm
+    # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa omar_search_pages trang, mỗi ngày một lần.
+    omar_search_pages: int = 10
+    omar_search_budget_share: float = 0.2
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
     omar_hashtag_info_days: int = 7
 
