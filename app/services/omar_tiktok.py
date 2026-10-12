@@ -27,6 +27,7 @@ from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import omar_comments
 from app.services.d1 import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -111,44 +112,96 @@ class _Pacer:
             await asyncio.sleep(start - now)
 
 
-async def _fetch_page(
-    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết)."""
-    for attempt in range(4):
+class Budget:
+    """Ngân sách request của một lượt, dùng chung cho mọi việc trong lượt (bình luận tuần, hashtag, làm mới trang 1) và
+    mọi worker song song - giữ chỗ TRƯỚC khi gọi nên chạy song song không vượt."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.used = 0
+
+    def take(self) -> bool:
+        if self.used >= self.limit:
+            return False
+        self.used += 1
+        return True
+
+    @property
+    def exhausted(self) -> bool:
+        return self.used >= self.limit
+
+
+async def omar_get(
+    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, path: str, params: dict[str, str], *, retries_424: int = 3
+) -> dict[str, Any] | None:
+    """Một request GET tới Omar -> `data` của response, hoặc None khi 404 (không tồn tại). Dùng chung cho mọi endpoint
+    (hashtag_videos, hashtag_info, comments, comment_replies): giữ nhịp theo pacer, 429 chờ Retry-After, 424 (TikTok phía
+    Omar lỗi tạm thời, đo 2026-10-12 ~15% trang) chờ lâu dần rồi thử lại, 401/403/hết hạn mức ngày -> OmarStop. Hết lượt
+    thử thì raise chứ không trả "rỗng" - bên gọi giữ nguyên con trỏ, lượt sau thử lại đúng trang đó."""
+    for attempt in range(retries_424 + 1):
         await pacer.wait()
         resp = await client.get(
-            f"{settings.omar_api_base_url.rstrip('/')}/hashtag_videos",
-            params={"name": hashtag, "cursor": cursor},
-            headers={"X-API-Key": api_key},
+            f"{settings.omar_api_base_url.rstrip('/')}/{path}", params=params, headers={"X-API-Key": api_key}
         )
         if resp.status_code == 429:
             retry = min(float(resp.headers.get("Retry-After") or 30), 120)
             body = resp.text[:200]
             if "day" in body.lower() and retry > 60:
                 raise OmarStop(f"daily_limit: {body}")
-            logger.warning("omar_rate_limited", hashtag=hashtag, retry_after=retry)
+            logger.warning("omar_rate_limited", path=path, retry_after=retry)
             await asyncio.sleep(retry)
             continue
         if resp.status_code in (401, 403):
             raise OmarStop(f"http_{resp.status_code}: {resp.text[:200]}")
-        if resp.status_code == 424 and attempt < 3:
-            # FETCH_FAILED: Omar gọi TikTok lỗi tạm thời (đo 2026-10-12: ~15% trang). Thử ngay thì thường lỗi tiếp - chờ
-            # lâu dần rồi thử lại.
-            logger.info("omar_fetch_failed_retry", hashtag=hashtag, cursor=cursor, attempt=attempt + 1)
+        if resp.status_code == 424 and attempt < retries_424:
+            logger.info("omar_fetch_failed_retry", path=path, attempt=attempt + 1)
             await asyncio.sleep(5 * (attempt + 1))
             continue
         if resp.status_code == 404:
-            return [], None  # hashtag không tồn tại
+            return None
         resp.raise_for_status()
-        data = (resp.json() or {}).get("data") or {}
-        has_more = str(data.get("has_more")).lower() == "true"
-        return list(data.get("videos") or []), (
-            str(data.get("next_cursor")) if has_more and data.get("next_cursor") else None
-        )
-    # Hết lượt thử: báo lỗi chứ KHÔNG trả "hết trang" - không thì run_omar_round đánh dấu hashtag đã cào xong và bỏ nó
-    # 7 ngày. Lỗi thì con trỏ giữ nguyên, lượt sau thử lại đúng trang này.
-    raise RuntimeError(f"omar_retries_exhausted status={resp.status_code}")
+        return (resp.json() or {}).get("data") or {}
+    raise RuntimeError(f"omar_retries_exhausted path={path} status={resp.status_code}")
+
+
+def next_cursor(data: dict[str, Any]) -> str | None:
+    """Cursor trang kế tiếp từ `data` của một endpoint phân trang, hoặc None khi hết."""
+    has_more = str(data.get("has_more")).lower() == "true"
+    return str(data["next_cursor"]) if has_more and data.get("next_cursor") else None
+
+
+async def _fetch_page(
+    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết)."""
+    data = await omar_get(client, pacer, api_key, "hashtag_videos", {"name": hashtag, "cursor": cursor})
+    if data is None:
+        return [], None  # hashtag không tồn tại
+    return list(data.get("videos") or []), next_cursor(data)
+
+
+async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str) -> dict[str, Any]:
+    """Tổng số video / lượt xem TikTok báo cho hashtag (hashtag_info, format=clean) - để biết đã cào được bao nhiêu phần."""
+    # 424 ở endpoint này thường là "Hashtag not found or lookup failed" (đo 2026-10-12) - chỉ thử lại một lần.
+    data = await omar_get(client, pacer, api_key, "hashtag_info", {"name": hashtag, "format": "clean"}, retries_424=1)
+    info = (data or {}).get("hashtag") or {}
+    nested = {**(info.get("ch_info") or {}), **(info.get("stats") or {}), **(info.get("statistics") or {})}
+
+    def pick(*names: str) -> int:
+        # Tên trường khác nhau giữa format=clean / dạng gốc của app (cha_info.user_count = số video) - lấy cái có số.
+        for source in (info, nested):
+            for name in names:
+                try:
+                    if int(source.get(name) or 0) > 0:
+                        return int(source[name])
+                except TypeError, ValueError:
+                    continue
+        return 0
+
+    return {
+        "video_count": pick("video_count", "videoCount", "user_count", "use_count"),
+        "view_count": pick("view_count", "viewCount", "play_count"),
+    }
 
 
 _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
@@ -332,6 +385,9 @@ async def hashtag_progress() -> list[dict[str, Any]]:
                 "cursor": entry.get("cursor"),
                 "done_at": entry.get("done_at"),
                 "fresh_at": entry.get("fresh_at"),
+                "video_count": entry.get("video_count"),
+                "view_count": entry.get("view_count"),
+                "info_at": entry.get("info_at"),
             }
         )
     return sorted(out, key=lambda row: (row["done_at"] is not None, -row["pages"]))
@@ -402,6 +458,39 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             logger.info("omar_round_no_budget", remaining=day.get("remaining"))
             return {**stats, "skipped": "no_budget"}
         pacer = _Pacer(per_minute)
+        spend = Budget(budget)
+
+        def should_stop() -> bool:
+            return _stop_requested or halted
+
+        halted = False
+        # 1. Bình luận tuần (app/services/omar_comments.py) - hàng đợi có thì làm trước, cùng ngân sách.
+        try:
+            await omar_comments.process_queue(client, pacer, api_key, spend, stats, should_stop)
+        except OmarStop as exc:
+            halted = True
+            stats["stopped"] = str(exc)[:100]
+            logger.error("omar_round_stopped", error=str(exc), telegram=True)
+        except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
+            logger.error("omar_comments_failed", error=str(exc)[:300])
+        # 2. Tổng video / lượt xem của từng hashtag (hashtag_info), làm mới mỗi settings.omar_hashtag_info_days ngày.
+        info_before = (now - timedelta(days=settings.omar_hashtag_info_days)).isoformat()
+        stale_info = [kw for kw in keywords if ((state.get(kw["id"]) or {}).get("info_at") or "") < info_before]
+
+        async def refresh_info(kw: dict[str, Any]) -> None:
+            if should_stop() or not spend.take():
+                return
+            stats["requests"] += 1
+            try:
+                info = await fetch_hashtag_info(client, pacer, api_key, str(kw["keyword"]).lstrip("#"))
+            except OmarStop:
+                raise
+            except Exception as exc:  # noqa: BLE001 - thử lại sau một ngày (lùi info_at), không phải mỗi lượt
+                logger.warning("omar_hashtag_info_failed", hashtag=kw["keyword"], error=str(exc)[:200])
+                retry_at = datetime.now(tz=UTC) - timedelta(days=settings.omar_hashtag_info_days - 1)
+                await save(kw["id"], {**(state.get(kw["id"]) or {}), "info_at": retry_at.isoformat()})
+                return
+            await save(kw["id"], {**(state.get(kw["id"]) or {}), **info, "info_at": datetime.now(tz=UTC).isoformat()})
 
         priority = await _movie_priority()
 
@@ -421,8 +510,6 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         fresh = sorted(
             (kw for kw in keywords if not todo(kw)), key=lambda kw: (state.get(kw["id"]) or {}).get("fresh_at") or ""
         )
-        # Vòng 1 chia đều: mỗi hashtag `quota` trang, `extra` hashtag đầu (theo vòng xoay) thêm 1 trang.
-        quota, extra = divmod(budget, max(len(deep), 1))
 
         async def fetch(kw: dict[str, Any], cursor: str) -> tuple[list[dict[str, Any]], str | None] | None:
             try:
@@ -450,23 +537,18 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                     await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
             return videos, next_cursor
 
-        reserved = 0  # request đã giữ chỗ trong ngân sách (trước khi gọi) - chạy song song không vượt budget
-        halted = False
-
         async def crawl(kw: dict[str, Any], pages: int) -> bool:
             """Tối đa `pages` trang tiếp theo của hashtag (tuần tự - trang sau cần cursor của trang trước). True khi hashtag
             còn trang để vòng sau / lượt sau đi tiếp."""
-            nonlocal reserved
             entry = state.get(kw["id"]) or {}
-            if entry.get("done_at"):  # đến hạn cào lại từ đầu
-                entry = {}
+            if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
+                entry = {k: entry[k] for k in ("video_count", "view_count", "info_at") if k in entry}
             entry.setdefault("started_at", now.isoformat())
             cursor = entry.get("cursor") or "0"
             empty = int(entry.get("empty") or 0)
             for _ in range(pages):
-                if reserved >= budget or _stop_requested or halted:
+                if should_stop() or not spend.take():
                     return True
-                reserved += 1
                 result = await fetch(kw, cursor)
                 if result is None:
                     return False  # trang lỗi: con trỏ giữ nguyên, lượt sau thử lại
@@ -485,10 +567,8 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             return True
 
         async def refresh_first_page(kw: dict[str, Any], _pages: int) -> bool:
-            nonlocal reserved
-            if reserved >= budget or _stop_requested or halted:
+            if should_stop() or not spend.take():
                 return False
-            reserved += 1
             if await fetch(kw, "0") is not None:
                 await save(kw["id"], {**(state.get(kw["id"]) or {}), "fresh_at": datetime.now(tz=UTC).isoformat()})
             return False
@@ -504,7 +584,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
             async def worker() -> None:
                 nonlocal halted
-                while not queue.empty() and not halted and not _stop_requested and reserved < budget:
+                while not queue.empty() and not should_stop() and not spend.exhausted:
                     kw, pages = queue.get_nowait()
                     try:
                         if await job(kw, pages):
@@ -520,14 +600,24 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
         # Vòng 1 chia đều; các vòng sau: phần ngân sách hashtag cào xong/lỗi để lại, mỗi hashtag còn trang thêm 1 trang;
         # cuối cùng ngân sách dư làm mới trang 1 của các hashtag đã cào hết.
+        if stale_info and not should_stop():
+            info_jobs = [(kw, 1) for kw in stale_info]
+
+            async def info_job(kw: dict[str, Any], _pages: int) -> bool:
+                await refresh_info(kw)
+                return False
+
+            await pool(info_job, info_jobs)
+        # Phần bình luận / hashtag_info đã tiêu một phần ngân sách: chia đều phần còn lại.
+        quota, extra = divmod(max(0, spend.limit - spend.used), max(len(deep), 1))
         first = [(kw, quota + (1 if i < extra else 0)) for i, kw in enumerate(deep)]
         first = [(kw, pages) for kw, pages in first if pages > 0]
         stats["keywords"] = len(first)
         stats["concurrency"] = settings.omar_concurrency
         active = await pool(crawl, first)
-        while active and reserved < budget and not halted and not _stop_requested:
+        while active and not spend.exhausted and not should_stop():
             active = await pool(crawl, [(kw, 1) for kw in active])
-        if fresh and reserved < budget and not halted and not _stop_requested:
+        if fresh and not spend.exhausted and not should_stop():
             await pool(refresh_first_page, [(kw, 1) for kw in fresh])
 
     try:

@@ -9,7 +9,7 @@ from fastapi import APIRouter
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services import omar_tiktok
+from app.services import omar_comments, omar_tiktok
 from app.services.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
@@ -28,11 +28,18 @@ async def omar_status() -> dict[str, Any]:
         "round": omar_tiktok.round_status(),
         "mode": "spread_daily" if settings.omar_spread_daily else "continuous",
         "hashtags": progress,
+        "comments": {
+            **await omar_comments.job_status(),
+            "weekday": settings.omar_comments_weekday,
+            "time": settings.omar_comments_time,
+            "top_per_hashtag": settings.omar_comments_top_per_hashtag,
+        },
         "totals": {
             "hashtags": len(progress),
             "finished": sum(1 for row in progress if row["done_at"]),
             "started": sum(1 for row in progress if row["pages"] > 0),
             "pages": sum(row["pages"] for row in progress),
+            "tiktok_videos": sum(row["video_count"] or 0 for row in progress),
         },
     }
 
@@ -51,3 +58,19 @@ async def omar_stop() -> dict[str, bool]:
     stopping = omar_tiktok.request_stop()
     logger.info("omar_manual_stop", stopping=stopping)
     return {"stopping": stopping}
+
+
+@router.post("/comments/run")
+async def omar_comments_run() -> dict[str, Any]:
+    """Xếp hàng bình luận tuần ngay (không đợi mốc tuần) rồi mở lượt Omar nếu đang rảnh - lượt đang chạy thì hàng đợi được
+    xử lý ở lượt kế tiếp."""
+    from app.services.scheduler import trigger_omar_now
+
+    job = await omar_comments.enqueue_weekly_job(trigger="manual")
+    started = trigger_omar_now()
+    logger.info("omar_comments_manual_run", videos=job["videos"], started=started)
+    return {
+        "queued": job["videos"],
+        "pending": (await omar_comments.job_status())["pending_videos"],
+        "started": started,
+    }

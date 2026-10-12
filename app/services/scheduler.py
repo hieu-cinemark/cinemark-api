@@ -40,6 +40,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
+from app.services import omar_comments
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -422,8 +423,13 @@ def trigger_omar_now() -> bool:
 async def _omar_tick() -> None:
     """Mỗi giờ một lượt, từ phút settings.omar_round_minute. Lượt trước chưa xong (chế độ chạy liên tục: một lượt có thể
     kéo dài nhiều giờ tới khi hết hạn mức) thì không mở lượt chồng lên; xong thì lượt kế bắt đầu ở lần kiểm tra sau. Khoá
-    theo giờ trong Redis để restart API không chạy lặp."""
+    theo giờ trong Redis để restart API không chạy lặp. Tới mốc tuần thì xếp hàng bình luận (app/services/omar_comments.py)
+    - lượt kế tiếp xử lý hàng đợi trước phần hashtag."""
     now = datetime.now(TIMEZONE)
+    try:
+        await omar_comments.maybe_enqueue_weekly(now)
+    except Exception as exc:  # noqa: BLE001 - xếp hàng lỗi: tick sau thử lại
+        logger.error("omar_comments_enqueue_failed", error=str(exc)[:300])
     if omar_is_running() or now.minute < settings.omar_round_minute:
         return
     hour_key = now.strftime("%Y-%m-%dT%H")

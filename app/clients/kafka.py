@@ -487,6 +487,23 @@ async def publish_raw_post(*, key: str, value: dict[str, Any]) -> bool:
     return True
 
 
+RAW_COMMENTS_TOPIC = "raw_comments"
+
+
+async def publish_raw_comment(*, key: str, value: dict[str, Any]) -> bool:
+    """Gửi một bình luận lên raw_comments như spider-hub làm (key "<platform>:<comment_id>", value {"platform",
+    "post_id", ...}) - cho bình luận không đi qua spider-hub (app/services/omar_comments.py)."""
+    if _producer is None:
+        logger.warning("kafka_producer_not_started", key=key)
+        return False
+    try:
+        await _producer.send_and_wait(RAW_COMMENTS_TOPIC, key=key, value=value)
+    except KafkaError as exc:
+        logger.warning("kafka_publish_failed", error=str(exc), key=key)
+        return False
+    return True
+
+
 INGEST_DECISIONS_TOPIC = "ingest_decisions"
 
 

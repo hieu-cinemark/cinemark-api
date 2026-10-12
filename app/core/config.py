@@ -141,6 +141,15 @@ class Settings(BaseSettings):
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_tiktok._claim_unseen.
     omar_republish_hours: float = 12
     omar_recrawl_days: int = 7
+    # Bình luận TikTok qua Omar mỗi tuần một lần (app/services/omar_comments.py): từ thứ omar_comments_weekday (0 = thứ Hai)
+    # lúc omar_comments_time giờ VN, mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao
+    # nhất, cào HẾT bình luận (kèm trả lời nếu omar_comments_replies). Hàng đợi chạy trước phần hashtag của mỗi lượt Omar.
+    omar_comments_weekday: int = 0
+    omar_comments_time: str = "01:00"
+    omar_comments_top_per_hashtag: int = 100
+    omar_comments_replies: bool = True
+    # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
+    omar_hashtag_info_days: int = 7
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
