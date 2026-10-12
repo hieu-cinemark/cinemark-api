@@ -46,6 +46,7 @@ from app.services.cleanup import resolve_cleanup_settings, run_purge
 from app.services.comment_planner import run_comment_round
 from app.services.d1 import get_enabled_keywords
 from app.services.hashtag_discovery import run_discovery
+from app.services.omar_tiktok import claim_round as claim_omar_round
 from app.services.omar_tiktok import is_running as omar_is_running
 from app.services.omar_tiktok import run_omar_round_tracked
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
@@ -399,7 +400,7 @@ async def _run_omar_round(trigger: str) -> None:
 
 def trigger_omar_now() -> bool:
     """Nút "Chạy ngay" của tab Omar (app/api/routes/omar.py). False khi đang có lượt chạy."""
-    if omar_is_running():
+    if not claim_omar_round("manual"):
         return False
     _spawn(_run_omar_round("manual"))
     return True
@@ -415,6 +416,8 @@ async def _omar_tick() -> None:
     hour_key = now.strftime("%Y-%m-%dT%H")
     redis = get_redis_client()
     if await redis.get(_OMAR_ROUND_KEY) == hour_key:
+        return
+    if not claim_omar_round("schedule"):
         return
     await redis.set(_OMAR_ROUND_KEY, hour_key, ex=2 * 3600)
     logger.info("omar_round_firing", hour=hour_key)

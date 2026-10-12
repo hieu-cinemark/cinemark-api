@@ -233,13 +233,23 @@ def request_stop() -> bool:
     return True
 
 
-async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
-    """run_omar_round kèm cờ đang chạy / thời điểm / thống kê sống cho dashboard. Gọi khi chưa có lượt nào chạy."""
+def claim_round(trigger: str) -> bool:
+    """Bật cờ đang chạy NGAY khi ra lệnh (đồng bộ, trước khi task kịp chạy) - không thì bấm "Chạy ngay" hai lần, hoặc bấm
+    đúng lúc lượt theo lịch vừa kích hoạt, mở hai lượt song song tranh con trỏ và tốn gấp đôi request. False khi đang
+    có lượt chạy."""
     global _stop_requested
+    if _round["running"]:
+        return False
     _stop_requested = False
     _round.update(
         running=True, trigger=trigger, started_at=datetime.now(tz=UTC).isoformat(), finished_at=None, stats={}
     )
+    return True
+
+
+async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
+    """run_omar_round kèm thống kê sống cho dashboard. Bên gọi phải claim_round(trigger) thành công trước."""
+    global _stop_requested
     try:
         return await run_omar_round(live=_round["stats"])
     finally:
