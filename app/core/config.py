@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     # Số request Omar chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
     omar_concurrency: int = 12
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_tiktok._claim_unseen.
-    omar_republish_hours: float = 12
+    omar_republish_hours: float = 48
     omar_recrawl_days: int = 7
     # Bình luận TikTok qua Omar mỗi tuần một lần (app/services/omar_comments.py): từ thứ omar_comments_weekday (0 = thứ Hai)
     # lúc omar_comments_time giờ VN, mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao
@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     omar_search_budget_share: float = 0.2
     # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab Omar) - chừa phần còn lại cho lượt đang chạy.
     omar_manual_requests_per_minute: int = 30
+    # Hashtag đã cào xong chỉ được cào lại từ đầu bằng ngân sách dư sau chừng này giờ - cào lại mỗi giờ làm ingest tồn
+    # hàng chục nghìn bài cập nhật (12/10/2026).
+    omar_recrawl_min_hours: float = 24
+    # Số request D1 (REST API) đồng thời mỗi tiến trình - xem app/clients/d1.py.
+    d1_max_concurrency: int = 8
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
     omar_hashtag_info_days: int = 7
 

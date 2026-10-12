@@ -700,6 +700,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         priority = await _movie_priority()
 
         missing_before = (now - timedelta(hours=settings.omar_missing_recheck_hours)).isoformat()
+        recrawl_gap_before = (now - timedelta(hours=settings.omar_recrawl_min_hours)).isoformat()
 
         def missing(kw: dict[str, Any]) -> bool:
             return ((state.get(kw["id"]) or {}).get("missing_at") or "") >= missing_before
@@ -718,7 +719,13 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             ),
         )
         fresh = sorted(
-            (kw for kw in keywords if not todo(kw) and not missing(kw)),
+            (
+                kw
+                for kw in keywords
+                if not todo(kw)
+                and not missing(kw)
+                and ((state.get(kw["id"]) or {}).get("done_at") or "") < recrawl_gap_before
+            ),
             key=lambda kw: (state.get(kw["id"]) or {}).get("done_at") or "",
         )
 

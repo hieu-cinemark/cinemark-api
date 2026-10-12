@@ -38,7 +38,8 @@ _logged_db_target = False
 # từng treo cả API (kể cả /health) sau khi chuyển sang DB_MODE=remote.
 _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
-_remote_sem = asyncio.Semaphore(8)
+# 8 cho service API (giữ dashboard không treo); service ingest đặt D1_MAX_CONCURRENCY cao hơn để xử lý kịp hàng tồn Kafka.
+_remote_sem = asyncio.Semaphore(settings.d1_max_concurrency)
 
 
 def _get_local_conn() -> sqlite3.Connection:
