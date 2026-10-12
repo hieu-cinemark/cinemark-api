@@ -35,6 +35,7 @@ from app.clients.kafka import publish_crawl_request
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import d1_query, related_hashtags_for_keywords
+from app.services.omar_tiktok import hashtag_exists
 from app.services.relevance_rules import normalize_title, title_acronym
 
 logger = get_logger(__name__)
@@ -329,6 +330,17 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             and (movie["id"], tag) not in decided
             and not any(other in tag for other in other_tags)
         }
+        # Biến thể tự sinh (HoLinhTrangSiMovie, ChiChiEmEm32026...) phần lớn KHÔNG có trên TikTok (đo 12/10/2026) - kiểm tra
+        # qua Omar trước khi hỏi Kira; không có thì ghi "rejected" (xét lại sau RECHECK_REJECTED_DAYS ngày). Hashtag đi kèm
+        # lấy từ video thật nên không cần kiểm tra.
+        for tag, cand in list(cands.items()):
+            if cand["source"] != "variant" or await hashtag_exists(cand["display"]) is not False:
+                continue
+            del cands[tag]
+            stats["not_on_tiktok"] = stats.get("not_on_tiktok", 0) + 1
+            if not dry_run:
+                verdict = {"verdict": "not_on_tiktok", "confidence": 100, "reason": "Không có video trên TikTok (Omar)"}
+                await _record(movie["id"], cand, verdict, "rejected", None)
         if not cands:
             continue
         batch = sorted(cands.values(), key=lambda c: (c["source"] != "variant", -c["seen"]))[:MAX_CANDIDATES_PER_MOVIE]

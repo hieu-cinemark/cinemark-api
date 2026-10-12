@@ -150,6 +150,8 @@ class Settings(BaseSettings):
     omar_comments_replies: bool = True
     # Phần ngân sách mỗi lượt tối đa dành cho hàng đợi bình luận tuần - phần còn lại cho hashtag.
     omar_comments_budget_share: float = 0.5
+    # Hashtag không có trên TikTok (trang 1 luôn lỗi 424) được kiểm tra lại sau chừng này giờ.
+    omar_missing_recheck_hours: float = 24
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
     omar_hashtag_info_days: int = 7
 

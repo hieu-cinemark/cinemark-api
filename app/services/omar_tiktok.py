@@ -182,6 +182,30 @@ async def _fetch_page(
     return list(data.get("videos") or []), next_cursor(data)
 
 
+async def hashtag_exists(hashtag: str) -> bool | None:
+    """Hashtag có video trên TikTok không (trang 1 của hashtag_videos). None khi không biết (chưa có key, Omar lỗi khác).
+    Omar trả 424 cho hashtag không tồn tại (đo 12/10/2026: biến thể kiểu #ChiChiEmEm32026 luôn 424, #chichiemem3 có video)."""
+    row = await get_omar_api_settings()
+    api_key = ((row or {}).get("api_key") or "").strip()
+    if not api_key:
+        return None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        try:
+            data = await omar_get(
+                client,
+                _Pacer(settings.omar_requests_per_minute),
+                api_key,
+                "hashtag_videos",
+                {"name": hashtag.lstrip("#"), "cursor": "0"},
+                retries_424=1,
+            )
+        except httpx.HTTPStatusError as exc:
+            return False if exc.response.status_code == 424 else None
+        except Exception:  # noqa: BLE001 - không kiểm tra được thì coi như chưa biết
+            return None
+    return bool(data and data.get("videos"))
+
+
 async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str) -> dict[str, Any]:
     """Tổng số video / lượt xem TikTok báo cho hashtag (hashtag_info, format=clean) - để biết đã cào được bao nhiêu phần."""
     # 424 ở endpoint này thường là "Hashtag not found or lookup failed" (đo 2026-10-12) - chỉ thử lại một lần.
@@ -390,6 +414,7 @@ async def hashtag_progress() -> list[dict[str, Any]]:
                 "video_count": entry.get("video_count"),
                 "view_count": entry.get("view_count"),
                 "info_at": entry.get("info_at"),
+                "missing_at": entry.get("missing_at"),
             }
         )
     return sorted(out, key=lambda row: (row["done_at"] is not None, -row["pages"]))
@@ -504,9 +529,14 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
         priority = await _movie_priority()
 
+        missing_before = (now - timedelta(hours=settings.omar_missing_recheck_hours)).isoformat()
+
+        def missing(kw: dict[str, Any]) -> bool:
+            return ((state.get(kw["id"]) or {}).get("missing_at") or "") >= missing_before
+
         def todo(kw: dict[str, Any]) -> bool:
             entry = state.get(kw["id"]) or {}
-            return not entry.get("done_at") or entry["done_at"] < recrawl_before
+            return not missing(kw) and (not entry.get("done_at") or entry["done_at"] < recrawl_before)
 
         # Hashtag chưa cào trang nào trước (hashtag mới thêm), rồi phim gần ngày chiếu trước.
         deep = sorted(
@@ -518,7 +548,8 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             ),
         )
         fresh = sorted(
-            (kw for kw in keywords if not todo(kw)), key=lambda kw: (state.get(kw["id"]) or {}).get("done_at") or ""
+            (kw for kw in keywords if not todo(kw) and not missing(kw)),
+            key=lambda kw: (state.get(kw["id"]) or {}).get("done_at") or "",
         )
 
         async def fetch(kw: dict[str, Any], cursor: str) -> tuple[list[dict[str, Any]], str | None] | None:
@@ -561,6 +592,15 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 if should_stop() or not spend.take():
                     return True
                 result = await fetch(kw, cursor)
+                ever_done = bool((state.get(kw["id"]) or {}).get("done_at"))  # đã từng cào xong: có thật, chỉ lỗi tạm
+                if result is None and cursor == "0" and not entry.get("pages") and not ever_done:
+                    # Trang 1 lỗi (sau các lần thử lại trong omar_get) ở hashtag chưa từng lấy được trang nào: hashtag không
+                    # có trên TikTok (Omar trả 424 - biến thể AI tự đặt như #ChiChiEmEm32026). Bỏ qua, kiểm tra lại sau
+                    # settings.omar_missing_recheck_hours giờ (phim sắp chiếu có thể có hashtag sau).
+                    entry["missing_at"] = datetime.now(tz=UTC).isoformat()
+                    stats["missing"] = int(stats.get("missing") or 0) + 1
+                    await save(kw["id"], entry)
+                    return False
                 if result is None:
                     # Trang lỗi (sau các lần thử lại trong omar_get): đợi rồi thử lại đúng trang đó. Trước 12/10/2026 lỗi một
                     # trang là bỏ hashtag tới hết lượt - lượt kết thúc khi còn hơn nửa hạn mức ngày.
@@ -570,6 +610,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                     await asyncio.sleep(30 * failed)
                     continue
                 failed = 0
+                entry.pop("missing_at", None)
                 videos, next_cursor = result
                 entry["pages"] = int(entry.get("pages") or 0) + 1
                 empty = 0 if videos else empty + 1
