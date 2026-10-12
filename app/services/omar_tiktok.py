@@ -207,8 +207,7 @@ async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: _Pacer, api_key: 
 _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
 # Trang rỗng liên tiếp mà vẫn has_more: coi như đã hết (tránh lặp vô hạn nếu Omar trả cursor lỗi).
 _MAX_EMPTY_PAGES = 3
-# Số trang mỗi hashtag mỗi vòng trong một lượt (xem run_omar_round).
-_PASS_PAGES = 5
+_MAX_PAGE_FAILURES = 3
 
 
 async def fetch_usage(api_key: str, client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
@@ -395,10 +394,10 @@ async def hashtag_progress() -> list[dict[str, Any]]:
 
 
 async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Một lượt mỗi giờ, CHIA ĐỀU cho mọi hashtag chưa cào xong: nhiều vòng, mỗi vòng mỗi hashtag _PASS_PAGES trang (hashtag
-    chưa bắt đầu đi trước), tới khi hết ngân sách - nên hashtag mới thêm được cào ngay từ vòng đầu. Con trỏ mỗi hashtag lưu trong
+    """Một lượt mỗi giờ: settings.omar_concurrency worker, mỗi worker cào một hashtag TỚI HẾT video rồi nhận hashtag kế
+    (hashtag chưa bắt đầu đứng đầu hàng), tới khi hết ngân sách. Con trỏ mỗi hashtag lưu trong
     Redis sau mỗi trang, lượt sau / hôm sau đi tiếp; cào tới has_more = false thì xong, cào lại từ đầu sau
-    settings.omar_recrawl_days ngày, trong lúc chờ ngân sách dư lấy trang 1 để bắt video mới.
+    settings.omar_recrawl_days ngày, hoặc sớm hơn khi lượt còn ngân sách dư (hashtag xong lâu nhất trước).
 
     Ngân sách: mặc định CHẠY LIÊN TỤC - toàn bộ hạn mức ngày còn lại (GET /usage, trừ settings.omar_daily_reserve) dùng
     ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ Supabase mỗi lượt). settings.omar_spread_daily = True thì
@@ -512,7 +511,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             ),
         )
         fresh = sorted(
-            (kw for kw in keywords if not todo(kw)), key=lambda kw: (state.get(kw["id"]) or {}).get("fresh_at") or ""
+            (kw for kw in keywords if not todo(kw)), key=lambda kw: (state.get(kw["id"]) or {}).get("done_at") or ""
         )
 
         async def fetch(kw: dict[str, Any], cursor: str) -> tuple[list[dict[str, Any]], str | None] | None:
@@ -541,21 +540,29 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                     await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
             return videos, next_cursor
 
-        async def crawl(kw: dict[str, Any], pages: int) -> bool:
-            """Tối đa `pages` trang tiếp theo của hashtag (tuần tự - trang sau cần cursor của trang trước). True khi hashtag
-            còn trang để vòng sau / lượt sau đi tiếp."""
+        async def crawl(kw: dict[str, Any], _pages: int) -> bool:
+            """Cào hashtag TỚI HẾT video (has_more = false) - tuần tự, trang sau cần cursor của trang trước. Dừng sớm chỉ
+            khi hết ngân sách / bị dừng / một trang lỗi _MAX_PAGE_FAILURES lần liền; con trỏ đã lưu nên lượt sau đi tiếp."""
             entry = state.get(kw["id"]) or {}
             if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
                 entry = {k: entry[k] for k in ("video_count", "view_count", "info_at") if k in entry}
             entry.setdefault("started_at", now.isoformat())
             cursor = entry.get("cursor") or "0"
             empty = int(entry.get("empty") or 0)
-            for _ in range(pages):
+            failed = 0
+            while True:
                 if should_stop() or not spend.take():
                     return True
                 result = await fetch(kw, cursor)
                 if result is None:
-                    return False  # trang lỗi: con trỏ giữ nguyên, lượt sau thử lại
+                    # Trang lỗi (sau các lần thử lại trong omar_get): đợi rồi thử lại đúng trang đó. Trước 12/10/2026 lỗi một
+                    # trang là bỏ hashtag tới hết lượt - lượt kết thúc khi còn hơn nửa hạn mức ngày.
+                    failed += 1
+                    if failed >= _MAX_PAGE_FAILURES:
+                        return True
+                    await asyncio.sleep(30 * failed)
+                    continue
+                failed = 0
                 videos, next_cursor = result
                 entry["pages"] = int(entry.get("pages") or 0) + 1
                 empty = 0 if videos else empty + 1
@@ -568,14 +575,6 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 cursor = next_cursor
                 entry.update(cursor=cursor, empty=empty)
                 await save(kw["id"], entry)
-            return True
-
-        async def refresh_first_page(kw: dict[str, Any], _pages: int) -> bool:
-            if should_stop() or not spend.take():
-                return False
-            if await fetch(kw, "0") is not None:
-                await save(kw["id"], {**(state.get(kw["id"]) or {}), "fresh_at": datetime.now(tz=UTC).isoformat()})
-            return False
 
         async def pool(job, items: list[tuple[dict[str, Any], int]]) -> list[dict[str, Any]]:
             """Chạy `items` (hashtag, số trang) trên tối đa settings.omar_concurrency worker song song - mỗi hashtag chỉ
@@ -610,17 +609,16 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 return False
 
             await pool(info_job, info_jobs)
-        # Nhiều vòng, mỗi vòng mỗi hashtag còn trang _PASS_PAGES trang, tới khi hết ngân sách. Trước 12/10/2026 vòng đầu
-        # chia cả ngân sách (vài trăm trang mỗi hashtag) và worker làm tuần tự theo hàng - hết hạn mức ngày trước khi tới
-        # cuối hàng, nên hashtag mới thêm (luôn ở cuối) không bao giờ được cào. Cuối cùng ngân sách dư làm mới trang 1 của
-        # các hashtag đã cào hết.
+        # Mỗi worker nhận một hashtag và cào tới hết rồi mới nhận hashtag kế (settings.omar_concurrency hashtag song song);
+        # hashtag chưa bắt đầu đứng đầu hàng nên hashtag mới thêm được cào ngay.
         stats["keywords"] = len(deep)
         stats["concurrency"] = settings.omar_concurrency
-        active = deep
-        while active and not spend.exhausted and not should_stop():
-            active = await pool(crawl, [(kw, _PASS_PAGES) for kw in active])
-        if fresh and not spend.exhausted and not should_stop():
-            await pool(refresh_first_page, [(kw, 1) for kw in fresh])
+        await pool(crawl, [(kw, 0) for kw in deep])
+        # Còn ngân sách: cào lại TỪ ĐẦU các hashtag đã xong lâu nhất (crawl tự đặt lại con trỏ khi có done_at) - bắt video
+        # mới và cập nhật tương tác thay vì để hạn mức ngày bỏ phí.
+        stats["recrawl_keywords"] = len(fresh)
+        if not spend.exhausted and not should_stop():
+            await pool(crawl, [(kw, 0) for kw in fresh])
 
     pending = sum(1 for kw in keywords if todo(kw))
     stats["pending_keywords"] = pending
