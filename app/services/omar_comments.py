@@ -37,6 +37,7 @@ logger = get_logger(__name__)
 JOBS_KEY = f"{REDIS_KEY_PREFIX}omar:comments:jobs"
 WEEK_KEY = f"{REDIS_KEY_PREFIX}omar:comments:week"
 LAST_JOB_KEY = f"{REDIS_KEY_PREFIX}omar:comments:last_job"
+ENQUEUE_LOCK_KEY = f"{REDIS_KEY_PREFIX}omar:comments:enqueuing"
 _SPIDER_SEEN_COMMENTS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_comment_ids"
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 WINDOW = timedelta(days=7)
@@ -153,17 +154,16 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
     return info
 
 
-async def maybe_enqueue_weekly(now_local: datetime) -> bool:
-    """Gọi từ scheduler mỗi tick: tới mốc tuần và tuần này chưa xếp hàng thì xếp hàng. True khi vừa xếp hàng."""
+async def weekly_enqueue_due(now_local: datetime) -> bool:
+    """Gọi từ scheduler mỗi tick (phải nhanh - tick bị cắt sau 25 giây): tới mốc tuần, tuần này chưa xếp hàng và không có
+    lượt xếp hàng nào đang chạy thì giữ khoá và trả True - bên gọi chạy enqueue_weekly_job ở nền (một truy vấn D1 mỗi
+    hashtag, lâu hơn một tick nhiều). Khoá tự hết hạn sau 15 phút, nên xếp hàng lỗi thì tick sau thử lại."""
     if not weekly_due(now_local):
         return False
-    week = iso_week(now_local)
     redis = get_redis_client()
-    current = await redis.get(WEEK_KEY)
-    if (current.decode() if isinstance(current, bytes) else current) == week:
+    if await redis.get(WEEK_KEY) == iso_week(now_local):
         return False
-    await enqueue_weekly_job(week=week)
-    return True
+    return bool(await redis.set(ENQUEUE_LOCK_KEY, "1", ex=15 * 60, nx=True))
 
 
 async def pending_jobs() -> list[dict[str, Any]]:

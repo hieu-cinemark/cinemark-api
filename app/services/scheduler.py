@@ -412,6 +412,15 @@ async def _run_omar_round(trigger: str) -> None:
         logger.error("hashtag_discovery_after_omar_failed", error=str(exc)[:300])
 
 
+async def _enqueue_weekly_comments(week: str) -> None:
+    # Chạy nền: xếp hàng bình luận tuần mất lâu hơn một tick (một truy vấn D1 mỗi hashtag) - chạy trong tick thì bị cắt
+    # sau 25 giây và chặn luôn việc mở lượt Omar (lỗi 2026-10-12).
+    try:
+        await omar_comments.enqueue_weekly_job(week=week)
+    except Exception as exc:  # noqa: BLE001 - khoá hết hạn sau 15 phút, tick sau thử lại
+        logger.error("omar_comments_enqueue_failed", error=str(exc)[:300])
+
+
 def trigger_omar_now() -> bool:
     """Nút "Chạy ngay" của tab Omar (app/api/routes/omar.py). False khi đang có lượt chạy."""
     if not claim_omar_round("manual"):
@@ -427,8 +436,9 @@ async def _omar_tick() -> None:
     - lượt kế tiếp xử lý hàng đợi trước phần hashtag."""
     now = datetime.now(TIMEZONE)
     try:
-        await omar_comments.maybe_enqueue_weekly(now)
-    except Exception as exc:  # noqa: BLE001 - xếp hàng lỗi: tick sau thử lại
+        if await omar_comments.weekly_enqueue_due(now):
+            _spawn(_enqueue_weekly_comments(omar_comments.iso_week(now)))
+    except Exception as exc:  # noqa: BLE001 - tick sau thử lại
         logger.error("omar_comments_enqueue_failed", error=str(exc)[:300])
     if omar_is_running() or now.minute < settings.omar_round_minute:
         return
