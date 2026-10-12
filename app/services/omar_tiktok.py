@@ -111,7 +111,7 @@ async def _fetch_page(
     client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết)."""
-    for attempt in range(3):
+    for attempt in range(4):
         await pacer.wait()
         resp = await client.get(
             f"{settings.omar_api_base_url.rstrip('/')}/hashtag_videos",
@@ -128,8 +128,12 @@ async def _fetch_page(
             continue
         if resp.status_code in (401, 403):
             raise OmarStop(f"http_{resp.status_code}: {resp.text[:200]}")
-        if resp.status_code == 424 and attempt == 0:
-            continue  # TikTok phía Omar lỗi tạm thời - thử lại một lần
+        if resp.status_code == 424 and attempt < 3:
+            # FETCH_FAILED: Omar gọi TikTok lỗi tạm thời (đo 2026-10-12: ~15% trang). Thử ngay thì thường lỗi tiếp - chờ
+            # lâu dần rồi thử lại.
+            logger.info("omar_fetch_failed_retry", hashtag=hashtag, cursor=cursor, attempt=attempt + 1)
+            await asyncio.sleep(5 * (attempt + 1))
+            continue
         if resp.status_code == 404:
             return [], None  # hashtag không tồn tại
         resp.raise_for_status()
@@ -138,7 +142,9 @@ async def _fetch_page(
         return list(data.get("videos") or []), (
             str(data.get("next_cursor")) if has_more and data.get("next_cursor") else None
         )
-    return [], None
+    # Hết lượt thử: báo lỗi chứ KHÔNG trả "hết trang" - không thì run_omar_round đánh dấu hashtag đã cào xong và bỏ nó
+    # 7 ngày. Lỗi thì con trỏ giữ nguyên, lượt sau thử lại đúng trang này.
+    raise RuntimeError(f"omar_retries_exhausted status={resp.status_code}")
 
 
 _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
