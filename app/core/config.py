@@ -123,8 +123,10 @@ class Settings(BaseSettings):
     # comment ở phút 5). Mỗi hashtag cào tới hết, con trỏ lưu trong Redis. Ngân sách mỗi giờ = hạn mức ngày còn lại (trừ
     # omar_daily_reserve để chừa cho chạy tay) chia đều cho số giờ tới lúc reset, trần omar_requests_per_hour (một giờ ở
     # 10 request/phút làm tối đa ~550). Hashtag đã cào hết được cào lại từ đầu sau omar_recrawl_days ngày.
+    # Giới hạn mỗi phút đọc từ GET /usage của gói mỗi lượt (omar_requests_per_minute chỉ là dự phòng khi không đọc được);
+    # omar_requests_per_hour = 0 nghĩa là không đặt trần riêng - nâng gói Omar thì tự dùng hết, không cần sửa.
     omar_round_minute: int = 20
-    omar_requests_per_hour: int = 500
+    omar_requests_per_hour: int = 0
     omar_requests_per_minute: int = 10
     omar_daily_reserve: int = 50
     omar_recrawl_days: int = 7

@@ -152,12 +152,14 @@ _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
 _MAX_EMPTY_PAGES = 3
 
 
-async def _usage(client: httpx.AsyncClient, api_key: str) -> tuple[int, int] | None:
-    """(request còn lại trong ngày, số giây tới lúc reset) từ GET /usage, hoặc None khi không đọc được."""
+async def _usage(client: httpx.AsyncClient, api_key: str) -> tuple[int, int, int] | None:
+    """(request còn lại trong ngày, số giây tới lúc reset, giới hạn mỗi phút của gói) từ GET /usage, hoặc None khi không
+    đọc được. Đọc giới hạn của GÓI mỗi lượt nên nâng gói Omar thì cào nhanh/nhiều hơn mà không phải sửa gì."""
     try:
         resp = await client.get(f"{settings.omar_api_base_url.rstrip('/')}/usage", headers={"X-API-Key": api_key})
-        day = (((resp.json() or {}).get("data") or {}).get("usage") or {}).get("day") or {}
-        return int(day.get("remaining")), int(day.get("resets_in") or 0)
+        usage = (((resp.json() or {}).get("data") or {}).get("usage")) or {}
+        day, minute = usage.get("day") or {}, usage.get("minute") or {}
+        return int(day.get("remaining")), int(day.get("resets_in") or 0), int(minute.get("limit") or 0)
     except Exception as exc:  # noqa: BLE001 - không đọc được thì dùng ngân sách mặc định
         logger.warning("omar_usage_failed", error=str(exc)[:200])
         return None
@@ -176,14 +178,19 @@ async def _movie_priority() -> dict[str, float]:
     return out
 
 
-async def run_omar_round() -> dict[str, Any]:
-    """Một lượt mỗi giờ: cào TỪNG hashtag TỚI HẾT (has_more = false), lưu con trỏ trong Redis sau mỗi trang - hết
-    ngân sách giữa chừng thì lượt sau (giờ sau / hôm sau khi hạn mức ngày reset) đi tiếp đúng chỗ đó. Hashtag đã cào hết
-    được cào lại từ đầu sau settings.omar_recrawl_days ngày; trong lúc chờ, ngân sách còn dư lấy trang 1 của chúng để
-    bắt video mới.
+_ROTATE_KEY = f"{REDIS_KEY_PREFIX}omar:rotation_offset"
 
-    Ngân sách mỗi giờ = hạn mức ngày còn lại (GET /usage) chia đều cho số giờ tới lúc reset, trần
-    settings.omar_requests_per_hour - dùng hết hạn mức ngày mà không bị chặn giữa ngày."""
+
+async def run_omar_round() -> dict[str, Any]:
+    """Một lượt mỗi giờ, CHIA ĐỀU cho mọi hashtag chưa cào xong (xoay vòng): mỗi hashtag được budget // số hashtag trang,
+    phần dư +1 trang cho vài hashtag - vị trí bắt đầu xoay qua từng lượt (Redis omar:rotation_offset) để công bằng.
+    Hashtag nào cào xong giữa lượt thì phần trang còn lại chia tiếp cho các hashtag khác. Con trỏ mỗi hashtag lưu trong
+    Redis sau mỗi trang, lượt sau / hôm sau đi tiếp; cào tới has_more = false thì xong, cào lại từ đầu sau
+    settings.omar_recrawl_days ngày, trong lúc chờ ngân sách dư lấy trang 1 để bắt video mới.
+
+    Ngân sách mỗi giờ = hạn mức ngày còn lại (GET /usage, trừ settings.omar_daily_reserve) chia cho số giờ tới lúc reset,
+    trần = số request làm được trong một giờ ở giới hạn mỗi phút của gói (và settings.omar_requests_per_hour nếu > 0).
+    Nhịp gọi cũng theo giới hạn mỗi phút của gói - nâng gói Omar thì tự chạy nhanh/nhiều hơn."""
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
     stats: dict[str, Any] = {"keywords": 0, "requests": 0, "videos": 0, "published": 0, "failed": 0, "finished": 0}
@@ -212,19 +219,24 @@ async def run_omar_round() -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 - mất con trỏ chỉ làm lần sau cào lại từ đầu
             logger.warning("omar_state_save_failed", error=str(exc)[:200])
 
-    pacer = _Pacer(settings.omar_requests_per_minute)
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         usage = await _usage(client, api_key)
+        per_minute = (usage[2] if usage and usage[2] > 0 else 0) or settings.omar_requests_per_minute
+        hour_cap = per_minute * 55
+        if settings.omar_requests_per_hour > 0:
+            hour_cap = min(hour_cap, settings.omar_requests_per_hour)
         if usage is not None:
-            remaining, resets_in = usage
+            remaining, resets_in, _ = usage
             hours_left = max(1, -(-resets_in // 3600))
-            budget = min(settings.omar_requests_per_hour, max(0, remaining - settings.omar_daily_reserve) // hours_left)
+            budget = min(hour_cap, max(0, remaining - settings.omar_daily_reserve) // hours_left)
         else:
-            budget = settings.omar_requests_per_hour // 4
+            budget = hour_cap // 4
         stats["budget"] = budget
+        stats["per_minute"] = per_minute
         if budget <= 0:
             logger.info("omar_round_no_budget", remaining=usage[0] if usage else None)
             return {**stats, "skipped": "no_budget"}
+        pacer = _Pacer(per_minute)
 
         priority = await _movie_priority()
 
@@ -232,14 +244,20 @@ async def run_omar_round() -> dict[str, Any]:
             entry = state.get(kw["id"]) or {}
             return not entry.get("done_at") or entry["done_at"] < recrawl_before
 
-        # Cào dở trước, rồi chưa cào / đến hạn cào lại; phim gần ngày chiếu trước.
+        # Thứ tự gốc: phim gần ngày chiếu trước; rồi xoay vòng theo offset để phần dư chia công bằng qua các lượt.
         deep = sorted(
-            (kw for kw in keywords if todo(kw)),
-            key=lambda kw: (not (state.get(kw["id"]) or {}).get("cursor"), priority.get(kw["movie_id"], 365.0)),
+            (kw for kw in keywords if todo(kw)), key=lambda kw: (priority.get(kw["movie_id"], 365.0), kw["id"])
         )
+        try:
+            offset = int(await redis.get(_ROTATE_KEY) or 0) % max(len(deep), 1)
+        except Exception:  # noqa: BLE001
+            offset = 0
+        deep = deep[offset:] + deep[:offset]
         fresh = sorted(
             (kw for kw in keywords if not todo(kw)), key=lambda kw: (state.get(kw["id"]) or {}).get("fresh_at") or ""
         )
+        # Vòng 1 chia đều: mỗi hashtag `quota` trang, `extra` hashtag đầu (theo vòng xoay) thêm 1 trang.
+        quota, extra = divmod(budget, max(len(deep), 1))
 
         async def fetch(kw: dict[str, Any], cursor: str) -> tuple[list[dict[str, Any]], str | None] | None:
             try:
@@ -263,33 +281,46 @@ async def run_omar_round() -> dict[str, Any]:
                 )
             return videos, next_cursor
 
-        try:
-            for kw in deep:
+        async def crawl(kw: dict[str, Any], pages: int) -> bool:
+            """Tối đa `pages` trang tiếp theo của hashtag. True khi hashtag còn trang để lượt sau / vòng sau đi tiếp."""
+            entry = state.get(kw["id"]) or {}
+            if entry.get("done_at"):  # đến hạn cào lại từ đầu
+                entry = {}
+            entry.setdefault("started_at", now.isoformat())
+            cursor = entry.get("cursor") or "0"
+            empty = int(entry.get("empty") or 0)
+            for _ in range(pages):
                 if stats["requests"] >= budget:
-                    break
-                entry = state.get(kw["id"]) or {}
-                if entry.get("done_at"):  # đến hạn cào lại từ đầu
-                    entry = {}
-                entry.setdefault("started_at", now.isoformat())
-                cursor = entry.get("cursor") or "0"
-                stats["keywords"] += 1
-                empty = 0
-                while stats["requests"] < budget:
-                    result = await fetch(kw, cursor)
-                    if result is None:
-                        break
-                    videos, next_cursor = result
-                    entry["pages"] = int(entry.get("pages") or 0) + 1
-                    empty = 0 if videos else empty + 1
-                    if next_cursor is None or empty >= _MAX_EMPTY_PAGES:
-                        entry.update(cursor=None, done_at=datetime.now(tz=UTC).isoformat(), fresh_at=None)
-                        stats["finished"] += 1
-                        logger.info("omar_hashtag_finished", hashtag=kw["keyword"], pages=entry["pages"])
-                        await save(kw["id"], entry)
-                        break
-                    cursor = next_cursor
-                    entry["cursor"] = cursor
+                    return True
+                result = await fetch(kw, cursor)
+                if result is None:
+                    return False  # trang lỗi: con trỏ giữ nguyên, lượt sau thử lại
+                videos, next_cursor = result
+                entry["pages"] = int(entry.get("pages") or 0) + 1
+                empty = 0 if videos else empty + 1
+                if next_cursor is None or empty >= _MAX_EMPTY_PAGES:
+                    entry.update(cursor=None, empty=0, done_at=datetime.now(tz=UTC).isoformat(), fresh_at=None)
+                    stats["finished"] += 1
+                    logger.info("omar_hashtag_finished", hashtag=kw["keyword"], pages=entry["pages"])
                     await save(kw["id"], entry)
+                    return False
+                cursor = next_cursor
+                entry.update(cursor=cursor, empty=empty)
+                await save(kw["id"], entry)
+            return True
+
+        try:
+            # Vòng 1: chia đều. Các vòng sau: phần ngân sách hashtag cào xong/lỗi để lại, mỗi hashtag còn trang thêm 1 trang.
+            active = []
+            for i, kw in enumerate(deep):
+                pages = quota + (1 if i < extra else 0)
+                if pages <= 0 or stats["requests"] >= budget:
+                    break
+                stats["keywords"] += 1
+                if await crawl(kw, pages):
+                    active.append(kw)
+            while active and stats["requests"] < budget:
+                active = [kw for kw in active if stats["requests"] < budget and await crawl(kw, 1)]
             # Còn dư ngân sách: trang 1 của các hashtag đã cào hết, lâu chưa làm mới nhất trước.
             for kw in fresh:
                 if stats["requests"] >= budget:
@@ -300,6 +331,13 @@ async def run_omar_round() -> dict[str, Any]:
             logger.error("omar_round_stopped", error=str(exc), telegram=True)
             stats["stopped"] = str(exc)[:100]
 
+    try:
+        # Mọi hashtag đều có phần (quota > 0): dịch đúng số hashtag vừa nhận trang dư, để lượt sau trang dư rơi vào
+        # nhóm kế tiếp. Ngân sách ít hơn số hashtag: dịch qua những hashtag vừa được cào.
+        step = extra if quota > 0 else stats["keywords"]
+        await redis.set(_ROTATE_KEY, (offset + max(step, 1)) % max(len(deep), 1))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("omar_rotation_save_failed", error=str(exc)[:200])
     pending = sum(1 for kw in keywords if todo(kw))
     logger.info("omar_round_finished", total_keywords=len(keywords), pending_keywords=pending, **stats)
     return {**stats, "pending_keywords": pending}
