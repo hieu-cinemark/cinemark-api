@@ -5,10 +5,10 @@ cập nhật tương tác và chọn bài cào comment như mọi bài TikTok kh
 
 API key đọc từ bảng omar_api_settings trên Supabase (nhập ở Settings). Không có key thì bỏ qua.
 
-Ngân sách: gói hiện tại 10 request/phút, 3.000/ngày (GET /usage). Mỗi giờ dùng tối đa settings.omar_requests_per_hour
-(mặc định 100 ~ 2.400/ngày) chia đều cho các hashtag TikTok đang bật: mỗi hashtag 1..omar_max_pages_per_keyword trang
-(20 video/trang). Nhiều hashtag hơn ngân sách thì xoay vòng qua các giờ (offset trong Redis). Nhịp gọi giữ dưới giới hạn
-mỗi phút; 429 chờ theo Retry-After, 424 (TikTok phía họ lỗi) thử lại một lần, 401/403 (key sai/hết hạn) dừng lượt.
+Từ 2026-10-12 mỗi hashtag được cào TỚI HẾT kết quả, con trỏ lưu trong Redis (omar:hashtag_state) - hết ngân sách thì
+lượt sau đi tiếp (xem run_omar_round). Gói hiện tại 10 request/phút, 3.000/ngày (GET /usage): ngân sách mỗi giờ = hạn
+mức ngày còn lại chia đều cho số giờ tới lúc reset. Nhịp gọi giữ dưới giới hạn mỗi phút; 429 chờ theo Retry-After, 424
+(TikTok phía họ lỗi) thử lại một lần, 401/403 (key sai/hết hạn) dừng lượt.
 
 Định dạng mặc định (không format=clean) là response gốc của TikTok - có đủ tác giả (format=clean thì không), nên mỗi bài
 lưu kèm tín hiệu tác giả (tick xanh, follower, tài khoản shop, nhãn quảng cáo/hợp tác) trong raw_json."""
@@ -16,7 +16,9 @@ lưu kèm tín hiệu tác giả (tick xanh, follower, tài khoản shop, nhãn 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -25,12 +27,10 @@ from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import get_enabled_keywords
+from app.services.d1 import d1_query, get_enabled_keywords
 from app.services.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
-
-_OFFSET_KEY = f"{REDIS_KEY_PREFIX}omar:tiktok_hashtag_offset"
 
 
 class OmarStop(Exception):
@@ -141,11 +141,46 @@ async def _fetch_page(
     return [], None
 
 
+_STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
+# Trang rỗng liên tiếp mà vẫn has_more: coi như đã hết (tránh lặp vô hạn nếu Omar trả cursor lỗi).
+_MAX_EMPTY_PAGES = 3
+
+
+async def _usage(client: httpx.AsyncClient, api_key: str) -> tuple[int, int] | None:
+    """(request còn lại trong ngày, số giây tới lúc reset) từ GET /usage, hoặc None khi không đọc được."""
+    try:
+        resp = await client.get(f"{settings.omar_api_base_url.rstrip('/')}/usage", headers={"X-API-Key": api_key})
+        day = (((resp.json() or {}).get("data") or {}).get("usage") or {}).get("day") or {}
+        return int(day.get("remaining")), int(day.get("resets_in") or 0)
+    except Exception as exc:  # noqa: BLE001 - không đọc được thì dùng ngân sách mặc định
+        logger.warning("omar_usage_failed", error=str(exc)[:200])
+        return None
+
+
+async def _movie_priority() -> dict[str, float]:
+    """movie_id -> số ngày lệch khỏi ngày chiếu (nhỏ = gần ngày chiếu, cào trước)."""
+    rows = await d1_query("SELECT id, released_at FROM movies", quiet=True) or []
+    today = datetime.now(tz=UTC).date()
+    out: dict[str, float] = {}
+    for row in rows:
+        try:
+            out[row["id"]] = abs((datetime.fromisoformat(str(row["released_at"])[:10]).date() - today).days)
+        except TypeError, ValueError:
+            out[row["id"]] = 365.0
+    return out
+
+
 async def run_omar_round() -> dict[str, Any]:
-    """Một lượt mỗi giờ. Trả về thống kê."""
+    """Một lượt mỗi giờ: cào TỪNG hashtag TỚI HẾT (has_more = false), lưu con trỏ trong Redis sau mỗi trang - hết
+    ngân sách giữa chừng thì lượt sau (giờ sau / hôm sau khi hạn mức ngày reset) đi tiếp đúng chỗ đó. Hashtag đã cào hết
+    được cào lại từ đầu sau settings.omar_recrawl_days ngày; trong lúc chờ, ngân sách còn dư lấy trang 1 của chúng để
+    bắt video mới.
+
+    Ngân sách mỗi giờ = hạn mức ngày còn lại (GET /usage) chia đều cho số giờ tới lúc reset, trần
+    settings.omar_requests_per_hour - dùng hết hạn mức ngày mà không bị chặn giữa ngày."""
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
-    stats: dict[str, Any] = {"keywords": 0, "requests": 0, "videos": 0, "published": 0, "failed": 0}
+    stats: dict[str, Any] = {"keywords": 0, "requests": 0, "videos": 0, "published": 0, "failed": 0, "finished": 0}
     if not api_key:
         logger.info("omar_round_skipped_no_key")
         return {**stats, "skipped": "no_key"}
@@ -153,50 +188,112 @@ async def run_omar_round() -> dict[str, Any]:
     if not keywords:
         return {**stats, "skipped": "no_keywords"}
 
-    budget = max(settings.omar_requests_per_hour, 1)
-    pages = max(1, min(settings.omar_max_pages_per_keyword, budget // len(keywords)))
-    per_round = min(len(keywords), budget // pages)
-    # Nhiều hashtag hơn ngân sách một giờ: xoay vòng, giờ sau tiếp từ chỗ giờ này dừng.
     redis = get_redis_client()
-    try:
-        offset = int(await redis.get(_OFFSET_KEY) or 0) % len(keywords)
-    except Exception:  # noqa: BLE001 - không có Redis thì bắt đầu từ đầu
-        offset = 0
-    ordered = sorted(keywords, key=lambda k: k["id"])
-    batch = (ordered[offset:] + ordered[:offset])[:per_round]
+    raw_state = await redis.hgetall(_STATE_KEY) or {}
+    state: dict[str, dict[str, Any]] = {}
+    for key, value in raw_state.items():
+        try:
+            state[key.decode() if isinstance(key, bytes) else key] = json.loads(value)
+        except TypeError, ValueError:
+            continue
+    now = datetime.now(tz=UTC)
+    recrawl_before = (now - timedelta(days=settings.omar_recrawl_days)).isoformat()
+
+    async def save(kw_id: str, entry: dict[str, Any]) -> None:
+        state[kw_id] = entry
+        try:
+            await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
+        except Exception as exc:  # noqa: BLE001 - mất con trỏ chỉ làm lần sau cào lại từ đầu
+            logger.warning("omar_state_save_failed", error=str(exc)[:200])
 
     pacer = _Pacer(settings.omar_requests_per_minute)
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        for kw in batch:
-            hashtag = str(kw["keyword"]).lstrip("#")
-            stats["keywords"] += 1
-            cursor: str | None = "0"
-            for _ in range(pages):
-                if cursor is None:
-                    break
-                try:
-                    videos, cursor = await _fetch_page(client, pacer, api_key, hashtag, cursor)
-                except OmarStop as exc:
-                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
-                    return {**stats, "stopped": str(exc)[:100]}
-                except Exception as exc:  # noqa: BLE001 - một hashtag lỗi không chặn hashtag khác
-                    stats["failed"] += 1
-                    logger.warning("omar_page_failed", hashtag=hashtag, error=str(exc)[:200])
-                    break
-                stats["requests"] += 1
-                for raw in videos:
-                    video = map_aweme(raw)
-                    if video is None:
-                        continue
-                    stats["videos"] += 1
-                    ok = await publish_raw_post(
-                        key=f"tiktok:{video['video_id']}",
-                        value={"platform": "tiktok", "keyword_id": kw["id"], **video},
+        usage = await _usage(client, api_key)
+        if usage is not None:
+            remaining, resets_in = usage
+            hours_left = max(1, -(-resets_in // 3600))
+            budget = min(settings.omar_requests_per_hour, max(0, remaining - settings.omar_daily_reserve) // hours_left)
+        else:
+            budget = settings.omar_requests_per_hour // 4
+        stats["budget"] = budget
+        if budget <= 0:
+            logger.info("omar_round_no_budget", remaining=usage[0] if usage else None)
+            return {**stats, "skipped": "no_budget"}
+
+        priority = await _movie_priority()
+
+        def todo(kw: dict[str, Any]) -> bool:
+            entry = state.get(kw["id"]) or {}
+            return not entry.get("done_at") or entry["done_at"] < recrawl_before
+
+        # Cào dở trước, rồi chưa cào / đến hạn cào lại; phim gần ngày chiếu trước.
+        deep = sorted(
+            (kw for kw in keywords if todo(kw)),
+            key=lambda kw: (not (state.get(kw["id"]) or {}).get("cursor"), priority.get(kw["movie_id"], 365.0)),
+        )
+        fresh = sorted(
+            (kw for kw in keywords if not todo(kw)), key=lambda kw: (state.get(kw["id"]) or {}).get("fresh_at") or ""
+        )
+
+        async def fetch(kw: dict[str, Any], cursor: str) -> tuple[list[dict[str, Any]], str | None] | None:
+            try:
+                videos, next_cursor = await _fetch_page(client, pacer, api_key, str(kw["keyword"]).lstrip("#"), cursor)
+            except OmarStop:
+                raise
+            except Exception as exc:  # noqa: BLE001 - một trang lỗi: để lượt sau thử lại đúng trang đó
+                stats["failed"] += 1
+                logger.warning("omar_page_failed", hashtag=kw["keyword"], cursor=cursor, error=str(exc)[:200])
+                return None
+            stats["requests"] += 1
+            for raw in videos:
+                video = map_aweme(raw)
+                if video is None:
+                    continue
+                stats["videos"] += 1
+                stats["published"] += int(
+                    await publish_raw_post(
+                        key=f"tiktok:{video['video_id']}", value={"platform": "tiktok", "keyword_id": kw["id"], **video}
                     )
-                    stats["published"] += int(ok)
-    try:
-        await redis.set(_OFFSET_KEY, (offset + per_round) % len(keywords))
-    except Exception as exc:  # noqa: BLE001 - mất offset chỉ làm giờ sau quét lại từ đầu
-        logger.warning("omar_offset_save_failed", error=str(exc))
-    logger.info("omar_round_finished", pages_per_keyword=pages, total_keywords=len(keywords), **stats)
-    return stats
+                )
+            return videos, next_cursor
+
+        try:
+            for kw in deep:
+                if stats["requests"] >= budget:
+                    break
+                entry = state.get(kw["id"]) or {}
+                if entry.get("done_at"):  # đến hạn cào lại từ đầu
+                    entry = {}
+                entry.setdefault("started_at", now.isoformat())
+                cursor = entry.get("cursor") or "0"
+                stats["keywords"] += 1
+                empty = 0
+                while stats["requests"] < budget:
+                    result = await fetch(kw, cursor)
+                    if result is None:
+                        break
+                    videos, next_cursor = result
+                    entry["pages"] = int(entry.get("pages") or 0) + 1
+                    empty = 0 if videos else empty + 1
+                    if next_cursor is None or empty >= _MAX_EMPTY_PAGES:
+                        entry.update(cursor=None, done_at=datetime.now(tz=UTC).isoformat(), fresh_at=None)
+                        stats["finished"] += 1
+                        logger.info("omar_hashtag_finished", hashtag=kw["keyword"], pages=entry["pages"])
+                        await save(kw["id"], entry)
+                        break
+                    cursor = next_cursor
+                    entry["cursor"] = cursor
+                    await save(kw["id"], entry)
+            # Còn dư ngân sách: trang 1 của các hashtag đã cào hết, lâu chưa làm mới nhất trước.
+            for kw in fresh:
+                if stats["requests"] >= budget:
+                    break
+                if await fetch(kw, "0") is not None:
+                    await save(kw["id"], {**(state.get(kw["id"]) or {}), "fresh_at": datetime.now(tz=UTC).isoformat()})
+        except OmarStop as exc:
+            logger.error("omar_round_stopped", error=str(exc), telegram=True)
+            stats["stopped"] = str(exc)[:100]
+
+    pending = sum(1 for kw in keywords if todo(kw))
+    logger.info("omar_round_finished", total_keywords=len(keywords), pending_keywords=pending, **stats)
+    return {**stats, "pending_keywords": pending}

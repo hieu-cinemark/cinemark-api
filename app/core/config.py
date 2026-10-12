@@ -120,12 +120,14 @@ class Settings(BaseSettings):
     # local cần trỏ vào instance khác.
     omar_api_base_url: str = "https://dev.omar-thing.site/api/v1"
     # Lượt cào hashtag TikTok qua Omar API mỗi giờ (app/services/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt
-    # comment ở phút 5). Gói hiện tại: 10 request/phút, 3.000/ngày (GET /usage) - mỗi giờ dùng tối đa
-    # omar_requests_per_hour (100 x 24 = 2.400/ngày), mỗi hashtag tối đa omar_max_pages_per_keyword trang (20 video/trang).
+    # comment ở phút 5). Mỗi hashtag cào tới hết, con trỏ lưu trong Redis. Ngân sách mỗi giờ = hạn mức ngày còn lại (trừ
+    # omar_daily_reserve để chừa cho chạy tay) chia đều cho số giờ tới lúc reset, trần omar_requests_per_hour (một giờ ở
+    # 10 request/phút làm tối đa ~550). Hashtag đã cào hết được cào lại từ đầu sau omar_recrawl_days ngày.
     omar_round_minute: int = 20
-    omar_requests_per_hour: int = 100
+    omar_requests_per_hour: int = 500
     omar_requests_per_minute: int = 10
-    omar_max_pages_per_keyword: int = 3
+    omar_daily_reserve: int = 50
+    omar_recrawl_days: int = 7
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
