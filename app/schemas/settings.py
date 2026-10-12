@@ -516,3 +516,20 @@ class AutoLoginRunHistoryEntry(BaseModel):
     kafka_published: int = 0
     kafka_publish_failed: int = 0
     error: str | None = None
+
+
+# --- Omar API settings (dev.omar-thing.site) --------------------------------
+# Dùng cho crawl video/hashtag thay vì spider-hub khi toggle bật trên dashboard.
+# API key được đọc từ Supabase (bảng omar_api_settings), không từ env.
+
+
+class OmarApiSettingsOut(BaseModel):
+    # Có api_key hay chưa - không bao giờ trả về key thô.
+    api_key_set: bool
+    base_url: str
+    updated_at: datetime | None = None
+
+
+class OmarApiSettingsUpdate(BaseModel):
+    api_key: str | None = Field(default=None, max_length=500)
+    base_url: str | None = Field(default=None, max_length=200)

@@ -51,6 +51,8 @@ from app.schemas.settings import (
     ImportParseResponse,
     NurtureRequest,
     NurtureResponse,
+    OmarApiSettingsOut,
+    OmarApiSettingsUpdate,
     ProxyCreate,
     ProxyOut,
     ProxyProviderOut,
@@ -680,3 +682,40 @@ async def auto_login_history_route(limit: int = 20) -> list[AutoLoginRunHistoryE
     người vận hành biết bao nhiêu tài khoản trong số được thử đã thực sự tới được
     spider-hub (so với số bị rơi do Kafka sập giữa lượt)."""
     return await auto_login_svc.list_auto_login_history(limit=limit)
+
+
+# --- Omar API settings (dev.omar-thing.site) --------------------------------
+# Toggle dùng Omar API thay vì spider-hub cho crawl video/hashtag TikTok.
+
+
+@router.get("/omar-api", response_model=OmarApiSettingsOut)
+async def get_omar_api_settings() -> OmarApiSettingsOut:
+    """Cấu hình Omar API: api_key đã lưu (không bao giờ trả về giá trị thô), base URL
+    đang có hiệu lực (từ env hoặc override trên dashboard). API key được đọc từ bảng
+    omar_api_settings trên Supabase."""
+    from app.core.config import settings as app_settings
+
+    row = await db.get_omar_api_settings()
+    return OmarApiSettingsOut(
+        api_key_set=bool(row and row.get("api_key")),
+        base_url=app_settings.omar_api_base_url,
+        updated_at=(row or {}).get("updated_at"),
+    )
+
+
+@router.put("/omar-api", response_model=OmarApiSettingsOut)
+async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettingsOut:
+    """Upsert api_key và/hoặc base_url. api_key=None/rỗng nghĩa là "xoá key hiện tại".
+    base_url=None giữ nguyên giá trị từ env."""
+    from app.core.config import settings as app_settings
+
+    # Ghi api_key
+    if payload.api_key is not None:
+        await db.upsert_omar_api_key(payload.api_key)
+
+    # Ghi base_url override nếu có (lưu vào env override để nó tồn tại giữa các lần restart)
+    if payload.base_url is not None and payload.base_url.strip():
+        # Cập nhật trong config env tại runtime (sẽ mất khi restart)
+        app_settings.omar_api_base_url = payload.base_url.strip()
+
+    return await get_omar_api_settings()

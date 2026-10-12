@@ -1319,3 +1319,56 @@ async def get_latest_accuracy_run() -> dict[str, Any] | None:
             "SELECT labeled_at, sample_size, metrics, note, created_at FROM ai_accuracy_runs ORDER BY id DESC LIMIT 1"
         )
         return await cur.fetchone()
+
+
+# --- Omar API settings -----------------------------------------------------
+# Cấu hình API key cho dev.omar-thing.site - dùng cho crawl video/hashtag thay vì
+# spider-hub khi người vận hành bật toggle trên dashboard. API key được đọc từ
+# bảng này (không bao giờ lưu trong env). Base URL có thể ghi đè bằng
+# OMAR_API_BASE_URL env var (app/core/config.py).
+
+
+async def get_omar_api_settings() -> dict[str, Any] | None:
+    """Trả về {"api_key": "...", "updated_at": ...} hoặc None nếu chưa có."""
+    await _ensure_omar_api_settings_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT api_key, updated_at FROM omar_api_settings WHERE id = 1")
+        return await cur.fetchone()
+
+
+_omar_api_settings_ready = False
+
+
+async def _ensure_omar_api_settings_table() -> None:
+    global _omar_api_settings_ready
+    if _omar_api_settings_ready:
+        return
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS omar_api_settings (
+                id integer PRIMARY KEY CHECK (id = 1),
+                api_key text NOT NULL DEFAULT '',
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.commit()
+    _omar_api_settings_ready = True
+
+
+async def upsert_omar_api_key(api_key: str | None) -> dict[str, Any]:
+    """Upsert API key - None/rỗng thì xoá (để toggle không dùng được)."""
+    await _ensure_omar_api_settings_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO omar_api_settings (id, api_key) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET api_key = EXCLUDED.api_key, updated_at = now()
+            RETURNING api_key, updated_at
+            """,
+            (api_key or "",),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]

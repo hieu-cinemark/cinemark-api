@@ -15,7 +15,7 @@ import asyncio
 import json
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -190,14 +190,17 @@ DEFAULT_COMMENTS_MAX_PAGES = 80
 
 
 async def publish_channel_videos_request(
-    *, username: str, max_pages: int | None = None, keyword_id: str | None = None
+    *, username: str, max_pages: int | None = None, keyword_id: str | None = None, use_omar_api: bool = False
 ) -> bool:
     """Xếp hàng type=channel_videos cho spider tiktok_channel_videos của TikTok (lưới video
-    của một kênh @username). Handle nhập tự do - chưa có bảng "kênh theo dõi" trong D1."""
+    của một kênh @username). Handle nhập tự do - chưa có bảng "kênh theo dõi" trong D1.
+
+    use_omar_api=True: spider-hub nhận message nhưng bỏ qua (omar_api_mode=True), cinemark-api
+    sẽ gọi trực tiếp Omar API rồi ingest kết quả."""
     handle = username.lstrip("@").strip()
     if not handle:
         return False
-    payload: dict[str, Any] = {"username": handle, "run_id": str(uuid.uuid4())}
+    payload: dict[str, Any] = {"username": handle, "run_id": str(uuid.uuid4()), "use_omar_api": use_omar_api}
     if max_pages is not None:
         payload["max_pages"] = max_pages
     if keyword_id:
@@ -308,7 +311,7 @@ async def publish_auto_login_request(platform: str, account_id: str, *, dry_run:
         "account_id": account_id,
         "dry_run": dry_run,
         "run_id": str(uuid.uuid4()),
-        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "requested_at": datetime.now(UTC).isoformat(),
     }
     try:
         await _producer.send_and_wait(AUTO_LOGIN_REQUESTS_TOPIC, key=key, value=value)
@@ -468,6 +471,23 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
         await consumer.stop()
         await admin.close()
     return results
+
+
+RAW_POSTS_TOPIC = "raw_posts"
+
+
+async def publish_raw_post(*, key: str, value: dict[str, Any]) -> bool:
+    """Gửi một bài lên raw_posts như spider-hub làm (key "<platform>:<id>", value {"platform", "keyword_id", ...}) -
+    cho nguồn bài không đi qua spider-hub (app/services/omar_tiktok.py), để ingest consumer xử lý y như bài của spider."""
+    if _producer is None:
+        logger.warning("kafka_producer_not_started", key=key)
+        return False
+    try:
+        await _producer.send_and_wait(RAW_POSTS_TOPIC, key=key, value=value)
+    except KafkaError as exc:
+        logger.warning("kafka_publish_failed", error=str(exc), key=key)
+        return False
+    return True
 
 
 INGEST_DECISIONS_TOPIC = "ingest_decisions"

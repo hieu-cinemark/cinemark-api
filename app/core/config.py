@@ -114,6 +114,19 @@ class Settings(BaseSettings):
     # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
     strict_relevance_movie_slugs: str = "nguoi-duoc-chon"
 
+    # Omar TikTok API (dev.omar-thing.site) - dùng cho crawl video/hashtag thay vì
+    # spider-hub. API key được đọc từ bảng omar_api_settings trên Supabase (xem
+    # app/services/platform_config_db.py). Base URL có thể ghi đè trong .env khi dev
+    # local cần trỏ vào instance khác.
+    omar_api_base_url: str = "https://dev.omar-thing.site/api/v1"
+    # Lượt cào hashtag TikTok qua Omar API mỗi giờ (app/services/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt
+    # comment ở phút 5). Gói hiện tại: 10 request/phút, 3.000/ngày (GET /usage) - mỗi giờ dùng tối đa
+    # omar_requests_per_hour (100 x 24 = 2.400/ngày), mỗi hashtag tối đa omar_max_pages_per_keyword trang (20 video/trang).
+    omar_round_minute: int = 20
+    omar_requests_per_hour: int = 100
+    omar_requests_per_minute: int = 10
+    omar_max_pages_per_keyword: int = 3
+
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
     # Asia/Ho_Chi_Minh). Bài gắn nhãn not_related được giữ qua thời gian ân hạn trước để
