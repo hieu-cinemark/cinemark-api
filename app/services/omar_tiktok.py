@@ -184,6 +184,56 @@ async def _movie_priority() -> dict[str, float]:
 
 _ROTATE_KEY = f"{REDIS_KEY_PREFIX}omar:rotation_offset"
 _SEEN_PREFIX = f"{REDIS_KEY_PREFIX}omar:seen:"
+# BFS: hashtag đi kèm trong video Omar lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày - hashtag_discovery
+# đọc làm ứng viên cho Kira duyệt (nguồn "omar_bfs"), duyệt xong thành từ khoá mới của cùng phim và Omar cào tiếp.
+COOCCUR_PREFIX = f"{REDIS_KEY_PREFIX}omar:cooccur:"
+_COOCCUR_TTL_SECONDS = 14 * 24 * 3600
+
+
+async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, Any]]) -> None:
+    """Cộng số video có mỗi hashtag đi kèm (khác chính hashtag đang cào). Giữ nguyên dấu, chỉ hạ chữ thường: TikTok không
+    phân biệt hoa thường nhưng #trạibuônngười và #traibuonnguoi là hai hashtag khác nhau."""
+    own = keyword.lstrip("#").strip().lower()
+    counts: dict[str, int] = {}
+    for video in videos:
+        for tag in {str(t).strip().lower() for t in video.get("hashtags") or [] if str(t).strip()}:
+            if tag != own and 3 <= len(tag) <= 60:
+                counts[tag] = counts.get(tag, 0) + 1
+    if not counts:
+        return
+    key = f"{COOCCUR_PREFIX}{keyword_id}"
+    try:
+        pipe = get_redis_client().pipeline()
+        for tag, n in counts.items():
+            pipe.hincrby(key, tag, n)
+        pipe.expire(key, _COOCCUR_TTL_SECONDS)
+        await pipe.execute()
+    except Exception as exc:  # noqa: BLE001 - thiếu số đếm chỉ làm BFS chậm hơn
+        logger.warning("omar_cooccur_failed", error=str(exc)[:200])
+
+
+async def top_cooccurring(keyword_ids: list[str], *, min_count: int, limit: int) -> dict[str, list[dict[str, Any]]]:
+    """keyword_id -> [{"title": hashtag, "count": số video}] nhiều nhất trước, chỉ hashtag có từ min_count video."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    if not keyword_ids:
+        return out
+    try:
+        pipe = get_redis_client().pipeline()
+        for keyword_id in keyword_ids:
+            pipe.hgetall(f"{COOCCUR_PREFIX}{keyword_id}")
+        results = await pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("omar_cooccur_read_failed", error=str(exc)[:200])
+        return out
+    for keyword_id, raw in zip(keyword_ids, results, strict=True):
+        items = []
+        for tag, n in (raw or {}).items():
+            tag = tag.decode() if isinstance(tag, bytes) else tag
+            if int(n) >= min_count:
+                items.append({"title": tag, "count": int(n)})
+        if items:
+            out[keyword_id] = sorted(items, key=lambda item: -item["count"])[:limit]
+    return out
 
 
 async def _claim_unseen(video_ids: list[str]) -> set[str]:
@@ -383,6 +433,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             stats["requests"] += 1
             mapped = [video for video in (map_aweme(raw) for raw in videos) if video is not None]
             stats["videos"] += len(mapped)
+            await _count_cooccur(str(kw["keyword"]), kw["id"], mapped)
             fresh_ids = await _claim_unseen([video["video_id"] for video in mapped])
             for video in mapped:
                 if video["video_id"] not in fresh_ids:

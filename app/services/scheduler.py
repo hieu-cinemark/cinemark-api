@@ -391,11 +391,24 @@ async def _hashtag_tick() -> None:
 _OMAR_ROUND_KEY = f"{REDIS_KEY_PREFIX}scheduler:omar_round:last_hour"
 
 
+_BFS_DISCOVERY_KEY = f"{REDIS_KEY_PREFIX}scheduler:hashtag_discovery:after_omar_at"
+
+
 async def _run_omar_round(trigger: str) -> None:
     try:
         await run_omar_round_tracked(trigger)
     except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để giờ sau chạy lại
         logger.error("omar_round_failed", error=str(exc)[:300])
+    # BFS: Kira duyệt hashtag đi kèm mà lượt Omar vừa đếm (app/services/hashtag_discovery.py), không đợi tới sáng hôm sau.
+    try:
+        redis = get_redis_client()
+        last = float(await redis.get(_BFS_DISCOVERY_KEY) or 0)
+        if time.time() - last >= settings.hashtag_discovery_after_omar_hours * 3600:
+            await redis.set(_BFS_DISCOVERY_KEY, str(time.time()), ex=7 * 24 * 3600)
+            logger.info("hashtag_discovery_after_omar")
+            await run_discovery()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("hashtag_discovery_after_omar_failed", error=str(exc)[:300])
 
 
 def trigger_omar_now() -> bool:

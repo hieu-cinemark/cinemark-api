@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/hashtag_discovery.py) -
     # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.
     hashtag_discovery_time: str = "05:30"
+    # Kira thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và Omar BFS).
+    hashtag_discovery_max_per_movie: int = 5
+    hashtag_discovery_max_per_run: int = 40
+    # Ngoài lượt buổi sáng, sau mỗi lượt Omar lại duyệt hashtag BFS mới - cách nhau ít nhất chừng này giờ.
+    hashtag_discovery_after_omar_hours: float = 3
 
     # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài Kira gán "related" cũng phải có
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim

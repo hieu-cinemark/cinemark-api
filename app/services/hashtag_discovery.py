@@ -9,8 +9,13 @@ Mỗi ngày một lượt (scheduler._hashtag_tick, hoặc scripts.discover_hash
 2. Luật cứng trước khi tốn lời gọi AI: bỏ tag đã là từ khoá của phim (kể cả đang TẮT - người vận hành đã tắt thì không
    bao giờ thêm lại), tag đã quyết trước đó, tag chung chung (_GENERIC), tag chứa tên một phim khác đang theo dõi.
 3. Kira đọc thông tin phim (movie_context_block) và chấm từng tag: "film" chỉ khi tag gọi đích danh phim này.
-4. Ràng buộc khi thêm: verdict "film" + confidence >= MIN_CONFIDENCE, tối đa MAX_ADDS_PER_MOVIE mỗi phim mỗi lượt và
-   MAX_ADDS_PER_RUN cả lượt; thêm thành từ khoá TikTok đang bật và xếp crawl ngay.
+4. Ràng buộc khi thêm: verdict "film" + confidence >= MIN_CONFIDENCE, tối đa settings.hashtag_discovery_max_per_movie
+   mỗi phim mỗi lượt và settings.hashtag_discovery_max_per_run cả lượt; thêm thành từ khoá TikTok đang bật và xếp crawl ngay.
+
+BFS từ Omar (từ 2026-10-12): Omar đếm hashtag đi kèm trong mọi video nó lấy về, theo từ khoá (omar_tiktok._count_cooccur).
+Hashtag đi kèm từ OMAR_BFS_MIN_VIDEOS video trở lên là ứng viên nguồn "omar_bfs" - Kira duyệt như mọi ứng viên, duyệt xong
+thành từ khoá mới của CÙNG phim (ghi parent_keyword_id + depth) và Omar cào nó ở lượt sau. Từ khoá mới lại góp ứng viên
+của nó, tới BFS_MAX_DEPTH tầng. Ngoài lượt buổi sáng, scheduler chạy thêm một lượt duyệt sau mỗi lượt Omar.
 5. Tự dọn: tag AI đã thêm mà sau PRUNE_AFTER_DAYS ngày không đem về bài nào thì tắt (status "pruned").
 
 Mọi quyết định (thêm/bỏ/dọn, kèm lý do và độ tự tin) nằm trong bảng hashtag_ai_decisions (D1 scraper) - tag bị bỏ
@@ -27,17 +32,22 @@ from typing import Any
 from app.ai.kira import call_kira, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.clients.kafka import publish_crawl_request
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import _related_hashtags_for_keywords, d1_query
+from app.services.omar_tiktok import top_cooccurring
 from app.services.relevance_rules import normalize_title, title_acronym
 
 logger = get_logger(__name__)
 
 TASK = "hashtag_discovery"
 MIN_CONFIDENCE = 80
-MAX_ADDS_PER_MOVIE = 3
-MAX_ADDS_PER_RUN = 20
-MAX_CANDIDATES_PER_MOVIE = 20
+MAX_CANDIDATES_PER_MOVIE = 30
+# BFS từ Omar: hashtag đi kèm từ chừng này video trở lên mới làm ứng viên; tối đa chừng này tầng tính từ từ khoá gốc
+# (gốc = 0) để không lan sang chủ đề khác.
+OMAR_BFS_MIN_VIDEOS = 3
+OMAR_BFS_PER_KEYWORD = 15
+BFS_MAX_DEPTH = 2
 PRUNE_AFTER_DAYS = 3
 RECHECK_REJECTED_DAYS = 14
 
@@ -163,16 +173,20 @@ async def _ensure_table() -> None:
         )""",
         quiet=True,
     )
+    # Cột BFS (từ 2026-10-12): tag được sinh từ từ khoá nào và ở tầng mấy. ALTER lỗi khi cột đã có - bỏ qua.
+    for column in ("parent_keyword_id TEXT", "depth INTEGER NOT NULL DEFAULT 0"):
+        await d1_query(f"ALTER TABLE hashtag_ai_decisions ADD COLUMN {column}", quiet=True)
 
 
 async def _record(
     movie_id: str, cand: dict[str, Any], verdict: dict[str, Any] | None, status: str, keyword_id: str | None
 ) -> None:
     await d1_query(
-        "INSERT INTO hashtag_ai_decisions (movie_id, tag, display, source, seen, verdict, confidence, reason, status, keyword_id, decided_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(movie_id, tag) DO UPDATE SET display = excluded.display, "
+        "INSERT INTO hashtag_ai_decisions (movie_id, tag, display, source, seen, verdict, confidence, reason, status, keyword_id, decided_at, parent_keyword_id, depth) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(movie_id, tag) DO UPDATE SET display = excluded.display, "
         "source = excluded.source, seen = excluded.seen, verdict = excluded.verdict, confidence = excluded.confidence, "
-        "reason = excluded.reason, status = excluded.status, keyword_id = excluded.keyword_id, decided_at = excluded.decided_at",
+        "reason = excluded.reason, status = excluded.status, keyword_id = excluded.keyword_id, decided_at = excluded.decided_at, "
+        "parent_keyword_id = excluded.parent_keyword_id, depth = excluded.depth",
         [
             movie_id,
             cand["tag"],
@@ -185,6 +199,8 @@ async def _record(
             status,
             keyword_id,
             datetime.now(tz=UTC).isoformat(),
+            cand.get("parent_keyword_id"),
+            int(cand.get("depth") or 0),
         ],
     )
 
@@ -248,7 +264,16 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
         or []
     )
     keywords = await d1_query("SELECT id, movie_id, platform, keyword, enabled FROM keywords", quiet=True) or []
-    decisions = await d1_query("SELECT movie_id, tag, status, decided_at FROM hashtag_ai_decisions", quiet=True) or []
+    decisions = (
+        await d1_query(
+            "SELECT movie_id, tag, status, decided_at, keyword_id, depth FROM hashtag_ai_decisions", quiet=True
+        )
+        or []
+    )
+    # Tầng BFS của mỗi từ khoá: từ khoá AI thêm mang depth đã ghi, từ khoá người nhập là 0.
+    depth_of = {d["keyword_id"]: int(d.get("depth") or 0) for d in decisions if d.get("keyword_id")}
+    tiktok_ids = [k["id"] for k in keywords if k["platform"] == "tiktok" and k["enabled"]]
+    omar_related = await top_cooccurring(tiktok_ids, min_count=OMAR_BFS_MIN_VIDEOS, limit=OMAR_BFS_PER_KEYWORD)
     related = await _related_hashtags_for_keywords(
         [k["id"] for k in keywords if k["platform"] == "tiktok" and k["enabled"]]
     )
@@ -285,6 +310,24 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
                 tag = _squash(item["title"])
                 entry = cands.setdefault(tag, {"tag": tag, "display": item["title"], "source": "related", "seen": 0})
                 entry["seen"] = max(entry["seen"], int(item.get("count") or 0))
+            # BFS từ video Omar lấy về - chỉ khi từ khoá cha chưa ở tầng sâu nhất.
+            parent_depth = depth_of.get(kw["id"], 0)
+            if parent_depth >= BFS_MAX_DEPTH:
+                continue
+            for item in omar_related.get(kw["id"], []):
+                tag = _squash(item["title"])
+                entry = cands.setdefault(
+                    tag,
+                    {
+                        "tag": tag,
+                        "display": item["title"],
+                        "source": "omar_bfs",
+                        "seen": 0,
+                        "parent_keyword_id": kw["id"],
+                        "depth": parent_depth + 1,
+                    },
+                )
+                entry["seen"] = max(entry["seen"], int(item.get("count") or 0))
         other_tags = [t for mid, t in title_tags.items() if mid != movie["id"] and len(t) >= 6]
         cands = {
             tag: c
@@ -314,8 +357,8 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             accept = (
                 verdict["verdict"] == "film"
                 and verdict["confidence"] >= MIN_CONFIDENCE
-                and added_here < MAX_ADDS_PER_MOVIE
-                and added_total < MAX_ADDS_PER_RUN
+                and added_here < settings.hashtag_discovery_max_per_movie
+                and added_total < settings.hashtag_discovery_max_per_run
             )
             logger.info(
                 "hashtag_ai_decision",
