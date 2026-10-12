@@ -459,6 +459,89 @@ async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
         _stop_requested = False
 
 
+# Hashtag đang được cào riêng (crawl_hashtag_now) - lượt Omar bỏ qua để không cào trùng con trỏ.
+_manual_running: set[str] = set()
+_manual_tasks: set[asyncio.Task] = set()
+_RESET_KEEP = ("video_count", "view_count", "info_at", "hashtag_id")
+
+
+async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
+    kw_id = keyword["id"]
+    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
+    if not api_key:
+        return
+    redis = get_redis_client()
+    raw = await redis.hget(_STATE_KEY, kw_id)
+    entry = json.loads(raw) if raw else {}
+    if entry.get("done_at"):
+        entry = {k: entry[k] for k in _RESET_KEEP if k in entry}
+    entry.pop("missing_at", None)
+    entry.setdefault("started_at", datetime.now(tz=UTC).isoformat())
+    cursor = entry.get("cursor") or "0"
+    stats: dict[str, Any] = {"pages": 0, "videos": 0, "published": 0, "skipped_seen": 0}
+    pacer = _Pacer(settings.omar_manual_requests_per_minute)
+    failed = 0
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+        while True:
+            try:
+                videos, following, hashtag_id = await _fetch_page(
+                    client, pacer, api_key, str(keyword["keyword"]).lstrip("#"), cursor, entry.get("hashtag_id")
+                )
+            except OmarStop as exc:
+                logger.error("omar_manual_stopped", hashtag=keyword["keyword"], error=str(exc)[:200])
+                break
+            except Exception as exc:  # noqa: BLE001 - thử lại đúng trang, lỗi liền thì để lượt Omar đi tiếp
+                failed += 1
+                logger.warning(
+                    "omar_manual_page_failed", hashtag=keyword["keyword"], cursor=cursor, error=str(exc)[:200]
+                )
+                if failed >= _MAX_PAGE_FAILURES:
+                    if cursor == "0" and not entry.get("pages"):
+                        entry["missing_at"] = datetime.now(tz=UTC).isoformat()
+                    break
+                await asyncio.sleep(30 * failed)
+                continue
+            failed = 0
+            if hashtag_id:
+                entry["hashtag_id"] = hashtag_id
+            mapped = [video for video in (map_aweme(item) for item in videos) if video is not None]
+            stats["pages"] += 1
+            stats["videos"] += len(mapped)
+            await _count_cooccur(str(keyword["keyword"]), kw_id, mapped)
+            await publish_videos(mapped, kw_id, stats)
+            entry["pages"] = int(entry.get("pages") or 0) + 1
+            if following is None:
+                entry.update(cursor=None, done_at=datetime.now(tz=UTC).isoformat())
+                break
+            cursor = following
+            entry["cursor"] = cursor
+            await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
+    await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
+    logger.info("omar_manual_finished", hashtag=keyword["keyword"], done=bool(entry.get("done_at")), **stats)
+
+
+def crawl_hashtag_now(keyword: dict[str, Any]) -> bool:
+    """Cào NGAY một hashtag tới hết (ô "Thêm hashtag" ở tab Omar), độc lập với lượt đang chạy - lượt chế độ liên tục có
+    thể kéo dài nhiều giờ và chỉ nạp danh sách hashtag lúc bắt đầu. False khi hashtag đang được cào riêng."""
+    kw_id = keyword["id"]
+    if kw_id in _manual_running:
+        return False
+    _manual_running.add(kw_id)
+
+    async def run() -> None:
+        try:
+            await _crawl_hashtag_now(keyword)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("omar_manual_failed", hashtag=keyword.get("keyword"), error=str(exc)[:300])
+        finally:
+            _manual_running.discard(kw_id)
+
+    task = asyncio.create_task(run())
+    _manual_tasks.add(task)
+    task.add_done_callback(_manual_tasks.discard)
+    return True
+
+
 async def hashtag_progress() -> list[dict[str, Any]]:
     """Mỗi hashtag TikTok đang bật: tên, phim, số trang đã lấy, cursor, đã cào xong lúc nào (từ Redis omar:hashtag_state)."""
     keywords = [k for k in await get_enabled_keywords(platform="tiktok") if str(k["keyword"]).startswith("#")]
@@ -662,9 +745,11 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         async def crawl(kw: dict[str, Any], _pages: int) -> bool:
             """Cào hashtag TỚI HẾT video (has_more = false) - tuần tự, trang sau cần cursor của trang trước. Dừng sớm chỉ
             khi hết ngân sách / bị dừng / một trang lỗi _MAX_PAGE_FAILURES lần liền; con trỏ đã lưu nên lượt sau đi tiếp."""
+            if kw["id"] in _manual_running:
+                return False  # đang được cào riêng (crawl_hashtag_now)
             entry = state.get(kw["id"]) or {}
             if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
-                entry = {k: entry[k] for k in ("video_count", "view_count", "info_at", "hashtag_id") if k in entry}
+                entry = {k: entry[k] for k in _RESET_KEEP if k in entry}
             entry.setdefault("started_at", now.isoformat())
             cursor = entry.get("cursor") or "0"
             empty = int(entry.get("empty") or 0)

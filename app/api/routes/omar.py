@@ -6,10 +6,13 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.services import omar_comments, omar_tiktok
+from app.services.d1 import get_or_create_keyword, set_keyword_enabled
 from app.services.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
@@ -74,3 +77,28 @@ async def omar_comments_run() -> dict[str, Any]:
         "pending": (await omar_comments.job_status())["pending_videos"],
         "started": started,
     }
+
+
+class OmarHashtagRequest(BaseModel):
+    movie_id: str
+    hashtag: str
+
+
+@router.post("/hashtags")
+async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
+    """Ô "Thêm hashtag" ở tab Omar: người dùng gõ hashtag cho một phim -> kiểm tra có video trên TikTok, tạo (hoặc bật lại)
+    từ khoá TikTok, rồi cào ngay tới hết (omar_tiktok.crawl_hashtag_now). Spider TikTok và các lượt Omar sau dùng từ khoá
+    này như mọi từ khoá khác."""
+    tag = payload.hashtag.strip().lstrip("#").replace(" ", "")
+    if len(tag) < 2:
+        raise ValidationError("Hashtag không hợp lệ")
+    exists = await omar_tiktok.hashtag_exists(tag)
+    if exists is False:
+        raise ValidationError(f"#{tag} không có video nào trên TikTok")
+    row = await get_or_create_keyword(payload.movie_id, "tiktok", f"#{tag}")
+    if row is None:
+        raise UpstreamError("Không tạo được từ khoá (phim không tồn tại / đang tắt, hoặc D1 lỗi)")
+    await set_keyword_enabled("tiktok", row["id"], True)
+    started = omar_tiktok.crawl_hashtag_now(row)
+    logger.info("omar_hashtag_added", hashtag=row["keyword"], movie_id=payload.movie_id, started=started)
+    return {"keyword": row, "started": started, "verified": exists is True}

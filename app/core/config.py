@@ -156,6 +156,8 @@ class Settings(BaseSettings):
     # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa omar_search_pages trang, mỗi ngày một lần.
     omar_search_pages: int = 10
     omar_search_budget_share: float = 0.2
+    # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab Omar) - chừa phần còn lại cho lượt đang chạy.
+    omar_manual_requests_per_minute: int = 30
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
     omar_hashtag_info_days: int = 7
 
