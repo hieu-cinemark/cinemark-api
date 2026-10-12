@@ -401,8 +401,9 @@ async def _run_omar_round() -> None:
 
 
 async def _omar_tick() -> None:
-    """Mỗi giờ một lượt, từ phút settings.omar_round_minute. Lượt trước (tối đa ~11 phút ở 10 request/phút) chưa xong
-    thì bỏ qua giờ này. Khoá theo giờ trong Redis để restart API không chạy lặp."""
+    """Mỗi giờ một lượt, từ phút settings.omar_round_minute. Lượt trước chưa xong (chế độ chạy liên tục: một lượt có thể
+    kéo dài nhiều giờ tới khi hết hạn mức) thì không mở lượt chồng lên; xong thì lượt kế bắt đầu ở lần kiểm tra sau. Khoá
+    theo giờ trong Redis để restart API không chạy lặp."""
     global _omar_running
     now = datetime.now(TIMEZONE)
     if _omar_running or now.minute < settings.omar_round_minute:

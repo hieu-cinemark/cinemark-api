@@ -188,8 +188,9 @@ async def run_omar_round() -> dict[str, Any]:
     Redis sau mỗi trang, lượt sau / hôm sau đi tiếp; cào tới has_more = false thì xong, cào lại từ đầu sau
     settings.omar_recrawl_days ngày, trong lúc chờ ngân sách dư lấy trang 1 để bắt video mới.
 
-    Ngân sách mỗi giờ = hạn mức ngày còn lại (GET /usage, trừ settings.omar_daily_reserve) chia cho số giờ tới lúc reset,
-    trần = số request làm được trong một giờ ở giới hạn mỗi phút của gói (và settings.omar_requests_per_hour nếu > 0).
+    Ngân sách: mặc định CHẠY LIÊN TỤC - toàn bộ hạn mức ngày còn lại (GET /usage, trừ settings.omar_daily_reserve) dùng
+    ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ Supabase mỗi lượt). settings.omar_spread_daily = True thì
+    rải đều: phần còn lại chia cho số giờ tới lúc reset, trần = số request một giờ ở giới hạn mỗi phút của gói.
     Nhịp gọi cũng theo giới hạn mỗi phút của gói - nâng gói Omar thì tự chạy nhanh/nhiều hơn."""
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
@@ -227,8 +228,14 @@ async def run_omar_round() -> dict[str, Any]:
             hour_cap = min(hour_cap, settings.omar_requests_per_hour)
         if usage is not None:
             remaining, resets_in, _ = usage
-            hours_left = max(1, -(-resets_in // 3600))
-            budget = min(hour_cap, max(0, remaining - settings.omar_daily_reserve) // hours_left)
+            spendable = max(0, remaining - settings.omar_daily_reserve)
+            if settings.omar_spread_daily:
+                # Rải đều: phần còn lại chia cho số giờ tới lúc reset, trần một giờ.
+                budget = min(hour_cap, spendable // max(1, -(-resets_in // 3600)))
+            else:
+                # Chạy liên tục (mặc định từ 2026-10-12): dùng hết hạn mức còn lại ngay trong lượt này - lượt có thể dài
+                # nhiều giờ (scheduler không mở lượt chồng lên); hết thì chờ reset ngày / key mới.
+                budget = spendable
         else:
             budget = hour_cap // 4
         stats["budget"] = budget
