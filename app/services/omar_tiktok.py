@@ -183,6 +183,33 @@ async def _movie_priority() -> dict[str, float]:
 
 
 _ROTATE_KEY = f"{REDIS_KEY_PREFIX}omar:rotation_offset"
+_SEEN_PREFIX = f"{REDIS_KEY_PREFIX}omar:seen:"
+
+
+async def _claim_unseen(video_ids: list[str]) -> set[str]:
+    """Các video chưa gửi lên raw_posts trong settings.omar_republish_hours giờ qua (và đánh dấu chúng là đã gửi). Với gói
+    lớn (50.000 request/ngày ~ 1 triệu video, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải vì mỗi video đã có
+    vẫn tốn vài lệnh ghi; lọc ở đây thì video mới đi ngay, video cũ chỉ cập nhật tương tác tối đa mỗi N giờ.
+    Redis lỗi thì coi như mới hết (thà ghi trùng còn hơn mất bài)."""
+    if not video_ids or settings.omar_republish_hours <= 0:
+        return set(video_ids)
+    try:
+        pipe = get_redis_client().pipeline()
+        for video_id in video_ids:
+            pipe.set(f"{_SEEN_PREFIX}{video_id}", "1", nx=True, ex=int(settings.omar_republish_hours * 3600))
+        results = await pipe.execute()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("omar_seen_check_failed", error=str(exc)[:200])
+        return set(video_ids)
+    return {video_id for video_id, created in zip(video_ids, results, strict=True) if created}
+
+
+async def _forget_seen(video_id: str) -> None:
+    try:
+        await get_redis_client().delete(f"{_SEEN_PREFIX}{video_id}")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("omar_seen_forget_failed", error=str(exc)[:200])
+
 
 # Trạng thái lượt đang/vừa chạy - cho tab Omar trên dashboard (app/api/routes/omar.py) và scheduler (không mở lượt chồng).
 _round: dict[str, Any] = {"running": False, "trigger": None, "started_at": None, "finished_at": None, "stats": {}}
@@ -262,7 +289,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
     stats: dict[str, Any] = live if live is not None else {}
-    stats.update(keywords=0, requests=0, videos=0, published=0, failed=0, finished=0)
+    stats.update(keywords=0, requests=0, videos=0, published=0, skipped_seen=0, failed=0, finished=0)
     if not api_key:
         logger.info("omar_round_skipped_no_key")
         return {**stats, "skipped": "no_key"}
@@ -344,16 +371,19 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 logger.warning("omar_page_failed", hashtag=kw["keyword"], cursor=cursor, error=str(exc)[:200])
                 return None
             stats["requests"] += 1
-            for raw in videos:
-                video = map_aweme(raw)
-                if video is None:
+            mapped = [video for video in (map_aweme(raw) for raw in videos) if video is not None]
+            stats["videos"] += len(mapped)
+            fresh_ids = await _claim_unseen([video["video_id"] for video in mapped])
+            for video in mapped:
+                if video["video_id"] not in fresh_ids:
+                    stats["skipped_seen"] += 1
                     continue
-                stats["videos"] += 1
-                stats["published"] += int(
-                    await publish_raw_post(
-                        key=f"tiktok:{video['video_id']}", value={"platform": "tiktok", "keyword_id": kw["id"], **video}
-                    )
+                ok = await publish_raw_post(
+                    key=f"tiktok:{video['video_id']}", value={"platform": "tiktok", "keyword_id": kw["id"], **video}
                 )
+                stats["published"] += int(ok)
+                if not ok:
+                    await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
             return videos, next_cursor
 
         reserved = 0  # request đã giữ chỗ trong ngân sách (trước khi gọi) - chạy song song không vượt budget
