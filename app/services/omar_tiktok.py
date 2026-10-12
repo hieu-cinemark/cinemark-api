@@ -173,13 +173,15 @@ def next_cursor(data: dict[str, Any]) -> str | None:
 
 
 async def _fetch_page(
-    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết)."""
-    data = await omar_get(client, pacer, api_key, "hashtag_videos", {"name": hashtag, "cursor": cursor})
+    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str, hashtag_id: str | None = None
+) -> tuple[list[dict[str, Any]], str | None, str | None]:
+    """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết, hashtag_id). Có `hashtag_id` (lưu từ trang
+    trước) thì gọi bằng `id` - Omar bỏ qua bước tra tên hashtag, nhanh hơn và tránh lỗi tra tên."""
+    params = {"id": hashtag_id, "cursor": cursor} if hashtag_id else {"name": hashtag, "cursor": cursor}
+    data = await omar_get(client, pacer, api_key, "hashtag_videos", params)
     if data is None:
-        return [], None  # hashtag không tồn tại
-    return list(data.get("videos") or []), next_cursor(data)
+        return [], None, hashtag_id  # hashtag không tồn tại
+    return list(data.get("videos") or []), next_cursor(data), str(data.get("hashtag_id") or "") or hashtag_id
 
 
 async def hashtag_exists(hashtag: str) -> bool | None:
@@ -552,9 +554,13 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             key=lambda kw: (state.get(kw["id"]) or {}).get("done_at") or "",
         )
 
-        async def fetch(kw: dict[str, Any], cursor: str) -> tuple[list[dict[str, Any]], str | None] | None:
+        async def fetch(
+            kw: dict[str, Any], cursor: str, hashtag_id: str | None = None
+        ) -> tuple[list[dict[str, Any]], str | None, str | None] | None:
             try:
-                videos, next_cursor = await _fetch_page(client, pacer, api_key, str(kw["keyword"]).lstrip("#"), cursor)
+                videos, next_cursor, hashtag_id = await _fetch_page(
+                    client, pacer, api_key, str(kw["keyword"]).lstrip("#"), cursor, hashtag_id
+                )
             except OmarStop:
                 raise
             except Exception as exc:  # noqa: BLE001 - một trang lỗi: để lượt sau thử lại đúng trang đó
@@ -576,14 +582,14 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 stats["published"] += int(ok)
                 if not ok:
                     await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
-            return videos, next_cursor
+            return videos, next_cursor, hashtag_id
 
         async def crawl(kw: dict[str, Any], _pages: int) -> bool:
             """Cào hashtag TỚI HẾT video (has_more = false) - tuần tự, trang sau cần cursor của trang trước. Dừng sớm chỉ
             khi hết ngân sách / bị dừng / một trang lỗi _MAX_PAGE_FAILURES lần liền; con trỏ đã lưu nên lượt sau đi tiếp."""
             entry = state.get(kw["id"]) or {}
             if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
-                entry = {k: entry[k] for k in ("video_count", "view_count", "info_at") if k in entry}
+                entry = {k: entry[k] for k in ("video_count", "view_count", "info_at", "hashtag_id") if k in entry}
             entry.setdefault("started_at", now.isoformat())
             cursor = entry.get("cursor") or "0"
             empty = int(entry.get("empty") or 0)
@@ -591,7 +597,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             while True:
                 if should_stop() or not spend.take():
                     return True
-                result = await fetch(kw, cursor)
+                result = await fetch(kw, cursor, entry.get("hashtag_id"))
                 ever_done = bool((state.get(kw["id"]) or {}).get("done_at"))  # đã từng cào xong: có thật, chỉ lỗi tạm
                 if result is None and cursor == "0" and not entry.get("pages") and not ever_done:
                     # Trang 1 lỗi (sau các lần thử lại trong omar_get) ở hashtag chưa từng lấy được trang nào: hashtag không
@@ -611,7 +617,9 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                     continue
                 failed = 0
                 entry.pop("missing_at", None)
-                videos, next_cursor = result
+                videos, next_cursor, hashtag_id = result
+                if hashtag_id:
+                    entry["hashtag_id"] = hashtag_id
                 entry["pages"] = int(entry.get("pages") or 0) + 1
                 empty = 0 if videos else empty + 1
                 if next_cursor is None or empty >= _MAX_EMPTY_PAGES:
