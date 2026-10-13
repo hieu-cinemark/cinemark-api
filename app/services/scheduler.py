@@ -40,7 +40,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
-from app.services import omar_comments
+from app.services import omar_comments, omar_trending, ops_alerts
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -453,6 +453,52 @@ async def _omar_tick() -> None:
     _spawn(_run_omar_round("schedule"))
 
 
+# --- Cảnh báo vận hành (app/services/ops_alerts.py) - mỗi settings.ops_alerts_interval_minutes phút ---------------
+# Khoá Redis thay cho mốc trong bộ nhớ để restart API (uvicorn --reload) không kiểm tra lại ngay; chạy nền vì /usage của
+# Omar và D1 có thể chậm.
+_OPS_ALERTS_KEY = f"{REDIS_KEY_PREFIX}scheduler:ops_alerts:last_run"
+
+
+async def _run_ops_alerts() -> None:
+    try:
+        await ops_alerts.run_checks()
+    except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
+        logger.error("ops_alerts_failed", error=str(exc)[:300])
+
+
+async def _ops_alerts_tick() -> None:
+    if not settings.ops_alerts_enabled:
+        return
+    # Trừ một nhịp kiểm tra để lượt kế tiếp không trễ thêm 30 giây mỗi lần.
+    ttl = max(60, settings.ops_alerts_interval_minutes * 60 - _POLL_INTERVAL_SECONDS)
+    if not await get_redis_client().set(_OPS_ALERTS_KEY, "1", nx=True, ex=ttl):
+        return
+    _spawn(_run_ops_alerts())
+
+
+# --- Omar: "video đang nổi" mỗi settings.omar_trending_interval_hours giờ (app/services/omar_trending.py) -----------
+_OMAR_TRENDING_KEY = f"{REDIS_KEY_PREFIX}scheduler:omar_trending:last_run"
+
+
+async def _run_omar_trending() -> None:
+    try:
+        await omar_trending.run_refresh_tracked()
+    except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để lượt sau chạy lại
+        logger.error("omar_trending_failed", error=str(exc)[:300])
+
+
+async def _omar_trending_tick() -> None:
+    """Độc lập với lượt Omar chính (nhịp gọi riêng). Khoá Redis sống một chu kỳ (trừ 2 phút cho lệch tick) nên restart API
+    không chạy lặp; việc chạy ở nền vì một lượt mất hàng chục phút."""
+    if not settings.omar_trending_enabled or omar_trending.is_running():
+        return
+    ttl = max(60, int(settings.omar_trending_interval_hours * 3600) - 120)
+    if not await get_redis_client().set(_OMAR_TRENDING_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):
+        return
+    logger.info("omar_trending_firing")
+    _spawn(_run_omar_trending())
+
+
 async def _loop() -> None:
     while True:
         try:
@@ -500,6 +546,18 @@ async def _loop() -> None:
             logger.error("scheduler_omar_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_omar_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_omar_trending_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_omar_trending_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_omar_trending_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_ops_alerts_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_ops_alerts_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_ops_alerts_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 

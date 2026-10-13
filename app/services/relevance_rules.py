@@ -470,8 +470,19 @@ def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None
     return bool(folded_title) and folded_title in text
 
 
+# Bài gắn hashtag ké (hashtag_only_mention) chỉ được tin là "related" khi bộ phân loại tự tin từ mức này trở lên.
+HASHTAG_ONLY_MIN_CONFIDENCE = 0.9
+
+
 def resolve_relevance(
-    label: str | None, content: str | None, movie: dict, *, has_keyword: bool, strict: bool
+    label: str | None,
+    content: str | None,
+    movie: dict,
+    *,
+    has_keyword: bool,
+    strict: bool,
+    hashtag_only: bool = False,
+    confidence: float | None = None,
 ) -> tuple[bool | None, str | None, str | None]:
     """Nhãn Kira (related/uncertain hoặc None khi Kira không kết luận - "not_related" do bên gọi xử lý trước)
     -> (ai_relevant, relevance_label, context). Dùng chung cho ingest consumer và
@@ -481,7 +492,13 @@ def resolve_relevance(
     trong bài quyết định thay. Có tín hiệu -> bài lên dashboard ("uncertain" được nâng thành "related", lý do
     trả ra ở context); không có -> vẫn lưu nhưng ẩn (ai_relevant False, nhãn "uncertain"). Phim "chặt" (strict:
     tên trùng cụm từ thông dụng) chỉ nhận tín hiệu mạnh, và kể cả bài Kira gán "related" cũng phải có tín hiệu
-    phim. ai_relevant None = chỉ kiểm tra từ khoá quyết định."""
+    phim. ai_relevant None = chỉ kiểm tra từ khoá quyết định.
+
+    `hashtag_only` (xem hashtag_only_mention): trừ khi bộ phân loại gán "related" với `confidence` >=
+    HASHTAG_ONLY_MIN_CONFIDENCE, bài vẫn lưu nhưng ẩn với nhãn "not_related", context "hashtag_only" - không để hashtag
+    tên phim một mình nâng bài lên (title_hashtag), để còn xem lại/gán lại được."""
+    if hashtag_only and not (label == "related" and (confidence or 0) >= HASHTAG_ONLY_MIN_CONFIDENCE):
+        return False, "not_related", "hashtag_only"
     if label == "related":
         if strict and not has_film_context(content, movie):
             return False, "uncertain", None
@@ -523,3 +540,116 @@ def no_diacritics_reason(text: str | None) -> str | None:
         return None
     letters = sum(1 for ch in body if ch.isalpha())
     return "no_diacritics" if letters >= _MIN_LETTERS else None
+
+
+# --- Bài "gắn hashtag ké" (từ 2026-10-13) ---
+# Bài chỉ nối với phim đích bằng hashtag tên phim nhét vào cuối một nội dung không liên quan ("Khi có đủ yêu thương thì
+# người bình thường cũng hoá anh hùng💕 #traibuonnguoi #fyp #trend", "U50 mà cô nét cỡ này đó #cookingshowbiz
+# #HoangHauCuoiCung") qua được cổng từ khoá, và Jev hay gán "related". Kira từng loại các bài này.
+_HASHTAG_RE = re.compile(r"#\w+", re.UNICODE)
+# Từ ngữ cảnh phim viết KHÔNG dấu nhưng không trùng nghĩa khi bỏ dấu (so trên văn bản đã normalize_title).
+_HASHTAG_ONLY_CONTEXT_PHRASES = frozenset(
+    [
+        *_STRONG_FILM_PHRASES,
+        "phim",
+        "movie",
+        "movies",
+        "film",
+        "films",
+        "cinema",
+        "cinemas",
+        "review",
+        "reviewer",
+        "scene",
+        "spoil",
+        "spoiler",
+        "dien xuat",
+        "kich ban",
+        "cot truyen",
+        "nhan vat",
+        "ket phim",
+    ]
+)
+# Từ chỉ là ngữ cảnh phim khi CÓ dấu: bỏ dấu thì "rạp"/"rap", "vé"/"về", "cảnh"/"cánh", "diễn"/"điện",
+# "chiếu"/"chiều" trùng nhau.
+_HASHTAG_ONLY_ACCENTED_WORDS = frozenset(["rạp", "vé", "cảnh", "diễn", "chiếu"])
+# Hashtag có các chuỗi con này (đã bỏ dấu, viết liền) là hashtag ngữ cảnh phim: #phimquytuvuotgiau, #reviewphim,
+# #tiktoksoiphim, #phimchieurap, #trailer..., #CinestarMoviesStation. Dry run 2026-10-13: bỏ qua chúng thì gần 60% số
+# bài bị gắn hashtag-only thực ra là clip phim thật (caption TikTok chỉ có hashtag, nội dung nằm trong video).
+_FILM_CONTEXT_HASHTAG_PARTS = (
+    "phim",
+    # Viết kiểu teen (#fimrap, #fim2026) và chuỗi rạp (#CGV, #lottecinema, #galaxycinema, #cinestar, #bhd, #betacinemas)
+    # - đo 13/10/2026: bị đánh dấu nhầm là "chỉ nhét hashtag" trong mẫu dry-run.
+    "fim",
+    "cgv",
+    "lotte",
+    "galaxy",
+    "cinestar",
+    "bhdstar",
+    "betacinema",
+    "xemphim",
+    "review",
+    "trailer",
+    "teaser",
+    "cinema",
+    "cine",
+    "movie",
+    "film",
+    "dienanh",
+    "chieurap",
+    "rapchieu",
+    "khoichieu",
+    "boxoffice",
+)
+# Tên diễn viên/đạo diễn ở dạng hashtag (#StevenNguyen) chỉ tính khi viết liền đủ dài - tên ngắn dễ trùng.
+_MIN_NAME_HASHTAG_CHARS = 6
+
+
+def _film_signal_in_hashtags(tags: set[str], movie: dict) -> bool:
+    """Hashtag ngữ cảnh phim (_FILM_CONTEXT_HASHTAG_PARTS) hoặc hashtag đúng bằng tên diễn viên/đạo diễn."""
+    if any(part in tag for tag in tags for part in _FILM_CONTEXT_HASHTAG_PARTS):
+        return True
+    names = {_squash(name) for key in ("director", "cast") for name in _name_parts(movie.get(key))}
+    return any(len(name) >= _MIN_NAME_HASHTAG_CHARS and name in tags for name in names)
+
+
+def _name_parts(value: object) -> list[str]:
+    return [normalize_title(name) for name in re.split(r"[,;/|]", str(value or ""))]
+
+
+def _film_signal_in_text(text: str, raw_lower: str, movie: dict, keywords: Iterable[str | None]) -> bool:
+    """Phần chữ (đã bỏ hashtag) có tín hiệu nào nối với phim đích: tên phim / từ khoá / tên viết tắt, tên đạo diễn/diễn
+    viên (từ hai chữ), nhà phát hành, hoặc từ ngữ cảnh điện ảnh."""
+    title = movie.get("title")
+    if mentions_film_manual(text, keywords, title):
+        return True
+    for key in ("director", "cast"):
+        if any(len(name.split()) >= 2 and _contains_phrase(text, name) for name in _name_parts(movie.get(key))):
+            return True
+    if any(len(_squash(name)) >= 3 and _contains_phrase(text, name) for name in _name_parts(movie.get("distributor"))):
+        return True
+    if any(_contains_phrase(text, phrase) for phrase in _HASHTAG_ONLY_CONTEXT_PHRASES):
+        return True
+    words = set(re.findall(r"\w+", raw_lower))
+    return bool(words & _HASHTAG_ONLY_ACCENTED_WORDS)
+
+
+def hashtag_only_mention(content: str | None, movie: dict | None, keywords: Iterable[str | None] = ()) -> bool:
+    """True khi mối nối DUY NHẤT của bài với phim đích là hashtag: bài có nhắc phim (tên, từ khoá hoặc tên viết tắt -
+    như cổng mentions_film_manual) nhưng sau khi bỏ mọi #hashtag, phần chữ còn lại không có tên phim, tên viết tắt, từ
+    khoá, tên đạo diễn/diễn viên, nhà phát hành hay từ ngữ cảnh điện ảnh (phim, rạp, vé, trailer, suất chiếu, review,
+    cảnh, diễn, đạo diễn...), VÀ không có hashtag ngữ cảnh phim (#phim..., #reviewphim, #tiktoksoiphim, #trailer...) hay
+    hashtag tên diễn viên/đạo diễn (#StevenNguyen). Caption chỉ có hashtag tên phim + hashtag chung chung (#fyp #trend)
+    hoặc chỉ còn emoji/vài chữ cũng là hashtag-only.
+
+    Từ khoá lấy từ `keywords` cộng movie["keywords"] (ingest consumer nạp sẵn). Bài không nhắc phim ở đâu cả trả False -
+    không phải việc của quy tắc này. Hàm thuần, không phân biệt dấu (normalize_title)."""
+    movie = movie or {}
+    all_keywords = [*(keywords or ()), *(movie.get("keywords") or ())]
+    raw = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", content or ""))
+    if not mentions_film_manual(raw, all_keywords, movie.get("title")):
+        return False
+    if _film_signal_in_hashtags(_hashtags(raw), movie):
+        return False
+    body = _HASHTAG_RE.sub(" ", raw)
+    return not _film_signal_in_text(normalize_title(body), body.lower(), movie, all_keywords)

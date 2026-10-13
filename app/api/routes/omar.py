@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.services import omar_channels, omar_comments, omar_search, omar_tiktok
+from app.services import omar_channels, omar_comments, omar_search, omar_tiktok, omar_trending, omar_yield
 from app.services.d1 import get_or_create_keyword, set_keyword_enabled
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -140,3 +140,24 @@ async def omar_add_search(payload: OmarSearchRequest) -> dict[str, Any]:
 async def omar_delete_search(query_id: str) -> dict[str, bool]:
     await omar_search.delete_custom_query(query_id)
     return {"ok": True}
+
+
+@router.get("/yield")
+async def omar_yield_summary(days: int = 7) -> dict[str, Any]:
+    """Hiệu quả từng nguồn theo ngày (request, gửi đi, mới thật) và phần ngân sách đang dùng cho tìm kiếm / kênh."""
+    per_day = await omar_yield.daily(max(1, min(days, 30)))
+    return {
+        "days": per_day,
+        "totals": omar_yield.totals(per_day),
+        "shares": await omar_yield.adaptive_shares(),
+        "base_shares": {"search": settings.omar_search_budget_share, "channel": settings.omar_channels_budget_share},
+    }
+
+
+@router.get("/trending")
+async def omar_trending_videos(movie_id: str | None = None, hours: float = 24, limit: int = 30) -> dict[str, Any]:
+    """Video đang nổi: tốc độ lượt xem/bình luận của top video TikTok mỗi phim, từ snapshot Omar
+    (app/services/omar_trending.py). hours = khoảng snapshot được xét (cần >= 1 giờ để có hai snapshot so sánh)."""
+    if not 1 <= hours <= 24 * 7:
+        raise ValidationError("hours phải trong khoảng 1..168")
+    return await omar_trending.trending(movie_id=movie_id or None, hours=hours, limit=max(1, min(limit, 100)))

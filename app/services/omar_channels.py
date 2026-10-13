@@ -24,6 +24,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.services import omar_yield
 from app.services.d1 import d1_query
 from app.services.relevance_rules import normalize_title
 
@@ -37,6 +38,10 @@ DONE_KEY = f"{REDIS_KEY_PREFIX}omar:channels:done"
 # Hash {handle: create_time (epoch) của video mới nhất đã thấy} - lần sau chỉ lật tới mốc này (trừ 1 ngày), không lật lại
 # cả settings.omar_channels_days ngày mỗi ngày.
 SEEN_UNTIL_KEY = f"{REDIS_KEY_PREFIX}omar:channels:seen_until"
+# Hash {handle: số lần cào liên tiếp không có video nào về phim đang theo dõi} và {handle: epoch được cào lại} - kênh
+# quá settings.omar_channels_prune_runs lần trắng thì nghỉ settings.omar_channels_rest_days ngày rồi thử lại.
+ZERO_KEY = f"{REDIS_KEY_PREFIX}omar:channels:zero"
+REST_KEY = f"{REDIS_KEY_PREFIX}omar:channels:rest_until"
 _WORKERS = 4
 
 
@@ -61,7 +66,13 @@ async def load_channels() -> list[str]:
         )
         or []
     )
-    return [str(row["handle"]) for row in rows]
+    handles = [str(row["handle"]) for row in rows]
+    try:
+        resting = await get_redis_client().hgetall(REST_KEY) or {}
+    except Exception:  # noqa: BLE001
+        resting = {}
+    now = datetime.now(tz=UTC).timestamp()
+    return [handle for handle in handles if float(resting.get(handle) or 0) <= now]
 
 
 async def load_movie_matchers() -> list[dict[str, Any]]:
@@ -120,12 +131,14 @@ async def crawl_channel(
     if seen_until:
         cutoff = max(cutoff, seen_until - 86_400)
     newest = 0
+    matched_total = 0
     cursor = "0"
     for _ in range(settings.omar_channels_max_pages):
         if not take():
             return False
         stats["requests"] = int(stats.get("requests") or 0) + 1
         stats["channel_requests"] = int(stats.get("channel_requests") or 0) + 1
+        await omar_yield.add("channel", requests=1)
         data = await omar_get(client, pacer, api_key, "posts", {"username": handle, "cursor": cursor})
         if data is None:
             return True  # kênh không tồn tại / đã đổi tên
@@ -137,16 +150,33 @@ async def crawl_channel(
                 by_keyword.setdefault(keyword_id, []).append({**video, "source": "omar_channel"})
         for keyword_id, matched in by_keyword.items():
             stats["channel_matched"] = int(stats.get("channel_matched") or 0) + len(matched)
-            await publish_videos(matched, keyword_id, stats)
+            matched_total += len(matched)
+            await publish_videos(matched, keyword_id, stats, source="channel")
         oldest = min((int(v.get("create_time") or 0) for v in videos), default=0)
         newest = max([newest, *(int(v.get("create_time") or 0) for v in videos)])
         if newest > seen_until:
             await redis.hset(SEEN_UNTIL_KEY, handle, str(newest))
         following = next_cursor(data)
         if following is None or (oldest and oldest < cutoff):
-            return True
+            break
         cursor = following
+    await _track_zero(handle, matched_total)
     return True
+
+
+async def _track_zero(handle: str, matched: int) -> None:
+    """Kênh không có video nào về phim đang theo dõi settings.omar_channels_prune_runs lần cào liên tiếp: nghỉ
+    settings.omar_channels_rest_days ngày (không cào), sau đó thử lại."""
+    redis = get_redis_client()
+    if matched:
+        await redis.hdel(ZERO_KEY, handle)
+        return
+    streak = int(await redis.hincrby(ZERO_KEY, handle, 1))
+    if streak >= settings.omar_channels_prune_runs:
+        until = datetime.now(tz=UTC) + timedelta(days=settings.omar_channels_rest_days)
+        await redis.hset(REST_KEY, handle, str(until.timestamp()))
+        await redis.hdel(ZERO_KEY, handle)
+        logger.info("omar_channel_resting", handle=handle, days=settings.omar_channels_rest_days)
 
 
 async def run_channels(

@@ -27,6 +27,7 @@ import openai
 from openai import OpenAI
 
 from app.core.logging import get_logger
+from app.services.ops_alerts import note_ai_wallet_error
 
 logger = get_logger(__name__)
 
@@ -280,8 +281,9 @@ async def call_ai(
                 logger.info("ai_call_finished", **result.as_log_fields())
                 last_call_usage.set(usage)
                 return content
-            except openai.RateLimitError:
+            except openai.RateLimitError as exc:
                 if attempt == _MAX_RATE_LIMIT_RETRIES:
+                    await note_ai_wallet_error(provider, exc)  # insufficient_quota đi kèm 429
                     logger.error(
                         "ai_call_failed",
                         provider=provider,
@@ -302,6 +304,8 @@ async def call_ai(
                 )
                 await asyncio.sleep(delay)
             except Exception as exc:
+                # Ví hết tiền (402 vnd_balance_exhausted): ghi mốc cho cảnh báo Telegram (app/services/ops_alerts.py).
+                await note_ai_wallet_error(provider, exc)
                 logger.error(
                     "ai_call_failed",
                     provider=provider,

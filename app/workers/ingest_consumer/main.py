@@ -50,6 +50,7 @@ from app.services.d1 import (
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.relevance_rules import (
     foreign_language_reason,
+    hashtag_only_mention,
     mentions_film_manual,
     mentions_keyword_or_title,
     mentions_other_film,
@@ -307,10 +308,17 @@ async def handle_post(payload: dict[str, Any]) -> None:
             kira_reason=verdict["reason"],
         )
         return
+    # Bài chỉ nối với phim bằng hashtag nhét vào nội dung khác ("... anh hùng💕 #traibuonnguoi #fyp"): Jev hay gán
+    # "related" cho loại này. Lưu nhưng ẩn (not_related, lý do hashtag_only) trừ khi bộ phân loại rất tự tin.
+    # Tắt mặc định (settings.hashtag_only_filter): dry-run 13/10/2026 chỉ đúng khoảng một nửa - bật khi đã bổ sung tên diễn
+    # viên cho các phim và xem lại mẫu (scripts/relabel_hashtag_only.py --random 20).
+    hashtag_only = settings.hashtag_only_filter and hashtag_only_mention(draft.get("content"), movie, movie_keywords)
     # Kira "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
     if settings.relevance_rules_only:
         # Đã qua cổng tên phim/viết tắt/từ khoá ở trên - chế độ thủ công coi vậy là liên quan.
-        ai_relevant, relevance_label, context = True, "related", "manual_rules"
+        ai_relevant, relevance_label, context = (
+            (False, "not_related", "hashtag_only") if hashtag_only else (True, "related", "manual_rules")
+        )
     else:
         ai_relevant, relevance_label, context = resolve_relevance(
             relevance_label,
@@ -318,8 +326,10 @@ async def handle_post(payload: dict[str, Any]) -> None:
             movie,
             has_keyword=has_keyword,
             strict=movie.get("slug") in settings.strict_relevance_movies,
+            hashtag_only=hashtag_only,
+            confidence=relevance_confidence,
         )
-    no_film_context = ai_relevant is False
+    no_film_context = ai_relevant is False and context != "hashtag_only"
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
@@ -344,6 +354,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         decision="kept",
         reason="no_film_context"
         if no_film_context
+        else "hashtag_only"
+        if context == "hashtag_only"
         else f"context_{context}"
         if context
         else (f"kira_{relevance_label}" if relevance_label else "no_verdict"),

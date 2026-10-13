@@ -27,7 +27,7 @@ from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services import omar_channels, omar_comments, omar_search
+from app.services import omar_channels, omar_comments, omar_search, omar_yield
 from app.services.d1 import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -148,9 +148,14 @@ def map_web_item(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: dict[str, Any]) -> None:
-    """Gửi video đã map lên raw_posts như spider (chống trùng qua tập seen dùng chung với spider, _claim_unseen)."""
-    fresh_ids = await _claim_unseen([video["video_id"] for video in mapped])
+async def publish_videos(
+    mapped: list[dict[str, Any]], keyword_id: str, stats: dict[str, Any], source: str | None = None
+) -> None:
+    """Gửi video đã map lên raw_posts như spider (chống trùng qua tập seen dùng chung với spider, _claim_unseen).
+    `source` (hashtag/search/channel): ghi số gửi đi và số mới thật vào omar_yield."""
+    brand_new: set[str] = set()
+    fresh_ids = await _claim_unseen([video["video_id"] for video in mapped], brand_new)
+    sent_before = int(stats.get("published") or 0)
     for video in mapped:
         if video["video_id"] not in fresh_ids:
             stats["skipped_seen"] = int(stats.get("skipped_seen") or 0) + 1
@@ -160,7 +165,10 @@ async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: d
         )
         stats["published"] = int(stats.get("published") or 0) + int(ok)
         if not ok:
+            brand_new.discard(video["video_id"])
             await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
+    if source:
+        await omar_yield.add(source, sent=int(stats.get("published") or 0) - sent_before, new=len(brand_new))
 
 
 class _Pacer:
@@ -347,7 +355,7 @@ _SEEN_PREFIX = f"{REDIS_KEY_PREFIX}omar:seen:"
 _SPIDER_SEEN_VIDEOS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_video_ids"
 
 
-async def _claim_unseen(video_ids: list[str]) -> set[str]:
+async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None) -> set[str]:
     """Video cần gửi lên raw_posts: video MỚI (chưa có trong set đã gửi dùng chung với spider) hoặc video cũ đã quá
     settings.omar_republish_hours giờ chưa gửi lại (cập nhật tương tác). Đánh dấu luôn những video đó. Với gói lớn (~1 triệu
     video/ngày, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải. Redis lỗi thì coi như mới hết (thà ghi trùng còn
@@ -372,6 +380,8 @@ async def _claim_unseen(video_ids: list[str]) -> set[str]:
         refresh_due = bool(results[i * step + 1]) if ttl > 0 else True
         if is_new or refresh_due:
             out.add(video_id)
+        if is_new and brand_new is not None:
+            brand_new.add(video_id)  # lần đầu thấy (chưa có trong tập chống trùng dùng chung với spider)
     return out
 
 
@@ -508,7 +518,7 @@ async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
             stats["pages"] += 1
             stats["videos"] += len(mapped)
             await _count_cooccur(str(keyword["keyword"]), kw_id, mapped)
-            await publish_videos(mapped, kw_id, stats)
+            await publish_videos(mapped, kw_id, stats, source="hashtag")
             entry["pages"] = int(entry.get("pages") or 0) + 1
             if following is None:
                 entry.update(cursor=None, done_at=datetime.now(tz=UTC).isoformat())
@@ -663,7 +673,10 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
         comments_task = asyncio.create_task(run_comments())
         # Tìm theo từ khoá (app/services/omar_search.py) mỗi ngày một lần mỗi câu - bắt bài không gắn/gắn sai hashtag phim.
-        search_budget = Budget(int(budget * settings.omar_search_budget_share), parent=spend)
+        # Phần của tìm kiếm / kênh chỉnh theo hiệu quả đo được (bài mới trên mỗi request so với hashtag - omar_yield).
+        shares = await omar_yield.adaptive_shares()
+        stats["shares"] = shares
+        search_budget = Budget(int(budget * shares["search"]), parent=spend)
 
         async def run_search() -> None:
             nonlocal halted
@@ -679,7 +692,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
         search_task = asyncio.create_task(run_search())
         # Cào theo kênh (app/services/omar_channels.py): kênh TikTok đã có bài liên quan trong D1, mỗi kênh mỗi ngày.
-        channel_budget = Budget(int(budget * settings.omar_channels_budget_share), parent=spend)
+        channel_budget = Budget(int(budget * shares["channel"]), parent=spend)
 
         async def run_channels() -> None:
             nonlocal halted
@@ -759,10 +772,11 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 logger.warning("omar_page_failed", hashtag=kw["keyword"], cursor=cursor, error=str(exc)[:200])
                 return None
             stats["requests"] += 1
+            await omar_yield.add("hashtag", requests=1)
             mapped = [video for video in (map_aweme(raw) for raw in videos) if video is not None]
             stats["videos"] += len(mapped)
             await _count_cooccur(str(kw["keyword"]), kw["id"], mapped)
-            await publish_videos(mapped, kw["id"], stats)
+            await publish_videos(mapped, kw["id"], stats, source="hashtag")
             return videos, next_cursor, hashtag_id
 
         async def crawl(kw: dict[str, Any], _pages: int) -> bool:

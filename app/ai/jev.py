@@ -20,6 +20,7 @@ import httpx
 from app.ai.aspects import ASPECTS
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import ops_alerts
 
 logger = get_logger(__name__)
 
@@ -122,6 +123,7 @@ async def classify_comments_jev(messages: list[str], films: list[dict[str, Any] 
             for attempt in range(3):
                 try:
                     resp = await client.post(f"{settings.jev_api_base_url.rstrip('/')}/systemone", json=body)
+                    await ops_alerts.note_jev_response(resp.status_code, resp.text if resp.status_code >= 400 else "")
                     if resp.status_code == 429 or resp.status_code >= 500:
                         await asyncio.sleep(2 * (attempt + 1))
                         continue
@@ -131,6 +133,7 @@ async def classify_comments_jev(messages: list[str], films: list[dict[str, Any] 
                     usage_totals["requests"] += 1
                     usage_totals["input_tokens"] += int(usage.get("input_tokens") or 0)
                     usage_totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+                    await ops_alerts.note_jev_tokens(int(usage.get("input_tokens") or 0))  # chi phí ngày, cảnh báo
                     return _label(data.get("answers") or {})
                 except (httpx.HTTPError, ValueError) as exc:
                     if attempt == 2:
@@ -165,6 +168,7 @@ async def ask(
     try:
         for attempt in range(3):
             resp = await client.post(f"{settings.jev_api_base_url.rstrip('/')}/systemone", json=body)
+            await ops_alerts.note_jev_response(resp.status_code, resp.text if resp.status_code >= 400 else "")
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < 2:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
@@ -174,6 +178,7 @@ async def ask(
             usage_totals["requests"] += 1
             usage_totals["input_tokens"] += int(usage.get("input_tokens") or 0)
             usage_totals["output_tokens"] += int(usage.get("output_tokens") or 0)
+            await ops_alerts.note_jev_tokens(int(usage.get("input_tokens") or 0))  # chi phí ngày, cảnh báo
             return data.get("answers") or {}
         raise RuntimeError("jev_retries_exhausted")
     finally:

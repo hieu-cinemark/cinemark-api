@@ -25,6 +25,7 @@ import httpx
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import omar_yield
 from app.services.d1 import d1_query
 from app.services.relevance_rules import normalize_title
 
@@ -38,6 +39,12 @@ DONE_KEY = f"{REDIS_KEY_PREFIX}omar:search:done"
 # Hash {câu tìm đã chuẩn hoá: JSON {at, videos, published}} - kết quả lần tìm gần nhất, cho tab Omar.
 STATS_KEY = f"{REDIS_KEY_PREFIX}omar:search:stats"
 _CUSTOM_TABLE_READY = False
+# Hash {câu tìm đã chuẩn hoá: số lần tìm liên tiếp không ra video mới} - câu tự sinh (gợi ý TikTok) bị xoá khi quá ngưỡng.
+ZERO_KEY = f"{REDIS_KEY_PREFIX}omar:search:zero"
+# Ngày (giờ VN) đã lấy gợi ý tìm kiếm của TikTok - mỗi ngày một lần.
+SUGGEST_DAY_KEY = f"{REDIS_KEY_PREFIX}omar:search:suggest_day"
+# Gợi ý chứa các cụm này là tìm kiếm nước ngoài (tên phim trùng chữ / phim Việt trên Netflix nước ngoài) - bỏ.
+_FOREIGN = (" espanol ", " de que ", " pelicula ", " netflix ", " sub indo ", " english ", " trata ")
 ENDPOINTS = ("search_videos", "search_photos")
 _WORKERS = 4
 
@@ -63,15 +70,17 @@ async def _ensure_custom_table() -> None:
         "created_at TEXT NOT NULL)",
         quiet=True,
     )
+    # source: custom (người dùng thêm) | suggest (tự sinh từ gợi ý tìm kiếm / xu hướng của TikTok). Cột thêm sau.
+    await d1_query("ALTER TABLE omar_search_queries ADD COLUMN source TEXT DEFAULT 'custom'", quiet=True)
     _CUSTOM_TABLE_READY = True
 
 
-async def add_custom_query(movie_id: str, query: str) -> dict[str, Any]:
+async def add_custom_query(movie_id: str, query: str, source: str = "custom") -> dict[str, Any]:
     await _ensure_custom_table()
     row = {"id": f"oq_{uuid.uuid4().hex[:16]}", "movie_id": movie_id, "query": query.strip()}
     await d1_query(
-        "INSERT INTO omar_search_queries (id, movie_id, query, created_at) VALUES (?, ?, ?, ?)",
-        [row["id"], movie_id, row["query"], datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).isoformat()],
+        "INSERT INTO omar_search_queries (id, movie_id, query, created_at, source) VALUES (?, ?, ?, ?, ?)",
+        [row["id"], movie_id, row["query"], datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).isoformat(), source],
     )
     return row
 
@@ -83,7 +92,8 @@ async def delete_custom_query(query_id: str) -> None:
 
 async def build_queries() -> list[dict[str, Any]]:
     """[{query, key, keyword_id, movie, movie_id, source, id}] cho mọi phim đang bật có từ khoá hashtag TikTok đang bật.
-    source: title (tên phim) | title_plain (không dấu) | social (câu tìm Facebook/Threads) | custom (tự thêm ở tab Omar)."""
+    source: title (tên phim) | title_plain (không dấu) | social (câu tìm Facebook/Threads) | custom (tự thêm ở tab Omar) |
+    suggest (tự sinh từ gợi ý tìm kiếm / xu hướng TikTok - discover_queries)."""
     rows = (
         await d1_query(
             """
@@ -124,10 +134,11 @@ async def build_queries() -> list[dict[str, Any]]:
         )
 
     await _ensure_custom_table()
-    for row in (
-        await d1_query("SELECT id, movie_id, query FROM omar_search_queries ORDER BY created_at", quiet=True) or []
-    ):
-        add(str(row["query"]), row["movie_id"], "custom", row["id"])
+    custom = await d1_query(
+        "SELECT id, movie_id, query, source FROM omar_search_queries ORDER BY created_at", quiet=True
+    )
+    for row in custom or []:
+        add(str(row["query"]), row["movie_id"], row.get("source") or "custom", row["id"])
     for row in rows:
         title = str(row.get("title") or "")
         if title:
@@ -174,6 +185,7 @@ async def _search_one(
                 return False
             stats["requests"] = int(stats.get("requests") or 0) + 1
             stats["search_requests"] = int(stats.get("search_requests") or 0) + 1
+            await omar_yield.add("search", requests=1)
             params = {"query": query["query"], "cursor": cursor, **mode}
             try:
                 data = await omar_get(client, pacer, api_key, path, params)
@@ -188,7 +200,7 @@ async def _search_one(
             # Các kiểu tìm trùng nhau một phần - chỉ đếm/gửi video chưa gặp trong câu này.
             mapped = [v for v in mapped if v["video_id"] not in seen_ids]
             seen_ids.update(v["video_id"] for v in mapped)
-            await publish_videos(mapped, query["keyword_id"], local)
+            await publish_videos(mapped, query["keyword_id"], local, source="search")
             following = next_cursor(data or {})
             if following is None:
                 break
@@ -203,7 +215,91 @@ async def _search_one(
         query["key"],
         json.dumps({"at": datetime.now(tz=UTC).isoformat(), "videos": videos, "published": local["published"]}),
     )
+    if complete and query.get("source") == "suggest" and query.get("id"):
+        await _track_zero(query, local["published"])
     return complete
+
+
+async def _track_zero(query: dict[str, Any], published: int) -> None:
+    """Câu tự sinh không ra video mới settings.omar_search_prune_days lần tìm liên tiếp thì xoá (đỡ tốn ngân sách)."""
+    redis = get_redis_client()
+    if published:
+        await redis.hdel(ZERO_KEY, query["key"])
+        return
+    streak = int(await redis.hincrby(ZERO_KEY, query["key"], 1))
+    if streak >= settings.omar_search_prune_days:
+        await delete_custom_query(query["id"])
+        await redis.hdel(ZERO_KEY, query["key"])
+        logger.info("omar_search_query_pruned", query=query["query"], movie=query.get("movie"))
+
+
+def keep_suggestion(text: str, title_plain: str) -> bool:
+    """Gợi ý đáng tìm: chứa tên phim (không dấu), không phải tìm kiếm nước ngoài, không quá dài."""
+    plain = normalize_title(text)
+    padded = f" {plain} "
+    return (
+        title_plain in plain
+        and plain != title_plain
+        and len(plain.split()) <= len(title_plain.split()) + 4
+        and not any(marker in padded for marker in _FOREIGN)
+    )
+
+
+async def discover_queries(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, take: Callable[[], bool]) -> int:
+    """Mỗi ngày một lần: gợi ý tìm kiếm của TikTok (search_suggest) cho tên phim không dấu, và từ khoá xu hướng ở Việt Nam
+    (trending_searches) chứa tên phim -> câu tìm mới (nguồn "suggest"), tối đa settings.omar_search_suggest_per_movie
+    câu mỗi phim. Câu không ra video mới bị tự xoá (_track_zero)."""
+    from app.services.omar_tiktok import omar_get
+
+    redis = get_redis_client()
+    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
+    if await redis.get(SUGGEST_DAY_KEY) == today:
+        return 0
+    queries = await build_queries()
+    existing = {" ".join(q["query"].lower().split()) for q in queries}
+    per_movie: dict[str, int] = {}
+    for q in queries:
+        if q["source"] == "suggest":
+            per_movie[q["movie_id"]] = per_movie.get(q["movie_id"], 0) + 1
+    movies = {q["movie_id"]: q["movie"] for q in queries if q["source"] == "title"}
+    candidates: list[tuple[str, str]] = []
+    for movie_id, title in movies.items():
+        title_plain = normalize_title(title)
+        if len(title_plain) < 4 or not take():
+            continue
+        await omar_yield.add("search", requests=1)
+        try:
+            data = await omar_get(client, pacer, api_key, "search_suggest", {"query": title_plain})
+        except Exception as exc:  # noqa: BLE001 - gợi ý lỗi: hôm sau thử lại
+            logger.warning("omar_search_suggest_failed", movie=title, error=str(exc)[:200])
+            continue
+        for item in (data or {}).get("suggestions") or []:
+            text = str(item.get("content") or "").strip()
+            if text and keep_suggestion(text, title_plain):
+                candidates.append((movie_id, text))
+    if take():
+        await omar_yield.add("search", requests=1)
+        try:
+            data = await omar_get(client, pacer, api_key, "trending_searches", {"region": "VN"})
+            for item in (data or {}).get("words") or []:
+                word = str(item.get("trendingSearchWord") or "").strip()
+                for movie_id, title in movies.items():
+                    if word and len(normalize_title(title)) >= 6 and normalize_title(title) in normalize_title(word):
+                        candidates.append((movie_id, word))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("omar_trending_searches_failed", error=str(exc)[:200])
+    added = 0
+    for movie_id, text in candidates:
+        key = " ".join(text.lower().split())
+        if key in existing or per_movie.get(movie_id, 0) >= settings.omar_search_suggest_per_movie:
+            continue
+        await add_custom_query(movie_id, text, source="suggest")
+        existing.add(key)
+        per_movie[movie_id] = per_movie.get(movie_id, 0) + 1
+        added += 1
+    await redis.set(SUGGEST_DAY_KEY, today, ex=3 * 24 * 3600)
+    logger.info("omar_search_queries_discovered", added=added, candidates=len(candidates))
+    return added
 
 
 _manual_tasks: set[asyncio.Task] = set()
@@ -246,6 +342,13 @@ async def run_search(
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     redis = get_redis_client()
+    if settings.omar_search_suggest:
+        try:
+            await discover_queries(client, pacer, api_key, lambda: not should_stop() and budget.take())
+        except OmarStop:
+            raise
+        except Exception as exc:  # noqa: BLE001 - mở rộng câu tìm lỗi không chặn phần tìm
+            logger.warning("omar_search_discover_failed", error=str(exc)[:200])
     done = await redis.hgetall(DONE_KEY) or {}
     queries = [q for q in await build_queries() if done.get(q["key"]) != today]
     if not queries:

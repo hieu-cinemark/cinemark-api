@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     # True: lọc bài liên quan hoàn toàn bằng luật, không AI (relevance_rules.mentions_film_manual/no_diacritics_reason):
     # khớp tên phim / viết tắt / từ khoá thì liên quan, phần chữ không có dấu tiếng Việt thì loại thẳng.
     # scripts/relabel_post_relevance.py khi đó tạm dừng phần Kira; --rules áp luật cho bài đang chờ.
+    # Bài chỉ nhắc phim qua hashtag nhét cuối caption (relevance_rules.hashtag_only_mention) -> lưu nhưng ẩn. Tắt mặc định
+    # tới khi độ chính xác đủ (dry-run 13/10/2026: ~50%).
+    hashtag_only_filter: bool = False
     relevance_rules_only: bool = False
 
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/hashtag_discovery.py) -
@@ -174,14 +177,28 @@ class Settings(BaseSettings):
     # lúc; sort: relevance/likes/newest). Đo 13/10/2026 "trại buôn người": week:newest chỉ ra 82 video rồi hết, không lọc ra
     # 207 video - chạy cả hai để vừa bắt video mới vừa lấy rộng.
     omar_search_modes: str = "week:newest,:relevance"
+    # Tự sinh câu tìm mỗi ngày từ gợi ý tìm kiếm (search_suggest) và xu hướng VN (trending_searches) của TikTok, tối đa
+    # omar_search_suggest_per_movie câu mỗi phim; câu tự sinh omar_search_prune_days lần tìm liền không ra video mới thì xoá.
+    omar_search_suggest: bool = True
+    omar_search_suggest_per_movie: int = 5
+    omar_search_prune_days: int = 5
     # Cào theo kênh (app/services/omar_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
     # omar_channels_max kênh, mỗi ngày lật /posts tới video cũ hơn omar_channels_days ngày (tối đa max_pages trang).
     omar_channels_budget_share: float = 0.2
+    # Chia ngân sách theo hiệu quả (app/services/omar_yield.py): phần của tìm kiếm / kênh = phần gốc x (bài mới trên mỗi
+    # request của nguồn đó / của hashtag) trong omar_adaptive_days ngày, kẹp trong [min, max].
+    omar_adaptive_budget: bool = True
+    omar_adaptive_days: int = 3
+    omar_adaptive_min_share: float = 0.05
+    omar_adaptive_max_share: float = 0.45
     omar_channels_min_posts: int = 2
     omar_channels_lookback_days: int = 90
     omar_channels_max: int = 300
     omar_channels_days: int = 30
     omar_channels_max_pages: int = 10
+    # Kênh omar_channels_prune_runs lần cào liền không có video về phim nào thì nghỉ omar_channels_rest_days ngày.
+    omar_channels_prune_runs: int = 14
+    omar_channels_rest_days: int = 7
     # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab Omar) - chừa phần còn lại cho lượt đang chạy.
     omar_manual_requests_per_minute: int = 30
     # Hashtag đã cào xong chỉ được cào lại từ đầu bằng ngân sách dư sau chừng này giờ - cào lại mỗi giờ làm ingest tồn
@@ -191,6 +208,19 @@ class Settings(BaseSettings):
     d1_max_concurrency: int = 8
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
     omar_hashtag_info_days: int = 7
+    # "Video đang nổi" (app/services/omar_trending.py): mỗi omar_trending_interval_hours giờ đọc lại số liệu của
+    # omar_trending_per_movie video TikTok tương tác cao nhất mỗi phim (đăng trong omar_trending_days ngày) qua Omar
+    # video_info (1 request/video, tối đa omar_trending_max_requests mỗi lượt) -> bảng D1 omar_video_stats. Video có
+    # >= omar_trending_rising_comments_per_hour bình luận/giờ (tối đa omar_trending_rising_limit mỗi lượt, chưa cào bình
+    # luận trong omar_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận Omar.
+    omar_trending_enabled: bool = True
+    omar_trending_interval_hours: float = 3
+    omar_trending_per_movie: int = 30
+    omar_trending_days: int = 7
+    omar_trending_max_requests: int = 600
+    omar_trending_rising_comments_per_hour: float = 20
+    omar_trending_rising_limit: int = 20
+    omar_trending_comments_recrawl_hours: float = 24
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
@@ -209,6 +239,27 @@ class Settings(BaseSettings):
     r2_access_key_id: str | None = None
     r2_secret_access_key: str | None = None
     lake_bucket: str = "cinemark-lake"
+
+    # Cảnh báo vận hành qua Telegram (app/services/ops_alerts.py), scheduler kiểm tra mỗi ops_alerts_interval_minutes.
+    # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói Omar / chi phí Jev mỗi ngày một lần.
+    ops_alerts_enabled: bool = True
+    ops_alerts_interval_minutes: int = 15
+    ops_alert_repeat_hours: float = 6
+    # Omar: đã dùng >= chừng này % hạn mức ngày; gói hết hạn trong chừng này ngày (và lần nữa khi còn <= 1 ngày).
+    ops_omar_quota_alert_pct: float = 90
+    # Chỉ báo hạn mức Omar khi còn ít nhất chừng này giờ tới lúc reset (cạn sớm).
+    ops_omar_quota_early_hours: float = 6
+    ops_omar_expiry_alert_days: int = 7
+    # Omar: tỉ lệ request lỗi của lượt đang/vừa chạy (trong 1 giờ qua), chỉ xét khi đủ số lần gọi tối thiểu.
+    ops_omar_error_rate_alert: float = 0.3
+    ops_omar_error_min_attempts: int = 50
+    # Không có bài TikTok / comment mới (MAX(scraped_at) trên D1) trong chừng này giờ.
+    ops_post_drought_hours: float = 6
+    ops_comment_drought_hours: float = 6
+    # Ví AI hết tiền: cảnh báo nếu lỗi 402/hết số dư gần nhất xảy ra trong chừng này giờ.
+    ops_ai_wallet_window_hours: float = 1
+    # Chi phí Jev hôm nay (giờ VN, ước từ token đầu vào) vượt mức này (USD).
+    ops_jev_daily_usd_alert: float = 2.0
 
     @property
     def strict_relevance_movies(self) -> frozenset[str]:

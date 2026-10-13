@@ -27,6 +27,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.services import omar_yield
 from app.services.d1 import d1_query, get_enabled_keywords
 
 if TYPE_CHECKING:
@@ -166,6 +167,36 @@ async def weekly_enqueue_due(now_local: datetime) -> bool:
     return bool(await redis.set(ENQUEUE_LOCK_KEY, "1", ex=15 * 60, nx=True))
 
 
+async def enqueue_videos(videos: list[dict[str, Any]], *, reason: str, hashtag: str = "trending") -> int:
+    """Xếp thêm từng video ({video_id, post_id, reply_count}) vào CÙNG hàng đợi với job tuần - dùng cho video đang lên
+    (app/services/omar_trending.py). Video đã có trong hàng đợi giữ nguyên con trỏ. Không đụng LAST_JOB_KEY / WEEK_KEY nên
+    lịch tuần không đổi. Trả số video thêm mới."""
+    redis = get_redis_client()
+    existing = {key.decode() if isinstance(key, bytes) else key for key in await redis.hkeys(JOBS_KEY) or []}
+    jobs: dict[str, str] = {}
+    for rank, video in enumerate(videos):
+        video_id = str(video.get("video_id") or "")
+        if not video_id or video_id in existing or video_id in jobs or not video.get("post_id"):
+            continue
+        jobs[video_id] = json.dumps(
+            {
+                "video_id": video_id,
+                "post_id": video["post_id"],
+                "hashtag": hashtag,
+                "rank": rank,
+                "reply_count": int(video.get("reply_count") or 0),
+                "cursor": "0",
+                "pages": 0,
+                "comments": 0,
+                "reason": reason,
+            }
+        )
+    if jobs:
+        await redis.hset(JOBS_KEY, mapping=jobs)
+        logger.info("omar_comments_videos_enqueued", reason=reason, videos=len(jobs))
+    return len(jobs)
+
+
 async def pending_jobs() -> list[dict[str, Any]]:
     raw = await get_redis_client().hgetall(JOBS_KEY) or {}
     jobs = []
@@ -220,6 +251,8 @@ async def _publish(video_id: str, comments: list[dict[str, Any]]) -> int:
             sent += 1
         else:
             await redis.srem(_SPIDER_SEEN_COMMENTS_KEY, comment["comment_id"])  # chưa tới Kafka: lần sau gửi lại
+    # Bình luận chỉ gửi khi chưa từng thấy, nên số gửi = số mới.
+    await omar_yield.add("comments", sent=sent, new=sent)
     return sent
 
 
@@ -253,6 +286,7 @@ async def process_queue(
             return None
         stats["requests"] += 1
         stats["comment_requests"] += 1
+        await omar_yield.add("comments", requests=1)
         return await omar_get(client, pacer, api_key, path, params)
 
     async def replies_of(video_id: str, comment_id: str) -> bool:
@@ -315,7 +349,12 @@ async def process_queue(
         await _update_last_job()
         await d1_query(
             "UPDATE posts SET comments_crawled_at = ?, comments_crawled_replies = ?, comments_crawl_reason = ? WHERE id = ?",
-            [datetime.now(tz=UTC).isoformat(), job.get("reply_count") or 0, "omar_weekly", job["post_id"]],
+            [
+                datetime.now(tz=UTC).isoformat(),
+                job.get("reply_count") or 0,
+                job.get("reason") or "omar_weekly",  # "omar_trending": xếp hàng từ omar_trending (enqueue_videos)
+                job["post_id"],
+            ],
             quiet=True,
         )
 
