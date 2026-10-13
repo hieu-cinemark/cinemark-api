@@ -32,6 +32,7 @@ import orjson
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 
+from app.ai.jev import use_jev
 from app.ai.tasks.post_relevance import classify_post_relevance_kira
 from app.clients.kafka import publish_ingest_decision, start_kafka_producer, stop_kafka_producer
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
@@ -277,7 +278,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
             platform=platform,
             other_titles=await _tracked_titles(),
         )
-        if settings.kira_ingest_relevance and not settings.relevance_rules_only
+        # Jev (~0,4 giây/bài) đủ nhanh để phân loại ngay ở ingest; Kira chậm nên chỉ khi bật KIRA_INGEST_RELEVANCE.
+        if (settings.kira_ingest_relevance or use_jev()) and not settings.relevance_rules_only
         else None
     )
     if verdict is not None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from app.ai.jev import judge_comment_value_jev, use_jev
 from app.ai.kira import call_kira, parse_json_response
 from app.core.logging import get_logger
 from app.services.d1 import d1_query
@@ -73,6 +74,8 @@ async def load_scores(post_ids: list[str]) -> dict[str, int]:
 
 
 async def _judge_movie(title: str, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    if use_jev():
+        return await judge_comment_value_jev(title, rows)
     lines = []
     for i, row in enumerate(rows, 1):
         caption = " ".join(str(row.get("content") or "").split())[:400]
