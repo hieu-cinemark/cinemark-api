@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.services import omar_channels, omar_comments, omar_tiktok
+from app.services import omar_channels, omar_comments, omar_search, omar_tiktok
 from app.services.d1 import get_or_create_keyword, set_keyword_enabled
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -103,3 +103,41 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     started = omar_tiktok.crawl_hashtag_now(row)
     logger.info("omar_hashtag_added", hashtag=row["keyword"], movie_id=payload.movie_id, started=started)
     return {"keyword": row, "started": started, "verified": exists is True}
+
+
+@router.get("/search")
+async def omar_search_queries() -> dict[str, Any]:
+    """Câu tìm theo từ khoá (tên phim, không dấu, câu tìm Facebook/Threads, câu tự thêm) và kết quả lần tìm gần nhất."""
+    return {
+        "queries": await omar_search.query_status(),
+        "date": settings.omar_search_date,
+        "sort": settings.omar_search_sort,
+        "pages": settings.omar_search_pages,
+    }
+
+
+class OmarSearchRequest(BaseModel):
+    movie_id: str
+    query: str
+
+
+@router.post("/search")
+async def omar_add_search(payload: OmarSearchRequest) -> dict[str, Any]:
+    """Thêm câu tìm cho một phim rồi tìm ngay; các ngày sau tìm cùng các câu khác trong lượt Omar."""
+    query = payload.query.strip()
+    if len(query) < 3:
+        raise ValidationError("Câu tìm quá ngắn")
+    row = await omar_search.add_custom_query(payload.movie_id, query)
+    found = next((q for q in await omar_search.build_queries() if q.get("id") == row["id"]), None)
+    if found is None:
+        await omar_search.delete_custom_query(row["id"])
+        raise ValidationError("Phim chưa có hashtag TikTok đang bật, hoặc câu tìm trùng câu đã có")
+    omar_search.search_now(found)
+    logger.info("omar_search_added", query=query, movie_id=payload.movie_id)
+    return {"query": found}
+
+
+@router.delete("/search/{query_id}")
+async def omar_delete_search(query_id: str) -> dict[str, bool]:
+    await omar_search.delete_custom_query(query_id)
+    return {"ok": True}
