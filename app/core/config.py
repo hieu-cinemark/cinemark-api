@@ -86,6 +86,17 @@ class Settings(BaseSettings):
     # app/services/platform_config_db.py. Công dụng chính hiện nay: phân loại liên quan,
     # cảm xúc comment và report topic/narrative (Beeknoee chỉ là tuỳ chọn cho report).
     kira_enabled: bool = False
+    # Gán nhãn comment (cảm xúc, khía cạnh, giai đoạn): "jev" = TypeSafe AI Jev (app/ai/jev.py, nhanh và rẻ; comment lỗi
+    # thì chuyển sang Kira nếu Kira bật), "kira" = như trước. Không có JEV_API_KEY thì luôn dùng Kira.
+    comment_labeler: str = "jev"
+    jev_api_key: str | None = None
+    jev_api_base_url: str = "https://api.typesafe.ai/v1"
+    jev_model: str = "jev-latest"
+    jev_concurrency: int = 16
+    # Dưới ngưỡng tự tin: cảm xúc -> neutral, giai đoạn -> khac, khía cạnh -> không gắn.
+    jev_min_confidence: float = 0.6
+    jev_stage_min_confidence: float = 0.5
+    jev_aspect_min_confidence: float = 0.5
 
     # Kira là bộ phân loại độ liên quan của bài lúc ingest (app/ai/tasks/post_relevance.py):
     # tối đa chừng này bài mỗi ngày UTC. Gom lô nên mỗi bài tốn khoảng 330 token (đo

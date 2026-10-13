@@ -27,10 +27,12 @@ from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
+from app.ai.jev import classify_comments_jev, jev_is_configured
 from app.ai.kira import call_kira, kira_is_enabled, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
 from app.ai.tasks.sentiment_rules import cached_comment_labels, remember_comment_labels, rule_sentiment
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import MIN_CONTENT_LENGTH
 
@@ -166,7 +168,18 @@ async def classify_comments(
                 routed["cache"] += 1
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
-    # 3. Phần còn lại mới gửi Kira, rồi ghi nhãn vào cache cho lần gặp lại.
+    # 3. Jev (settings.comment_labeler = "jev"): mỗi comment một request, song song - comment lỗi rơi xuống Kira ở bước 4.
+    if rest and settings.comment_labeler == "jev" and jev_is_configured():
+        jev_labels = await classify_comments_jev([m for _, m in rest], [films[i] if films else None for i, _ in rest])
+        for (i, _), label in zip(rest, jev_labels, strict=True):
+            if label is not None and (parsed := _label(label)) is not None:
+                labels[i] = parsed
+        done = [(m, label) for i, m in rest if (label := labels[i]) is not None]
+        await remember_comment_labels(done)
+        routed["jev"] = len(done)
+        rest = [(i, m) for i, m in rest if labels[i] is None]
+
+    # 4. Phần còn lại mới gửi Kira, rồi ghi nhãn vào cache cho lần gặp lại.
     if rest and await kira_is_enabled():
         for start in range(0, len(rest), BATCH_SIZE):
             chunk = rest[start : start + BATCH_SIZE]
