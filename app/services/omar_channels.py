@@ -200,6 +200,25 @@ async def run_channels(
         raise stopped[0]
 
 
+async def channel_status() -> dict[str, Any]:
+    """Cho tab Omar: số kênh đã từng cào, đã cào hôm nay, và các kênh có video mới gần nhất."""
+    redis = get_redis_client()
+    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
+    done = await redis.hgetall(DONE_KEY) or {}
+    seen = await redis.hgetall(SEEN_UNTIL_KEY) or {}
+    latest = sorted(((handle, float(ts or 0)) for handle, ts in seen.items()), key=lambda item: -item[1])[:20]
+    return {
+        "tracked": len(seen),
+        "done_today": sum(1 for day in done.values() if day == today),
+        "max_channels": settings.omar_channels_max,
+        "days": settings.omar_channels_days,
+        "latest": [
+            {"handle": handle, "newest_video_at": datetime.fromtimestamp(ts, tz=UTC).isoformat() if ts else None}
+            for handle, ts in latest
+        ],
+    }
+
+
 _manual_tasks: set[asyncio.Task] = set()
 
 

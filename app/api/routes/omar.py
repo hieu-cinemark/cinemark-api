@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.services import omar_comments, omar_tiktok
+from app.services import omar_channels, omar_comments, omar_tiktok
 from app.services.d1 import get_or_create_keyword, set_keyword_enabled
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -31,6 +31,7 @@ async def omar_status() -> dict[str, Any]:
         "round": omar_tiktok.round_status(),
         "mode": "spread_daily" if settings.omar_spread_daily else "continuous",
         "hashtags": progress,
+        "channels": await omar_channels.channel_status(),
         "comments": {
             **await omar_comments.job_status(),
             "weekday": settings.omar_comments_weekday,
