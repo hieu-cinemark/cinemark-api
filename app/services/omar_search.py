@@ -42,6 +42,17 @@ ENDPOINTS = ("search_videos", "search_photos")
 _WORKERS = 4
 
 
+def search_modes() -> list[dict[str, str]]:
+    """settings.omar_search_modes -> [{"date": "week", "sort": "newest"}, {"sort": "relevance"}, ...]."""
+    modes = []
+    for item in settings.omar_search_modes.split(","):
+        date, _, sort = item.strip().partition(":")
+        mode = {k: v for k, v in (("date", date.strip()), ("sort", sort.strip())) if v}
+        if mode not in modes:
+            modes.append(mode)
+    return modes or [{}]
+
+
 async def _ensure_custom_table() -> None:
     """Câu tìm người dùng tự thêm ở tab Omar (ngoài tên phim và câu tìm Facebook/Threads)."""
     global _CUSTOM_TABLE_READY
@@ -148,27 +159,22 @@ async def _search_one(
     take: Callable[[], bool],
     stats: dict[str, Any],
 ) -> bool:
-    """Cả hai endpoint, tối đa settings.omar_search_pages trang mỗi endpoint. True khi tìm xong không lỗi - lỗi thì lượt
+    """Video theo từng kiểu trong settings.omar_search_modes, rồi bài ảnh; tối đa settings.omar_search_pages trang mỗi lượt. True khi tìm xong không lỗi - lỗi thì lượt
     sau tìm lại câu này (search_videos của Omar hay trả 424 "Video search failed" từng đợt, đo 12/10/2026)."""
     from app.services.omar_tiktok import OmarStop, map_web_item, next_cursor, omar_get, publish_videos
 
     local: dict[str, Any] = {"published": 0, "skipped_seen": 0}
-    videos = 0
+    seen_ids: set[str] = set()
     complete = True
-    for path in ENDPOINTS:
+    passes = [("search_videos", mode) for mode in search_modes()] + [("search_photos", {})]
+    for path, mode in passes:
         cursor = "0"
         for _ in range(settings.omar_search_pages):
             if not take():
                 return False
             stats["requests"] = int(stats.get("requests") or 0) + 1
             stats["search_requests"] = int(stats.get("search_requests") or 0) + 1
-            params = {"query": query["query"], "cursor": cursor}
-            if path == "search_videos":
-                # Video mới trong tuần trước (search_photos không có bộ lọc này).
-                if settings.omar_search_date:
-                    params["date"] = settings.omar_search_date
-                if settings.omar_search_sort:
-                    params["sort"] = settings.omar_search_sort
+            params = {"query": query["query"], "cursor": cursor, **mode}
             try:
                 data = await omar_get(client, pacer, api_key, path, params)
             except OmarStop:
@@ -179,12 +185,15 @@ async def _search_one(
                 complete = False
                 break
             mapped = [v for v in (map_web_item(raw) for raw in (data or {}).get("results") or []) if v]
-            videos += len(mapped)
+            # Các kiểu tìm trùng nhau một phần - chỉ đếm/gửi video chưa gặp trong câu này.
+            mapped = [v for v in mapped if v["video_id"] not in seen_ids]
+            seen_ids.update(v["video_id"] for v in mapped)
             await publish_videos(mapped, query["keyword_id"], local)
             following = next_cursor(data or {})
             if following is None:
                 break
             cursor = following
+    videos = len(seen_ids)
     stats["search_videos"] = int(stats.get("search_videos") or 0) + videos
     stats["videos"] = int(stats.get("videos") or 0) + videos
     for key in ("published", "skipped_seen"):

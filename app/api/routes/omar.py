@@ -110,8 +110,7 @@ async def omar_search_queries() -> dict[str, Any]:
     """Câu tìm theo từ khoá (tên phim, không dấu, câu tìm Facebook/Threads, câu tự thêm) và kết quả lần tìm gần nhất."""
     return {
         "queries": await omar_search.query_status(),
-        "date": settings.omar_search_date,
-        "sort": settings.omar_search_sort,
+        "modes": omar_search.search_modes(),
         "pages": settings.omar_search_pages,
     }
 

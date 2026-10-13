@@ -168,11 +168,12 @@ class Settings(BaseSettings):
     omar_missing_recheck_hours: float = 24
     # Tìm theo từ khoá qua Omar (app/services/omar_search.py): mỗi câu (tên phim có dấu / không dấu + câu tìm kiếm
     # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa omar_search_pages trang, mỗi ngày một lần.
-    omar_search_pages: int = 10
+    omar_search_pages: int = 30
     omar_search_budget_share: float = 0.2
-    # Tìm video theo từ khoá chỉ trong khoảng thời gian này (day/week/month/3months/6months, rỗng = mọi lúc), mới nhất trước.
-    omar_search_date: str = "week"
-    omar_search_sort: str = "newest"
+    # Các kiểu tìm video cho mỗi câu, "date:sort" cách nhau bằng dấu phẩy (date: day/week/month/3months/6months, rỗng = mọi
+    # lúc; sort: relevance/likes/newest). Đo 13/10/2026 "trại buôn người": week:newest chỉ ra 82 video rồi hết, không lọc ra
+    # 207 video - chạy cả hai để vừa bắt video mới vừa lấy rộng.
+    omar_search_modes: str = "week:newest,:relevance"
     # Cào theo kênh (app/services/omar_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
     # omar_channels_max kênh, mỗi ngày lật /posts tới video cũ hơn omar_channels_days ngày (tối đa max_pages trang).
     omar_channels_budget_share: float = 0.2
