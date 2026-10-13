@@ -111,8 +111,15 @@ async def run_search(
                     return False
                 stats["requests"] += 1
                 stats["search_requests"] += 1
+                params = {"query": query["query"], "cursor": cursor}
+                if path == "search_videos":
+                    # Video mới trong tuần trước (search_photos không có bộ lọc này).
+                    if settings.omar_search_date:
+                        params["date"] = settings.omar_search_date
+                    if settings.omar_search_sort:
+                        params["sort"] = settings.omar_search_sort
                 try:
-                    data = await omar_get(client, pacer, api_key, path, {"query": query["query"], "cursor": cursor})
+                    data = await omar_get(client, pacer, api_key, path, params)
                 except OmarStop:
                     raise
                 except Exception as exc:  # noqa: BLE001 - trang lỗi: bỏ phần còn lại của endpoint này, hôm sau tìm lại

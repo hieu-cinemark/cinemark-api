@@ -170,6 +170,17 @@ class Settings(BaseSettings):
     # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa omar_search_pages trang, mỗi ngày một lần.
     omar_search_pages: int = 10
     omar_search_budget_share: float = 0.2
+    # Tìm video theo từ khoá chỉ trong khoảng thời gian này (day/week/month/3months/6months, rỗng = mọi lúc), mới nhất trước.
+    omar_search_date: str = "week"
+    omar_search_sort: str = "newest"
+    # Cào theo kênh (app/services/omar_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
+    # omar_channels_max kênh, mỗi ngày lật /posts tới video cũ hơn omar_channels_days ngày (tối đa max_pages trang).
+    omar_channels_budget_share: float = 0.2
+    omar_channels_min_posts: int = 2
+    omar_channels_lookback_days: int = 90
+    omar_channels_max: int = 300
+    omar_channels_days: int = 30
+    omar_channels_max_pages: int = 10
     # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab Omar) - chừa phần còn lại cho lượt đang chạy.
     omar_manual_requests_per_minute: int = 30
     # Hashtag đã cào xong chỉ được cào lại từ đầu bằng ngân sách dư sau chừng này giờ - cào lại mỗi giờ làm ingest tồn

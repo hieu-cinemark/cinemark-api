@@ -27,7 +27,7 @@ from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services import omar_comments, omar_search
+from app.services import omar_channels, omar_comments, omar_search
 from app.services.d1 import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
 from app.services.platform_config_db import get_omar_api_settings
 
@@ -678,6 +678,22 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 logger.error("omar_search_failed", error=str(exc)[:300])
 
         search_task = asyncio.create_task(run_search())
+        # Cào theo kênh (app/services/omar_channels.py): kênh TikTok đã có bài liên quan trong D1, mỗi kênh mỗi ngày.
+        channel_budget = Budget(int(budget * settings.omar_channels_budget_share), parent=spend)
+
+        async def run_channels() -> None:
+            nonlocal halted
+            try:
+                await omar_channels.run_channels(client, pacer, api_key, channel_budget, stats, should_stop)
+            except OmarStop as exc:
+                if not halted:
+                    halted = True
+                    stats["stopped"] = str(exc)[:100]
+                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
+            except Exception as exc:  # noqa: BLE001 - phần kênh lỗi không chặn phần hashtag
+                logger.error("omar_channels_failed", error=str(exc)[:300])
+
+        channels_task = asyncio.create_task(run_channels())
         # 2. Tổng video / lượt xem của từng hashtag (hashtag_info), làm mới mỗi settings.omar_hashtag_info_days ngày.
         info_before = (now - timedelta(days=settings.omar_hashtag_info_days)).isoformat()
         stale_info = [kw for kw in keywords if ((state.get(kw["id"]) or {}).get("info_at") or "") < info_before]
@@ -843,6 +859,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             await pool(info_job, [(kw, 1) for kw in stale_info])
         await comments_task
         await search_task
+        await channels_task
 
     pending = sum(1 for kw in keywords if todo(kw))
     stats["pending_keywords"] = pending

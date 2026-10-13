@@ -31,3 +31,15 @@ def test_map_aweme_photo_url():
     aweme = {"aweme_id": "9", "author": {"unique_id": "abc"}, "image_post_info": {"images": []}}
     assert map_aweme(aweme)["url"] == "https://www.tiktok.com/@abc/photo/9"
     assert map_aweme({**aweme, "image_post_info": None})["url"] == "https://www.tiktok.com/@abc/video/9"
+
+
+def test_channel_match_movie():
+    from app.services.omar_channels import match_movie
+
+    movies = [
+        {"keyword_id": "kw_tbn", "title_key": "traibuonnguoi", "tags": {"traibuonnguoi", "phimtraibuonnguoi"}},
+        {"keyword_id": "kw_qat", "title_key": "quyantang4hotinh", "tags": {"quyantang4"}},
+    ]
+    assert match_movie({"hashtags": ["TraiBuonNguoi", "fyp"], "desc": "x"}, movies) == "kw_tbn"
+    assert match_movie({"hashtags": [], "desc": "Review nhanh phim Quỷ Ăn Tạng 4: Hổ Tinh nha"}, movies) == "kw_qat"
+    assert match_movie({"hashtags": ["fyp"], "desc": "đi ăn lẩu"}, movies) is None
