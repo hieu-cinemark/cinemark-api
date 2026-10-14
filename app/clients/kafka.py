@@ -107,6 +107,7 @@ async def publish_crawl_request(
     max_pages: int | None = None,
     start_date: date | None = None,
     end_date: date | None = None,
+    recent_post: bool = False,
     bfs_depth: int | None = None,
 ) -> bool:
     """Trả về request có thực sự được publish hay không - chỗ gọi tự quyết định báo gì cho
@@ -117,9 +118,6 @@ async def publish_crawl_request(
     sinh ra mang một id mà ingest consumer có thể tra ngược thẳng về D1."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", keyword_id=keyword_id)
-        return False
-    if platform == "tiktok" and not keyword.startswith("#"):
-        logger.info("crawl_request_skipped_tiktok_text", keyword=keyword, keyword_id=keyword_id)
         return False
     # Một lần bấm Dừng trước đó bật platform_drain khoảng 15 phút để bỏ qua hàng tồn. Một
     # lần kích hoạt có chủ đích mới phải gỡ cờ đó, nếu không lượt crawl được publish xong
@@ -139,6 +137,8 @@ async def publish_crawl_request(
             value["start_date"] = start_date.isoformat()
         if end_date is not None:
             value["end_date"] = end_date.isoformat()
+        if recent_post:
+            value["recent_post"] = True
     elif start_date is not None or end_date is not None:
         logger.info(
             "crawl_request_dates_dropped",

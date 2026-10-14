@@ -23,6 +23,9 @@ class RunScraperRequest(BaseModel):
     max_pages: int | None = None
     start_date: date | None = None
     end_date: date | None = None
+    # Chỉ Facebook: bật bộ lọc "Bài viết gần đây" (mới nhất trước, cần session đã đăng nhập).
+    # Không kèm khoảng ngày thì spider-hub chạy một lượt duy nhất thay vì quét theo cửa sổ ngày.
+    recent_post: bool = False
     # Bước nhảy sang hashtag liên quan của TikTok đã được người vận hành duyệt. Bị bỏ qua
     # nếu không có keyword_id. spider-hub giới hạn số trang và ngừng gợi ý thêm tag ở độ
     # sâu 2.

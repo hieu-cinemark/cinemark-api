@@ -56,6 +56,7 @@ def build_run_route(router: APIRouter, platform: str) -> None:
                 max_pages=payload.max_pages,
                 start_date=payload.start_date,
                 end_date=payload.end_date,
+                recent_post=payload.recent_post,
                 bfs_depth=payload.bfs_depth if payload.keyword_id is not None else None,
             )
             if ok:
