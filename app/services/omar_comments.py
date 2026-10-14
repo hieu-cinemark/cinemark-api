@@ -83,23 +83,37 @@ def weekly_due(now: datetime) -> bool:
     return (now.weekday(), now.hour * 60 + now.minute) >= (settings.omar_comments_weekday, hour * 60 + minute)
 
 
-async def _top_videos(keyword_id: str, since: str, limit: int) -> list[dict[str, Any]]:
-    return (
+async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[str, list[dict[str, Any]]]:
+    """Top `limit` video theo tương tác của MỖI từ khoá, một truy vấn cho mọi từ khoá (ROW_NUMBER theo keyword_id).
+    Trước 14/10/2026 là một truy vấn mỗi từ khoá chạy lần lượt: 147 hashtag ~140 giây, nút "Cào bình luận ngay" của
+    dashboard hết giờ chờ 15 giây. Danh sách id truyền qua json_each (D1 giới hạn 100 tham số mỗi câu)."""
+    if not keyword_ids:
+        return {}
+    rows = (
         await d1_query(
             f"""
-            SELECT p.id, p.external_id, p.reply_count
-            FROM posts p
-            WHERE p.platform = 'tiktok' AND p.keyword_id = ? AND p.posted_at >= ? AND p.reply_count > 0
-              AND {RELEVANT_POST_SQL}
-            ORDER BY COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0)
-                     + COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) DESC
-            LIMIT ?
+            SELECT keyword_id, id, external_id, reply_count FROM (
+              SELECT p.keyword_id, p.id, p.external_id, p.reply_count,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY p.keyword_id
+                       ORDER BY COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0)
+                                + COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) DESC
+                     ) AS rn
+              FROM posts p
+              WHERE p.platform = 'tiktok' AND p.keyword_id IN (SELECT value FROM json_each(?))
+                AND p.posted_at >= ? AND p.reply_count > 0 AND {RELEVANT_POST_SQL}
+            ) WHERE rn <= ? ORDER BY keyword_id, rn
             """,
-            [keyword_id, since, limit],
+            [json.dumps(keyword_ids), since, limit],
             quiet=True,
+            timeout=60.0,
         )
         or []
     )
+    by_keyword: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_keyword.setdefault(str(row["keyword_id"]), []).append(row)
+    return by_keyword
 
 
 _KEYWORD_TABLE_READY = False
@@ -162,8 +176,9 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
     existing = {key.decode() if isinstance(key, bytes) else key for key in existing}
     added, per_hashtag = 0, {}
     jobs: dict[str, str] = {}
+    top = await _top_videos([str(kw["id"]) for kw in keywords], since, settings.omar_comments_top_per_hashtag)
     for kw in keywords:
-        rows = await _top_videos(kw["id"], since, settings.omar_comments_top_per_hashtag)
+        rows = top.get(str(kw["id"]), [])
         per_hashtag[kw["keyword"]] = len(rows)
         for rank, row in enumerate(rows):
             video_id = str(row.get("external_id") or "")
