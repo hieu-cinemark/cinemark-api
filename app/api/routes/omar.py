@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter
@@ -18,6 +19,8 @@ from app.services.platform_config_db import get_omar_api_settings
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/omar", tags=["omar"])
+
+EXISTS_CHECK_SECONDS = 8.0
 
 
 @router.get("/status")
@@ -109,7 +112,12 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     tag = payload.hashtag.strip().lstrip("#").replace(" ", "")
     if len(tag) < 2:
         raise ValidationError("Hashtag không hợp lệ")
-    exists = await omar_tiktok.hashtag_exists(tag)
+    # Kiểm tra trên TikTok qua Omar có lúc >12 giây (đi chung bộ giãn nhịp với lượt Omar đang chạy) - dashboard chỉ chờ
+    # 15 giây. Quá EXISTS_CHECK_SECONDS thì coi như chưa biết: vẫn tạo từ khoá và cào; hashtag rỗng thì lượt cào dừng ở trang 1.
+    try:
+        exists = await asyncio.wait_for(omar_tiktok.hashtag_exists(tag), timeout=EXISTS_CHECK_SECONDS)
+    except TimeoutError:
+        exists = None
     if exists is False:
         raise ValidationError(f"#{tag} không có video nào trên TikTok")
     row = await get_or_create_keyword(payload.movie_id, "tiktok", f"#{tag}")
