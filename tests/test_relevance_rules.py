@@ -230,3 +230,40 @@ def test_names_can_be_ignored_for_strict_movies() -> None:
     assert film_context_reason(gossip, movie) == "cast"
     assert film_context_reason(gossip, movie, allow_names=False) is None
     assert film_context_reason("Phim Người Được Chọn có Thanh Hương", movie, allow_names=False) == "phim_title"
+
+
+_UT_LAN_2 = {"title": "Út Lan 2", "keywords": ["#PhimUtLan", "#UtLan2", "#UtLan2Movie", "Út Lan 2"]}
+_TRAI_BUON_NGUOI = {"title": "Trại Buôn Người", "keywords": ["#TraiBuonNguoi2026", "#TraiBuonNguoiMovie"]}
+_SHAUN = {"title": "Shaun the Sheep: “Quái Lạ” Ghé Nhà", "keywords": ["#ShaunTheSheep", "#QuaiLaGheNha"]}
+_HHCC = {"title": "Hoàng Hậu Cuối Cùng", "keywords": ["#hhcccasting", "#HoangHauCuoiCungMovie"]}
+
+
+@pytest.mark.parametrize(
+    ("content", "movie"),
+    [
+        ("#traibuonnguoimovie #xuhuong", _TRAI_BUON_NGUOI),
+        ("visual quá #UtLan2Movie #fyp", _UT_LAN_2),
+        ("cừu dễ thương #QuaiLaGheNha #CGV", _SHAUN),
+    ],
+)
+def test_film_specific_keyword_hashtag_counts(content: str, movie: dict) -> None:
+    assert film_context_reason(content, movie, allow_title_hashtag=True) == "keyword_hashtag"
+
+
+@pytest.mark.parametrize(
+    ("content", "movie"),
+    [
+        # phim phần 2, từ khoá không số -> bài phần 1
+        ("dàn cast giao lưu #PhimUtLan #UtLanOanLinhGiuCua", _UT_LAN_2),
+        # tên loạt phim
+        ("#shaunthesheep #cartoon", _SHAUN),
+        # viết tắt dễ trùng
+        ("#CapCut #hhcccasting", _HHCC),
+    ],
+)
+def test_ambiguous_keyword_hashtags_do_not_count(content: str, movie: dict) -> None:
+    assert film_context_reason(content, movie, allow_title_hashtag=True) is None
+
+
+def test_keyword_hashtag_off_for_strict_movies() -> None:
+    assert film_context_reason("#traibuonnguoimovie", _TRAI_BUON_NGUOI, allow_title_hashtag=False) is None

@@ -358,6 +358,41 @@ def _distinctive_title(title: str) -> bool:
     return len(title.split()) >= 3 or len(_squash(title)) >= 10
 
 
+# Số phần phim một chữ số ("Út Lan 2", #TeeYod4) - không tính năm (#TraiBuonNguoi2026).
+_SEQUEL_DIGIT_RE = re.compile(r"(?<!\d)\d(?!\d)")
+
+
+def _film_specific_keyword_hashtag(tags: set[str], movie: dict) -> bool:
+    """Bài mang một hashtag trùng từ khoá đang bật của phim (movie["keywords"]) mà từ khoá đó chỉ trỏ tới ĐÚNG
+    phim này. Đo trên bài đang bị ẩn 14/10/2026: #TraiBuonNguoiMovie, #holinhtrangsibianmovuadinh, #CCEE3,
+    #TeeYod4, #ThamTuKien2 là tín hiệu gần như chắc chắn mà Jev vẫn trả "uncertain" (caption chỉ có hashtag).
+    Bỏ qua từ khoá mơ hồ - chính chúng kéo về phần lớn bài ẩn đúng:
+      - phim có số phần mà từ khoá không có số (#PhimUtLan, #teeyod, #ThamTuKien -> bài của phần trước);
+      - từ khoá chỉ là tên loạt phim, phần trước dấu ":" của tên (#ShaunTheSheep);
+      - từ khoá mở đầu bằng tên viết tắt mà không có số (#hhcccasting - viết tắt dễ trùng);
+      - từ khoá ngắn chung chung (dưới 10 ký tự viết liền, không có số, không phải dạng phim…/…movie: #memin)."""
+    raw_title = str(movie.get("title") or "")
+    aliases = {_squash(normalize_title(str(k).lstrip("#"))) for k in movie.get("keywords") or ()} - {""}
+    if not aliases & tags:
+        return False
+    sequel = bool(_SEQUEL_DIGIT_RE.search(normalize_title(raw_title))) or any(
+        _SEQUEL_DIGIT_RE.search(a) for a in aliases
+    )
+    franchise = _squash(normalize_title(raw_title.split(":", 1)[0])) if ":" in raw_title else None
+    acronym = title_acronym(raw_title)
+    for alias in aliases & tags:
+        numbered = bool(_SEQUEL_DIGIT_RE.search(alias))
+        if sequel and not numbered:
+            continue
+        if franchise and alias in (franchise, "phim" + franchise, franchise + "movie"):
+            continue
+        if acronym and alias.startswith(acronym) and not numbered:
+            continue
+        if len(alias) >= 10 or numbered or alias.startswith("phim") or alias.endswith("movie"):
+            return True
+    return False
+
+
 def film_context_reason(
     content: str | None, movie: dict | None = None, *, allow_title_hashtag: bool = False, allow_names: bool = True
 ) -> str | None:
@@ -365,6 +400,8 @@ def film_context_reason(
     None. Theo thứ tự:
       - "cast"/"director": tên đạo diễn/diễn viên (từ hai chữ trở lên), kể cả dạng hashtag
         (#StevenNguyen) - bỏ qua khi `allow_names=False` (tin đời tư của diễn viên cũng nhắc tên);
+      - "keyword_hashtag": chỉ khi `allow_title_hashtag` - hashtag trùng một từ khoá đang bật chỉ trỏ tới đúng
+        phim này (#TraiBuonNguoiMovie, #CCEE3), xem _film_specific_keyword_hashtag;
       - "phim_title": "phim <tên>" / "điện ảnh <tên>", kể cả dạng hashtag (#PhimNguoiDuocChon);
       - "strong_near_title": một từ điện ảnh mạnh (khởi chiếu, ra rạp, trailer, phòng vé...) cách
         tên phim không quá _STRONG_PHRASE_WINDOW từ;
@@ -391,12 +428,15 @@ def film_context_reason(
             if len(folded.split()) >= 2 and (_contains_phrase(text, folded) or _squash(folded) in tags):
                 return key
 
+    # Xét sau mọi tín hiệu theo tên phim để lý do cũ giữ nguyên; dùng cả khi bài không chứa nguyên văn tên phim.
+    keyword_hashtag = "keyword_hashtag" if allow_title_hashtag and _film_specific_keyword_hashtag(tags, movie) else None
+
     title = normalize_title(movie.get("title"))
     if not title:
-        return None
+        return keyword_hashtag
     squashed_text = _squash(text)
     if not (_contains_phrase(text, title) or _squash(title) in squashed_text):
-        return None
+        return keyword_hashtag
     if any(_squash(prefix + title) in squashed_text for prefix in ("phim ", "dien anh ", "movie ", "film ")):
         return "phim_title"
     tokens = text.split()
@@ -408,7 +448,7 @@ def film_context_reason(
         return "quoted_title"
     if allow_title_hashtag and _distinctive_title(title) and _squash(title) in tags:
         return "title_hashtag"
-    return None
+    return keyword_hashtag
 
 
 def has_film_context(content: str | None, movie: dict | None = None) -> bool:
