@@ -102,12 +102,61 @@ async def _top_videos(keyword_id: str, since: str, limit: int) -> list[dict[str,
     )
 
 
+_KEYWORD_TABLE_READY = False
+
+
+async def _ensure_keyword_table() -> None:
+    global _KEYWORD_TABLE_READY
+    if _KEYWORD_TABLE_READY:
+        return
+    await d1_query(
+        "CREATE TABLE IF NOT EXISTS omar_comment_keywords (keyword_id TEXT PRIMARY KEY, created_at TEXT NOT NULL)",
+        quiet=True,
+    )
+    _KEYWORD_TABLE_READY = True
+
+
+async def selected_keyword_ids() -> list[str]:
+    """Từ khoá người dùng chọn để cào bình luận (tab Omar). Rỗng = mặc định: mọi hashtag TikTok đang bật."""
+    await _ensure_keyword_table()
+    rows = await d1_query("SELECT keyword_id FROM omar_comment_keywords ORDER BY created_at", quiet=True) or []
+    return [str(row["keyword_id"]) for row in rows]
+
+
+async def set_selected_keyword_ids(keyword_ids: list[str]) -> list[str]:
+    """Thay toàn bộ danh sách (chỉ giữ id là từ khoá TikTok đang có). Danh sách rỗng = quay về mặc định."""
+    await _ensure_keyword_table()
+    known = {str(k["id"]) for k in await get_enabled_keywords(platform="tiktok")}
+    wanted = list(dict.fromkeys(str(i) for i in keyword_ids if str(i) in known))
+    now = datetime.now(tz=UTC).isoformat()
+    await d1_query("DELETE FROM omar_comment_keywords", quiet=True)
+    for start in range(0, len(wanted), 40):
+        chunk = wanted[start : start + 40]
+        await d1_query(
+            "INSERT INTO omar_comment_keywords (keyword_id, created_at) VALUES " + ", ".join("(?, ?)" for _ in chunk),
+            [value for keyword_id in chunk for value in (keyword_id, now)],
+            quiet=True,
+        )
+    logger.info("omar_comment_keywords_set", count=len(wanted))
+    return wanted
+
+
+async def comment_keywords() -> list[dict[str, Any]]:
+    """Từ khoá được cào bình luận ở lượt tới: danh sách đã chọn (cả từ khoá chữ, không chỉ hashtag - từ 13/10/2026 TikTok
+    cào được cả tìm kiếm từ khoá) hoặc mặc định mọi hashtag TikTok đang bật. Từ khoá đã chọn mà bị tắt thì bỏ qua."""
+    enabled = await get_enabled_keywords(platform="tiktok")
+    selected = set(await selected_keyword_ids())
+    if selected:
+        return [k for k in enabled if str(k["id"]) in selected]
+    return [k for k in enabled if str(k["keyword"]).startswith("#")]
+
+
 async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedule") -> dict[str, Any]:
-    """Xếp hàng top video tuần của mọi hashtag TikTok đang bật. Video trùng giữa các hashtag chỉ xếp một lần; video còn
-    trong hàng đợi từ tuần trước (chưa cào xong) được giữ nguyên con trỏ."""
+    """Xếp hàng top video tuần của các từ khoá cào bình luận (comment_keywords). Video trùng giữa các từ khoá chỉ xếp
+    một lần; video còn trong hàng đợi từ tuần trước (chưa cào xong) được giữ nguyên con trỏ."""
     now = datetime.now(tz=UTC)
     since = (now - WINDOW).isoformat()
-    keywords = [k for k in await get_enabled_keywords(platform="tiktok") if str(k["keyword"]).startswith("#")]
+    keywords = await comment_keywords()
     redis = get_redis_client()
     existing = set(await redis.hkeys(JOBS_KEY) or [])
     existing = {key.decode() if isinstance(key, bytes) else key for key in existing}

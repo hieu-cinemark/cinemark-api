@@ -80,6 +80,22 @@ async def omar_comments_run() -> dict[str, Any]:
     }
 
 
+class OmarCommentKeywordsRequest(BaseModel):
+    keyword_ids: list[str]
+
+
+@router.get("/comments/keywords")
+async def omar_comment_keywords() -> dict[str, Any]:
+    """Ô chọn từ khoá cào bình luận ở tab Omar: danh sách đã chọn (rỗng = mọi hashtag TikTok đang bật)."""
+    return {"keyword_ids": await omar_comments.selected_keyword_ids()}
+
+
+@router.put("/comments/keywords")
+async def omar_set_comment_keywords(payload: OmarCommentKeywordsRequest) -> dict[str, Any]:
+    saved = await omar_comments.set_selected_keyword_ids(payload.keyword_ids)
+    return {"keyword_ids": saved}
+
+
 class OmarHashtagRequest(BaseModel):
     movie_id: str
     hashtag: str
