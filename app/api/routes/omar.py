@@ -31,7 +31,9 @@ async def omar_status() -> dict[str, Any]:
     return {
         "key_set": bool(api_key),
         "usage": await omar_tiktok.fetch_usage(api_key) if api_key else None,
-        "round": omar_tiktok.round_status(),
+        "round": await omar_tiktok.round_status_full(),
+        # Đang dừng chờ hạn mức / key mới: {"reason": "quota"|"key", "until": iso, ...} hoặc None.
+        "paused": await omar_tiktok.get_pause(),
         "mode": "spread_daily" if settings.omar_spread_daily else "continuous",
         "hashtags": progress,
         "channels": await omar_channels.channel_status(),
@@ -55,6 +57,8 @@ async def omar_status() -> dict[str, Any]:
 async def omar_run() -> dict[str, bool]:
     from app.services.scheduler import trigger_omar_now
 
+    # Bấm "Chạy ngay" là bỏ trạng thái dừng (vd. vừa nâng gói / đổi key) - lượt tự kiểm tra lại hạn mức.
+    await omar_tiktok.clear_pause()
     started = trigger_omar_now()
     logger.info("omar_manual_run", started=started)
     return {"started": started}

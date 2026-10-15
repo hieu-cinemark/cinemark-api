@@ -41,6 +41,9 @@ STATS_KEY = f"{REDIS_KEY_PREFIX}omar:search:stats"
 _CUSTOM_TABLE_READY = False
 # Hash {câu tìm đã chuẩn hoá: số lần tìm liên tiếp không ra video mới} - câu tự sinh (gợi ý TikTok) bị xoá khi quá ngưỡng.
 ZERO_KEY = f"{REDIS_KEY_PREFIX}omar:search:zero"
+# Con trỏ trang đang dở của từng (câu, kiểu tìm) khi lượt dừng giữa chừng vì hết ngân sách / hết hạn mức - lượt sau lật
+# tiếp từ đó thay vì từ trang 1. Xoá khi kiểu tìm đó chạy xong.
+CURSOR_KEY = f"{REDIS_KEY_PREFIX}omar:search:cursor"
 # Ngày (giờ VN) đã lấy gợi ý tìm kiếm của TikTok - mỗi ngày một lần.
 SUGGEST_DAY_KEY = f"{REDIS_KEY_PREFIX}omar:search:suggest_day"
 # Gợi ý chứa các cụm này là tìm kiếm nước ngoài (tên phim trùng chữ / phim Việt trên Netflix nước ngoài) - bỏ.
@@ -178,10 +181,15 @@ async def _search_one(
     seen_ids: set[str] = set()
     complete = True
     passes = [("search_videos", mode) for mode in search_modes()] + [("search_photos", {})]
+    redis = get_redis_client()
     for path, mode in passes:
-        cursor = "0"
+        cursor_field = f"{query['key']}|{path}|{json.dumps(mode, sort_keys=True)}"
+        saved = await redis.hget(CURSOR_KEY, cursor_field)
+        cursor = (saved.decode() if isinstance(saved, bytes) else saved) or "0"
         for _ in range(settings.omar_search_pages):
             if not take():
+                if cursor != "0":
+                    await redis.hset(CURSOR_KEY, cursor_field, cursor)
                 return False
             stats["requests"] = int(stats.get("requests") or 0) + 1
             stats["search_requests"] = int(stats.get("search_requests") or 0) + 1
@@ -190,6 +198,8 @@ async def _search_one(
             try:
                 data = await omar_get(client, pacer, api_key, path, params)
             except OmarStop:
+                if cursor != "0":
+                    await redis.hset(CURSOR_KEY, cursor_field, cursor)
                 raise
             except Exception as exc:  # noqa: BLE001 - trang lỗi: bỏ phần còn lại của endpoint này, hôm sau tìm lại
                 stats["failed"] = int(stats.get("failed") or 0) + 1
@@ -205,6 +215,7 @@ async def _search_one(
             if following is None:
                 break
             cursor = following
+        await redis.hdel(CURSOR_KEY, cursor_field)
     videos = len(seen_ids)
     stats["search_videos"] = int(stats.get("search_videos") or 0) + videos
     stats["videos"] = int(stats.get("videos") or 0) + videos

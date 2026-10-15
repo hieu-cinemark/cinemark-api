@@ -16,6 +16,7 @@ lưu kèm tín hiệu tác giả (tick xanh, follower, tài khoản shop, nhãn 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from datetime import UTC, datetime, timedelta
@@ -423,6 +424,97 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
         logger.warning("omar_cooccur_failed", error=str(exc)[:200])
 
 
+# Tạm dừng khi hết hạn mức (2026-10-15): lượt kết thúc vì dùng hết hạn mức ngày (hoặc key sai) thì ghi lại tới khi nào
+# chạy được - scheduler không gọi Omar nữa (kể cả /usage) cho tới lúc đó rồi mở lượt NGAY khi hạn mức reset, không đợi
+# mốc giờ kế tiếp. Con trỏ hashtag / hàng đợi bình luận / tìm kiếm vốn lưu sau mỗi trang nên lượt sau đi tiếp đúng chỗ.
+_PAUSE_KEY = f"{REDIS_KEY_PREFIX}omar:paused"
+_LAST_ROUND_KEY = f"{REDIS_KEY_PREFIX}omar:last_round"
+# Key sai/hết hạn: thử lại khi đổi key, hoặc sau chừng này giờ nếu vẫn key cũ.
+_KEY_PAUSE_HOURS = 6
+# Hạn mức reset xong chừng này giây mới mở lượt - tránh gọi đúng lúc phía Omar chưa kịp reset.
+_RESUME_SLACK_SECONDS = 60
+
+
+def key_fingerprint(api_key: str) -> str:
+    return hashlib.sha256(api_key.encode()).hexdigest()[:12] if api_key else ""
+
+
+def _log_stop(exc: OmarStop) -> None:
+    quota = str(exc).startswith("daily_limit")
+    # Hết hạn mức ngày là chuyện bình thường của chế độ chạy liên tục - chỉ báo Telegram khi key có vấn đề.
+    if quota:
+        logger.info("omar_round_stopped", error=str(exc))
+    else:
+        logger.error("omar_round_stopped", error=str(exc), telegram=True)
+
+
+async def get_pause() -> dict[str, Any] | None:
+    try:
+        raw = await get_redis_client().get(_PAUSE_KEY)
+        return json.loads(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001 - không đọc được thì coi như không dừng (lượt tự kiểm tra hạn mức)
+        logger.warning("omar_pause_read_failed", error=str(exc)[:200])
+        return None
+
+
+async def set_pause(reason: str, until: datetime, *, api_key: str = "") -> None:
+    entry = {
+        "reason": reason,  # "quota" (hết hạn mức ngày) | "key" (key sai/hết hạn)
+        "until": until.astimezone(UTC).isoformat(),
+        "at": datetime.now(tz=UTC).isoformat(),
+        "key": key_fingerprint(api_key),
+    }
+    ttl = max(60, int((until - datetime.now(tz=UTC)).total_seconds()) + 7 * 24 * 3600)
+    await get_redis_client().set(_PAUSE_KEY, json.dumps(entry), ex=ttl)
+    logger.info("omar_paused", **entry)
+
+
+async def clear_pause() -> None:
+    await get_redis_client().delete(_PAUSE_KEY)
+
+
+async def pause_over(pause: dict[str, Any]) -> bool:
+    """Hết dừng chưa: tới giờ `until`, hoặc (dừng vì key) key trong Supabase đã đổi."""
+    try:
+        until = datetime.fromisoformat(pause["until"])
+    except KeyError, TypeError, ValueError:
+        return True
+    if datetime.now(tz=UTC) >= until:
+        return True
+    if pause.get("reason") == "key":
+        row = await get_omar_api_settings()
+        current = key_fingerprint(((row or {}).get("api_key") or "").strip())
+        return bool(current) and current != pause.get("key")
+    return False
+
+
+async def _pause_after_round(stats: dict[str, Any], api_key: str, reset_at: datetime | None, exhausted: bool) -> None:
+    """Ghi lại khi nào lượt kế tiếp chạy được, theo lý do lượt vừa dừng."""
+    stopped = str(stats.get("stopped") or "")
+    now = datetime.now(tz=UTC)
+    if stopped.startswith(("http_401", "http_403")):
+        await set_pause("key", now + timedelta(hours=_KEY_PAUSE_HOURS), api_key=api_key)
+        return
+    if not (stopped.startswith("daily_limit") or (exhausted and not settings.omar_spread_daily)):
+        return
+    # Đọc lại /usage (không tính vào hạn mức) để có giờ reset chính xác; không đọc được thì dùng giờ reset lúc mở lượt.
+    usage = await fetch_usage(api_key)
+    day = (usage or {}).get("day") or {}
+    if day.get("resets_in") is not None:
+        reset_at = now + timedelta(seconds=int(day["resets_in"]))
+        if int(day.get("remaining") or 0) > settings.omar_daily_reserve and not stopped.startswith("daily_limit"):
+            return  # vẫn còn hạn mức (vd. gói vừa được nâng) - lượt sau chạy bình thường
+    await set_pause("quota", (reset_at or now + timedelta(hours=1)) + timedelta(seconds=_RESUME_SLACK_SECONDS))
+
+
+async def last_round() -> dict[str, Any] | None:
+    try:
+        raw = await get_redis_client().get(_LAST_ROUND_KEY)
+        return json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # Trạng thái lượt đang/vừa chạy - cho tab Omar trên dashboard (app/api/routes/omar.py) và scheduler (không mở lượt chồng).
 _round: dict[str, Any] = {"running": False, "trigger": None, "started_at": None, "finished_at": None, "stats": {}}
 _stop_requested = False
@@ -430,6 +522,14 @@ _stop_requested = False
 
 def round_status() -> dict[str, Any]:
     return {**_round, "stop_requested": _stop_requested}
+
+
+async def round_status_full() -> dict[str, Any]:
+    """Như round_status, nhưng sau restart (chưa có lượt nào trong tiến trình này) thì lấy lượt gần nhất đã lưu ở Redis."""
+    if _round["running"] or _round["started_at"]:
+        return round_status()
+    saved = await last_round()
+    return {**(saved or _round), "running": False, "stop_requested": False}
 
 
 def is_running() -> bool:
@@ -467,6 +567,10 @@ async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
     finally:
         _round.update(running=False, finished_at=datetime.now(tz=UTC).isoformat())
         _stop_requested = False
+        try:
+            await get_redis_client().set(_LAST_ROUND_KEY, json.dumps(_round, default=str), ex=30 * 24 * 3600)
+        except Exception as exc:  # noqa: BLE001 - chỉ là thông tin hiển thị
+            logger.warning("omar_last_round_save_failed", error=str(exc)[:200])
 
 
 # Hashtag đang được cào riêng (crawl_hashtag_now) - lượt Omar bỏ qua để không cào trùng con trỏ.
@@ -630,8 +734,10 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         hour_cap = per_minute * 55
         if settings.omar_requests_per_hour > 0:
             hour_cap = min(hour_cap, settings.omar_requests_per_hour)
+        reset_at: datetime | None = None
         if day.get("remaining") is not None:
             remaining, resets_in = int(day["remaining"]), int(day.get("resets_in") or 0)
+            reset_at = datetime.now(tz=UTC) + timedelta(seconds=resets_in)
             spendable = max(0, remaining - settings.omar_daily_reserve)
             if settings.omar_spread_daily:
                 # Rải đều: phần còn lại chia cho số giờ tới lúc reset, trần một giờ.
@@ -646,6 +752,8 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         stats["per_minute"] = per_minute
         if budget <= 0:
             logger.info("omar_round_no_budget", remaining=day.get("remaining"))
+            if reset_at is not None:
+                await set_pause("quota", reset_at + timedelta(seconds=_RESUME_SLACK_SECONDS))
             return {**stats, "skipped": "no_budget"}
         pacer = _Pacer(per_minute)
         spend = Budget(budget)
@@ -667,7 +775,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 if not halted:
                     halted = True
                     stats["stopped"] = str(exc)[:100]
-                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
+                    _log_stop(exc)
             except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
                 logger.error("omar_comments_failed", error=str(exc)[:300])
 
@@ -686,7 +794,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 if not halted:
                     halted = True
                     stats["stopped"] = str(exc)[:100]
-                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
+                    _log_stop(exc)
             except Exception as exc:  # noqa: BLE001 - phần tìm kiếm lỗi không chặn phần hashtag
                 logger.error("omar_search_failed", error=str(exc)[:300])
 
@@ -702,7 +810,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 if not halted:
                     halted = True
                     stats["stopped"] = str(exc)[:100]
-                    logger.error("omar_round_stopped", error=str(exc), telegram=True)
+                    _log_stop(exc)
             except Exception as exc:  # noqa: BLE001 - phần kênh lỗi không chặn phần hashtag
                 logger.error("omar_channels_failed", error=str(exc)[:300])
 
@@ -849,7 +957,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                         if not halted:
                             halted = True
                             stats["stopped"] = str(exc)[:100]
-                            logger.error("omar_round_stopped", error=str(exc), telegram=True)
+                            _log_stop(exc)
 
             await asyncio.gather(*(worker() for _ in range(max(1, min(settings.omar_concurrency, len(items))))))
             return still
@@ -877,6 +985,11 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
 
     pending = sum(1 for kw in keywords if todo(kw))
     stats["pending_keywords"] = pending
+    if not _stop_requested:
+        try:
+            await _pause_after_round(stats, api_key, reset_at, spend.exhausted)
+        except Exception as exc:  # noqa: BLE001 - không ghi được thì lượt sau tự kiểm tra hạn mức như trước
+            logger.warning("omar_pause_save_failed", error=str(exc)[:200])
     if _stop_requested:
         stats["stopped"] = "manual_stop"
     logger.info("omar_round_finished", total_keywords=len(keywords), **stats)

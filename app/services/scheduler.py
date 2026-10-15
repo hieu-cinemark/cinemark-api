@@ -48,7 +48,10 @@ from app.services.comment_planner import run_comment_round
 from app.services.d1 import get_enabled_keywords
 from app.services.hashtag_discovery import run_discovery
 from app.services.omar_tiktok import claim_round as claim_omar_round
+from app.services.omar_tiktok import clear_pause as clear_omar_pause
+from app.services.omar_tiktok import get_pause as get_omar_pause
 from app.services.omar_tiktok import is_running as omar_is_running
+from app.services.omar_tiktok import pause_over as omar_pause_over
 from app.services.omar_tiktok import run_omar_round_tracked
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.query_discovery import run_query_discovery
@@ -440,11 +443,23 @@ async def _omar_tick() -> None:
             _spawn(_enqueue_weekly_comments(omar_comments.iso_week(now)))
     except Exception as exc:  # noqa: BLE001 - tick sau thử lại
         logger.error("omar_comments_enqueue_failed", error=str(exc)[:300])
-    if omar_is_running() or now.minute < settings.omar_round_minute:
+    if omar_is_running():
+        return
+    # Đang dừng vì hết hạn mức / key sai (omar_tiktok.set_pause): không gọi Omar cho tới lúc hết dừng, rồi mở lượt NGAY
+    # (không đợi phút omar_round_minute hay giờ kế tiếp) để cào tiếp từ con trỏ đã lưu.
+    resume = False
+    pause = await get_omar_pause()
+    if pause:
+        if not await omar_pause_over(pause):
+            return
+        await clear_omar_pause()
+        resume = True
+        logger.info("omar_resuming_after_pause", reason=pause.get("reason"), paused_until=pause.get("until"))
+    if not resume and now.minute < settings.omar_round_minute:
         return
     hour_key = now.strftime("%Y-%m-%dT%H")
     redis = get_redis_client()
-    if await redis.get(_OMAR_ROUND_KEY) == hour_key:
+    if not resume and await redis.get(_OMAR_ROUND_KEY) == hour_key:
         return
     if not claim_omar_round("schedule"):
         return
@@ -491,6 +506,9 @@ async def _omar_trending_tick() -> None:
     """Độc lập với lượt Omar chính (nhịp gọi riêng). Khoá Redis sống một chu kỳ (trừ 2 phút cho lệch tick) nên restart API
     không chạy lặp; việc chạy ở nền vì một lượt mất hàng chục phút."""
     if not settings.omar_trending_enabled or omar_trending.is_running():
+        return
+    # Hết hạn mức thì làm mới video đang lên cũng chỉ ra 429 - chờ cùng lúc với lượt chính.
+    if await get_omar_pause():
         return
     ttl = max(60, int(settings.omar_trending_interval_hours * 3600) - 120)
     if not await get_redis_client().set(_OMAR_TRENDING_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):
