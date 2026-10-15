@@ -130,6 +130,67 @@ async def _ensure_keyword_table() -> None:
     _KEYWORD_TABLE_READY = True
 
 
+_OPTIONS_TABLE_READY = False
+
+
+async def _ensure_options_table() -> None:
+    global _OPTIONS_TABLE_READY
+    if _OPTIONS_TABLE_READY:
+        return
+    await d1_query("CREATE TABLE IF NOT EXISTS omar_comment_options (key TEXT PRIMARY KEY, value TEXT NOT NULL)", quiet=True)
+    _OPTIONS_TABLE_READY = True
+
+
+async def all_videos_enabled() -> bool:
+    """Tuỳ chọn "toàn bộ video" ở tab Omar: ngoài top video 7 ngày, xếp hàng MỌI video có bình luận của các từ khoá đã
+    chọn (mọi thời điểm) mà Omar chưa cào. Chỉ áp dụng cho từ khoá chọn tay - danh sách trống (mặc định mọi hashtag)
+    thì bỏ qua, tránh xếp hàng hàng chục nghìn video một lúc."""
+    await _ensure_options_table()
+    rows = await d1_query("SELECT value FROM omar_comment_options WHERE key = 'all_videos'", quiet=True) or []
+    return bool(rows) and str(rows[0]["value"]) == "1"
+
+
+async def set_all_videos(enabled: bool) -> bool:
+    await _ensure_options_table()
+    await d1_query(
+        "INSERT INTO omar_comment_options (key, value) VALUES ('all_videos', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        ["1" if enabled else "0"],
+        quiet=True,
+    )
+    logger.info("omar_comment_all_videos_set", enabled=enabled)
+    return enabled
+
+
+async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """Mọi video TikTok liên quan, có bình luận, của các từ khoá này mà Omar chưa cào xong (comments_crawl_reason không
+    bắt đầu bằng "omar") - nhiều tương tác trước. Video Omar đã cào thì lịch tuần (top 7 ngày) lo phần bình luận mới."""
+    if not keyword_ids:
+        return {}
+    rows = (
+        await d1_query(
+            f"""
+            SELECT p.keyword_id, p.id, p.external_id, p.reply_count
+            FROM posts p
+            WHERE p.platform = 'tiktok' AND p.keyword_id IN (SELECT value FROM json_each(?))
+              AND p.reply_count > 0 AND {RELEVANT_POST_SQL}
+              AND (p.comments_crawl_reason IS NULL OR p.comments_crawl_reason NOT LIKE 'omar%')
+            ORDER BY p.keyword_id,
+                     COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0)
+                     + COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) DESC
+            """,
+            [json.dumps(keyword_ids)],
+            quiet=True,
+            timeout=60.0,
+        )
+        or []
+    )
+    by_keyword: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_keyword.setdefault(str(row["keyword_id"]), []).append(row)
+    return by_keyword
+
+
 async def selected_keyword_ids() -> list[str]:
     """Từ khoá người dùng chọn để cào bình luận (tab Omar). Rỗng = mặc định: mọi hashtag TikTok đang bật."""
     await _ensure_keyword_table()
@@ -176,9 +237,13 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
     existing = {key.decode() if isinstance(key, bytes) else key for key in existing}
     added, per_hashtag = 0, {}
     jobs: dict[str, str] = {}
-    top = await _top_videos([str(kw["id"]) for kw in keywords], since, settings.omar_comments_top_per_hashtag)
+    keyword_ids = [str(kw["id"]) for kw in keywords]
+    top = await _top_videos(keyword_ids, since, settings.omar_comments_top_per_hashtag)
+    all_videos = bool(await selected_keyword_ids()) and await all_videos_enabled()
+    rest = await _all_videos(keyword_ids) if all_videos else {}
     for kw in keywords:
-        rows = top.get(str(kw["id"]), [])
+        # Top 7 ngày trước (rank nhỏ = cào trước), rồi phần còn lại của tuỳ chọn "toàn bộ video".
+        rows = top.get(str(kw["id"]), []) + rest.get(str(kw["id"]), [])
         per_hashtag[kw["keyword"]] = len(rows)
         for rank, row in enumerate(rows):
             video_id = str(row.get("external_id") or "")
@@ -207,6 +272,7 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
         "trigger": trigger,
         "queued_at": now.isoformat(),
         "hashtags": len(keywords),
+        "all_videos": all_videos,
         "videos": added,
         "kept_from_before": len(existing),
         "finished_at": None,

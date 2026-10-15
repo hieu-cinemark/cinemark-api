@@ -57,3 +57,67 @@ def test_budget_and_cursor():
     assert next_cursor({"has_more": True, "next_cursor": 30}) == "30"
     assert next_cursor({"has_more": "false", "next_cursor": 30}) is None
     assert next_cursor({"has_more": True}) is None
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.values: dict[str, str] = {}
+
+    async def hkeys(self, key):
+        return list(self.hashes.get(key, {}))
+
+    async def hset(self, key, field=None, value=None, mapping=None):
+        self.hashes.setdefault(key, {}).update(mapping or {field: value})
+
+    async def set(self, key, value, **_):
+        self.values[key] = value
+
+
+def test_enqueue_all_videos_only_for_selected_keywords(monkeypatch):
+    import asyncio
+    import json
+
+    from app.services import omar_comments as oc
+
+    redis = _FakeRedis()
+    keywords = [{"id": "k1", "keyword": "#phim"}]
+    top = {"k1": [{"id": "p1", "external_id": "v1", "reply_count": 9}]}
+    rest = {"k1": [{"id": "p1", "external_id": "v1", "reply_count": 9}, {"id": "p2", "external_id": "v2", "reply_count": 3}]}
+
+    async def fake_keywords():
+        return keywords
+
+    async def fake_top(*_):
+        return top
+
+    async def fake_rest(_ids):
+        return rest
+
+    monkeypatch.setattr(oc, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(oc, "comment_keywords", fake_keywords)
+    monkeypatch.setattr(oc, "_top_videos", fake_top)
+    monkeypatch.setattr(oc, "_all_videos", fake_rest)
+
+    def run(selected: list[str], enabled: bool):
+        redis.hashes.clear()
+
+        async def fake_selected():
+            return selected
+
+        async def fake_enabled():
+            return enabled
+
+        monkeypatch.setattr(oc, "selected_keyword_ids", fake_selected)
+        monkeypatch.setattr(oc, "all_videos_enabled", fake_enabled)
+        info = asyncio.run(oc.enqueue_weekly_job(week="2026-W42"))
+        jobs = {k: json.loads(v) for k, v in redis.hashes.get(oc.JOBS_KEY, {}).items()}
+        return info, jobs
+
+    info, jobs = run(["k1"], True)
+    assert info["all_videos"] is True and set(jobs) == {"v1", "v2"}
+    assert jobs["v1"]["rank"] == 0 and jobs["v2"]["rank"] == 2  # top tuần trước, video trùng chỉ xếp một lần
+    _, jobs = run([], True)  # không chọn tay -> bỏ qua tuỳ chọn
+    assert set(jobs) == {"v1"}
+    _, jobs = run(["k1"], False)
+    assert set(jobs) == {"v1"}

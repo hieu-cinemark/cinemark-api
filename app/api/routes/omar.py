@@ -85,18 +85,26 @@ async def omar_comments_run() -> dict[str, Any]:
 
 class OmarCommentKeywordsRequest(BaseModel):
     keyword_ids: list[str]
+    # None = giữ nguyên tuỳ chọn đã lưu.
+    all_videos: bool | None = None
 
 
 @router.get("/comments/keywords")
 async def omar_comment_keywords() -> dict[str, Any]:
-    """Ô chọn từ khoá cào bình luận ở tab Omar: danh sách đã chọn (rỗng = mọi hashtag TikTok đang bật)."""
-    return {"keyword_ids": await omar_comments.selected_keyword_ids()}
+    """Ô chọn từ khoá cào bình luận ở tab Omar: danh sách đã chọn (rỗng = mọi hashtag TikTok đang bật) + tuỳ chọn cào
+    toàn bộ video của các từ khoá đó."""
+    return {
+        "keyword_ids": await omar_comments.selected_keyword_ids(),
+        "all_videos": await omar_comments.all_videos_enabled(),
+    }
 
 
 @router.put("/comments/keywords")
 async def omar_set_comment_keywords(payload: OmarCommentKeywordsRequest) -> dict[str, Any]:
     saved = await omar_comments.set_selected_keyword_ids(payload.keyword_ids)
-    return {"keyword_ids": saved}
+    if payload.all_videos is not None:
+        await omar_comments.set_all_videos(payload.all_videos)
+    return {"keyword_ids": saved, "all_videos": await omar_comments.all_videos_enabled()}
 
 
 class OmarHashtagRequest(BaseModel):
