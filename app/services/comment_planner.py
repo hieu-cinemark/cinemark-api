@@ -66,6 +66,9 @@ VALUE_PICK_SCORE = 70
 VALUE_SKIP_SCORE = 20
 VALUE_PER_MOVIE = 8
 VALUE_PAGES = 5
+# Nhân số trang theo nền tảng (2026-10-15): Facebook Comet ~10 comment/trang, Threads cũng ít - cùng số trang với TikTok
+# (20-50 comment/trang) thì bài FB/Threads chỉ được vài chục comment. Vừa phải vì tài khoản Facebook còn ít.
+PAGE_MULTIPLIER = {"facebook": 2, "threads": 2}
 
 SOURCE_OFFICIAL = "chinh_chu"
 SOURCE_MEDIA = "trang_tin"
@@ -308,7 +311,7 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
             platform=platform,
             post_external_id=pick.external_id,
             post_url=pick.url,
-            max_pages=pick.max_pages,
+            max_pages=pick.max_pages * PAGE_MULTIPLIER.get(platform, 1),
             bypass_drain=False,
         )
         if ok:

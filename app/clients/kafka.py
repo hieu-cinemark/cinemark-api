@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
 from datetime import UTC, date, datetime
@@ -116,6 +117,10 @@ async def publish_crawl_request(
     app/api/routes/platform_scraper.py). keyword_id là keywords.id của D1 (xem
     app/services/d1.py) - truyền qua nguyên vẹn để message raw_posts mà lượt crawl này
     sinh ra mang một id mà ingest consumer có thể tra ngược thẳng về D1."""
+    if platform == "threads" and keyword.strip().startswith("#"):
+        # Threads không cào hashtag (2026-10-15, ~1% liên quan - xem app/api/routes/keywords.py) - kể cả từ khoá cũ còn bật.
+        logger.info("crawl_request_skipped_threads_hashtag", keyword=keyword, keyword_id=keyword_id)
+        return False
     if _producer is None:
         logger.warning("kafka_producer_not_started", keyword_id=keyword_id)
         return False
@@ -150,6 +155,10 @@ async def publish_crawl_request(
         )
     if bfs_depth:
         value["bfs_depth"] = int(bfs_depth)
+    # Spider tìm kiếm Facebook/Threads bỏ bài không nhắc tới từ khoá HOẶC tên phim (spider-hub spiders/keyword_filter.py) -
+    # kèm tên phim để câu kiểu "đi xem <tên phim>" không làm mất bài chỉ nhắc tên phim.
+    if platform in ("facebook", "threads") and (terms := await _match_terms_for_keyword(keyword_id)):
+        value["match_terms"] = terms
     # Spider hashtag của TikTok hỏi Kira hashtag nào đi cùng là của phim (BFS) - kèm thông tin phim để nó nhận ra tên
     # diễn viên/nhân vật (2026-10-07: "#nadechkugimiya", diễn viên chính Quỷ Ăn Tạng 4, bị chấm "generic").
     if platform == "tiktok" and (movie_context := await _movie_context_for_keyword(keyword_id)):
@@ -161,6 +170,27 @@ async def publish_crawl_request(
         return False
     await enqueue_published(value)
     return True
+
+
+async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
+    """Tên phim của từ khoá (và phần trước dấu ":" nếu tên có phụ đề, vd. "Thám Tử Kiên") - cho bộ lọc lạc đề của spider."""
+    from app.services.d1 import d1_query
+
+    try:
+        rows = await d1_query(
+            "SELECT m.title FROM keywords k JOIN movies m ON m.id = k.movie_id WHERE k.id = ?", [keyword_id], quiet=True
+        )
+    except Exception as exc:  # noqa: BLE001 - thiếu tên phim thì spider chỉ lọc theo từ khoá
+        logger.warning("match_terms_lookup_failed", keyword_id=keyword_id, error=str(exc))
+        return []
+    title = str((rows or [{}])[0].get("title") or "").strip()
+    if not title:
+        return []
+    terms = [title]
+    head = re.split(r"[:：(\[]", title, maxsplit=1)[0].strip()
+    if head and head != title and len(head.split()) >= 2:
+        terms.append(head)
+    return terms
 
 
 async def _movie_context_for_keyword(keyword_id: str) -> str | None:

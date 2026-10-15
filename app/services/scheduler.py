@@ -47,6 +47,7 @@ from app.services.cleanup import resolve_cleanup_settings, run_purge
 from app.services.comment_planner import run_comment_round
 from app.services.d1 import get_enabled_keywords
 from app.services.hashtag_discovery import run_discovery
+from app.services.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.omar_tiktok import claim_round as claim_omar_round
 from app.services.omar_tiktok import clear_pause as clear_omar_pause
 from app.services.omar_tiktok import get_pause as get_omar_pause
@@ -108,8 +109,12 @@ async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurt
         logger.info("scheduled_crawl_no_keywords", platform=platform)
     else:
         published = 0
+        # Facebook/Threads: tắt từ khoá toàn ra rác, giảm trang từ khoá kém (app/services/keyword_yield.py).
+        keywords, low_pages = await plan_keyword_crawl(platform, keywords)
         for keyword in keywords:
-            ok = await publish_crawl_request(platform=platform, keyword=keyword["keyword"], keyword_id=keyword["id"])
+            ok = await publish_crawl_request(
+                platform=platform, keyword=keyword["keyword"], keyword_id=keyword["id"], max_pages=low_pages.get(keyword["id"])
+            )
             if ok:
                 published += 1
         logger.info(

@@ -26,8 +26,10 @@ from typing import Any
 from app.ai.kira import call_kira, parse_json_response
 from app.ai.movie_context import cast_list, movie_context_block
 from app.core.logging import get_logger
+from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.services.d1 import d1_query
 from app.services.hashtag_discovery import RECHECK_REJECTED_DAYS, _ensure_table, _record
+from app.services.keyword_yield import keyword_yields
 from app.services.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
@@ -56,6 +58,63 @@ Không chắc thì KHÔNG trả "film".
 
 Trả về JSON hợp lệ, không bọc code block:
 {"results":[{"query":"<đúng như được đưa>","verdict":"film|ambiguous|wrong","confidence":0-100,"reason":"một câu ngắn tiếng Việt"}]}"""
+
+
+GENERATE_TASK = "query_generation"
+MAX_GENERATED = 6
+SAMPLE_POSTS = 15
+SAMPLE_DAYS = 14
+# Câu AI đã thêm mà tỉ lệ bài liên quan dưới mức này (đủ mẫu) thì tắt - xem app/services/keyword_yield.py.
+PRUNE_BELOW_RATIO = 0.20
+PRUNE_MIN_SAMPLE = 50
+
+GENERATE_PROMPT = """Bạn đề xuất câu truy vấn TÌM KIẾM trên Facebook và Threads (tiếng Việt) để tìm bài khán giả nói về MỘT bộ phim chiếu rạp.
+Bạn có thông tin phim và một số bài liên quan nhiều tương tác gần đây. Hãy đề xuất tối đa 6 câu ngắn (2-6 từ) mà kết quả
+tìm kiếm phần lớn sẽ là bài về ĐÚNG phim này, nhưng KHÁC các câu đang có - để bắt thêm bài chưa tìm được:
+- tên nhân vật, biệt danh, câu thoại/meme khán giả hay nhắc (lấy từ các bài mẫu), tên phim viết tắt khán giả hay dùng;
+- tên đạo diễn/diễn viên chính KÈM tên phim hoặc tên nhân vật;
+- tên phim kèm từ ngữ cảnh rạp chiếu (suất chiếu, ra rạp, lịch chiếu, trailer...).
+KHÔNG dùng hashtag (#), không dùng cụm quá chung (vd. "phim hay", "phim kinh dị"), không dùng tên người không có trong phim.
+Tên phim trùng cụm từ thông dụng thì luôn ghép thêm ngữ cảnh phim hoặc tên diễn viên.
+
+Trả về JSON hợp lệ, không bọc code block: {"queries": ["...", "..."]}"""
+
+
+async def _sample_posts(movie_id: str) -> list[str]:
+    """Bài liên quan nhiều tương tác nhất của phim gần đây (mọi nền tảng) - gợi ý cho AI các cách khán giả gọi phim."""
+    since = (datetime.now(tz=UTC) - timedelta(days=SAMPLE_DAYS)).isoformat()
+    rows = (
+        await d1_query(
+            f"""SELECT substr(p.content, 1, 240) AS content FROM posts p
+            WHERE p.movie_id = ? AND p.posted_at >= ? AND {RELEVANT_POST_SQL} AND length(p.content) >= 30
+            ORDER BY COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0) + COALESCE(p.repost_count, 0) DESC
+            LIMIT ?""",
+            [movie_id, since, SAMPLE_POSTS],
+            quiet=True,
+            timeout=60.0,
+        )
+        or []
+    )
+    return [" ".join(str(row["content"]).split()) for row in rows if row.get("content")]
+
+
+async def _generate_queries(movie: dict[str, Any], existing: list[str]) -> list[str]:
+    """Kira đề xuất câu tìm kiếm mới (dạng chữ) từ thông tin phim + bài mẫu. Lỗi -> [] (chỉ còn câu theo mẫu)."""
+    samples = await _sample_posts(movie["id"])
+    user = (
+        f"{movie_context_block(movie)}\n"
+        f"Câu đang có: {', '.join(existing[:20]) or '(chưa có)'}\n\n"
+        "Bài mẫu:\n" + "\n".join(f"- {text}" for text in samples)
+    )
+    raw = await call_kira(task=GENERATE_TASK, system_prompt=GENERATE_PROMPT, user_prompt=user, max_tokens=4000)
+    parsed = parse_json_response(raw)
+    queries = parsed.get("queries") if isinstance(parsed, dict) else None
+    out = []
+    for query in queries if isinstance(queries, list) else []:
+        text = " ".join(str(query).split()).strip(" .,-")
+        if text and not text.startswith("#") and 2 <= len(text.split()) <= 8 and len(text) <= 80:
+            out.append(text)
+    return out[:MAX_GENERATED]
 
 
 def _key(value: str) -> str:
@@ -120,9 +179,17 @@ async def _prune(dry_run: bool) -> int:
         "FROM hashtag_ai_decisions d WHERE d.source = 'query' AND d.status = 'added' AND d.decided_at < ? AND d.keyword_id IS NOT NULL",
         [cutoff],
     )
+    yields: dict[str, dict[str, Any]] = {}
+    for platform in PLATFORMS:
+        try:
+            yields.update(await keyword_yields(platform))
+        except Exception as exc:  # noqa: BLE001 - không đo được thì chỉ dọn theo số bài mới như trước
+            logger.warning("query_ai_yield_failed", platform=platform, error=str(exc)[:200])
     pruned = 0
     for row in rows or []:
-        if int(row.get("found") or 0) >= MIN_NEW_POSTS:
+        stats = yields.get(str(row["keyword_id"])) or {}
+        junk = stats.get("sample", 0) >= PRUNE_MIN_SAMPLE and stats.get("ratio", 1) < PRUNE_BELOW_RATIO
+        if int(row.get("found") or 0) >= MIN_NEW_POSTS and not junk:
             continue
         pruned += 1
         logger.info(
@@ -131,7 +198,11 @@ async def _prune(dry_run: bool) -> int:
         if dry_run:
             continue
         await d1_query("UPDATE keywords SET enabled = 0 WHERE id = ?", [row["keyword_id"]])
-        reason = f"{PRUNE_AFTER_DAYS} ngày chỉ đem về {row['found']} bài mới"
+        reason = (
+            f"tỉ lệ bài liên quan chỉ {round(stats['ratio'] * 100)}% trên {stats['sample']} bài"
+            if junk
+            else f"{PRUNE_AFTER_DAYS} ngày chỉ đem về {row['found']} bài mới"
+        )
         await _record(row["movie_id"], row, {"reason": reason}, "pruned", row["keyword_id"])
     return pruned
 
@@ -175,8 +246,16 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
         stats["movies"] += 1
         # Đã là từ khoá của phim (mọi trạng thái - người vận hành đã tắt/xoá thì không thêm lại) hoặc đã quyết trước đó.
         existing = {_key(k["keyword"]) for k in own}
+        try:
+            generated = await _generate_queries(movie, [k["keyword"] for k in own])
+        except Exception as exc:  # noqa: BLE001 - AI sinh câu lỗi: vẫn xét các câu theo mẫu
+            generated = []
+            logger.warning("query_ai_generate_failed", movie_id=movie["id"], error=str(exc)[:300])
+        stats["generated"] = stats.get("generated", 0) + len(generated)
         queries = [
-            q for q in candidate_queries(movie) if _key(q) not in existing and (movie["id"], _key(q)) not in decided
+            q
+            for q in dict.fromkeys([*candidate_queries(movie), *generated])
+            if _key(q) not in existing and (movie["id"], _key(q)) not in decided
         ]
         if not queries:
             continue
