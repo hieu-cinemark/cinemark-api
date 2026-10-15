@@ -1,0 +1,4 @@
+# Chỉ cho scripts/visobert_*.py (gắn nhãn cảm xúc bằng ViSoBERT) - không cần cho web/ingest.
+# VPS không có GPU: pip install --index-url https://download.pytorch.org/whl/cpu torch, rồi -r file này.
+torch>=2.9
+transformers>=5.0
