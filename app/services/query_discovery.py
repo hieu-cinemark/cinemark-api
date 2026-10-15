@@ -62,6 +62,9 @@ Trả về JSON hợp lệ, không bọc code block:
 
 GENERATE_TASK = "query_generation"
 MAX_GENERATED = 6
+# Mỗi lần sinh câu mất ~150-170 giây và 11-15 nghìn token của Kira (đo 15/10/2026) - giới hạn số phim mỗi lượt, phim gần
+# ngày chiếu nhất trước; phim còn lại chỉ xét câu theo mẫu và tới lượt ở các ngày sau.
+MAX_GENERATE_PER_RUN = 6
 SAMPLE_POSTS = 15
 SAMPLE_DAYS = 14
 # Câu AI đã thêm mà tỉ lệ bài liên quan dưới mức này (đủ mẫu) thì tắt - xem app/services/keyword_yield.py.
@@ -234,6 +237,16 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
     titles = [m["title"] for m in movies if m.get("title")]
 
     stats = {"movies": 0, "candidates": 0, "asked": 0, "added": 0, "rejected": 0, "pruned": pruned, "failed": 0}
+
+    def days_from_release(movie: dict[str, Any]) -> float:
+        try:
+            day = datetime.fromisoformat(str(movie.get("released_at") or "")[:10]).replace(tzinfo=UTC)
+        except ValueError:
+            return float("inf")
+        return abs((day - now).total_seconds())
+
+    active = [m for m in movies if _active(m, now) and (not movie_id or m["id"] == movie_id)]
+    generate_for = {m["id"] for m in sorted(active, key=days_from_release)[:MAX_GENERATE_PER_RUN]}
     for movie in movies:
         if movie_id and movie["id"] != movie_id:
             continue
@@ -246,11 +259,12 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
         stats["movies"] += 1
         # Đã là từ khoá của phim (mọi trạng thái - người vận hành đã tắt/xoá thì không thêm lại) hoặc đã quyết trước đó.
         existing = {_key(k["keyword"]) for k in own}
-        try:
-            generated = await _generate_queries(movie, [k["keyword"] for k in own])
-        except Exception as exc:  # noqa: BLE001 - AI sinh câu lỗi: vẫn xét các câu theo mẫu
-            generated = []
-            logger.warning("query_ai_generate_failed", movie_id=movie["id"], error=str(exc)[:300])
+        generated: list[str] = []
+        if movie["id"] in generate_for:
+            try:
+                generated = await _generate_queries(movie, [k["keyword"] for k in own])
+            except Exception as exc:  # noqa: BLE001 - AI sinh câu lỗi: vẫn xét các câu theo mẫu
+                logger.warning("query_ai_generate_failed", movie_id=movie["id"], error=str(exc)[:300])
         stats["generated"] = stats.get("generated", 0) + len(generated)
         queries = [
             q
