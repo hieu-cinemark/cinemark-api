@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import heapq
+import itertools
 import json
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -314,6 +317,54 @@ _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
 # Trang rỗng liên tiếp mà vẫn has_more: coi như đã hết (tránh lặp vô hạn nếu Omar trả cursor lỗi).
 _MAX_EMPTY_PAGES = 3
 _MAX_PAGE_FAILURES = 3
+# Trang rỗng GIỮA CHỪNG (cursor khác "0") thường là Omar/TikTok giới hạn tạm thời - gọi lại sau vài phút lại có data (đo
+# 16/10/2026). Để từ khoá đó chờ _EMPTY_RETRY_SECONDS rồi gọi lại đúng cursor, tối đa _EMPTY_RETRIES lần; vẫn rỗng thì để đó
+# (giữ cursor, lượt sau đi tiếp) và làm từ khoá khác. Hashtag "để đó" _MAX_STALL_ROUNDS lượt liền thì coi là đã hết.
+_EMPTY_RETRY_SECONDS = 180.0
+_EMPTY_RETRIES = 3
+_MAX_STALL_ROUNDS = 3
+# Khoảng tối thiểu giữa hai request của CÙNG một từ khoá - các worker xen kẽ giữa các từ khoá thay vì gọi dồn một từ khoá.
+_KEYWORD_GAP_SECONDS = 3.0
+
+
+async def run_round_robin(
+    items: list[Any],
+    step: Callable[[Any], Awaitable[float | None]],
+    *,
+    workers: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Chạy `step` xoay vòng trên `items` với tối đa `workers` worker song song: mỗi lần một worker lấy item sẵn sàng sớm
+    nhất, gọi step (một trang), step trả về số giây chờ trước lần gọi kế của item đó (xếp lại hàng) hoặc None (item xong).
+    Một item chỉ ở một worker tại một thời điểm, nên các request xen kẽ giữa các từ khoá."""
+    if not items:
+        return
+    order = itertools.count()
+    heap: list[tuple[float, int, Any]] = [(0.0, next(order), item) for item in items]
+    busy = 0
+
+    async def worker() -> None:
+        nonlocal busy
+        while not should_stop():
+            if not heap:
+                if busy == 0:
+                    return
+                await asyncio.sleep(0.5)  # item đang ở worker khác có thể được xếp lại
+                continue
+            wait = heap[0][0] - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(min(wait, 1.0))
+                continue
+            _, _, item = heapq.heappop(heap)
+            busy += 1
+            try:
+                delay = await step(item)
+            finally:
+                busy -= 1
+            if delay is not None:
+                heapq.heappush(heap, (time.monotonic() + delay, next(order), item))
+
+    await asyncio.gather(*(worker() for _ in range(max(1, min(workers, len(items))))))
 
 
 async def fetch_usage(api_key: str, client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
@@ -887,55 +938,84 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             await publish_videos(mapped, kw["id"], stats, source="hashtag")
             return videos, next_cursor, hashtag_id
 
-        async def crawl(kw: dict[str, Any], _pages: int) -> bool:
-            """Cào hashtag TỚI HẾT video (has_more = false) - tuần tự, trang sau cần cursor của trang trước. Dừng sớm chỉ
-            khi hết ngân sách / bị dừng / một trang lỗi _MAX_PAGE_FAILURES lần liền; con trỏ đã lưu nên lượt sau đi tiếp."""
-            if kw["id"] in _manual_running:
-                return False  # đang được cào riêng (crawl_hashtag_now)
-            entry = state.get(kw["id"]) or {}
-            if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
-                entry = {k: entry[k] for k in _RESET_KEEP if k in entry}
-            entry.setdefault("started_at", now.isoformat())
+        entries: dict[str, dict[str, Any]] = {}
+        failures: dict[str, int] = {}
+        empty_tries: dict[str, int] = {}
+
+        async def crawl_page(kw: dict[str, Any]) -> float | None:
+            """MỘT trang của hashtag `kw` (cào tới hết bằng nhiều lần gọi xen kẽ với hashtag khác - run_round_robin). Trả về
+            số giây chờ trước trang kế, hoặc None khi hashtag xong / để đó tới lượt sau / hết ngân sách. Con trỏ lưu sau mỗi
+            trang nên lượt sau đi tiếp."""
+            nonlocal halted
+            kw_id = kw["id"]
+            if kw_id in _manual_running:
+                return None  # đang được cào riêng (crawl_hashtag_now)
+            entry = entries.get(kw_id)
+            if entry is None:
+                entry = state.get(kw_id) or {}
+                if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
+                    entry = {k: entry[k] for k in _RESET_KEEP if k in entry}
+                entry.setdefault("started_at", now.isoformat())
+                entries[kw_id] = entry
+            if should_stop() or not spend.take():
+                return None
             cursor = entry.get("cursor") or "0"
-            empty = int(entry.get("empty") or 0)
-            failed = 0
-            while True:
-                if should_stop() or not spend.take():
-                    return True
+            try:
                 result = await fetch(kw, cursor, entry.get("hashtag_id"))
-                ever_done = bool((state.get(kw["id"]) or {}).get("done_at"))  # đã từng cào xong: có thật, chỉ lỗi tạm
-                if result is None and cursor == "0" and not entry.get("pages") and not ever_done:
-                    # Trang 1 lỗi (sau các lần thử lại trong omar_get) ở hashtag chưa từng lấy được trang nào: hashtag không
-                    # có trên TikTok (Omar trả 424 - biến thể AI tự đặt như #ChiChiEmEm32026). Bỏ qua, kiểm tra lại sau
-                    # settings.omar_missing_recheck_hours giờ (phim sắp chiếu có thể có hashtag sau).
-                    entry["missing_at"] = datetime.now(tz=UTC).isoformat()
-                    stats["missing"] = int(stats.get("missing") or 0) + 1
-                    await save(kw["id"], entry)
-                    return False
-                if result is None:
-                    # Trang lỗi (sau các lần thử lại trong omar_get): đợi rồi thử lại đúng trang đó. Trước 12/10/2026 lỗi một
-                    # trang là bỏ hashtag tới hết lượt - lượt kết thúc khi còn hơn nửa hạn mức ngày.
-                    failed += 1
-                    if failed >= _MAX_PAGE_FAILURES:
-                        return True
-                    await asyncio.sleep(30 * failed)
-                    continue
-                failed = 0
-                entry.pop("missing_at", None)
-                videos, next_cursor, hashtag_id = result
-                if hashtag_id:
-                    entry["hashtag_id"] = hashtag_id
-                entry["pages"] = int(entry.get("pages") or 0) + 1
-                empty = 0 if videos else empty + 1
-                if next_cursor is None or empty >= _MAX_EMPTY_PAGES:
-                    entry.update(cursor=None, empty=0, done_at=datetime.now(tz=UTC).isoformat(), fresh_at=None)
-                    stats["finished"] += 1
-                    logger.info("omar_hashtag_finished", hashtag=kw["keyword"], pages=entry["pages"])
-                    await save(kw["id"], entry)
-                    return False
-                cursor = next_cursor
-                entry.update(cursor=cursor, empty=empty)
-                await save(kw["id"], entry)
+            except OmarStop as exc:
+                if not halted:
+                    halted = True
+                    stats["stopped"] = str(exc)[:100]
+                    _log_stop(exc)
+                return None
+            ever_done = bool((state.get(kw_id) or {}).get("done_at"))  # đã từng cào xong: có thật, chỉ lỗi tạm
+            if result is None and cursor == "0" and not entry.get("pages") and not ever_done:
+                # Trang 1 lỗi (sau các lần thử lại trong omar_get) ở hashtag chưa từng lấy được trang nào: hashtag không
+                # có trên TikTok (Omar trả 424 - biến thể AI tự đặt như #ChiChiEmEm32026). Bỏ qua, kiểm tra lại sau
+                # settings.omar_missing_recheck_hours giờ (phim sắp chiếu có thể có hashtag sau).
+                entry["missing_at"] = datetime.now(tz=UTC).isoformat()
+                stats["missing"] = int(stats.get("missing") or 0) + 1
+                await save(kw_id, entry)
+                return None
+            if result is None:
+                # Trang lỗi (sau các lần thử lại trong omar_get): thử lại đúng trang đó sau một lúc, xen các hashtag khác.
+                failures[kw_id] = failures.get(kw_id, 0) + 1
+                return None if failures[kw_id] >= _MAX_PAGE_FAILURES else 30.0 * failures[kw_id]
+            failures[kw_id] = 0
+            entry.pop("missing_at", None)
+            videos, next_cursor, hashtag_id = result
+            if hashtag_id:
+                entry["hashtag_id"] = hashtag_id
+            if not videos and cursor != "0":
+                # Rỗng giữa chừng: thường chỉ bị giới hạn tạm thời - chờ vài phút rồi gọi lại đúng cursor.
+                empty_tries[kw_id] = empty_tries.get(kw_id, 0) + 1
+                if empty_tries[kw_id] <= _EMPTY_RETRIES:
+                    stats["empty_retries"] = int(stats.get("empty_retries") or 0) + 1
+                    return _EMPTY_RETRY_SECONDS
+                if next_cursor is None:
+                    # Vẫn rỗng: để đó (giữ cursor, lượt sau gọi lại); _MAX_STALL_ROUNDS lượt liền thì coi là đã hết.
+                    entry["stalls"] = int(entry.get("stalls") or 0) + 1
+                    if entry["stalls"] < _MAX_STALL_ROUNDS:
+                        stats["stalled"] = int(stats.get("stalled") or 0) + 1
+                        logger.info(
+                            "omar_hashtag_stalled", hashtag=kw["keyword"], cursor=cursor, stalls=entry["stalls"]
+                        )
+                        await save(kw_id, entry)
+                        return None
+            empty_tries[kw_id] = 0
+            entry["pages"] = int(entry.get("pages") or 0) + 1
+            if videos:
+                entry.pop("stalls", None)
+            empty = 0 if videos else int(entry.get("empty") or 0) + 1
+            if next_cursor is None or empty >= _MAX_EMPTY_PAGES:
+                entry.update(cursor=None, empty=0, stalls=0, done_at=datetime.now(tz=UTC).isoformat(), fresh_at=None)
+                stats["finished"] += 1
+                logger.info("omar_hashtag_finished", hashtag=kw["keyword"], pages=entry["pages"])
+                await save(kw_id, entry)
+                return None
+            entry.update(cursor=next_cursor, empty=empty)
+            await save(kw_id, entry)
+            return _KEYWORD_GAP_SECONDS
 
         async def pool(job, items: list[tuple[dict[str, Any], int]]) -> list[dict[str, Any]]:
             """Chạy `items` (hashtag, số trang) trên tối đa settings.omar_concurrency worker song song - mỗi hashtag chỉ
@@ -962,16 +1042,24 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             await asyncio.gather(*(worker() for _ in range(max(1, min(settings.omar_concurrency, len(items))))))
             return still
 
-        # Mỗi worker nhận một hashtag và cào tới hết rồi mới nhận hashtag kế (settings.omar_concurrency hashtag song song);
-        # hashtag chưa bắt đầu đứng đầu hàng nên hashtag mới thêm được cào ngay.
+        # settings.omar_concurrency worker xoay vòng giữa các hashtag, mỗi lần một trang (run_round_robin) - không gọi dồn một
+        # hashtag; hashtag chưa bắt đầu đứng đầu hàng nên hashtag mới thêm được cào ngay.
         stats["keywords"] = len(deep)
         stats["concurrency"] = settings.omar_concurrency
-        await pool(crawl, [(kw, 0) for kw in deep])
+        await run_round_robin(
+            deep, crawl_page, workers=settings.omar_concurrency, should_stop=lambda: should_stop() or spend.exhausted
+        )
         # Còn ngân sách: cào lại TỪ ĐẦU các hashtag đã xong lâu nhất (crawl tự đặt lại con trỏ khi có done_at) - bắt video
         # mới và cập nhật tương tác thay vì để hạn mức ngày bỏ phí.
         stats["recrawl_keywords"] = len(fresh)
         if not spend.exhausted and not should_stop():
-            await pool(crawl, [(kw, 0) for kw in fresh])
+            entries.clear()  # cào lại từ đầu: crawl_page tự đặt lại con trỏ khi có done_at
+            await run_round_robin(
+                fresh,
+                crawl_page,
+                workers=settings.omar_concurrency,
+                should_stop=lambda: should_stop() or spend.exhausted,
+            )
         if stale_info and not should_stop():
 
             async def info_job(kw: dict[str, Any], _pages: int) -> bool:

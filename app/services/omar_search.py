@@ -165,6 +165,125 @@ async def query_status() -> list[dict[str, Any]]:
     return out
 
 
+class _QuerySearch:
+    """Tìm một câu: video theo từng kiểu trong settings.omar_search_modes, rồi bài ảnh; tối đa settings.omar_search_pages
+    trang mỗi kiểu. Mỗi lần step() là MỘT trang, để run_search xen kẽ các câu (run_round_robin) thay vì gọi dồn một câu."""
+
+    def __init__(self, query: dict[str, Any]) -> None:
+        self.query = query
+        self.passes = [("search_videos", mode) for mode in search_modes()] + [("search_photos", {})]
+        self.index = 0
+        self.cursor: str | None = None
+        self.pages = 0
+        self.empty_tries = 0
+        self.local: dict[str, Any] = {"published": 0, "skipped_seen": 0}
+        self.seen_ids: set[str] = set()
+        # False khi một trang lỗi - lượt sau tìm lại câu này (search_videos của Omar hay trả 424 "Video search failed" từng
+        # đợt, đo 12/10/2026). halted: dừng vì hết ngân sách - không tính là đã tìm xong.
+        self.complete = True
+        self.halted = False
+
+    def _field(self) -> str:
+        path, mode = self.passes[self.index]
+        return f"{self.query['key']}|{path}|{json.dumps(mode, sort_keys=True)}"
+
+    async def _next_pass(self, *, keep_cursor: bool = False) -> None:
+        redis = get_redis_client()
+        if keep_cursor and self.cursor not in (None, "0"):
+            await redis.hset(CURSOR_KEY, self._field(), self.cursor)
+        else:
+            await redis.hdel(CURSOR_KEY, self._field())
+        self.index += 1
+        self.cursor = None
+        self.pages = 0
+        self.empty_tries = 0
+
+    async def step(
+        self, client: httpx.AsyncClient, pacer: _Pacer, api_key: str, take: Callable[[], bool], stats: dict[str, Any]
+    ) -> float | None:
+        """Một trang. Trả về số giây chờ trước trang kế của câu này, hoặc None khi câu xong / dừng (self.halted)."""
+        from app.services.omar_tiktok import (
+            _EMPTY_RETRIES,
+            _EMPTY_RETRY_SECONDS,
+            _KEYWORD_GAP_SECONDS,
+            OmarStop,
+            map_web_item,
+            next_cursor,
+            omar_get,
+            publish_videos,
+        )
+
+        if self.index >= len(self.passes):
+            return None
+        redis = get_redis_client()
+        path, mode = self.passes[self.index]
+        if self.cursor is None:
+            saved = await redis.hget(CURSOR_KEY, self._field())
+            self.cursor = (saved.decode() if isinstance(saved, bytes) else saved) or "0"
+        if not take():
+            if self.cursor != "0":
+                await redis.hset(CURSOR_KEY, self._field(), self.cursor)
+            self.halted = True
+            return None
+        stats["requests"] = int(stats.get("requests") or 0) + 1
+        stats["search_requests"] = int(stats.get("search_requests") or 0) + 1
+        await omar_yield.add("search", requests=1)
+        params = {"query": self.query["query"], "cursor": self.cursor, **mode}
+        try:
+            data = await omar_get(client, pacer, api_key, path, params)
+        except OmarStop:
+            if self.cursor != "0":
+                await redis.hset(CURSOR_KEY, self._field(), self.cursor)
+            raise
+        except Exception as exc:  # noqa: BLE001 - trang lỗi: bỏ phần còn lại của kiểu tìm này, hôm sau tìm lại
+            stats["failed"] = int(stats.get("failed") or 0) + 1
+            logger.warning("omar_search_failed_page", query=self.query["query"], path=path, error=str(exc)[:200])
+            self.complete = False
+            await self._next_pass()
+            return _KEYWORD_GAP_SECONDS if self.index < len(self.passes) else None
+        results = (data or {}).get("results") or []
+        if not results and self.cursor != "0":
+            # Rỗng giữa chừng: thường bị giới hạn tạm thời - chờ vài phút gọi lại đúng cursor; vẫn rỗng thì để đó (giữ
+            # cursor cho lần tìm sau) và sang kiểu tìm kế.
+            self.empty_tries += 1
+            if self.empty_tries <= _EMPTY_RETRIES:
+                stats["search_empty_retries"] = int(stats.get("search_empty_retries") or 0) + 1
+                return _EMPTY_RETRY_SECONDS
+            await self._next_pass(keep_cursor=True)
+            return _KEYWORD_GAP_SECONDS if self.index < len(self.passes) else None
+        self.empty_tries = 0
+        mapped = [v for v in (map_web_item(raw) for raw in results) if v]
+        # Các kiểu tìm trùng nhau một phần - chỉ đếm/gửi video chưa gặp trong câu này.
+        mapped = [v for v in mapped if v["video_id"] not in self.seen_ids]
+        self.seen_ids.update(v["video_id"] for v in mapped)
+        await publish_videos(mapped, self.query["keyword_id"], self.local, source="search")
+        self.pages += 1
+        following = next_cursor(data or {})
+        if following is None or self.pages >= settings.omar_search_pages:
+            await self._next_pass()
+        else:
+            self.cursor = following
+        return _KEYWORD_GAP_SECONDS if self.index < len(self.passes) else None
+
+    async def finish(self, stats: dict[str, Any]) -> bool:
+        """Cộng số liệu của câu vào lượt. True khi tìm xong không lỗi."""
+        videos = len(self.seen_ids)
+        stats["search_videos"] = int(stats.get("search_videos") or 0) + videos
+        stats["videos"] = int(stats.get("videos") or 0) + videos
+        for key in ("published", "skipped_seen"):
+            stats[key] = int(stats.get(key) or 0) + self.local[key]
+        await get_redis_client().hset(
+            STATS_KEY,
+            self.query["key"],
+            json.dumps(
+                {"at": datetime.now(tz=UTC).isoformat(), "videos": videos, "published": self.local["published"]}
+            ),
+        )
+        if self.complete and self.query.get("source") == "suggest" and self.query.get("id"):
+            await _track_zero(self.query, self.local["published"])
+        return self.complete
+
+
 async def _search_one(
     client: httpx.AsyncClient,
     pacer: _Pacer,
@@ -173,62 +292,16 @@ async def _search_one(
     take: Callable[[], bool],
     stats: dict[str, Any],
 ) -> bool:
-    """Video theo từng kiểu trong settings.omar_search_modes, rồi bài ảnh; tối đa settings.omar_search_pages trang mỗi lượt. True khi tìm xong không lỗi - lỗi thì lượt
-    sau tìm lại câu này (search_videos của Omar hay trả 424 "Video search failed" từng đợt, đo 12/10/2026)."""
-    from app.services.omar_tiktok import OmarStop, map_web_item, next_cursor, omar_get, publish_videos
-
-    local: dict[str, Any] = {"published": 0, "skipped_seen": 0}
-    seen_ids: set[str] = set()
-    complete = True
-    passes = [("search_videos", mode) for mode in search_modes()] + [("search_photos", {})]
-    redis = get_redis_client()
-    for path, mode in passes:
-        cursor_field = f"{query['key']}|{path}|{json.dumps(mode, sort_keys=True)}"
-        saved = await redis.hget(CURSOR_KEY, cursor_field)
-        cursor = (saved.decode() if isinstance(saved, bytes) else saved) or "0"
-        for _ in range(settings.omar_search_pages):
-            if not take():
-                if cursor != "0":
-                    await redis.hset(CURSOR_KEY, cursor_field, cursor)
-                return False
-            stats["requests"] = int(stats.get("requests") or 0) + 1
-            stats["search_requests"] = int(stats.get("search_requests") or 0) + 1
-            await omar_yield.add("search", requests=1)
-            params = {"query": query["query"], "cursor": cursor, **mode}
-            try:
-                data = await omar_get(client, pacer, api_key, path, params)
-            except OmarStop:
-                if cursor != "0":
-                    await redis.hset(CURSOR_KEY, cursor_field, cursor)
-                raise
-            except Exception as exc:  # noqa: BLE001 - trang lỗi: bỏ phần còn lại của endpoint này, hôm sau tìm lại
-                stats["failed"] = int(stats.get("failed") or 0) + 1
-                logger.warning("omar_search_failed_page", query=query["query"], path=path, error=str(exc)[:200])
-                complete = False
-                break
-            mapped = [v for v in (map_web_item(raw) for raw in (data or {}).get("results") or []) if v]
-            # Các kiểu tìm trùng nhau một phần - chỉ đếm/gửi video chưa gặp trong câu này.
-            mapped = [v for v in mapped if v["video_id"] not in seen_ids]
-            seen_ids.update(v["video_id"] for v in mapped)
-            await publish_videos(mapped, query["keyword_id"], local, source="search")
-            following = next_cursor(data or {})
-            if following is None:
-                break
-            cursor = following
-        await redis.hdel(CURSOR_KEY, cursor_field)
-    videos = len(seen_ids)
-    stats["search_videos"] = int(stats.get("search_videos") or 0) + videos
-    stats["videos"] = int(stats.get("videos") or 0) + videos
-    for key in ("published", "skipped_seen"):
-        stats[key] = int(stats.get(key) or 0) + local[key]
-    await get_redis_client().hset(
-        STATS_KEY,
-        query["key"],
-        json.dumps({"at": datetime.now(tz=UTC).isoformat(), "videos": videos, "published": local["published"]}),
-    )
-    if complete and query.get("source") == "suggest" and query.get("id"):
-        await _track_zero(query, local["published"])
-    return complete
+    """Tìm hết một câu liền một mạch (tìm ngay một câu từ tab Omar). True khi tìm xong không lỗi."""
+    search = _QuerySearch(query)
+    while True:
+        delay = await search.step(client, pacer, api_key, take, stats)
+        if delay is None:
+            break
+        await asyncio.sleep(delay)
+    if search.halted:
+        return False
+    return await search.finish(stats)
 
 
 async def _track_zero(query: dict[str, Any], published: int) -> None:
@@ -349,7 +422,7 @@ async def run_search(
     stats: dict[str, Any],
     should_stop: Callable[[], bool],
 ) -> None:
-    from app.services.omar_tiktok import OmarStop
+    from app.services.omar_tiktok import OmarStop, run_round_robin
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     redis = get_redis_client()
@@ -365,9 +438,6 @@ async def run_search(
     if not queries:
         return
     stats.update(search_queries=len(queries), search_requests=0, search_videos=0)
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    for query in queries:
-        queue.put_nowait(query)
     stopped: list[BaseException] = []
 
     def halted() -> bool:
@@ -376,16 +446,18 @@ async def run_search(
     def take() -> bool:
         return not halted() and budget.take()
 
-    async def worker() -> None:
-        while not queue.empty() and not halted():
-            query = queue.get_nowait()
-            try:
-                if await _search_one(client, pacer, api_key, query, take, stats):
-                    await redis.hset(DONE_KEY, query["key"], today)
-            except OmarStop as exc:
-                stopped.append(exc)
+    async def step(search: _QuerySearch) -> float | None:
+        try:
+            delay = await search.step(client, pacer, api_key, take, stats)
+        except OmarStop as exc:
+            stopped.append(exc)
+            return None
+        if delay is None and not search.halted and await search.finish(stats):
+            await redis.hset(DONE_KEY, search.query["key"], today)
+        return delay
 
-    await asyncio.gather(*(worker() for _ in range(min(_WORKERS, len(queries)))))
+    # Xen kẽ giữa các câu, mỗi lần một trang (không gọi dồn một câu) - xem omar_tiktok.run_round_robin.
+    await run_round_robin([_QuerySearch(q) for q in queries], step, workers=_WORKERS, should_stop=halted)
     logger.info(
         "omar_search_processed",
         queries=len(queries),
