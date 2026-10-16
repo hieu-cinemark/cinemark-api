@@ -57,6 +57,7 @@ from app.services.omar_tiktok import run_omar_round_tracked
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.query_discovery import run_query_discovery
 from app.services.source_pages import queue_enabled_sources as queue_source_pages
+from app.services.source_pages import review_suggestions as review_source_pages
 
 logger = get_logger(__name__)
 
@@ -382,7 +383,12 @@ _HASHTAG_DISCOVERY_KEY = f"{REDIS_KEY_PREFIX}scheduler:hashtag_discovery:last_ru
 
 async def _run_hashtag_discovery() -> None:
     # Hashtag TikTok rồi câu tìm kiếm Facebook/Threads (app/services/query_discovery.py); lỗi phần này không chặn phần kia.
-    for name, job in (("hashtag_discovery", run_discovery), ("query_discovery", run_query_discovery)):
+    # Rồi AI duyệt trang nguồn Facebook gợi ý (app/services/source_pages.py) - tự thêm trang của phim / trang chung.
+    for name, job in (
+        ("hashtag_discovery", run_discovery),
+        ("query_discovery", run_query_discovery),
+        ("source_page_review", review_source_pages),
+    ):
         try:
             await job()
         except Exception as exc:  # noqa: BLE001 - một lượt lỗi chỉ để mai chạy lại

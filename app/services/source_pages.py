@@ -1,29 +1,34 @@
-"""Trang nguồn Facebook - cào theo nguồn (2026-10-16).
+"""Trang nguồn Facebook - cào theo nguồn (2026-10-16), tự động hoàn toàn.
 
 Mỗi dòng source_pages là một Page/Profile Facebook, hai loại:
 - movie_id có giá trị: trang CỦA một phim (fanpage chính thức) - mọi bài là về phim đó, ingest lưu là liên quan;
 - movie_id NULL: trang CHUNG (CGV, Moveek, trang review) - ingest tìm phim đang theo dõi mà bài nêu tên rồi lọc liên quan
-  như bài tìm kiếm của phim đó; bài không nêu phim nào thì bỏ. Lượt cào Facebook theo lịch (scheduler._trigger_platform) xếp thêm một yêu cầu type="page_feed" cho mỗi
-trang đang bật - spider facebook_page_feed của spider-hub đọc bảng tin của trang (mới nhất trước, dừng ở bài đã có hoặc
-cũ hơn SINCE_DAYS) và gửi bài kèm source="page"; ingest coi bài của trang nguồn là liên quan tới phim của trang (không
-cần khớp từ khoá).
+  như bài tìm kiếm của phim đó; bài không nêu phim nào thì bỏ.
 
-Bài cần keyword_id để ingest biết phim: dùng từ khoá Facebook là tên phim (get_or_create_keyword) - nó vốn là từ khoá
-tìm kiếm chính của phim nên thường đã có.
+Tự động: review_suggestions() (mỗi sáng, sau hashtag/query discovery) cho Kira duyệt các trang gợi ý - tác giả Facebook
+có nhiều bài liên quan nhất 30 ngày qua (suggestions()) kèm bài mẫu của chính trang - thành "trang của phim X", "trang
+chung" hoặc loại; trang được duyệt tự thêm vào danh sách (added_by='ai').
 
-suggestions(): gợi ý trang từ chính dữ liệu đã có - tác giả Facebook có nhiều bài liên quan nhất của từng phim, lấy
-đường dẫn trang từ URL bài (facebook.com/<trang>/posts/...).
+Tần suất: lượt cào Facebook theo lịch gọi queue_enabled_sources(), chỉ xếp trang đã quá hạn - trang của phim mỗi
+FILM_INTERVAL_HOURS, trang chung mỗi SHARED_INTERVAL_HOURS; lượt cào trước không có bài mới (spider ghi
+page_feed_last:<url> trong Redis) thì giãn gấp đôi, tối đa x MAX_BACKOFF. Spider facebook_page_feed đọc bảng tin mới nhất
+trước, dừng ở bài đã có / cũ hơn SINCE_DAYS / MAX_PAGES trang.
+
+Bài cần keyword_id để ingest biết phim: trang của phim dùng từ khoá Facebook là tên phim (get_or_create_keyword).
 """
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
+from app.ai.kira import call_kira, parse_json_response
 from app.clients.kafka import publish_action_request
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
@@ -32,8 +37,19 @@ from app.services.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
 
-MAX_PAGES = 15
-SINCE_DAYS = 30
+# Mỗi trang bảng tin xin 10 bài (spider) - 50 trang ~ 500 bài; dừng sớm ở bài đã có nên lượt sau chỉ tốn vài trang.
+MAX_PAGES = 50
+SINCE_DAYS = 60
+FILM_INTERVAL_HOURS = 6
+SHARED_INTERVAL_HOURS = 24
+MAX_BACKOFF = 8
+# AI duyệt trang gợi ý
+REVIEW_TASK = "source_page_review"
+REVIEW_BATCH = 10
+REVIEW_MIN_CONFIDENCE = 75
+MAX_ADDS_PER_RUN = 20
+RECHECK_REJECTED_DAYS = 14
+SAMPLE_POSTS_PER_PAGE = 3
 SUGGEST_WINDOW_DAYS = 30
 SUGGEST_PER_MOVIE = 5
 SUGGEST_MIN_POSTS = 5
@@ -64,6 +80,16 @@ async def _ensure_table() -> None:
         """CREATE TABLE IF NOT EXISTS source_pages (
             id TEXT PRIMARY KEY, platform TEXT NOT NULL, url TEXT NOT NULL, page_id TEXT, name TEXT,
             movie_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, last_queued_at TEXT, created_at TEXT NOT NULL
+        )""",
+        quiet=True,
+    )
+    cols = {row.get("name") for row in await d1_query("PRAGMA table_info(source_pages)", quiet=True) or []}
+    for column, kind in (("added_by", "TEXT"), ("ai_reason", "TEXT"), ("quiet_runs", "INTEGER NOT NULL DEFAULT 0")):
+        if column not in cols:
+            await d1_query(f"ALTER TABLE source_pages ADD COLUMN {column} {kind}", quiet=True)
+    await d1_query(
+        """CREATE TABLE IF NOT EXISTS source_page_decisions (
+            url TEXT PRIMARY KEY, verdict TEXT NOT NULL, movie_id TEXT, confidence INTEGER, reason TEXT, decided_at TEXT NOT NULL
         )""",
         quiet=True,
     )
@@ -101,7 +127,14 @@ async def list_sources() -> list[dict[str, Any]]:
     return rows or []
 
 
-async def add_source(*, url: str, movie_id: str | None = None, name: str | None = None) -> dict[str, Any]:
+async def add_source(
+    *,
+    url: str,
+    movie_id: str | None = None,
+    name: str | None = None,
+    added_by: str = "manual",
+    reason: str | None = None,
+) -> dict[str, Any]:
     """movie_id None = trang chung (nhiều phim)."""
     await _ensure_table()
     page_url = normalize_page_url(url)
@@ -116,8 +149,17 @@ async def add_source(*, url: str, movie_id: str | None = None, name: str | None 
         raise ValidationError("Trang này đã có trong danh sách")
     source_id = f"src_{uuid.uuid4()}"
     await d1_query(
-        "INSERT INTO source_pages (id, platform, url, name, movie_id, enabled, created_at) VALUES (?, 'facebook', ?, ?, ?, 1, ?)",
-        [source_id, page_url, (name or "").strip() or None, movie_id, datetime.now(tz=UTC).isoformat()],
+        "INSERT INTO source_pages (id, platform, url, name, movie_id, enabled, created_at, added_by, ai_reason) "
+        "VALUES (?, 'facebook', ?, ?, ?, 1, ?, ?, ?)",
+        [
+            source_id,
+            page_url,
+            (name or "").strip() or None,
+            movie_id,
+            datetime.now(tz=UTC).isoformat(),
+            added_by,
+            reason,
+        ],
     )
     logger.info("source_page_added", url=page_url, movie_id=movie_id)
     return (await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id]))[0]
@@ -165,17 +207,45 @@ async def queue_source(source: dict[str, Any], *, bypass_drain: bool = False) ->
     return ok
 
 
+def _due(source: dict[str, Any], now: datetime) -> bool:
+    base = FILM_INTERVAL_HOURS if source.get("movie_id") else SHARED_INTERVAL_HOURS
+    interval = base * min(MAX_BACKOFF, 2 ** int(source.get("quiet_runs") or 0))
+    last = str(source.get("last_queued_at") or "")
+    try:
+        return now - datetime.fromisoformat(last) >= timedelta(hours=interval) - timedelta(minutes=30)
+    except ValueError:
+        return True
+
+
+async def _update_quiet_runs(source: dict[str, Any]) -> None:
+    """Lượt cào trước của trang không có bài mới (spider ghi page_feed_last:<url>) -> tăng quiet_runs (giãn lịch), có
+    bài -> về 0."""
+    try:
+        raw = await get_redis_client().get(f"{REDIS_KEY_PREFIX}page_feed_last:{source['url']}")
+    except Exception:  # noqa: BLE001 - không đọc được thì giữ nhịp cũ
+        return
+    if not raw:
+        return
+    last = json.loads(raw)
+    quiet = 0 if int(last.get("new") or 0) > 0 else int(source.get("quiet_runs") or 0) + 1
+    if quiet != int(source.get("quiet_runs") or 0):
+        await d1_query("UPDATE source_pages SET quiet_runs = ? WHERE id = ?", [quiet, source["id"]], quiet=True)
+        source["quiet_runs"] = quiet
+
+
 async def queue_enabled_sources() -> int:
-    """Gọi từ lượt cào Facebook theo lịch: xếp mọi trang đang bật của phim đang bật."""
+    """Gọi từ mỗi lượt cào Facebook theo lịch: xếp các trang đang bật đã tới hạn (xem docstring module)."""
     await _ensure_table()
     rows = await d1_query(
         "SELECT s.* FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
         "WHERE s.enabled = 1 AND (s.movie_id IS NULL OR m.enabled = 1)",
         quiet=True,
     )
+    now = datetime.now(tz=UTC)
     queued = 0
     for row in rows or []:
-        if await queue_source(row):
+        await _update_quiet_runs(row)
+        if _due(row, now) and await queue_source(row):
             queued += 1
     logger.info("source_pages_queued", queued=queued, total=len(rows or []))
     return queued
@@ -272,3 +342,130 @@ async def suggestions() -> list[dict[str, Any]]:
     ]
     out = film_pages + shared_pages
     return out
+
+
+REVIEW_PROMPT = """Bạn duyệt Trang Facebook làm NGUỒN CÀO bài cho hệ thống theo dõi thảo luận phim chiếu rạp tại Việt Nam.
+Mỗi trang có: tên, đường dẫn, các phim đang theo dõi mà trang đã đăng bài, và vài bài mẫu của chính trang.
+Phân loại từng trang:
+- "film": trang dành riêng cho MỘT phim (fanpage chính thức, trang phim của nhà phát hành) - ghi movie là đúng tên phim đó
+  trong danh sách phim của trang. Chỉ chọn khi gần như mọi bài của trang đều về phim đó.
+- "shared": trang đăng về NHIỀU phim chiếu rạp (chuỗi rạp, nhà phát hành nhiều phim, trang tin/review/meme điện ảnh).
+- "reject": trang không phải về phim chiếu rạp (thương hiệu/sản phẩm trùng tên phim, game, ca sĩ, trang bán hàng), trang cá
+  nhân ít bài, hoặc trang không nói tiếng Việt.
+Không chắc thì "reject". Trả JSON hợp lệ, không bọc code block:
+{"results":[{"url":"<đúng như được đưa>","verdict":"film|shared|reject","movie":"<tên phim khi film, ngược lại null>",
+"confidence":0-100,"reason":"một câu ngắn tiếng Việt"}]}"""
+
+
+async def _sample_posts(name: str) -> list[str]:
+    rows = (
+        await d1_query(
+            "SELECT substr(content, 1, 220) AS content FROM posts WHERE platform = 'facebook' AND author = ? "
+            "AND length(content) >= 20 ORDER BY posted_at DESC LIMIT ?",
+            [name, SAMPLE_POSTS_PER_PAGE],
+            quiet=True,
+        )
+        or []
+    )
+    return [" ".join(str(row["content"]).split()) for row in rows]
+
+
+async def _decided_urls() -> set[str]:
+    recheck = (datetime.now(tz=UTC) - timedelta(days=RECHECK_REJECTED_DAYS)).isoformat()
+    rows = await d1_query("SELECT url, verdict, decided_at FROM source_page_decisions", quiet=True) or []
+    return {row["url"] for row in rows if row["verdict"] != "reject" or str(row["decided_at"]) >= recheck}
+
+
+async def pending_suggestions() -> list[dict[str, Any]]:
+    """Gợi ý mà Kira chưa quyết định (cho dashboard)."""
+    await _ensure_table()
+    decided = await _decided_urls()
+    return [s for s in await suggestions() if s["url"] not in decided]
+
+
+async def review_suggestions(*, dry_run: bool = False, limit: int | None = None) -> dict[str, int]:
+    """Kira duyệt các trang gợi ý chưa quyết định; trang film/shared đủ tin cậy tự thêm vào danh sách (xem docstring)."""
+    await _ensure_table()
+    decided = await _decided_urls()
+    candidates = [s for s in await suggestions() if s["url"] not in decided][:limit]
+    stats = {"candidates": len(candidates), "asked": 0, "added": 0, "rejected": 0, "failed": 0}
+    titles = {
+        normalize_title(row["title"]): row["id"]
+        for row in await d1_query("SELECT id, title FROM movies WHERE enabled = 1", quiet=True) or []
+    }
+    for start in range(0, len(candidates), REVIEW_BATCH):
+        if stats["added"] >= MAX_ADDS_PER_RUN:
+            break
+        batch = candidates[start : start + REVIEW_BATCH]
+        blocks = []
+        for cand in batch:
+            samples = await _sample_posts(cand["name"])
+            blocks.append(
+                f"- url: {cand['url']}\n  name: {cand['name']}\n  films: {', '.join(cand['films'])}\n"
+                f"  on-topic posts (30 days): {cand['posts']}\n  sample posts:\n"
+                + "\n".join(f"    * {text}" for text in samples)
+            )
+        try:
+            raw = await call_kira(
+                task=REVIEW_TASK, system_prompt=REVIEW_PROMPT, user_prompt="\n".join(blocks), max_tokens=6000
+            )
+        except Exception as exc:  # noqa: BLE001 - Kira tắt/lỗi: lượt sau xét lại
+            stats["failed"] += 1
+            logger.warning("source_page_review_failed", error=str(exc)[:300])
+            continue
+        stats["asked"] += 1
+        parsed = parse_json_response(raw)
+        results = parsed.get("results") if isinstance(parsed, dict) else None
+        by_url = {str(r.get("url")): r for r in results if isinstance(r, dict)} if isinstance(results, list) else {}
+        for cand in batch:
+            verdict = by_url.get(cand["url"])
+            if not verdict:
+                continue
+            kind = str(verdict.get("verdict") or "").lower()
+            try:
+                confidence = int(float(verdict.get("confidence") or 0))
+            except TypeError, ValueError:
+                confidence = 0
+            movie_id = titles.get(normalize_title(str(verdict.get("movie") or ""))) if kind == "film" else None
+            accept = (
+                kind in ("film", "shared") and confidence >= REVIEW_MIN_CONFIDENCE and (kind == "shared" or movie_id)
+            )
+            reason = str(verdict.get("reason") or "")[:300]
+            logger.info(
+                "source_page_ai_decision",
+                url=cand["url"],
+                name=cand["name"],
+                verdict=kind,
+                confidence=confidence,
+                movie_id=movie_id,
+                accept=accept,
+                dry_run=dry_run,
+                reason=reason,
+            )
+            if dry_run:
+                stats["added" if accept else "rejected"] += 1
+                continue
+            await d1_query(
+                "INSERT INTO source_page_decisions (url, verdict, movie_id, confidence, reason, decided_at) VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(url) DO UPDATE SET verdict = excluded.verdict, movie_id = excluded.movie_id, "
+                "confidence = excluded.confidence, reason = excluded.reason, decided_at = excluded.decided_at",
+                [
+                    cand["url"],
+                    kind if accept else "reject",
+                    movie_id,
+                    confidence,
+                    reason,
+                    datetime.now(tz=UTC).isoformat(),
+                ],
+                quiet=True,
+            )
+            if not accept or stats["added"] >= MAX_ADDS_PER_RUN:
+                stats["rejected"] += 0 if accept else 1
+                continue
+            try:
+                await add_source(url=cand["url"], movie_id=movie_id, name=cand["name"], added_by="ai", reason=reason)
+                stats["added"] += 1
+            except (ValidationError, NotFoundError) as exc:
+                logger.info("source_page_ai_add_skipped", url=cand["url"], error=str(exc))
+    logger.info("source_page_review_finished", telegram=bool(stats["added"]) and not dry_run, dry_run=dry_run, **stats)
+    return stats

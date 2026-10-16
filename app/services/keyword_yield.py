@@ -33,7 +33,7 @@ WINDOW_DAYS = 14
 MIN_SAMPLE = 150
 PAUSE_BELOW = 0.10
 LOW_BELOW = 0.40
-LOW_PAGES = 10
+LOW_PAGES = 20
 # Từ khoá mới tạo chưa đủ ngày thì chưa đánh giá.
 MIN_AGE = timedelta(days=3)
 

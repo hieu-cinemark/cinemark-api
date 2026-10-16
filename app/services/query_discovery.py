@@ -39,8 +39,10 @@ PLATFORMS = ("facebook", "threads")
 QUERY_TEMPLATES = ("phim {title}", "review {title}", "đi xem {title}")
 MAX_CAST = 3
 MIN_CONFIDENCE = 80
-MAX_ADDS_PER_MOVIE = 2
-MAX_ADDS_PER_RUN = 12
+# Nâng 2026-10-16 (2 -> 4, 12 -> 30): câu kém đã tự bị tắt theo tỉ lệ liên quan (keyword_yield), nên thêm nhiều câu hơn
+# để lấy nhiều bài nhất có thể.
+MAX_ADDS_PER_MOVIE = 4
+MAX_ADDS_PER_RUN = 30
 ACTIVE_BEFORE_DAYS = 30
 ACTIVE_AFTER_DAYS = 45
 PRUNE_AFTER_DAYS = 3
