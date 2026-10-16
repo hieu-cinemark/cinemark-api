@@ -314,6 +314,14 @@ async def handle_post(payload: dict[str, Any]) -> None:
         other_film = mentions_other_film(
             draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
         )
+        if other_film and not payload.get("_rerouted"):
+            # Bài tìm ra bằng từ khoá phim A nhưng chỉ nói về phim B đang theo dõi: chuyển sang phim B (đi lại mọi cổng
+            # như bài của B) thay vì bỏ - 16/10/2026 thấy bài về Hộ Linh Tráng Sĩ tìm ra bằng từ khoá Án Mạng Xém Hoàn Hảo.
+            other_keyword_id = await _route_shared_page_post(draft.get("content"))
+            if other_keyword_id and other_keyword_id != keyword_id:
+                logger.info("post_rerouted_other_film", platform=platform, post_id=post_id, other_film=other_film)
+                await handle_post({**payload, "keyword_id": other_keyword_id, "_rerouted": True})
+                return
         reason = "other_film" if other_film else "keyword_absent"
         logger.info(
             "post_dropped_other_film" if other_film else "post_dropped_keyword_absent",
@@ -393,6 +401,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             strict=movie.get("slug") in settings.strict_relevance_movies,
             hashtag_only=hashtag_only,
             confidence=relevance_confidence,
+            full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
         )
     no_film_context = ai_relevant is False and context != "hashtag_only"
     ok = await persist_post(

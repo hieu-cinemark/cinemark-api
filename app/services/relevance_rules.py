@@ -487,6 +487,18 @@ def _strong_phrase_near_title(tokens: list[str], title: list[str]) -> bool:
     return False
 
 
+FULL_TITLE_MIN_WORDS = 3
+
+
+def mentions_full_title(content: str | None, title: str | None) -> bool:
+    """Bài có đủ tên phim (bỏ dấu/hoa thường/khoảng trắng/dấu câu) và tên dài từ FULL_TITLE_MIN_WORDS chữ - tên ngắn
+    ("Mẹ Mìn", "Huyết Thống", "Loạn Thế") trùng từ ngữ thường ngày nên không tính."""
+    words = normalize_title(title).split()
+    if len(words) < FULL_TITLE_MIN_WORDS:
+        return False
+    return _squash("".join(words)) in _squash(normalize_title(content))
+
+
 def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None], title: str | None) -> bool:
     """Bài có chứa ĐẦY ĐỦ một trong các từ khoá của phim, hoặc đầy đủ tên phim không - so sau
     khi bỏ dấu/hoa thường/khoảng trắng/dấu câu, nên "#PhimNguoiDuocChon", "phim Người Được
@@ -523,6 +535,7 @@ def resolve_relevance(
     strict: bool,
     hashtag_only: bool = False,
     confidence: float | None = None,
+    full_title_rule: bool = True,
 ) -> tuple[bool | None, str | None, str | None]:
     """Nhãn Kira (related/uncertain hoặc None khi Kira không kết luận - "not_related" do bên gọi xử lý trước)
     -> (ai_relevant, relevance_label, context). Dùng chung cho ingest consumer và
@@ -546,6 +559,11 @@ def resolve_relevance(
     context = film_context_reason(content, movie, allow_title_hashtag=not strict, allow_names=not strict)
     if context:
         return True, "related" if label == "uncertain" else label, context
+    if not strict and full_title_rule and mentions_full_title(content, movie.get("title")):
+        # Đủ tên phim dài (từ 3 chữ) là tín hiệu đủ mạnh (đo 16/10/2026: ~85% bài "uncertain" có đủ tên 3+ chữ thật sự
+        # là về phim - "t vừa coi suất chiều Bóng Ma Nhà Hát", "spotlight của Út Lan 2..."); phim tên là cụm từ thông
+        # dụng thì bên gọi truyền full_title_rule=False (settings.ambiguous_title_movie_slugs).
+        return True, "related", "full_title"
     if has_keyword or label == "uncertain":
         return False, label or "uncertain", None
     return None, label, None

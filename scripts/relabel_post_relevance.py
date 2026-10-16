@@ -85,6 +85,7 @@ async def _relabel(
             movie,
             has_keyword=has_keyword,
             strict=movie.get("slug") in settings.strict_relevance_movies,
+            full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
         )
     keyword_match = int(ai_relevant if ai_relevant is not None else has_keyword)
     if not dry_run:

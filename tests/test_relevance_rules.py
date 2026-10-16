@@ -267,3 +267,19 @@ def test_ambiguous_keyword_hashtags_do_not_count(content: str, movie: dict) -> N
 
 def test_keyword_hashtag_off_for_strict_movies() -> None:
     assert film_context_reason("#traibuonnguoimovie", _TRAI_BUON_NGUOI, allow_title_hashtag=False) is None
+
+
+def test_full_title_lifts_uncertain_for_long_titles():
+    from app.services.relevance_rules import mentions_full_title, resolve_relevance
+
+    movie = {"title": "Bóng Ma Nhà Hát", "slug": "bong-ma-nha-hat"}
+    text = "ai đang lăn tăn tối nay coi gì thì Bóng Ma Nhà Hát chiếu rồi đó, t vừa coi suất chiều"
+    assert mentions_full_title(text, movie["title"])
+    assert mentions_full_title("#BongMaNhaHat hay", movie["title"])
+    assert resolve_relevance("uncertain", text, movie, has_keyword=True, strict=False) == (True, "related", "full_title")
+    # tên ngắn (trùng từ thường ngày) và phim tên chung chung thì không nâng
+    assert not mentions_full_title("bình yên đến lạ #memin", "Mẹ Mìn")
+    assert resolve_relevance(
+        "uncertain", "Cộng, Trừ, Nhân, Chia có đủ", {"title": "Cộng Trừ Nhân Chia"}, has_keyword=True, strict=False,
+        full_title_rule=False,
+    )[0] is False

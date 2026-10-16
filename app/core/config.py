@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.
     # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
     strict_relevance_movie_slugs: str = "nguoi-duoc-chon"
+    # Phim có tên là cụm từ thông dụng ("cộng, trừ, nhân, chia", "người mẹ xấu xa"): bài "uncertain" KHÔNG được nâng thành
+    # liên quan chỉ vì có đủ tên phim (resolve_relevance, quy tắc full_title - 2026-10-16). Khác strict: không đụng bài
+    # bộ phân loại đã gán "related".
+    ambiguous_title_movie_slugs: str = "nguoi-duoc-chon,cong-tru-nhan-chia,nguoi-me-xau"
 
     # Omar TikTok API (dev.omar-thing.site) - dùng cho crawl video/hashtag thay vì
     # spider-hub. API key được đọc từ bảng omar_api_settings trên Supabase (xem
@@ -260,6 +264,10 @@ class Settings(BaseSettings):
     ops_ai_wallet_window_hours: float = 1
     # Chi phí Jev hôm nay (giờ VN, ước từ token đầu vào) vượt mức này (USD).
     ops_jev_daily_usd_alert: float = 2.0
+
+    @property
+    def ambiguous_title_movies(self) -> frozenset[str]:
+        return frozenset(slug.strip() for slug in self.ambiguous_title_movie_slugs.split(",") if slug.strip())
 
     @property
     def strict_relevance_movies(self) -> frozenset[str]:
