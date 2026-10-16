@@ -374,6 +374,9 @@ class ProxyProviderOut(BaseModel):
     token_set: bool
     ip_allowlist: bool
     updated_at: datetime | None = None
+    # Lần spider-hub thực sự gọi gói này + kết quả ("ok" / "error: ...").
+    last_used_at: datetime | None = None
+    last_status: str | None = None
 
 
 class ProxyProviderUpdate(BaseModel):

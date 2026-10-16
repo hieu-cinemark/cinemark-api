@@ -837,6 +837,9 @@ async def _ensure_proxy_settings_tables() -> None:
             )
             """
         )
+        # spider-hub ghi hai cột này mỗi lần thực sự dùng gói (proxy_settings.record_provider_use).
+        await cur.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
+        await cur.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_status text")
         await conn.commit()
     _proxy_settings_ready = True
 
@@ -869,7 +872,7 @@ async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
     return row  # type: ignore[return-value]
 
 
-PROXY_PROVIDER_COLUMNS = "key, api_url, token, ip_allowlist, updated_at"
+PROXY_PROVIDER_COLUMNS = "key, api_url, token, ip_allowlist, updated_at, last_used_at, last_status"
 
 
 async def list_proxy_providers() -> list[dict[str, Any]]:

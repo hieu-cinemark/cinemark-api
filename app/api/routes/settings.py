@@ -306,6 +306,8 @@ def _proxy_provider_out(row: dict) -> ProxyProviderOut:
         token_set=bool(row.get("token")),
         ip_allowlist=bool(row["ip_allowlist"]),
         updated_at=row.get("updated_at"),
+        last_used_at=row.get("last_used_at"),
+        last_status=row.get("last_status"),
     )
 
 
