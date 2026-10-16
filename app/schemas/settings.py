@@ -157,7 +157,7 @@ class FilterKeywordUpdate(BaseModel):
     enabled: bool | None = None
 
 
-MAX_CRAWL_RUNS_PER_DAY = 3
+MAX_CRAWL_RUNS_PER_DAY = 8  # 3 -> 8 (2026-10-16): lượt sau trong ngày của FB/Threads chỉ lấy bài mới nhất, nhẹ
 # Hai giờ chạy cách nhau ít nhất chừng này phút: scheduler.py còn bắn bù một lượt bị lỡ tới 30 phút sau giờ của nó.
 MIN_CRAWL_RUN_GAP_MINUTES = 60
 _HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
