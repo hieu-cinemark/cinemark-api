@@ -56,6 +56,7 @@ from app.services.omar_tiktok import pause_over as omar_pause_over
 from app.services.omar_tiktok import run_omar_round_tracked
 from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.query_discovery import run_query_discovery
+from app.services.source_pages import queue_enabled_sources as queue_source_pages
 
 logger = get_logger(__name__)
 
@@ -117,6 +118,12 @@ async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurt
             )
             if ok:
                 published += 1
+        if platform == "facebook":
+            # Cào theo nguồn: bảng tin các trang nguồn đang bật (app/services/source_pages.py).
+            try:
+                await queue_source_pages()
+            except Exception as exc:  # noqa: BLE001 - lỗi trang nguồn không chặn lượt tìm kiếm
+                logger.warning("source_pages_queue_failed", error=str(exc)[:200])
         logger.info(
             "scheduled_crawl_triggered",
             platform=platform,

@@ -142,6 +142,33 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
     return movies
 
 
+_film_keyword_cache: dict[str, str | None] = {}
+
+
+async def _route_shared_page_post(content: str | None) -> str | None:
+    """keyword_id (từ khoá Facebook của phim, ưu tiên từ khoá đúng tên phim) của phim đang theo dõi mà bài nêu tên
+    (tên phim hoặc một từ khoá của phim). Nhiều phim thì lấy phim có tên dài nhất khớp (cụ thể nhất)."""
+    if not content:
+        return None
+    matches = [
+        movie
+        for movie in (await _tracked_movies()).values()
+        if movie.get("keywords") and mentions_keyword_or_title(content, movie["keywords"], movie.get("title"))
+    ]
+    if not matches:
+        return None
+    movie = max(matches, key=lambda m: len(str(m.get("title") or "")))
+    if movie["id"] not in _film_keyword_cache:
+        rows = await d1_query(
+            "SELECT id FROM keywords WHERE movie_id = ? AND platform = 'facebook' AND enabled = 1 "
+            "ORDER BY (keyword = ?) DESC LIMIT 1",
+            [movie["id"], movie.get("title")],
+            quiet=True,
+        )
+        _film_keyword_cache[movie["id"]] = rows[0]["id"] if rows else None
+    return _film_keyword_cache[movie["id"]]
+
+
 async def _tracked_titles() -> list[str]:
     return [m["title"] for m in (await _tracked_movies()).values()]
 
@@ -207,6 +234,14 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     keyword_id = payload.get("keyword_id")
+    if not keyword_id and payload.get("source") == "page":
+        # Trang nguồn CHUNG (CGV, trang review... - không gắn phim): tìm phim đang theo dõi mà bài nêu tên, rồi đi
+        # qua đúng các cổng liên quan như bài tìm kiếm của phim đó. Không nêu phim nào thì bỏ.
+        keyword_id = await _route_shared_page_post(mapper(payload).get("content"))
+        if not keyword_id:
+            await _drop(platform=platform, post_id=post_id, reason="source_page_no_film")
+            return
+        payload = {**payload, "keyword_id": keyword_id, "source": "page_shared"}
     if not keyword_id:
         logger.warning("post_missing_keyword_id", platform=platform, post_id=post_id)
         await _note_drop(platform, "missing_keyword_id", post_id=post_id)
@@ -237,6 +272,36 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if settings.relevance_rules_only and (no_marks := no_diacritics_reason(draft.get("content"))):
         logger.info("post_dropped_no_diacritics", platform=platform, post_id=post_id, keyword_id=keyword_id)
         await _drop(platform=platform, post_id=post_id, reason="non_vietnamese", keyword_id=keyword_id, rule=no_marks)
+        return
+
+    # Cào theo nguồn (spider facebook_page_feed, 2026-10-16): bài đăng trên trang nguồn đã gắn với phim (fanpage chính
+    # thức, nhà phát hành...) là về phim đó dù không nhắc tên ("Nó làm gì em chưa???" + ảnh) - bỏ cổng từ khoá/tên phim
+    # và Kira, lưu là liên quan. Vẫn qua lọc ngôn ngữ ở trên.
+    if payload.get("source") == "page":
+        ok = await persist_post(
+            movie_id=keyword["movie_id"],
+            keyword_id=keyword_id,
+            keyword=keyword["keyword"],
+            platform=platform,
+            draft=draft,
+            ai_relevant=True,
+            relevance_label="related",
+            relevance_confidence=None,
+        )
+        if not ok:
+            await _note_drop(platform, "d1_write_failed", post_id=post_id)
+            await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
+            return
+        logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"), source="page")
+        await _decide(
+            platform=platform,
+            post_id=post_id,
+            keyword_id=keyword_id,
+            decision="kept",
+            reason="source_page",
+            confidence=None,
+            has_keyword=contains_keyword(draft.get("content"), keyword["keyword"]),
+        )
         return
 
     # Bài phải chứa đầy đủ từ khoá (hoặc dạng hashtag của nó) hoặc đầy đủ tên phim - kết quả

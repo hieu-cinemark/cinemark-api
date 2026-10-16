@@ -14,14 +14,65 @@ build_comments_run_route nếu spider-hub có spider comment cho nền tảng đ
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 from app.api.routes.keywords import build_keyword_routes
 from app.api.routes.platform_scraper import build_comments_run_route, build_run_route
 from app.api.routes.token_refresh import build_token_refresh_routes
+from app.services import source_pages
 
 router = APIRouter(prefix="/facebook", tags=["facebook"])
 build_run_route(router, "facebook")
 build_keyword_routes(router, "facebook")
 build_token_refresh_routes(router, "facebook")
 build_comments_run_route(router, "facebook")
+
+
+# --- Trang nguồn (cào theo nguồn, app/services/source_pages.py) ---------------------------------------------------
+
+
+class SourcePageCreate(BaseModel):
+    url: str
+    # None/rỗng = trang chung (nhiều phim) - ingest tự tìm phim theo nội dung bài.
+    movie_id: str | None = None
+    name: str | None = None
+
+
+class SourcePageUpdate(BaseModel):
+    enabled: bool
+
+
+@router.get("/sources")
+async def list_source_pages() -> dict[str, Any]:
+    return {"items": await source_pages.list_sources()}
+
+
+@router.get("/sources/suggestions")
+async def source_page_suggestions() -> dict[str, Any]:
+    """Trang có nhiều bài liên quan nhất 30 ngày qua chưa có trong danh sách (trang của phim + trang chung)."""
+    return {"items": await source_pages.suggestions()}
+
+
+@router.post("/sources")
+async def create_source_page(payload: SourcePageCreate) -> dict[str, Any]:
+    return await source_pages.add_source(url=payload.url, movie_id=payload.movie_id, name=payload.name)
+
+
+@router.patch("/sources/{source_id}")
+async def update_source_page(source_id: str, payload: SourcePageUpdate) -> dict[str, bool]:
+    await source_pages.set_enabled(source_id, payload.enabled)
+    return {"ok": True}
+
+
+@router.delete("/sources/{source_id}")
+async def delete_source_page(source_id: str) -> dict[str, bool]:
+    await source_pages.delete_source(source_id)
+    return {"ok": True}
+
+
+@router.post("/sources/{source_id}/run")
+async def run_source_page(source_id: str) -> dict[str, bool]:
+    return {"published": await source_pages.run_source(source_id)}

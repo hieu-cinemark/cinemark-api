@@ -1,0 +1,274 @@
+"""Trang nguồn Facebook - cào theo nguồn (2026-10-16).
+
+Mỗi dòng source_pages là một Page/Profile Facebook, hai loại:
+- movie_id có giá trị: trang CỦA một phim (fanpage chính thức) - mọi bài là về phim đó, ingest lưu là liên quan;
+- movie_id NULL: trang CHUNG (CGV, Moveek, trang review) - ingest tìm phim đang theo dõi mà bài nêu tên rồi lọc liên quan
+  như bài tìm kiếm của phim đó; bài không nêu phim nào thì bỏ. Lượt cào Facebook theo lịch (scheduler._trigger_platform) xếp thêm một yêu cầu type="page_feed" cho mỗi
+trang đang bật - spider facebook_page_feed của spider-hub đọc bảng tin của trang (mới nhất trước, dừng ở bài đã có hoặc
+cũ hơn SINCE_DAYS) và gửi bài kèm source="page"; ingest coi bài của trang nguồn là liên quan tới phim của trang (không
+cần khớp từ khoá).
+
+Bài cần keyword_id để ingest biết phim: dùng từ khoá Facebook là tên phim (get_or_create_keyword) - nó vốn là từ khoá
+tìm kiếm chính của phim nên thường đã có.
+
+suggestions(): gợi ý trang từ chính dữ liệu đã có - tác giả Facebook có nhiều bài liên quan nhất của từng phim, lấy
+đường dẫn trang từ URL bài (facebook.com/<trang>/posts/...).
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from urllib.parse import urlparse
+
+from app.clients.kafka import publish_action_request
+from app.core.errors import NotFoundError, ValidationError
+from app.core.logging import get_logger
+from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.services.d1 import d1_query, get_or_create_keyword
+from app.services.relevance_rules import normalize_title
+
+logger = get_logger(__name__)
+
+MAX_PAGES = 15
+SINCE_DAYS = 30
+SUGGEST_WINDOW_DAYS = 30
+SUGGEST_PER_MOVIE = 5
+SUGGEST_MIN_POSTS = 5
+SUGGEST_SHARED = 30
+
+_TABLE_READY = False
+# Đường dẫn không phải trang (facebook.com/groups/..., /watch, /reel...) - không gợi ý.
+_NOT_A_PAGE = {
+    "groups",
+    "watch",
+    "reel",
+    "reels",
+    "photo",
+    "photo.php",
+    "story.php",
+    "permalink.php",
+    "share",
+    "events",
+    "stories",
+}
+
+
+async def _ensure_table() -> None:
+    global _TABLE_READY
+    if _TABLE_READY:
+        return
+    await d1_query(
+        """CREATE TABLE IF NOT EXISTS source_pages (
+            id TEXT PRIMARY KEY, platform TEXT NOT NULL, url TEXT NOT NULL, page_id TEXT, name TEXT,
+            movie_id TEXT, enabled INTEGER NOT NULL DEFAULT 1, last_queued_at TEXT, created_at TEXT NOT NULL
+        )""",
+        quiet=True,
+    )
+    _TABLE_READY = True
+
+
+def normalize_page_url(url: str) -> str:
+    """https://www.facebook.com/<trang> (bỏ query/đường dẫn con, giữ profile.php?id=...)."""
+    raw = url.strip()
+    if not raw:
+        raise ValidationError("Thiếu đường dẫn trang")
+    if not raw.startswith("http"):
+        raw = f"https://www.facebook.com/{raw.lstrip('@/')}"
+    parsed = urlparse(raw)
+    if "facebook.com" not in parsed.netloc:
+        raise ValidationError("Chỉ nhận trang Facebook (facebook.com/...)")
+    if parsed.path.rstrip("/") == "/profile.php":
+        match = re.search(r"(?:^|&)id=(\d+)", parsed.query)
+        if not match:
+            raise ValidationError("Đường dẫn profile.php thiếu id")
+        return f"https://www.facebook.com/profile.php?id={match.group(1)}"
+    slug = parsed.path.strip("/").split("/")[0]
+    if not slug or slug in _NOT_A_PAGE:
+        raise ValidationError("Đường dẫn không phải một trang/Profile")
+    return f"https://www.facebook.com/{slug}"
+
+
+async def list_sources() -> list[dict[str, Any]]:
+    await _ensure_table()
+    rows = await d1_query(
+        "SELECT s.*, m.title AS movie_title FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
+        "ORDER BY m.title, s.created_at",
+        quiet=True,
+    )
+    return rows or []
+
+
+async def add_source(*, url: str, movie_id: str | None = None, name: str | None = None) -> dict[str, Any]:
+    """movie_id None = trang chung (nhiều phim)."""
+    await _ensure_table()
+    page_url = normalize_page_url(url)
+    movie_id = (movie_id or "").strip() or None
+    if movie_id and not await d1_query("SELECT id FROM movies WHERE id = ?", [movie_id], quiet=True):
+        raise NotFoundError("Không tìm thấy phim")
+    existing = await d1_query(
+        "SELECT id FROM source_pages WHERE platform = 'facebook' AND url = ? AND COALESCE(movie_id, '') = ?",
+        [page_url, movie_id or ""],
+    )
+    if existing:
+        raise ValidationError("Trang này đã có trong danh sách")
+    source_id = f"src_{uuid.uuid4()}"
+    await d1_query(
+        "INSERT INTO source_pages (id, platform, url, name, movie_id, enabled, created_at) VALUES (?, 'facebook', ?, ?, ?, 1, ?)",
+        [source_id, page_url, (name or "").strip() or None, movie_id, datetime.now(tz=UTC).isoformat()],
+    )
+    logger.info("source_page_added", url=page_url, movie_id=movie_id)
+    return (await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id]))[0]
+
+
+async def set_enabled(source_id: str, enabled: bool) -> None:
+    await _ensure_table()
+    await d1_query("UPDATE source_pages SET enabled = ? WHERE id = ?", [1 if enabled else 0, source_id])
+
+
+async def delete_source(source_id: str) -> None:
+    await _ensure_table()
+    await d1_query("DELETE FROM source_pages WHERE id = ?", [source_id])
+
+
+async def queue_source(source: dict[str, Any], *, bypass_drain: bool = False) -> bool:
+    """Xếp một yêu cầu page_feed cho trang (từ khoá Facebook là tên phim làm keyword_id)."""
+    keyword_id = None
+    if source.get("movie_id"):
+        movie = await d1_query("SELECT title FROM movies WHERE id = ?", [source["movie_id"]], quiet=True)
+        if not movie:
+            return False
+        keyword = await get_or_create_keyword(source["movie_id"], "facebook", movie[0]["title"])
+        if keyword is None:
+            return False
+        keyword_id = keyword["id"]
+    ok = await publish_action_request(
+        "facebook",
+        "page_feed",
+        {
+            "page_url": source["url"],
+            "page_id": source.get("page_id") or None,
+            # None với trang chung - ingest tự tìm phim theo nội dung bài.
+            "keyword_id": keyword_id,
+            "max_pages": MAX_PAGES,
+            "since_days": SINCE_DAYS,
+            "run_id": str(uuid.uuid4()),
+        },
+        bypass_drain=bypass_drain,
+    )
+    if ok:
+        await d1_query(
+            "UPDATE source_pages SET last_queued_at = ? WHERE id = ?", [datetime.now(tz=UTC).isoformat(), source["id"]]
+        )
+    return ok
+
+
+async def queue_enabled_sources() -> int:
+    """Gọi từ lượt cào Facebook theo lịch: xếp mọi trang đang bật của phim đang bật."""
+    await _ensure_table()
+    rows = await d1_query(
+        "SELECT s.* FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
+        "WHERE s.enabled = 1 AND (s.movie_id IS NULL OR m.enabled = 1)",
+        quiet=True,
+    )
+    queued = 0
+    for row in rows or []:
+        if await queue_source(row):
+            queued += 1
+    logger.info("source_pages_queued", queued=queued, total=len(rows or []))
+    return queued
+
+
+async def run_source(source_id: str) -> bool:
+    await _ensure_table()
+    rows = await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id])
+    if not rows:
+        raise NotFoundError("Không tìm thấy trang nguồn")
+    return await queue_source(rows[0], bypass_drain=True)
+
+
+def _page_from_post_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        return normalize_page_url(url)
+    except ValidationError:
+        return None
+
+
+async def suggestions() -> list[dict[str, Any]]:
+    """Trang Facebook có nhiều bài liên quan nhất của từng phim trong SUGGEST_WINDOW_DAYS ngày, chưa có trong danh sách."""
+    await _ensure_table()
+    since = (datetime.now(tz=UTC) - timedelta(days=SUGGEST_WINDOW_DAYS)).isoformat()
+    rows = (
+        await d1_query(
+            f"""SELECT p.movie_id, m.title AS movie_title, p.author, p.url, COUNT(*) AS posts,
+                   SUM(COALESCE(p.like_count, 0) + COALESCE(p.reply_count, 0) + COALESCE(p.repost_count, 0)) AS engagement
+            FROM posts p JOIN movies m ON m.id = p.movie_id
+            WHERE p.platform = 'facebook' AND m.enabled = 1 AND p.posted_at >= ? AND {RELEVANT_POST_SQL}
+              AND p.author IS NOT NULL AND p.author != ''
+            GROUP BY p.movie_id, p.author HAVING posts >= ? ORDER BY p.movie_id, posts DESC""",
+            [since, SUGGEST_MIN_POSTS],
+            quiet=True,
+            timeout=60.0,
+        )
+        or []
+    )
+    sources = await list_sources()
+    taken_film = {(row["movie_id"], row["url"]) for row in sources if row.get("movie_id")}
+    taken_shared = {row["url"] for row in sources if not row.get("movie_id")}
+    film_pages: list[dict[str, Any]] = []
+    shared: dict[str, dict[str, Any]] = {}
+    per_movie: dict[str, int] = {}
+    for row in rows:
+        page_url = _page_from_post_url(row.get("url"))
+        if not page_url:
+            continue
+        # Tên trang chứa tên phim -> trang của phim đó; còn lại (CGV, trang review, cá nhân) -> trang chung, gộp mọi phim.
+        own_page = normalize_title(row["movie_title"]).replace(" ", "") in normalize_title(row["author"]).replace(
+            " ", ""
+        )
+        posts, engagement = int(row["posts"] or 0), int(row["engagement"] or 0)
+        if own_page:
+            if (row["movie_id"], page_url) in taken_film or per_movie.get(row["movie_id"], 0) >= SUGGEST_PER_MOVIE:
+                continue
+            per_movie[row["movie_id"]] = per_movie.get(row["movie_id"], 0) + 1
+            film_pages.append(
+                {
+                    "kind": "film",
+                    "movie_id": row["movie_id"],
+                    "movie_title": row["movie_title"],
+                    "name": row["author"],
+                    "url": page_url,
+                    "posts": posts,
+                    "engagement": engagement,
+                    "films": [row["movie_title"]],
+                }
+            )
+            continue
+        if page_url in taken_shared:
+            continue
+        entry = shared.setdefault(
+            page_url,
+            {
+                "kind": "shared",
+                "movie_id": None,
+                "movie_title": None,
+                "name": row["author"],
+                "url": page_url,
+                "posts": 0,
+                "engagement": 0,
+                "films": [],
+            },
+        )
+        entry["posts"] += posts
+        entry["engagement"] += engagement
+        entry["films"].append(row["movie_title"])
+    # Trang chung đáng cào là trang nói về nhiều phim đang theo dõi.
+    shared_pages = sorted((e for e in shared.values() if len(e["films"]) >= 2), key=lambda e: -e["posts"])[
+        :SUGGEST_SHARED
+    ]
+    out = film_pages + shared_pages
+    return out
