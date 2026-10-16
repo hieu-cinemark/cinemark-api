@@ -428,7 +428,9 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
                 confidence = 0
             movie_id = titles.get(normalize_title(str(verdict.get("movie") or ""))) if kind == "film" else None
             accept = (
-                kind in ("film", "shared") and confidence >= REVIEW_MIN_CONFIDENCE and (kind == "shared" or bool(movie_id))
+                kind in ("film", "shared")
+                and confidence >= REVIEW_MIN_CONFIDENCE
+                and (kind == "shared" or bool(movie_id))
             )
             reason = str(verdict.get("reason") or "")[:300]
             logger.info(
