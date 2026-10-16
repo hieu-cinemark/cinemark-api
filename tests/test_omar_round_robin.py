@@ -50,6 +50,7 @@ def test_search_retries_empty_mid_page_same_cursor(monkeypatch):
         [
             {"results": [{"id": "1"}], "has_more": True, "next_cursor": "20"},
             {"results": [], "has_more": True, "next_cursor": "40"},  # giới hạn tạm thời
+            {"results": [], "has_more": True, "next_cursor": "40"},
             {"results": [{"id": "2"}], "has_more": False},
         ]
     )
@@ -70,6 +71,6 @@ def test_search_retries_empty_mid_page_same_cursor(monkeypatch):
             delays.append(delay)
 
     asyncio.run(run())
-    assert cursors == ["0", "20", "20"]
-    assert ot._EMPTY_RETRY_SECONDS in delays
+    assert cursors == ["0", "20", "20", "20"]
+    assert [d for d in delays if d >= ot._EMPTY_RETRY_SECONDS] == [ot._EMPTY_RETRY_SECONDS, 2 * ot._EMPTY_RETRY_SECONDS]
     assert search.seen_ids == {"1", "2"}

@@ -248,7 +248,7 @@ class _QuerySearch:
             self.empty_tries += 1
             if self.empty_tries <= _EMPTY_RETRIES:
                 stats["search_empty_retries"] = int(stats.get("search_empty_retries") or 0) + 1
-                return _EMPTY_RETRY_SECONDS
+                return _EMPTY_RETRY_SECONDS * self.empty_tries  # 3, 6, 9 phút
             await self._next_pass(keep_cursor=True)
             return _KEYWORD_GAP_SECONDS if self.index < len(self.passes) else None
         self.empty_tries = 0

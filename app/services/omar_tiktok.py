@@ -318,8 +318,8 @@ _STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
 _MAX_EMPTY_PAGES = 3
 _MAX_PAGE_FAILURES = 3
 # Trang rỗng GIỮA CHỪNG (cursor khác "0") thường là Omar/TikTok giới hạn tạm thời - gọi lại sau vài phút lại có data (đo
-# 16/10/2026). Để từ khoá đó chờ _EMPTY_RETRY_SECONDS rồi gọi lại đúng cursor, tối đa _EMPTY_RETRIES lần; vẫn rỗng thì để đó
-# (giữ cursor, lượt sau đi tiếp) và làm từ khoá khác. Hashtag "để đó" _MAX_STALL_ROUNDS lượt liền thì coi là đã hết.
+# 16/10/2026). Để từ khoá đó chờ rồi gọi lại đúng cursor, lần chờ thứ n = n x _EMPTY_RETRY_SECONDS (3, 6, 9 phút), tối
+# đa _EMPTY_RETRIES lần; vẫn rỗng thì để đó (giữ cursor, lượt sau đi tiếp) và làm từ khoá khác. Hashtag "để đó" _MAX_STALL_ROUNDS lượt liền thì coi là đã hết.
 _EMPTY_RETRY_SECONDS = 180.0
 _EMPTY_RETRIES = 3
 _MAX_STALL_ROUNDS = 3
@@ -991,7 +991,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 empty_tries[kw_id] = empty_tries.get(kw_id, 0) + 1
                 if empty_tries[kw_id] <= _EMPTY_RETRIES:
                     stats["empty_retries"] = int(stats.get("empty_retries") or 0) + 1
-                    return _EMPTY_RETRY_SECONDS
+                    return _EMPTY_RETRY_SECONDS * empty_tries[kw_id]
                 if next_cursor is None:
                     # Vẫn rỗng: để đó (giữ cursor, lượt sau gọi lại); _MAX_STALL_ROUNDS lượt liền thì coi là đã hết.
                     entry["stalls"] = int(entry.get("stalls") or 0) + 1
