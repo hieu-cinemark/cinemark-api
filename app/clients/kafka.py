@@ -144,7 +144,9 @@ async def publish_crawl_request(
             value["end_date"] = end_date.isoformat()
         if recent_post:
             value["recent_post"] = True
-    elif start_date is not None or end_date is not None:
+    elif platform == "threads" and recent_post:
+        value["recent_post"] = True  # spider-hub: tab "Gần đây" của Threads
+    if platform != "facebook" and (start_date is not None or end_date is not None):
         logger.info(
             "crawl_request_dates_dropped",
             platform=platform,

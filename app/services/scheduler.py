@@ -96,7 +96,15 @@ def _spawn(coro) -> None:
 NURTURE_PLATFORMS = {"facebook", "threads", "tiktok"}
 
 
-async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurture_after: bool = False) -> None:
+# Lượt cào sau trong ngày (không phải giờ đầu tiên của lịch) với FB/Threads chỉ lấy bài mới nhất ("Bài viết gần đây" /
+# tab "Gần đây") - lượt đầu đã đào sâu theo độ liên quan; kết quả kiểu đó lặp lại giữa các lượt (2026-10-16), còn xếp
+# theo thời gian thì ra tập bài khác và bắt được bài mới đăng trong ngày.
+RECENT_LATER_SLOT_PLATFORMS = {"facebook", "threads"}
+
+
+async def _trigger_platform(
+    platform: str, *, nurture_before: bool = False, nurture_after: bool = False, recent: bool = False
+) -> None:
     # Cùng topic Kafka và consumer theo nền tảng với crawl, nên nurture publish trước thì
     # thực sự chạy xong rồi mới tới các lượt crawl từ khoá phía sau; publish sau cùng thì
     # nó chạy sau khi chúng xong hết.
@@ -115,7 +123,11 @@ async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurt
         keywords, low_pages = await plan_keyword_crawl(platform, keywords)
         for keyword in keywords:
             ok = await publish_crawl_request(
-                platform=platform, keyword=keyword["keyword"], keyword_id=keyword["id"], max_pages=low_pages.get(keyword["id"])
+                platform=platform,
+                keyword=keyword["keyword"],
+                keyword_id=keyword["id"],
+                max_pages=low_pages.get(keyword["id"]),
+                recent_post=recent,
             )
             if ok:
                 published += 1
@@ -130,6 +142,7 @@ async def _trigger_platform(platform: str, *, nurture_before: bool = False, nurt
             platform=platform,
             requested=len(keywords),
             published=published,
+            recent=recent,
             telegram=True,
         )
 
@@ -181,11 +194,13 @@ async def _tick() -> None:
         logger.info("scheduled_crawl_firing", platform=platform, run_time=due[0], fired_at=current_hm)
         # Không await tại chỗ - một lần publish Kafka hoặc query D1 chậm cho một nền tảng không
         # được làm trễ việc kiểm tra (hoặc bắn) lịch của mọi nền tảng khác trong cùng lượt.
+        slots = parse_run_times(sched["run_time"])
         _spawn(
             _trigger_platform(
                 platform,
                 nurture_before=bool(sched.get("nurture_before")),
                 nurture_after=bool(sched.get("nurture_after")),
+                recent=platform in RECENT_LATER_SLOT_PLATFORMS and len(slots) > 1 and due[0] != slots[0],
             )
         )
 
