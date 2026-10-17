@@ -422,7 +422,9 @@ def film_context_reason(
     movie = movie or {}
     tags = _hashtags(content)
     for key in ("director", "cast") if allow_names else ():
-        for name in re.split(r"[,;/|]", str(movie.get(key) or "")):
+        # Tách cả " và " / " and " / "&": đạo diễn "Khương Ngọc và Tấn Hoàng Thông" trước 17/10/2026 thành một tên dài
+        # không bao giờ khớp. Cast lưu dạng JSON ('["Minh Hằng", ...]') - dấu ngoặc/nháy bị normalize_title bỏ đi.
+        for name in re.split(r"[,;/|&\[\]\n]|\s+(?:và|and)\s+", str(movie.get(key) or "")):
             folded = normalize_title(name)
             # Tên một chữ quá dễ trùng ("Hiếu", "Linh") - chỉ tin tên từ hai chữ trở lên.
             if len(folded.split()) >= 2 and (_contains_phrase(text, folded) or _squash(folded) in tags):

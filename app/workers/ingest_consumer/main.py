@@ -360,11 +360,11 @@ async def handle_post(payload: dict[str, Any]) -> None:
         relevance_label = verdict["label"]
         relevance_confidence = verdict["confidence"]
     if relevance_label == "not_related":
-        # Quyết định được ghi qua _drop() -> topic ingest_decisions -> lake
-        # (bronze/entity=decisions/). Khôi phục một nhãn sai bằng cách phát lại NDJSON trong
-        # lake, không phải từ D1.
+        # Từ 17/10/2026 LƯU nhưng ẩn (nhãn not_related) thay vì bỏ: bộ phân loại loại nhầm khá nhiều bài thật (vd. "Xem QUỶ
+        # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/relabel_full_title.py...); job
+        # dọn bài not_related (app/services/cleanup.py) đã tắt trong Settings để không xoá chúng.
         logger.info(
-            "post_dropped_irrelevant",
+            "post_hidden_irrelevant",
             platform=platform,
             post_id=post_id,
             keyword_id=keyword_id,
@@ -372,13 +372,28 @@ async def handle_post(payload: dict[str, Any]) -> None:
             confidence=relevance_confidence,
             reason=verdict["reason"],
         )
-        await _drop(
+        ok = await persist_post(
+            movie_id=keyword["movie_id"],
+            keyword_id=keyword_id,
+            keyword=keyword["keyword"],
+            platform=platform,
+            draft=draft,
+            ai_relevant=False,
+            relevance_label="not_related",
+            relevance_confidence=relevance_confidence,
+        )
+        if not ok:
+            await _note_drop(platform, "d1_write_failed", post_id=post_id)
+            await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
+            return
+        await _decide(
             platform=platform,
             post_id=post_id,
-            reason="kira_irrelevant",
             keyword_id=keyword_id,
+            decision="kept",
+            reason="kira_not_related_hidden",
             confidence=relevance_confidence,
-            kira_reason=verdict["reason"],
+            has_keyword=has_keyword,
         )
         return
     # Bài chỉ nối với phim bằng hashtag nhét vào nội dung khác ("... anh hùng💕 #traibuonnguoi #fyp"): Jev hay gán

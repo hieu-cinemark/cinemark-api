@@ -311,3 +311,10 @@ def test_full_title_ignores_unnumbered_series_head():
 
     assert not mentions_full_title("#thamtukien cinetour Cần Thơ", "Thám Tử Kiên: Lời Nguyền Hoàng Kim")
     assert not mentions_full_title("Shaun the Sheep hay quá", "Shaun the Sheep: “Quái Lạ” Ghé Nhà")
+
+
+def test_director_split_on_va():
+    from app.services.relevance_rules import film_context_reason
+
+    movie = {"title": "Lên Hương", "director": "Khương Ngọc và Tấn Hoàng Thông", "cast": '["Thu Trang"]'}
+    assert film_context_reason("Coi hài mà cũng buồn nữa #LenHuong #KhuongNgoc", movie) == "director"
