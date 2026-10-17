@@ -276,10 +276,38 @@ def test_full_title_lifts_uncertain_for_long_titles():
     text = "ai đang lăn tăn tối nay coi gì thì Bóng Ma Nhà Hát chiếu rồi đó, t vừa coi suất chiều"
     assert mentions_full_title(text, movie["title"])
     assert mentions_full_title("#BongMaNhaHat hay", movie["title"])
-    assert resolve_relevance("uncertain", text, movie, has_keyword=True, strict=False) == (True, "related", "full_title")
+    assert resolve_relevance("uncertain", text, movie, has_keyword=True, strict=False) == (
+        True,
+        "related",
+        "full_title",
+    )
     # tên ngắn (trùng từ thường ngày) và phim tên chung chung thì không nâng
     assert not mentions_full_title("bình yên đến lạ #memin", "Mẹ Mìn")
-    assert resolve_relevance(
-        "uncertain", "Cộng, Trừ, Nhân, Chia có đủ", {"title": "Cộng Trừ Nhân Chia"}, has_keyword=True, strict=False,
-        full_title_rule=False,
-    )[0] is False
+    assert (
+        resolve_relevance(
+            "uncertain",
+            "Cộng, Trừ, Nhân, Chia có đủ",
+            {"title": "Cộng Trừ Nhân Chia"},
+            has_keyword=True,
+            strict=False,
+            full_title_rule=False,
+        )[0]
+        is False
+    )
+
+
+def test_full_title_accepts_numbered_head_before_colon():
+    from app.services.relevance_rules import mentions_full_title
+
+    title = "QUỶ ĂN TẠNG 4: HỔ TINH (Tee Yod)"
+    assert mentions_full_title("Xem QUỶ ĂN TẠNG 4 chỉ từ 40.000Đ/vé tại App CGV", title)
+    assert mentions_full_title("đi xem #QuyAnTang4 thôi", title)
+    assert not mentions_full_title("quỷ ăn tạng 3 xem lại vẫn sợ", title)
+    assert not mentions_full_title("Quỷ Ăn Tạng 40 năm trước", title)
+
+
+def test_full_title_ignores_unnumbered_series_head():
+    from app.services.relevance_rules import mentions_full_title
+
+    assert not mentions_full_title("#thamtukien cinetour Cần Thơ", "Thám Tử Kiên: Lời Nguyền Hoàng Kim")
+    assert not mentions_full_title("Shaun the Sheep hay quá", "Shaun the Sheep: “Quái Lạ” Ghé Nhà")

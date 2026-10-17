@@ -490,13 +490,31 @@ def _strong_phrase_near_title(tokens: list[str], title: list[str]) -> bool:
 FULL_TITLE_MIN_WORDS = 3
 
 
+def full_title_variants(title: str | None) -> list[str]:
+    """Các dạng tên phim đủ đặc trưng để quy tắc full_title chấp nhận (đã bỏ dấu, viết liền):
+    - cả tên, khi từ FULL_TITLE_MIN_WORDS chữ trở lên;
+    - phần trước dấu ":" / "(" khi phần đó có số phần phim - bài thường chỉ ghi "Quỷ Ăn Tạng 4" cho "QUỶ ĂN TẠNG 4: HỔ
+      TINH (Tee Yod)" (17/10/2026: hàng trăm bài như "Xem QUỶ ĂN TẠNG 4 chỉ từ 40.000Đ/vé" bị ẩn). Phần trước dấu ":"
+      KHÔNG có số ("Thám Tử Kiên", "Shaun the Sheep") là tên loạt phim - bài phần cũ - nên không tính."""
+    raw = str(title or "")
+    variants: list[str] = []
+    words = normalize_title(raw).split()
+    if len(words) >= FULL_TITLE_MIN_WORDS:
+        variants.append("".join(words))
+    head = normalize_title(re.split(r"[:(（]", raw, maxsplit=1)[0]).split()
+    if len(head) >= 2 and _SEQUEL_DIGIT_RE.search(" ".join(head)):
+        squashed = "".join(head)
+        if squashed not in variants:
+            variants.append(squashed)
+    return variants
+
+
 def mentions_full_title(content: str | None, title: str | None) -> bool:
-    """Bài có đủ tên phim (bỏ dấu/hoa thường/khoảng trắng/dấu câu) và tên dài từ FULL_TITLE_MIN_WORDS chữ - tên ngắn
-    ("Mẹ Mìn", "Huyết Thống", "Loạn Thế") trùng từ ngữ thường ngày nên không tính."""
-    words = normalize_title(title).split()
-    if len(words) < FULL_TITLE_MIN_WORDS:
-        return False
-    return _squash("".join(words)) in _squash(normalize_title(content))
+    """Bài có đủ tên phim (bỏ dấu/hoa thường/khoảng trắng/dấu câu) - xem full_title_variants. Tên ngắn ("Mẹ Mìn", "Huyết
+    Thống", "Loạn Thế") trùng từ ngữ thường ngày nên không tính. Tên kết thúc bằng số không khớp khi ngay sau là chữ số
+    khác ("quyantang4" không khớp "quyantang40")."""
+    text = _squash(normalize_title(content))
+    return any(re.search(re.escape(_squash(variant)) + r"(?!\d)", text) for variant in full_title_variants(title))
 
 
 def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None], title: str | None) -> bool:
