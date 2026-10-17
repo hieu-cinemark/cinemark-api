@@ -417,6 +417,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             hashtag_only=hashtag_only,
             confidence=relevance_confidence,
             full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
+            posted_at=draft.get("posted_at"),
         )
     no_film_context = ai_relevant is False and context != "hashtag_only"
     ok = await persist_post(

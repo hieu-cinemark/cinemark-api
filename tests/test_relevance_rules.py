@@ -318,3 +318,17 @@ def test_director_split_on_va():
 
     movie = {"title": "Lên Hương", "director": "Khương Ngọc và Tấn Hoàng Thông", "cast": '["Thu Trang"]'}
     assert film_context_reason("Coi hài mà cũng buồn nữa #LenHuong #KhuongNgoc", movie) == "director"
+
+
+def test_release_window_lifts_series_name_with_cinema_words_near_release():
+    from app.services.relevance_rules import franchise_names, in_release_window
+
+    shaun = {"title": "Shaun the Sheep: “Quái Lạ” Ghé Nhà", "released_at": "2026-10-16"}
+    text = "SHAUN THE SHEEP hôm nay có buổi ra mắt cực vui tại Vạn Hạnh Mall. Phim có suất sớm cuối tuần này"
+    assert "shaun the sheep" in franchise_names(shaun["title"])
+    assert in_release_window(text, shaun, "2026-10-12T10:00:00")
+    assert not in_release_window(text, shaun, "2025-06-01T10:00:00")  # video cũ
+    assert not in_release_window("Shaun the Sheep funny clip #cartoon", shaun, "2026-10-17")  # không có từ rạp
+    tee = {"title": "QUỶ ĂN TẠNG 4: HỔ TINH (Tee Yod)", "released_at": "2026-10-09"}
+    assert "tee yod" in franchise_names(tee["title"])
+    assert in_release_window("buổi ra mắt phim Tee Yod 4 #premiere", tee, "2026-10-08")

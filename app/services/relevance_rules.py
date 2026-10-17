@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
+from datetime import date, timedelta
 
 _STRIP_RE = re.compile(r"(?:#|@)\S+|https?://\S+|www\.\S+")
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
@@ -546,6 +547,76 @@ def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None
 HASHTAG_ONLY_MIN_CONFIDENCE = 0.9
 
 
+# --- Quy tắc "quanh ngày công chiếu" (release_window, 17/10/2026) ---
+# Bài nhắc TÊN LOẠT PHIM (tên bỏ số phần / phần trước ":" / tên trong ngoặc: "Út Lan", "Shaun the Sheep", "Tee Yod", "Lên
+# Hương") kèm từ ngữ rạp chiếu, đăng trong khoảng quanh ngày công chiếu, là về phim đang chiếu - kể cả khi tên là cụm từ
+# thường ngày hay trùng tên phần trước. Bài phần cũ trong danh sách hashtag phần lớn là video đăng từ năm trước nên ngày đăng
+# tách được chúng. Đo trên bài ẩn 17/10/2026: chỉ dùng ngày đăng thì nâng 1.695 bài lẫn nhiều rác; ngày + tên loạt + từ rạp
+# còn khoảng 190 bài, phần lớn đúng ("SHAUN THE SHEEP hôm nay ra mắt... suất sớm", "#lenhuong đi coi về").
+RELEASE_WINDOW_BEFORE_DAYS = 7
+RELEASE_WINDOW_AFTER_DAYS = 60
+_RELEASE_CONTEXT_PHRASES = (
+    *_STRONG_FILM_PHRASES,
+    "cinetour",
+    "tham do",
+    "di xem",
+    "di coi",
+    "xem phim",
+    "coi phim",
+    "phim hay",
+    "dang chieu",
+    "ra mat",
+    "suat som",
+    "showcase",
+    "review phim",
+    "gala",
+)
+
+
+def franchise_names(title: str | None) -> list[str]:
+    """Tên loạt phim từ tên phim (đã bỏ dấu, bỏ số phần): cả tên, phần trước ":" / "(", và tên trong ngoặc - mỗi tên từ
+    hai chữ và năm ký tự viết liền trở lên."""
+    raw = str(title or "")
+    names: list[str] = []
+    for part in [raw, re.split(r"[:(（]", raw, maxsplit=1)[0], *re.findall(r"[(（]([^)）]+)[)）]", raw)]:
+        words = [word for word in normalize_title(part).split() if not word.isdigit()]
+        name = " ".join(words)
+        if len(words) >= 2 and len(_squash(name)) >= 5 and name not in names:
+            names.append(name)
+    return names
+
+
+def _to_date(value: object) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else None
+    except ValueError:
+        return None
+
+
+def in_release_window(content: str | None, movie: dict | None, posted_at: object) -> bool:
+    """Xem phần chú thích RELEASE_WINDOW_*: đăng trong [công chiếu - BEFORE, công chiếu + AFTER] ngày, nhắc tên loạt phim
+    và có từ ngữ rạp chiếu."""
+    movie = movie or {}
+    released, posted = _to_date(movie.get("released_at")), _to_date(posted_at)
+    if not released or not posted:
+        return False
+    if (
+        not released - timedelta(days=RELEASE_WINDOW_BEFORE_DAYS)
+        <= posted
+        <= released + timedelta(days=RELEASE_WINDOW_AFTER_DAYS)
+    ):
+        return False
+    text = normalize_title(content)
+    if not text:
+        return False
+    squashed = _squash(text)
+    if not any(
+        _contains_phrase(text, name) or _squash(name) in squashed for name in franchise_names(movie.get("title"))
+    ):
+        return False
+    return any(_contains_phrase(text, phrase) for phrase in _RELEASE_CONTEXT_PHRASES)
+
+
 def resolve_relevance(
     label: str | None,
     content: str | None,
@@ -556,6 +627,7 @@ def resolve_relevance(
     hashtag_only: bool = False,
     confidence: float | None = None,
     full_title_rule: bool = True,
+    posted_at: object = None,
 ) -> tuple[bool | None, str | None, str | None]:
     """Nhãn Kira (related/uncertain hoặc None khi Kira không kết luận - "not_related" do bên gọi xử lý trước)
     -> (ai_relevant, relevance_label, context). Dùng chung cho ingest consumer và
@@ -584,6 +656,8 @@ def resolve_relevance(
         # là về phim - "t vừa coi suất chiều Bóng Ma Nhà Hát", "spotlight của Út Lan 2..."); phim tên là cụm từ thông
         # dụng thì bên gọi truyền full_title_rule=False (settings.ambiguous_title_movie_slugs).
         return True, "related", "full_title"
+    if not strict and full_title_rule and in_release_window(content, movie, posted_at):
+        return True, "related", "release_window"
     if has_keyword or label == "uncertain":
         return False, label or "uncertain", None
     return None, label, None

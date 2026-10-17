@@ -32,7 +32,7 @@ CHUNK = 90  # id mỗi câu UPDATE (D1 tối đa 100 tham số)
 
 async def load_movies() -> dict[str, dict]:
     """Cùng dữ liệu phim mà ingest dùng (app/workers/ingest_consumer/main.py:_tracked_movies)."""
-    rows = await d1_query('SELECT id, title, slug, director, "cast" FROM movies', quiet=True) or []
+    rows = await d1_query('SELECT id, title, slug, director, "cast", released_at FROM movies', quiet=True) or []
     movies = {r["id"]: {**r, "keywords": []} for r in rows if r.get("title")}
     for row in await d1_query("SELECT movie_id, keyword FROM keywords WHERE enabled = 1", quiet=True) or []:
         if row["movie_id"] in movies and row.get("keyword"):
@@ -40,7 +40,7 @@ async def load_movies() -> dict[str, dict]:
     return movies
 
 
-def lift_reason(content: str | None, movie: dict) -> str | None:
+def lift_reason(content: str | None, movie: dict, posted_at: object = None) -> str | None:
     slug = movie.get("slug")
     relevant, _, context = resolve_relevance(
         "uncertain",
@@ -49,13 +49,14 @@ def lift_reason(content: str | None, movie: dict) -> str | None:
         has_keyword=False,
         strict=slug in settings.strict_relevance_movies,
         full_title_rule=slug not in settings.ambiguous_title_movies,
+        posted_at=posted_at,
     )
     return context if relevant else None
 
 
 # Lý do đủ chính xác để nâng hàng loạt (đo 17/10/2026 trên 225 bài ẩn): "cast" (tin đời tư diễn viên, diễn viên đóng
 # nhiều phim) và "keyword_hashtag" (#teeyod2/#teeyod3 cho Tee Yod 4, hashtag quảng cáo thuốc cho Huyết Thống) sai nhiều.
-DEFAULT_REASONS = "director,title_hashtag,phim_title,strong_near_title,quoted_title,full_title"
+DEFAULT_REASONS = "director,title_hashtag,phim_title,strong_near_title,quoted_title,full_title,release_window"
 
 
 async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: set[str]) -> None:
@@ -69,7 +70,7 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
     last_id = ""
     while True:
         rows = await d1_query(
-            f"SELECT p.id, p.platform, p.movie_id, p.content FROM posts p "
+            f"SELECT p.id, p.platform, p.movie_id, p.content, p.posted_at FROM posts p "
             f"WHERE p.scraped_at >= ? AND p.id > ? AND NOT {RELEVANT_POST_SQL} ORDER BY p.id LIMIT ?",
             [since, last_id, PAGE],
             timeout=120.0,
@@ -80,7 +81,7 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
         lift: list[str] = []
         for row in rows:
             movie = movies.get(row["movie_id"])
-            reason = lift_reason(row["content"], movie) if movie else None
+            reason = lift_reason(row["content"], movie, row["posted_at"]) if movie else None
             if not reason or reason not in allowed:
                 continue
             lift.append(row["id"])
