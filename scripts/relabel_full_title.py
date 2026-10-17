@@ -38,7 +38,7 @@ async def run(since: str, dry_run: bool) -> None:
     while True:
         rows = await d1_query(
             f"SELECT p.id, p.platform, p.movie_id, p.content FROM posts p "
-            f"WHERE p.scraped_at >= ? AND p.id > ? AND NOT {RELEVANT_POST_SQL} ORDER BY p.id LIMIT ?",
+            f"WHERE p.scraped_at >= ? AND p.id > ? AND NOT COALESCE({RELEVANT_POST_SQL}, 0) ORDER BY p.id LIMIT ?",
             [since, last_id, PAGE],
             timeout=120.0,
         )

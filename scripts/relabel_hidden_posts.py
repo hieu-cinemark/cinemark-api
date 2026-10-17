@@ -56,7 +56,7 @@ def lift_reason(content: str | None, movie: dict, posted_at: object = None) -> s
 
 # Lý do đủ chính xác để nâng hàng loạt (đo 17/10/2026 trên 225 bài ẩn): "cast" (tin đời tư diễn viên, diễn viên đóng
 # nhiều phim) và "keyword_hashtag" (#teeyod2/#teeyod3 cho Tee Yod 4, hashtag quảng cáo thuốc cho Huyết Thống) sai nhiều.
-DEFAULT_REASONS = "director,title_hashtag,phim_title,strong_near_title,quoted_title,full_title,release_window"
+DEFAULT_REASONS = "title_hashtag,phim_title,strong_near_title,quoted_title,full_title,release_window"
 
 
 async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: set[str]) -> None:
@@ -71,7 +71,7 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
     while True:
         rows = await d1_query(
             f"SELECT p.id, p.platform, p.movie_id, p.content, p.posted_at FROM posts p "
-            f"WHERE p.scraped_at >= ? AND p.id > ? AND NOT {RELEVANT_POST_SQL} ORDER BY p.id LIMIT ?",
+            f"WHERE p.scraped_at >= ? AND p.id > ? AND NOT COALESCE({RELEVANT_POST_SQL}, 0) ORDER BY p.id LIMIT ?",
             [since, last_id, PAGE],
             timeout=120.0,
         )
