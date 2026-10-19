@@ -1,0 +1,11 @@
+[Unit]
+Description=Run cinemark-visobert every 3 hours
+
+[Timer]
+# every 3 hours at :20, with up to 5 min jitter; runs a missed slot after a reboot
+OnCalendar=*-*-* 00/3:20:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
