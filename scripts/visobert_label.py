@@ -276,7 +276,9 @@ if __name__ == "__main__":
     parser.add_argument("--table", choices=("comments", "posts"), default="comments")
     parser.add_argument("--model", help="đường dẫn/tên model (mặc định models/visobert-cinemark)")
     parser.add_argument("--eval", type=int, metavar="N", help="so N dòng đã có nhãn với ViSoBERT, không ghi gì")
-    parser.add_argument("--min-confidence", type=float, default=0.85, help="chỉ ghi khi model chắc từ mức này (mặc định 0.85: khớp ~86%% với nhãn Jev/Kira, phủ ~56%%)")
+    # 0.7 từ 19/10/2026 (model fine-tune lại trên 94k nhãn): trên 3.000 nhãn Jev/Kira model chưa thấy, 0.7 phủ 94.9% khớp
+    # 96.6% - ngang model cũ ở 0.85 (phủ 84.5%, khớp 97.0%).
+    parser.add_argument("--min-confidence", type=float, default=0.7, help="chỉ ghi khi model chắc từ mức này (mặc định 0.7)")
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--days", type=float, help="chỉ dòng thu thập trong N ngày gần nhất")
     parser.add_argument("--platform", help="chỉ một nền tảng (facebook/threads/tiktok)")

@@ -41,7 +41,8 @@ async def download() -> list[dict[str, str]]:
         page = await d1_query(
             "SELECT id, message, sentiment FROM comments WHERE sentiment IN ('positive','negative','neutral') "
             f"AND length(trim(message)) >= {MIN_CONTENT_LENGTH} AND id > ? "
-            "AND COALESCE(sentiment_source, '') != 'visobert' ORDER BY id LIMIT ?",
+            # Không học lại nhãn của chính ViSoBERT, cũng không học nhãn luật (sticker/emoji/tag - rule_sentiment).
+            "AND COALESCE(sentiment_source, '') NOT IN ('visobert', 'rule') ORDER BY id LIMIT ?",
             [last_id, FETCH_PAGE],
             timeout=120.0,
         )
@@ -64,13 +65,21 @@ async def ensure_source_column() -> None:
         await d1_query("ALTER TABLE comments ADD COLUMN sentiment_confidence REAL", quiet=True)
 
 
-def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
+def train(rows: list[dict[str, str]], args: argparse.Namespace, unseen_ids: set[str] | None = None) -> None:
     import torch
     from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast
 
     rng = random.Random(42)
     rng.shuffle(rows)
-    eval_rows, pool = rows[: args.eval_size], rows[args.eval_size :]
+    if unseen_ids:
+        # Bộ kiểm tra chỉ gồm bình luận model hiện tại chưa từng thấy (gắn nhãn sau lần huấn luyện trước) - để so model
+        # cũ và mới công bằng trên cùng một bộ.
+        unseen = [r for r in rows if r["id"] in unseen_ids]
+        eval_rows = unseen[: args.eval_size]
+        eval_ids = {r["id"] for r in eval_rows}
+        pool = [r for r in rows if r["id"] not in eval_ids]
+    else:
+        eval_rows, pool = rows[: args.eval_size], rows[args.eval_size :]
     by_label: dict[str, list[dict[str, str]]] = {label: [] for label in LABELS}
     for row in pool:
         by_label[row["label"]].append(row)
@@ -95,7 +104,7 @@ def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
             ).to(device)
             yield enc, torch.tensor([label_id[r["label"]] for r in chunk], device=device)
 
-    def evaluate() -> float:
+    def evaluate(model=model) -> float:
         model.eval()
         preds: list[int] = []
         with torch.inference_mode():
@@ -112,6 +121,11 @@ def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
         model.train()
         return acc
 
+    if OUT_DIR.exists() and args.out != OUT_DIR:
+        print(f"model hiện tại ({OUT_DIR.name}) trên cùng bộ kiểm tra:")
+        current = AutoModelForSequenceClassification.from_pretrained(OUT_DIR).to(device)
+        evaluate(current)
+        del current
     print("trước fine-tune:")
     evaluate()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
@@ -136,20 +150,26 @@ def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
                 print(f"  epoch {epoch + 1} bước {step}/{steps} loss {loss.item():.3f} · còn ~{(steps - step) / rate / 60:.0f} phút", flush=True)
         print(f"sau epoch {epoch + 1}:")
         evaluate()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    model.save_pretrained(OUT_DIR)
-    tokenizer.save_pretrained(OUT_DIR)
-    print(f"đã lưu {OUT_DIR}")
+    args.out.mkdir(parents=True, exist_ok=True)
+    model.save_pretrained(args.out)
+    tokenizer.save_pretrained(args.out)
+    print(f"đã lưu {args.out}")
 
 
 async def main(args: argparse.Namespace) -> None:
     await ensure_source_column()
+    previous_ids: set[str] = set()
+    if DATA_FILE.exists():
+        previous_ids = {json.loads(line)["id"] for line in DATA_FILE.read_text(encoding="utf-8").split("\n") if line}
     if args.refresh_data or not DATA_FILE.exists():
         rows = await download()
     else:
         rows = [json.loads(line) for line in DATA_FILE.read_text(encoding="utf-8").split("\n") if line]
     print(f"{len(rows)} bình luận có nhãn: {dict(Counter(r['label'] for r in rows))}")
-    await asyncio.to_thread(train, rows, args)
+    unseen = {r["id"] for r in rows} - previous_ids if args.refresh_data and previous_ids else None
+    if unseen is not None:
+        print(f"{len(unseen)} bình luận mới gắn nhãn sau lần tải trước (bộ kiểm tra lấy từ đây)")
+    await asyncio.to_thread(train, rows, args, unseen)
 
 
 if __name__ == "__main__":
@@ -160,4 +180,5 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--refresh-data", action="store_true")
+    parser.add_argument("--out", type=Path, default=OUT_DIR, help="thư mục lưu model (mặc định ghi đè models/visobert-cinemark)")
     asyncio.run(main(parser.parse_args()))
