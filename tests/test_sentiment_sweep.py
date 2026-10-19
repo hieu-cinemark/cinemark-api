@@ -90,3 +90,20 @@ async def test_insights_only_keeps_existing_sentiment(monkeypatch, d1) -> None:
     assert "sentiment = CASE" not in update_sql and "sentiment_classified_at" not in update_sql
     assert "AND +insights_classified_at IS NULL" in update_sql
     assert result["classified"] == 5
+
+
+async def test_rule_labels_marked_with_rule_source(monkeypatch, d1) -> None:
+    labels = {
+        "c0": {"sentiment": "positive", "aspects": [], "stage": "khac", "source": "rule"},
+        "c1": {"sentiment": "negative", "aspects": ["dien_xuat:-"], "stage": "da_xem"},
+    }
+    assert await sentiment_sweep._save(labels) == 2
+    assert len(d1) == 2
+    rule_sql, rule_params = d1[1]
+    assert "sentiment_source = 'rule'" in rule_sql and rule_params == ["c0"]
+
+
+async def test_no_rule_update_without_rule_labels(monkeypatch, d1) -> None:
+    labels = {"c1": {"sentiment": "negative", "aspects": [], "stage": "da_xem"}}
+    await sentiment_sweep._save(labels)
+    assert len(d1) == 1

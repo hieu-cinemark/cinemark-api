@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
@@ -47,6 +47,7 @@ class CommentLabel(TypedDict):
     sentiment: str
     aspects: list[str]  # "key:+" / "key:-", key trong app.ai.aspects.ASPECTS
     stage: str  # key trong app.ai.aspects.STAGES
+    source: NotRequired[str]  # "rule": gán bằng rule_sentiment (comment không có nội dung) - ghi vào sentiment_source
 
 
 # 10 thay vì 25 (2026-10-06): khi Kira tải cao, một lô 25 comment mất ~170-180s (model suy luận ẩn) và gateway
@@ -156,7 +157,7 @@ async def classify_comments(
     rest = []
     for i, m in todo:
         if (sentiment := rule_sentiment(m)) is not None:
-            labels[i] = {"sentiment": sentiment, "aspects": [], "stage": "khac"}
+            labels[i] = {"sentiment": sentiment, "aspects": [], "stage": "khac", "source": "rule"}
             routed["rule"] += 1
         else:
             rest.append((i, m))

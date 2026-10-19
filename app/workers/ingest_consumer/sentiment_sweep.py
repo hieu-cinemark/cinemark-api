@@ -78,6 +78,13 @@ async def _save(labels: dict[str, CommentLabel], *, insights_only: bool = False,
     if result is None:
         logger.warning("comment_sentiment_save_failed", count=len(ids), insights_only=insights_only)
         return 0
+    # Nhãn của comment không có nội dung (sticker/emoji/tag - rule_sentiment): ghi nguồn "rule" để dashboard bỏ khỏi tỉ
+    # lệ cảm xúc. Câu riêng, chỉ vài id, để câu UPDATE chính không vượt 100 tham số của D1.
+    rule_ids = [cid for cid, label in labels.items() if label.get("source") == "rule"]
+    if rule_ids and not insights_only and table == "comments":
+        await d1_query(
+            f"UPDATE comments SET sentiment_source = 'rule' WHERE id IN ({','.join('?' * len(rule_ids))})", rule_ids
+        )
     return len(ids)
 
 

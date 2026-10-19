@@ -139,7 +139,7 @@ async def test_aspects_and_stage_are_parsed_and_unknown_keys_dropped() -> None:
         {"sentiment": "negative", "aspects": ["kich_ban:-", "dien_xuat:+"], "stage": "da_xem"},
         {"sentiment": "positive", "aspects": ["quang_ba:+"], "stage": "hong"},
         {"sentiment": "neutral", "aspects": [], "stage": "khac"},  # thiếu aspects/stage -> rỗng/khác, vẫn giữ sentiment
-        {"sentiment": "neutral", "aspects": [], "stage": "khac"},  # chỉ tag bạn bè: luật, không gọi Kira
+        {"sentiment": "neutral", "aspects": [], "stage": "khac", "source": "rule"},  # chỉ tag bạn bè: luật, không gọi Kira
     ]
     prompt = mock_call.await_args.kwargs["user_prompt"]
     assert '"dien_xuat"' in prompt and '"da_xem"' in prompt  # danh sách khía cạnh/giai đoạn nằm trong user prompt
