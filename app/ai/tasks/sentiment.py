@@ -202,6 +202,3 @@ async def classify_sentiments(messages: list[str | None]) -> list[str | None]:
     return [label["sentiment"] if label else None for label in await classify_comments(messages)]
 
 
-async def classify_sentiment(message: str | None) -> str | None:
-    """Hàm tiện ích phân loại một comment, bọc classify_sentiments()."""
-    return (await classify_sentiments([message]))[0]

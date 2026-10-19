@@ -37,20 +37,6 @@ class NotFoundError(AppError):
     code = "not_found"
 
 
-class AuthenticationError(AppError):
-    """Thông tin xác thực bị thiếu, sai hoặc hết hạn."""
-
-    status_code = 401
-    code = "unauthorized"
-
-
-class AuthorizationError(AppError):
-    """Đã xác thực, nhưng không được phép làm việc này (sai scope/role)."""
-
-    status_code = 403
-    code = "forbidden"
-
-
 class ValidationError(AppError):
     """Request đúng định dạng nhưng vi phạm một quy tắc nghiệp vụ (khác với lỗi 422 của
     chính FastAPI/Pydantic cho body request sai định dạng)."""

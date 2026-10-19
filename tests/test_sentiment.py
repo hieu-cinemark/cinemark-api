@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.ai.tasks import sentiment
-from app.ai.tasks.sentiment import classify_comments, classify_sentiment, classify_sentiments
+from app.ai.tasks.sentiment import classify_comments, classify_sentiments
 
 
 @pytest.fixture(autouse=True)
@@ -100,14 +100,14 @@ async def test_bad_shape_fails_open() -> None:
 async def test_exception_fails_open() -> None:
     call, configured = _kira(RuntimeError("down"))
     with call, configured:
-        assert await classify_sentiment(LONG) is None
+        assert (await classify_sentiments([LONG]))[0] is None
 
 
 async def test_single_wrapper() -> None:
     call, configured = _kira(_reply("positive"))
     with call, configured:
-        assert await classify_sentiment(LONG) == "positive"
-    assert await classify_sentiment("ok") is None
+        assert (await classify_sentiments([LONG]))[0] == "positive"
+    assert (await classify_sentiments(["ok"]))[0] is None
 
 
 async def test_unnumbered_results_map_by_order_when_counts_match() -> None:

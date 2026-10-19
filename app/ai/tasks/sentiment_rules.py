@@ -87,29 +87,6 @@ def rule_sentiment(message: str | None) -> str | None:
 CACHE_TTL = 30 * 24 * 3600
 
 
-def _cache_key(message: str) -> str:
-    normalized = " ".join(message.lower().split())
-    return f"{REDIS_KEY_PREFIX}sentiment_cache:{hashlib.sha1(normalized.encode()).hexdigest()}"
-
-
-async def cached_labels(messages: list[str]) -> list[str | None]:
-    try:
-        values = await get_redis_client().mget([_cache_key(m) for m in messages])
-        return [v.decode() if isinstance(v, bytes) else v for v in values]
-    except Exception:  # noqa: BLE001 - Redis lỗi thì coi như cache trống
-        return [None] * len(messages)
-
-
-async def remember_labels(pairs: list[tuple[str, str]]) -> None:
-    try:
-        pipe = get_redis_client().pipeline()
-        for message, label in pairs:
-            pipe.set(_cache_key(message), label, ex=CACHE_TTL)
-        await pipe.execute()
-    except Exception as exc:  # noqa: BLE001 - không ghi được cache thì lần sau gọi Kira lại, không sao
-        logger.warning("sentiment_cache_write_failed", error=exc)
-
-
 # Nhãn đầy đủ (sentiment + aspects + stage) từ 2026-10-07 - key riêng, vì cache cũ ở trên chỉ có sentiment: dùng nó
 # thì comment trùng nội dung sẽ không bao giờ có khía cạnh.
 def _label_cache_key(message: str) -> str:

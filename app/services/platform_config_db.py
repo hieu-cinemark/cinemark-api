@@ -622,17 +622,6 @@ async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled
     return row  # type: ignore[return-value]
 
 
-async def mark_comment_crawl_schedule_triggered(platform: str, triggered_date: str) -> None:
-    """Lần ghi chống chạy lặp của chính scheduler.py - xem comment của cột
-    comment_crawl_schedules.last_triggered_date ở trên."""
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "UPDATE comment_crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
-            (triggered_date, platform),
-        )
-        await conn.commit()
-
-
 AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, updated_at"
 
 _ai_settings_ready = False

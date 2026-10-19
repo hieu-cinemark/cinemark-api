@@ -221,22 +221,6 @@ async def _movie_context_for_keyword(keyword_id: str) -> str | None:
 DEFAULT_COMMENTS_MAX_PAGES = 80
 
 
-async def publish_channel_videos_request(
-    *, username: str, max_pages: int | None = None, keyword_id: str | None = None
-) -> bool:
-    """Xếp hàng type=channel_videos cho spider tiktok_channel_videos của TikTok (lưới video
-    của một kênh @username). Handle nhập tự do - chưa có bảng "kênh theo dõi" trong D1."""
-    handle = username.lstrip("@").strip()
-    if not handle:
-        return False
-    payload: dict[str, Any] = {"username": handle, "run_id": str(uuid.uuid4())}
-    if max_pages is not None:
-        payload["max_pages"] = max_pages
-    if keyword_id:
-        payload["keyword_id"] = keyword_id
-    return await publish_action_request("tiktok", "channel_videos", payload)
-
-
 async def publish_comments_crawl_request(
     *,
     platform: str,
