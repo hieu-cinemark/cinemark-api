@@ -844,22 +844,25 @@ async def list_keywords(platform: str) -> list[dict[str, Any]]:
     return rows or []
 
 
-async def get_keyword(keyword_id: str, platform: str) -> dict[str, Any] | None:
+async def get_keyword(keyword_id: str, platform: str, *, include_disabled: bool = False) -> dict[str, Any] | None:
     """Một từ khoá đang bật theo id, trên nền tảng đã cho, join với cờ enabled của phim -
     giống những gì KeywordRepository.get() + tra phim của Postgres (đã xoá) từng làm cho
     nút kích hoạt "chạy một từ khoá". Tham số platform là bắt buộc, không phải tình cờ:
     mỗi nền tảng có router riêng (xem app/api/routes/facebook.py + platform_scraper.py)
     chỉ muốn từ khoá của chính nó - một keyword_id thuộc nền tảng khác không được âm thầm
-    khớp ở đây."""
+    khớp ở đây.
+
+    include_disabled=True (ingest): nhận cả từ khoá đã tắt - bài đang trên đường về khi keyword_yield/người dùng vừa tắt
+    từ khoá vẫn là bài thật của phim, trước đây bị bỏ với lý do unknown_keyword_id. Phim vẫn phải đang bật."""
     rows = await d1_query(
         """
         SELECT k.id, k.movie_id, k.platform, k.keyword,
                m.title AS movie_title, m.director AS movie_director,
                m.`cast` AS movie_cast, m.distributor AS movie_distributor
         FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE k.id = ? AND k.platform = ? AND k.enabled = 1 AND m.enabled = 1
+        WHERE k.id = ? AND k.platform = ? AND (k.enabled = 1 OR ?) AND m.enabled = 1
         """,
-        [keyword_id, platform],
+        [keyword_id, platform, 1 if include_disabled else 0],
     )
     return rows[0] if rows else None
 

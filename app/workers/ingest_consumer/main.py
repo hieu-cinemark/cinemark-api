@@ -248,7 +248,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         await _drop(platform=platform, post_id=post_id, reason="missing_keyword_id")
         return
 
-    keyword = await get_keyword(keyword_id, platform=platform)
+    keyword = await get_keyword(keyword_id, platform=platform, include_disabled=True)
     if keyword is None:
         logger.warning("post_unknown_keyword_id", platform=platform, keyword_id=keyword_id, post_id=post_id)
         await _note_drop(platform, "unknown_keyword_id", post_id=post_id, keyword_id=keyword_id)

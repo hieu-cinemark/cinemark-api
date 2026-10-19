@@ -37,9 +37,9 @@ def _kw(kid, movie="m1"):
 
 def test_pauses_junk_but_keeps_last_keyword_of_a_film(monkeypatch):
     yields = {
-        "junk": {"sample": 500, "ratio": 0.02},
-        "good": {"sample": 500, "ratio": 0.9},
-        "only": {"sample": 400, "ratio": 0.03},
+        "junk": {"sample": 500, "ratio": 0.02, "stored": 60},
+        "good": {"sample": 500, "ratio": 0.9, "stored": 450},
+        "only": {"sample": 400, "ratio": 0.03, "stored": 40},
     }
     keep, pages, writes, redis = _run(monkeypatch, yields, [_kw("junk"), _kw("good"), _kw("only", movie="m2")])
     assert [k["id"] for k in keep] == ["good", "only"]
@@ -49,10 +49,11 @@ def test_pauses_junk_but_keeps_last_keyword_of_a_film(monkeypatch):
 
 
 def test_low_yield_gets_fewer_pages_and_small_samples_are_left_alone(monkeypatch):
-    yields = {"low": {"sample": 300, "ratio": 0.25}, "tiny": {"sample": 20, "ratio": 0.0}}
+    yields = {"low": {"sample": 300, "ratio": 0.25, "stored": 80}, "tiny": {"sample": 20, "ratio": 0.0, "stored": 20}}
     keep, pages, writes, _ = _run(monkeypatch, yields, [_kw("low"), _kw("tiny")])
     assert len(keep) == 2 and writes == []
-    assert pages == {"low": ky.LOW_PAGES}
+    # "tiny" chưa đủ mẫu để tắt, nhưng ít bài -> chỉ vài trang
+    assert pages == {"low": ky.LOW_PAGES, "tiny": ky.LOW_VOLUME_PAGES}
 
 
 def test_new_keywords_are_not_judged(monkeypatch):
@@ -62,3 +63,25 @@ def test_new_keywords_are_not_judged(monkeypatch):
         monkeypatch, {"new": {"sample": 900, "ratio": 0.0}}, [_kw("new"), _kw("x")], created=datetime.now(tz=UTC).isoformat()
     )
     assert len(keep) == 2 and writes == [] and pages == {}
+
+
+def test_low_volume_keyword_gets_few_pages_even_if_relevant(monkeypatch):
+    yields = {"rare": {"sample": 200, "ratio": 0.9, "stored": 12}}
+    keep, pages, _, _ = _run(monkeypatch, yields, [_kw("rare")])
+    assert [k["id"] for k in keep] == ["rare"] and pages == {"rare": ky.LOW_VOLUME_PAGES}
+
+
+def test_zero_yield_keywords_only_crawled_on_their_turn(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    ids = [f"z{i}" for i in range(30)]
+    now = datetime.now(tz=UTC)
+    on_turn = {kid for kid in ids if ky._zero_yield_turn(kid, now)}
+    keep, pages, _, _ = _run(monkeypatch, {}, [_kw(kid) for kid in ids])
+    assert {k["id"] for k in keep} == on_turn
+    assert 0 < len(on_turn) < len(ids)
+    assert all(pages[kid] == ky.LOW_VOLUME_PAGES for kid in on_turn)
+    # mỗi từ khoá được cào đúng một lần trong ZERO_EVERY_DAYS ngày liên tiếp
+    for kid in ids:
+        turns = sum(ky._zero_yield_turn(kid, now + timedelta(days=d)) for d in range(ky.ZERO_EVERY_DAYS))
+        assert turns == 1

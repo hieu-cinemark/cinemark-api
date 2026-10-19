@@ -13,11 +13,16 @@ Mỗi lượt cào theo lịch (scheduler._trigger_platform) gọi plan_crawl:
   thấy được, bật lại tay được). Không tắt từ khoá cuối cùng còn bật của phim trên nền tảng đó - chỉ giảm trang;
 - hiệu quả < LOW_BELOW -> chỉ cào LOW_PAGES trang (trang đầu của tìm kiếm là phần tốt nhất);
 - còn lại / chưa đủ mẫu -> mặc định của spider.
+Từ khoá ÍT BÀI (19/10/2026: 76/150 từ khoá FB và 78/103 Threads ra <= 20 bài/tuần, 28 và 31 cái ra 0 bài) không bao giờ đủ
+MIN_SAMPLE nên trước đây luôn được cào đủ trang (FB: cả lượt quét 60 ngày, 16 khoảng) - tốn request của tài khoản mà gần
+như không có bài. Giờ: lưu < LOW_VOLUME_STORED bài trong WINDOW_DAYS ngày -> LOW_VOLUME_PAGES trang; 0 bài -> chỉ cào mỗi
+ZERO_EVERY_DAYS ngày một lần (mỗi từ khoá một ngày lệch nhau để rải tải).
 """
 
 from __future__ import annotations
 
 import json
+import zlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -36,6 +41,9 @@ LOW_BELOW = 0.40
 LOW_PAGES = 20
 # Từ khoá mới tạo chưa đủ ngày thì chưa đánh giá.
 MIN_AGE = timedelta(days=3)
+LOW_VOLUME_STORED = 30
+LOW_VOLUME_PAGES = 5
+ZERO_EVERY_DAYS = 3
 
 YIELD_KEY_TMPL = f"{REDIS_KEY_PREFIX}keyword_yield:{{keyword_id}}:{{kind}}"
 PAUSED_KEY = f"{REDIS_KEY_PREFIX}keyword_yield:paused"
@@ -140,6 +148,7 @@ async def plan_crawl(
 
     keep: list[dict[str, Any]] = []
     pages: dict[str, int] = {}
+    skipped_zero = 0
     redis = get_redis_client()
     for keyword in keywords:
         stats = yields.get(str(keyword["id"]))
@@ -148,7 +157,17 @@ async def plan_crawl(
             old_enough = now - (made if made.tzinfo else made.replace(tzinfo=UTC)) >= MIN_AGE
         except ValueError:
             old_enough = True
-        if not stats or stats["sample"] < MIN_SAMPLE or not old_enough:
+        if not old_enough:
+            keep.append(keyword)
+            continue
+        stored = stats["stored"] if stats else 0
+        if stored == 0 and not _zero_yield_turn(str(keyword["id"]), now):
+            skipped_zero += 1
+            continue
+        low_volume = stored < LOW_VOLUME_STORED
+        if not stats or stats["sample"] < MIN_SAMPLE:
+            if low_volume:
+                pages[str(keyword["id"])] = LOW_VOLUME_PAGES
             keep.append(keyword)
             continue
         if stats["ratio"] < PAUSE_BELOW and per_movie[keyword["movie_id"]] > 1:
@@ -159,7 +178,23 @@ async def plan_crawl(
                 await redis.hset(PAUSED_KEY, str(keyword["id"]), json.dumps(entry))
             logger.info("keyword_auto_paused", telegram=not dry_run, dry_run=dry_run, keyword_id=keyword["id"], **entry)
             continue
-        if stats["ratio"] < LOW_BELOW:
+        if low_volume:
+            pages[str(keyword["id"])] = LOW_VOLUME_PAGES
+        elif stats["ratio"] < LOW_BELOW:
             pages[str(keyword["id"])] = LOW_PAGES
         keep.append(keyword)
+    logger.info(
+        "keyword_crawl_planned",
+        platform=platform,
+        keywords=len(keywords),
+        crawled=len(keep),
+        skipped_zero_yield=skipped_zero,
+        reduced_pages=len(pages),
+        dry_run=dry_run,
+    )
     return keep, pages
+
+
+def _zero_yield_turn(keyword_id: str, now: datetime) -> bool:
+    """Từ khoá 0 bài chỉ được cào mỗi ZERO_EVERY_DAYS ngày một lần, lệch ngày theo keyword_id (ổn định giữa các lượt)."""
+    return (now.toordinal() + zlib.crc32(keyword_id.encode())) % ZERO_EVERY_DAYS == 0
