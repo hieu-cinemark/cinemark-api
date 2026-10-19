@@ -17,6 +17,7 @@ Quyết định nằm chung bảng hashtag_ai_decisions với tag "<nền tảng
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from collections.abc import Iterable
@@ -36,6 +37,9 @@ logger = get_logger(__name__)
 
 TASK = "query_discovery"
 PLATFORMS = ("facebook", "threads")
+# Nền tảng được THÊM câu mới. Threads tắt từ 19/10/2026: câu AI sinh cho Threads gần như không ra bài (log: "cừu Shaun
+# Halloween", "Shaun quái thú", "Steve Cox Shaun"... 0-1 bài, 9-34 bài lạc đề mỗi câu). Câu Threads đã có vẫn được dọn.
+ADD_PLATFORMS = ("facebook", "threads") if os.getenv("QUERY_DISCOVERY_THREADS", "").lower() in ("1", "true", "yes") else ("facebook",)
 QUERY_TEMPLATES = ("phim {title}", "review {title}", "đi xem {title}")
 MAX_CAST = 3
 MIN_CONFIDENCE = 80
@@ -46,6 +50,8 @@ MAX_ADDS_PER_RUN = 30
 ACTIVE_BEFORE_DAYS = 30
 ACTIVE_AFTER_DAYS = 45
 PRUNE_AFTER_DAYS = 3
+# Câu chạy được chừng này ngày (đã qua vài lượt crawl) mà chưa lưu bài nào và spider chưa thấy bài nào khớp -> tắt luôn.
+EARLY_PRUNE_DAYS = 1
 MIN_NEW_POSTS = 3
 
 SYSTEM_PROMPT = """Bạn duyệt câu truy vấn TÌM KIẾM trên Facebook/Threads cho hệ thống theo dõi thảo luận về MỘT bộ phim chiếu rạp (TARGET FILM).
@@ -177,9 +183,11 @@ async def _ask_kira(
 
 
 async def _prune(dry_run: bool) -> int:
-    cutoff = (datetime.now(tz=UTC) - timedelta(days=PRUNE_AFTER_DAYS)).isoformat()
+    now = datetime.now(tz=UTC)
+    full_cutoff = (now - timedelta(days=PRUNE_AFTER_DAYS)).isoformat()
+    cutoff = (now - timedelta(days=EARLY_PRUNE_DAYS)).isoformat()
     rows = await d1_query(
-        "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, "
+        "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, d.decided_at, "
         "(SELECT count(*) FROM posts p WHERE p.keyword_id = d.keyword_id) AS found "
         "FROM hashtag_ai_decisions d WHERE d.source = 'query' AND d.status = 'added' AND d.decided_at < ? AND d.keyword_id IS NOT NULL",
         [cutoff],
@@ -193,9 +201,18 @@ async def _prune(dry_run: bool) -> int:
     pruned = 0
     for row in rows or []:
         stats = yields.get(str(row["keyword_id"])) or {}
-        junk = stats.get("sample", 0) >= PRUNE_MIN_SAMPLE and stats.get("ratio", 1) < PRUNE_BELOW_RATIO
-        if int(row.get("found") or 0) >= MIN_NEW_POSTS and not junk:
-            continue
+        found = int(row.get("found") or 0)
+        if str(row.get("decided_at") or "") >= full_cutoff:
+            # Chưa đủ PRUNE_AFTER_DAYS ngày: chỉ tắt sớm câu hoàn toàn không ra gì.
+            if found or stats.get("matched", 0):
+                continue
+            junk = False
+            early = True
+        else:
+            junk = stats.get("sample", 0) >= PRUNE_MIN_SAMPLE and stats.get("ratio", 1) < PRUNE_BELOW_RATIO
+            early = False
+            if found >= MIN_NEW_POSTS and not junk:
+                continue
         pruned += 1
         logger.info(
             "query_ai_pruned", movie_id=row["movie_id"], query=row["display"], found=row["found"], dry_run=dry_run
@@ -206,6 +223,8 @@ async def _prune(dry_run: bool) -> int:
         reason = (
             f"tỉ lệ bài liên quan chỉ {round(stats['ratio'] * 100)}% trên {stats['sample']} bài"
             if junk
+            else f"{EARLY_PRUNE_DAYS} ngày không ra bài nào khớp ({stats.get('dropped', 0)} bài lạc đề)"
+            if early
             else f"{PRUNE_AFTER_DAYS} ngày chỉ đem về {row['found']} bài mới"
         )
         await _record(row["movie_id"], row, {"reason": reason}, "pruned", row["keyword_id"])
@@ -255,7 +274,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
         if not _active(movie, now) or stats["added"] >= MAX_ADDS_PER_RUN:
             continue
         own = [k for k in keywords if k["movie_id"] == movie["id"]]
-        platforms = [p for p in PLATFORMS if any(k["platform"] == p for k in own)]
+        platforms = [p for p in ADD_PLATFORMS if any(k["platform"] == p for k in own)]
         if not platforms:
             continue
         stats["movies"] += 1
