@@ -26,6 +26,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
 from app.core.logging import get_logger
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH, RELEVANT_POST_SQL, ensure_post_voice_columns
 from app.services.d1 import d1_query
@@ -37,6 +38,9 @@ BASE_MODEL = "5CD-AI/Vietnamese-Sentiment-visobert"
 FINETUNED_DIR = Path(__file__).resolve().parent.parent / "models" / "visobert-cinemark"
 LABELS = {"NEG": "negative", "POS": "positive", "NEU": "neutral"}
 SOURCE = "visobert"
+# Comment không mang nội dung (rỗng, sticker, emoji, tag tên, tiếng cười - rule_sentiment) ghi nguồn riêng để tách khỏi
+# nhãn model/Kira khi cần (vd. bỏ khỏi tỉ lệ cảm xúc).
+RULE_SOURCE = "rule"
 MAX_TOKENS = 256
 POST_TEXT_LIMIT = 1200
 PAGE_SIZE = 1000
@@ -100,10 +104,14 @@ def _select_sql(table: str, *, labeled: bool) -> str:
             f"SELECT p.id, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message, p.sentiment FROM posts p "
             f"WHERE p.sentiment {cond} AND {RELEVANT_POST_SQL} AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
         )
-    return (
-        "SELECT c.id, c.message, c.sentiment FROM comments c "
-        f"WHERE c.sentiment {cond} AND length(trim(c.message)) >= {MIN_CONTENT_LENGTH}"
-    )
+    if labeled:
+        return (
+            "SELECT c.id, c.message, c.sentiment FROM comments c "
+            f"WHERE c.sentiment {cond} AND length(trim(c.message)) >= {MIN_CONTENT_LENGTH}"
+        )
+    # Lấy cả comment ngắn/rỗng (19/10/2026: 184k comment < MIN_CONTENT_LENGTH ký tự NULL mãi vì không lượt gán nào lấy
+    # chúng): rule_sentiment gán phần không có nội dung, phần có chữ ("hay mà", "đã quá") để model.
+    return f"SELECT c.id, c.message, c.sentiment FROM comments c WHERE c.sentiment {cond}"
 
 
 async def _select(
@@ -131,7 +139,7 @@ async def _select(
     return rows
 
 
-async def _save(table: str, labels: dict[str, tuple[str, float]]) -> int:
+async def _save(table: str, labels: dict[str, tuple[str, float]], source: str = SOURCE) -> int:
     """Một câu UPDATE cho cả khối qua json_each - chỉ dòng vẫn còn sentiment IS NULL (Jev/Kira ghi trước thì giữ)."""
     if not labels:
         return 0
@@ -141,7 +149,7 @@ async def _save(table: str, labels: dict[str, tuple[str, float]]) -> int:
     # Dấu "+" chặn index trên sentiment.
     result = await d1_query(
         f"UPDATE {table} SET sentiment = j.s, sentiment_confidence = j.c, "
-        f"sentiment_source = '{SOURCE}', sentiment_classified_at = CURRENT_TIMESTAMP "
+        f"sentiment_source = '{source}', sentiment_classified_at = CURRENT_TIMESTAMP "
         f"FROM (SELECT value ->> 'id' AS id, value ->> 's' AS s, value ->> 'c' AS c FROM json_each(?1)) AS j "
         f"WHERE {table}.id = j.id AND +{table}.sentiment IS NULL",
         [payload],
@@ -203,9 +211,9 @@ async def run(args: argparse.Namespace) -> None:
     pending: list[asyncio.Task[int]] = []
     started = time.monotonic()
 
-    async def save_chunk(chunk: dict[str, tuple[str, float]]) -> int:
+    async def save_chunk(chunk: dict[str, tuple[str, float]], source: str = SOURCE) -> int:
         async with sem:
-            return await _save(args.table, chunk)
+            return await _save(args.table, chunk, source)
 
     while args.limit is None or totals["selected"] < args.limit:
         page = PAGE_SIZE if args.limit is None else min(PAGE_SIZE, args.limit - totals["selected"])
@@ -214,21 +222,32 @@ async def run(args: argparse.Namespace) -> None:
             break
         cursor = (str(rows[-1]["scraped_at"] or ""), str(rows[-1]["id"]))
         totals["selected"] += len(rows)
-        preds = await asyncio.to_thread(clf.predict, [row["message"] for row in rows])
+        ruled: dict[str, tuple[str, float]] = {}
+        if args.table == "comments":
+            for row in rows:
+                if (label := rule_sentiment(row.get("message"))) is not None:
+                    ruled[row["id"]] = (label, 1.0)
+            totals["rule"] += len(ruled)
+        model_rows = [row for row in rows if row["id"] not in ruled]
+        preds = await asyncio.to_thread(clf.predict, [strip_placeholders(row["message"]) for row in model_rows])
         confident: dict[str, tuple[str, float]] = {}
-        for row, (label, conf) in zip(rows, preds, strict=True):
+        for row, (label, conf) in zip(model_rows, preds, strict=True):
             if conf >= args.min_confidence:
                 confident[row["id"]] = (label, conf)
                 totals[label] += 1
             else:
                 totals["low_confidence"] += 1  # để Jev/Kira
         if args.dry_run:
-            for row, (label, conf) in list(zip(rows, preds, strict=True))[:50]:
-                print(f"{label:>8} {conf:.2f}  {' '.join(str(row['message']).split())[:110]}")
+            pred_by_id = {row["id"]: pred for row, pred in zip(model_rows, preds, strict=True)}
+            for row in rows[:50]:
+                label, conf = ruled.get(row["id"]) or pred_by_id[row["id"]]
+                tag = "rule" if row["id"] in ruled else f"{conf:.2f}"
+                print(f"{label:>8} {tag:>5}  {' '.join(str(row['message']).split())[:110]}")
             break
-        items = list(confident.items())
-        for i in range(0, len(items), SAVE_CHUNK):
-            pending.append(asyncio.create_task(save_chunk(dict(items[i : i + SAVE_CHUNK]))))
+        for source, labels in ((SOURCE, confident), (RULE_SOURCE, ruled)):
+            items = list(labels.items())
+            for i in range(0, len(items), SAVE_CHUNK):
+                pending.append(asyncio.create_task(save_chunk(dict(items[i : i + SAVE_CHUNK]), source)))
         # Không để quá nhiều câu UPDATE chờ: lô kế tiếp chọn lại sentiment IS NULL nên phải ghi xong trước.
         totals["saved"] += sum(await asyncio.gather(*pending))
         pending.clear()
