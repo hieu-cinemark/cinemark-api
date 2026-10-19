@@ -136,11 +136,14 @@ async def _save(table: str, labels: dict[str, tuple[str, float]]) -> int:
     if not labels:
         return 0
     payload = json.dumps([{"id": cid, "s": s, "c": c} for cid, (s, c) in labels.items()])
-    pick = f"(SELECT j.value ->> '{{key}}' FROM json_each(?1) j WHERE j.value ->> 'id' = {table}.id)"
+    # UPDATE ... FROM json_each: tra từng dòng theo khoá chính. Bản cũ (subquery tương quan + "sentiment IS NULL") để
+    # planner chọn index sentiment - quét mọi dòng chưa có nhãn (~470k) mỗi câu, 4-5 giây, làm D1 nghẽn (19/10/2026).
+    # Dấu "+" chặn index trên sentiment.
     result = await d1_query(
-        f"UPDATE {table} SET sentiment = {pick.format(key='s')}, sentiment_confidence = {pick.format(key='c')}, "
+        f"UPDATE {table} SET sentiment = j.s, sentiment_confidence = j.c, "
         f"sentiment_source = '{SOURCE}', sentiment_classified_at = CURRENT_TIMESTAMP "
-        f"WHERE id IN (SELECT j.value ->> 'id' FROM json_each(?1) j) AND sentiment IS NULL",
+        f"FROM (SELECT value ->> 'id' AS id, value ->> 's' AS s, value ->> 'c' AS c FROM json_each(?1)) AS j "
+        f"WHERE {table}.id = j.id AND +{table}.sentiment IS NULL",
         [payload],
         timeout=60.0,
     )

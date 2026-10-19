@@ -68,7 +68,9 @@ async def _save(labels: dict[str, CommentLabel], *, insights_only: bool = False,
     if not insights_only:
         sets.append("sentiment_classified_at = CURRENT_TIMESTAMP")
     ids = list(labels)
-    guard = "insights_classified_at IS NULL" if insights_only else "sentiment IS NULL"
+    # Dấu "+" chặn SQLite dùng index trên sentiment: có index (sentiment, scraped_at) là planner bỏ khoá chính, quét
+    # mọi dòng sentiment IS NULL (~470k comment, đo 19/10/2026: 32 giây mỗi câu) - D1 nghẽn, ingest ghi lỗi 7429.
+    guard = "+insights_classified_at IS NULL" if insights_only else "+sentiment IS NULL"
     result = await d1_query(
         f"UPDATE {table} SET {', '.join(sets)} WHERE id IN ({','.join('?' * len(ids))}) AND {guard}",
         [*params, *ids],

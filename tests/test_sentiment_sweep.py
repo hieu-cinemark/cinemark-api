@@ -48,7 +48,7 @@ async def test_classifies_and_saves_one_update_per_batch(monkeypatch, d1) -> Non
     assert select_params == ["2026-09-26T08:00:00+00:00", 11]  # limit + len(exclude)
     assert len(d1) == 2  # 1 SELECT + 1 UPDATE cho cả lô
     update_sql, update_params = d1[1]
-    assert "AND sentiment IS NULL" in update_sql  # không bao giờ ghi đè
+    assert "AND +sentiment IS NULL" in update_sql  # không bao giờ ghi đè; "+" = không dùng index sentiment
     assert "sentiment = CASE id" in update_sql and "insights_classified_at = CURRENT_TIMESTAMP" in update_sql
     assert update_params[-4:] == ["c0", "c1", "c3", "c4"]
     pairs = update_params[:-4]
@@ -88,5 +88,5 @@ async def test_insights_only_keeps_existing_sentiment(monkeypatch, d1) -> None:
     assert "post_id IN (SELECT id FROM posts WHERE movie_id = ?)" in select_sql and select_params[0] == "movie_1"
     update_sql, _ = d1[1]
     assert "sentiment = CASE" not in update_sql and "sentiment_classified_at" not in update_sql
-    assert "AND insights_classified_at IS NULL" in update_sql
+    assert "AND +insights_classified_at IS NULL" in update_sql
     assert result["classified"] == 5
