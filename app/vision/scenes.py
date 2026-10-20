@@ -86,4 +86,6 @@ def cluster_scenes(embeddings: np.ndarray, authors: list[str]) -> list[SceneClus
             centres.append(centre)
         else:
             merged[twin].members.extend(cluster.members)
+    # Gộp làm cụm lớn thêm - xếp lại theo số người đăng.
+    merged.sort(key=lambda c: (-len({authors[i].strip().lower() for i in c.members}), -len(c.members)))
     return merged
