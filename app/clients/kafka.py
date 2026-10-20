@@ -371,6 +371,15 @@ async def publish_nurture_request(
     return await publish_action_request(platform, "nurture", payload)
 
 
+async def publish_threads_profiles_request(max_profiles: int) -> bool:
+    """Xếp hàng type=profiles (Threads) để crawl_request_consumer của spider-hub chạy worker hồ sơ kênh
+    (spiders/threads/features/profiles/) trên hàng đợi handle đã SADD vào Redis - xem app/services/channel_profiles.py.
+    bypass_drain=False: nút Dừng của Threads bỏ được lượt này; handle vẫn nằm trong hàng đợi cho lượt sau."""
+    return await publish_action_request(
+        "threads", "profiles", {"max": max_profiles, "run_id": str(uuid.uuid4())}, bypass_drain=False
+    )
+
+
 async def publish_cookie_check_request(platform: str = "facebook", *, stale_hours: float | None = None) -> bool:
     """Xếp hàng type=cookie_check để crawl_request_consumer của spider-hub chạy scripts/check_facebook_cookies.py
     (chỉ tài khoản chưa được kiểm tra trong `stale_hours` giờ). Chung hàng đợi với crawl nên không mở cùng một

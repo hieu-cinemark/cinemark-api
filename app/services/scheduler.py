@@ -551,15 +551,42 @@ async def _omar_trending_tick() -> None:
 
 
 _CHANNEL_PROFILES_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles"
+_CHANNEL_PROFILES_THREADS_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles_threads"
+_threads_collecting = False
+
+
+async def _collect_threads_profiles() -> None:
+    global _threads_collecting
+    try:
+        await channel_profiles.collect_threads_results()
+    except Exception as exc:  # noqa: BLE001 - kết quả còn trong Redis, vòng sau gom lại
+        logger.error("channel_profiles_threads_collect_failed", error=str(exc))
+    finally:
+        _threads_collecting = False
 
 
 async def _channel_profiles_tick() -> None:
-    """Follower kênh TikTok (app/services/channel_profiles.py) mỗi settings.channel_profiles_interval_hours giờ. Khoá Redis
-    sống một chu kỳ nên restart API không chạy lặp; chạy nền vì một lượt mất vài phút. Omar hết hạn mức thì chờ."""
-    if settings.channel_profiles_interval_hours <= 0 or channel_profiles.is_running() or await get_omar_pause():
+    """Follower kênh (app/services/channel_profiles.py) mỗi settings.channel_profiles_interval_hours giờ. Khoá Redis
+    sống một chu kỳ nên restart API không chạy lặp; chạy nền vì một lượt mất vài phút.
+
+    - Threads: mỗi vòng gom kết quả spider-hub đã ghi vào Redis (rẻ khi trống); mỗi chu kỳ xếp hàng kênh mới cho
+      spider-hub. Khoá riêng với TikTok để Omar hết hạn mức không làm trễ Threads.
+    - TikTok (Omar): Omar hết hạn mức thì chờ."""
+    global _threads_collecting
+    if settings.channel_profiles_interval_hours <= 0:
         return
+    redis = get_redis_client()
+    if not _threads_collecting and await redis.hlen(channel_profiles.THREADS_RESULTS_KEY):
+        _threads_collecting = True
+        _spawn(_collect_threads_profiles())
     ttl = max(60, int(settings.channel_profiles_interval_hours * 3600) - 120)
-    if not await get_redis_client().set(_CHANNEL_PROFILES_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):
+    if not channel_profiles.is_threads_running() and await redis.set(
+        _CHANNEL_PROFILES_THREADS_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl
+    ):
+        _spawn(channel_profiles.enqueue_threads_profiles())
+    if channel_profiles.is_running() or await get_omar_pause():
+        return
+    if not await redis.set(_CHANNEL_PROFILES_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):
         return
     _spawn(channel_profiles.refresh_followers())
 

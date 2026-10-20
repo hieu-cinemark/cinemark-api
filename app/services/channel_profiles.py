@@ -1,10 +1,18 @@
-"""Follower của kênh TikTok cho trang "Xuất thông tin theo kênh" (cinemark, file Social Booking) - từ 20/10/2026.
+"""Follower của kênh TikTok/Threads cho trang "Xuất thông tin theo kênh" (cinemark, file Social Booking) - từ 20/10/2026.
 
-Bài lấy qua Omar không có follower (raw_json.author_followers luôn trống), bài spider chỉ có ở ~14% bài - nên kênh đang
-hoạt động (từ CHANNEL_MIN_POSTS bài liên quan trong LOOKBACK_DAYS ngày) mà chưa có follower hoặc số đã cũ hơn
-REFRESH_DAYS ngày được hỏi Omar GET /profile?username= (1 request mỗi kênh, tối đa MAX_PER_RUN mỗi lượt; scheduler chạy mỗi
-settings.channel_profiles_interval_hours giờ). Ghi bảng D1 channel_profiles (cùng bảng Worker ghi tệp khán giả -
-api/lib/channelNiches.ts của cinemark)."""
+Kênh cần hỏi = đúng các kênh trang xuất hiển thị với mặc định "Số bài tối thiểu" = CHANNEL_MIN_POSTS: kênh có từ
+CHANNEL_MIN_POSTS bài liên quan cho CÙNG một phim trong LOOKBACK_DAYS ngày, chưa có follower hoặc số đã cũ hơn
+REFRESH_DAYS ngày, không phải follower nhập tay (followers_source='manual'). Ghi bảng D1 channel_profiles (cùng bảng
+Worker ghi tệp khán giả - api/lib/channelNiches.ts của cinemark).
+
+- TikTok: bài lấy qua Omar không có follower (raw_json.author_followers luôn trống), bài spider chỉ có ở ~14% bài - nên
+  hỏi Omar GET /profile?username= (1 request mỗi kênh, tối đa MAX_PER_RUN mỗi lượt).
+- Threads: qua session Threads của spider-hub. Bên này SADD handle vào THREADS_QUEUE_KEY rồi xếp type=profiles lên
+  crawl_requests (publish_threads_profiles_request); worker spider-hub (spiders/threads/features/profiles/) hỏi từng
+  handle và ghi kết quả vào hash THREADS_RESULTS_KEY; collect_threads_results gom hash đó ở mỗi vòng scheduler.
+  Tài khoản Threads hiếm và dễ cháy nên tối đa THREADS_MAX_PER_RUN kênh mỗi lượt.
+
+Scheduler chạy mỗi settings.channel_profiles_interval_hours giờ (app/services/scheduler.py:_channel_profiles_tick)."""
 
 from __future__ import annotations
 
@@ -15,6 +23,8 @@ from typing import Any
 
 import httpx
 
+from app.clients.kafka import publish_threads_profiles_request
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
@@ -23,11 +33,18 @@ from app.services.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
 
-LOOKBACK_DAYS = 30
+LOOKBACK_DAYS = 180
+# Trùng mặc định "Số bài tối thiểu" của trang xuất (ChannelExportPage.tsx của cinemark) - đếm theo từng phim.
 CHANNEL_MIN_POSTS = 2
 REFRESH_DAYS = 7
 MAX_PER_RUN = 1000
 CONCURRENCY = 4
+THREADS_MAX_PER_RUN = 200
+
+# Trùng PROFILE_QUEUE_REDIS_KEY/PROFILE_RESULTS_REDIS_KEY ở constants/threads.py của spider-hub (RedisCache bên đó tự thêm
+# prefix social_crawler:).
+THREADS_QUEUE_KEY = f"{REDIS_KEY_PREFIX}threads:profile_queue"
+THREADS_RESULTS_KEY = f"{REDIS_KEY_PREFIX}threads:profile_results"
 
 # Giống CHANNEL_PROFILES_SQL ở api/lib/channelNiches.ts (cinemark) - bên nào chạy trước thì tạo bảng.
 TABLE_SQL = """CREATE TABLE IF NOT EXISTS channel_profiles (
@@ -57,35 +74,67 @@ async def _ensure_table() -> None:
         if column.split(" ")[0] not in have:
             await d1_query(f"ALTER TABLE channel_profiles ADD COLUMN {column}")
 
-# Handle TikTok trong link bài: https://www.tiktok.com/@<handle>/video/...
+# Handle trong link bài: https://www.tiktok.com/@<handle>/video/..., https://www.threads.com/@<handle>/post/...
 _HANDLE_SQL = "lower(substr(p.url, instr(p.url, '@') + 1, instr(substr(p.url, instr(p.url, '@') + 1) || '/', '/') - 1))"
 
 _running = False
+_threads_running = False
+_table_ready = False
 
 
 def is_running() -> bool:
     return _running
 
 
-async def _candidates(limit: int) -> list[dict[str, Any]]:
+def is_threads_running() -> bool:
+    return _threads_running
+
+
+async def _ensure_table_once() -> None:
+    global _table_ready
+    if not _table_ready:
+        await _ensure_table()
+        _table_ready = True
+
+
+async def _candidates(platform: str, limit: int) -> list[dict[str, Any]]:
+    """Kênh `platform` cần hỏi follower (xem docstring module), nhiều bài nhất trước."""
     since = (datetime.now(tz=UTC) - timedelta(days=LOOKBACK_DAYS)).isoformat()
     fresh_after = (datetime.now(tz=UTC) - timedelta(days=REFRESH_DAYS)).isoformat()
     rows = await d1_query(
         f"""
-        SELECT c.handle, c.posts FROM (
-          SELECT {_HANDLE_SQL} AS handle, COUNT(*) AS posts
+        SELECT c.handle, SUM(c.posts) AS posts FROM (
+          SELECT p.movie_id, {_HANDLE_SQL} AS handle, COUNT(*) AS posts
           FROM posts p
-          WHERE p.platform = 'tiktok' AND p.posted_at >= ?1 AND instr(p.url, '@') > 0 AND {RELEVANT_POST_SQL}
-          GROUP BY 1 HAVING COUNT(*) >= ?2
+          WHERE p.platform = ?1 AND p.posted_at >= ?2 AND p.movie_id IS NOT NULL AND instr(p.url, '@') > 0
+            AND {RELEVANT_POST_SQL}
+          GROUP BY p.movie_id, handle HAVING COUNT(*) >= ?3
         ) c
-        LEFT JOIN channel_profiles cp ON cp.platform = 'tiktok' AND cp.handle = c.handle
-        WHERE c.handle != '' AND COALESCE(cp.followers_source, '') != 'manual' AND (cp.followers_at IS NULL OR cp.followers_at < ?3)
-        ORDER BY c.posts DESC LIMIT ?4
+        LEFT JOIN channel_profiles cp ON cp.platform = ?1 AND cp.handle = c.handle
+        WHERE c.handle != '' AND COALESCE(cp.followers_source, '') != 'manual' AND (cp.followers_at IS NULL OR cp.followers_at < ?4)
+        GROUP BY c.handle
+        ORDER BY posts DESC LIMIT ?5
         """,
-        [since, CHANNEL_MIN_POSTS, fresh_after, limit],
+        [platform, since, CHANNEL_MIN_POSTS, fresh_after, limit],
         timeout=60.0,
     )
     return rows or []
+
+
+async def _upsert(platform: str, rows: list[dict[str, Any]], now: str) -> None:
+    """rows: {handle, name, followers}. Không tìm thấy (followers None) vẫn ghi followers_at để không hỏi lại tới lượt
+    REFRESH_DAYS sau; follower nhập tay (followers_source='manual') không bao giờ bị ghi đè."""
+    for start in range(0, len(rows), 200):
+        await d1_query(
+            """INSERT INTO channel_profiles (platform, handle, name, followers, followers_at)
+            SELECT ?3, value ->> 'handle', value ->> 'name', value ->> 'followers', ?2 FROM json_each(?1) WHERE true
+            ON CONFLICT(platform, handle) DO UPDATE SET
+              followers = COALESCE(excluded.followers, channel_profiles.followers),
+              name = COALESCE(excluded.name, channel_profiles.name), followers_at = excluded.followers_at
+            WHERE COALESCE(channel_profiles.followers_source, '') != 'manual'""",
+            [json.dumps(rows[start : start + 200], ensure_ascii=False), now, platform],
+            timeout=60.0,
+        )
 
 
 async def _fetch_profile(client: httpx.AsyncClient, api_key: str, handle: str) -> dict[str, Any] | None:
@@ -119,11 +168,11 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
         return {"skipped": 1}
     _running = True
     try:
-        await _ensure_table()
+        await _ensure_table_once()
         api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
         if not api_key:
             return {"no_key": 1}
-        candidates = await _candidates(limit)
+        candidates = await _candidates("tiktok", limit)
         sem = asyncio.Semaphore(CONCURRENCY)
         rows: list[dict[str, Any]] = []
         failed = 0
@@ -143,19 +192,66 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             await asyncio.gather(*(one(client, str(row["handle"])) for row in candidates))
-        for start in range(0, len(rows), 200):
-            await d1_query(
-                """INSERT INTO channel_profiles (platform, handle, name, followers, followers_at)
-                SELECT 'tiktok', value ->> 'handle', value ->> 'name', value ->> 'followers', ?2 FROM json_each(?1) WHERE true
-                ON CONFLICT(platform, handle) DO UPDATE SET
-                  followers = COALESCE(excluded.followers, channel_profiles.followers),
-                  name = COALESCE(excluded.name, channel_profiles.name), followers_at = excluded.followers_at
-                WHERE COALESCE(channel_profiles.followers_source, '') != 'manual'""",
-                [json.dumps(rows[start : start + 200], ensure_ascii=False), now],
-                timeout=60.0,
-            )
+        await _upsert("tiktok", rows, now)
         found = sum(1 for row in rows if row["followers"] is not None)
         logger.info("channel_profiles_refreshed", candidates=len(candidates), found=found, failed=failed)
         return {"candidates": len(candidates), "found": found, "failed": failed}
     finally:
         _running = False
+
+
+async def enqueue_threads_profiles(limit: int = THREADS_MAX_PER_RUN) -> dict[str, int]:
+    """Một lượt Threads: SADD tối đa `limit` handle vào hàng đợi rồi xếp type=profiles cho spider-hub. Lượt trước còn
+    handle chưa hỏi (spider-hub lỗi/bị Dừng) thì không thêm mới, chỉ kích hoạt lại cho phần còn lại."""
+    global _threads_running
+    if _threads_running:
+        return {"skipped": 1}
+    _threads_running = True
+    try:
+        await _ensure_table_once()
+        redis = get_redis_client()
+        pending = int(await redis.scard(THREADS_QUEUE_KEY) or 0)
+        added = 0
+        if not pending:
+            candidates = await _candidates("threads", limit)
+            handles = [str(row["handle"]) for row in candidates if row.get("handle")]
+            if handles:
+                added = int(await redis.sadd(THREADS_QUEUE_KEY, *handles) or 0)
+        queued = pending + added
+        published = await publish_threads_profiles_request(limit) if queued else False
+        logger.info("threads_profiles_enqueued", pending=pending, added=added, published=published)
+        return {"pending": pending, "added": added, "published": int(published)}
+    except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; chu kỳ sau thử lại
+        logger.error("threads_profiles_enqueue_failed", error=str(exc)[:300])
+        return {"failed": 1}
+    finally:
+        _threads_running = False
+
+
+async def collect_threads_results() -> dict[str, int]:
+    """Gom kết quả spider-hub đã ghi vào THREADS_RESULTS_KEY, ghi D1 channel_profiles (platform='threads') rồi xoá
+    đúng những trường đã ghi. Rẻ khi hash trống (một HGETALL) - scheduler gọi mỗi vòng."""
+    redis = get_redis_client()
+    raw = await redis.hgetall(THREADS_RESULTS_KEY)
+    if not raw:
+        return {"collected": 0}
+    rows: list[dict[str, Any]] = []
+    for handle, value in raw.items():
+        try:
+            result = json.loads(value)
+        except ValueError:
+            result = {}
+        followers = result.get("follower_count") if result.get("found") else None
+        rows.append(
+            {
+                "handle": str(handle).lower(),
+                "followers": int(followers) if isinstance(followers, (int, float)) else None,
+                "name": (result.get("full_name") or None) if result.get("found") else None,
+            }
+        )
+    await _ensure_table_once()
+    await _upsert("threads", rows, datetime.now(tz=UTC).isoformat())
+    await redis.hdel(THREADS_RESULTS_KEY, *raw.keys())
+    found = sum(1 for row in rows if row["followers"] is not None)
+    logger.info("threads_profiles_collected", collected=len(rows), found=found)
+    return {"collected": len(rows), "found": found}
