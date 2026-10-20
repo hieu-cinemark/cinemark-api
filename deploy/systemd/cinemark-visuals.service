@@ -1,0 +1,21 @@
+[Unit]
+Description=cinemark-api post cover images: store in R2 + classify (screen / venue / event / other) for recent posts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cinemark-api
+EnvironmentFile=/opt/cinemark-api/.env
+# CPU-only VPS: cap torch threads and CPU share so crawling/ingest keep their cores.
+Environment=OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TOKENIZERS_PARALLELISM=false
+# Cover links are signed and expire within days - run often over a window a bit longer than the interval.
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.post_visuals --hours 3 --limit 3000
+User=app
+Group=app
+Nice=10
+CPUQuota=200%
+MemoryMax=2G
+TimeoutStartSec=50min
+StandardOutput=journal
+StandardError=journal
