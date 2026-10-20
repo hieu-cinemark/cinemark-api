@@ -144,3 +144,13 @@ def test_parse_facebook_page_suffix_and_login_wall() -> None:
     assert cp.parse_facebook_page(page)["followers"] == 1_200_000
     assert cp.parse_facebook_page("<html><title>Log in</title></html>") is None
     assert cp.facebook_page_url("61560995677283") == "https://www.facebook.com/profile.php?id=61560995677283"
+
+
+def test_parse_threads_page() -> None:
+    page = (
+        '<meta property="og:title" content="Chỉ Khen Phim Hay (@chikhenphimhay) &#x2022; Threads" />'
+        '<meta property="og:description" content="54 ng&#x1b0;&#x1edd;i theo d&#xf5;i &#x2022; 352 thread." />'
+    )
+    assert cp.parse_threads_page(page) == {"name": "Chỉ Khen Phim Hay", "followers": 54}
+    page_k = '<meta property="og:description" content="2K người theo dõi • 2K thread" />'
+    assert cp.parse_threads_page(page_k)["followers"] == 2000

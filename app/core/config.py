@@ -231,10 +231,6 @@ class Settings(BaseSettings):
     # luận trong omar_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận Omar.
     # Follower kênh TikTok cho trang "Xuất thông tin theo kênh" (app/services/channel_profiles.py) - mỗi chừng này giờ một lượt.
     channel_profiles_interval_hours: float = 6
-    # Threads (qua spider-hub): mỗi ngày một lần xếp MỌI kênh cần hỏi vào hàng đợi, rồi cứ chừng này giờ chạy một mẻ
-    # THREADS_MAX_PER_RUN kênh - mẻ nhỏ xen giữa các lượt search/comment thay vì một lượt dài vài giờ chặn hàng Threads.
-    threads_profiles_fill_hours: float = 24
-    threads_profiles_batch_hours: float = 2
     omar_trending_enabled: bool = True
     omar_trending_interval_hours: float = 3
     omar_trending_per_movie: int = 30

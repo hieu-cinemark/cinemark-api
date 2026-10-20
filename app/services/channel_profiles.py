@@ -7,7 +7,8 @@ Worker ghi tệp khán giả - api/lib/channelNiches.ts của cinemark).
 
 - TikTok: bài lấy qua Omar không có follower (raw_json.author_followers luôn trống), bài spider chỉ có ở ~14% bài - nên
   hỏi Omar GET /profile?username= (1 request mỗi kênh, tối đa MAX_PER_RUN mỗi lượt).
-- Threads: qua session Threads của spider-hub. Bên này SADD handle vào THREADS_QUEUE_KEY rồi xếp type=profiles lên
+- Facebook page / Threads: trang hồ sơ công khai (không đăng nhập) - refresh_public_followers, không tốn tài khoản.
+- Dự phòng cho Threads (không còn lên lịch từ 20/10/2026): qua session Threads của spider-hub. Bên này SADD handle vào THREADS_QUEUE_KEY rồi xếp type=profiles lên
   crawl_requests (publish_threads_profiles_request); worker spider-hub (spiders/threads/features/profiles/) hỏi từng
   handle và ghi kết quả vào hash THREADS_RESULTS_KEY; collect_threads_results gom hash đó ở mỗi vòng scheduler.
   Tài khoản Threads hiếm và dễ cháy nên tối đa THREADS_MAX_PER_RUN kênh mỗi lượt.
@@ -97,7 +98,6 @@ END"""
 
 _running = False
 _threads_running = False
-_facebook_running = False
 _table_ready = False
 
 
@@ -107,10 +107,6 @@ def is_running() -> bool:
 
 def is_threads_running() -> bool:
     return _threads_running
-
-
-def is_facebook_running() -> bool:
-    return _facebook_running
 
 
 async def _ensure_table_once() -> None:
@@ -233,7 +229,7 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
 async def enqueue_threads_profiles(fill: bool, limit: int = THREADS_MAX_PER_RUN) -> dict[str, int]:
     """fill=True (mỗi ngày): SADD mọi kênh cần hỏi (tối đa THREADS_FILL_LIMIT, trùng thì set tự bỏ) vào hàng đợi. Sau đó
     hàng đợi còn handle thì xếp một mẻ type=profiles tối đa `limit` kênh cho spider-hub (scheduler gọi mỗi
-    settings.threads_profiles_batch_hours giờ)."""
+    gọi tay khi cần - không còn lên lịch, xem docstring module)."""
     global _threads_running
     if _threads_running:
         return {"skipped": 1}
@@ -337,48 +333,82 @@ def facebook_page_url(handle: str) -> str:
     return f"https://www.facebook.com/profile.php?id={handle}" if handle.isdigit() else f"https://www.facebook.com/{handle}"
 
 
-async def refresh_facebook_followers(limit: int = FB_MAX_PER_RUN) -> dict[str, int]:
-    """Một lượt: follower cho tối đa `limit` page Facebook (cùng điều kiện chọn kênh với TikTok/Threads)."""
-    global _facebook_running
-    if _facebook_running:
+def threads_profile_url(handle: str) -> str:
+    return f"https://www.threads.com/@{handle}"
+
+
+def parse_threads_page(page_html: str) -> dict[str, Any] | None:
+    """Trang hồ sơ Threads công khai (không đăng nhập, thử 20/10/2026): og:description "54 người theo dõi • 352 thread...",
+    og:title "Chỉ Khen Phim Hay (@chikhenphimhay) • Threads...". None khi không có og:description."""
+    meta = {key.lower(): html.unescape(value) for key, value in _META_RE.findall(page_html)}
+    description = meta.get("description")
+    if not description:
+        return None
+    match = _FOLLOWERS_RE.search(description)
+    if not match:
+        # Tài khoản không tồn tại và trang chặn đều ra trang "Threads • Đăng nhập" (200) không có số - tính như bị chặn.
+        return None
+    return {"name": (meta.get("title") or "").split(" (@")[0].strip() or None, "followers": _parse_count(match.group(1), match.group(2))}
+
+
+_PUBLIC_SOURCES = {
+    "facebook": (facebook_page_url, parse_facebook_page),
+    "threads": (threads_profile_url, parse_threads_page),
+}
+_public_running: set[str] = set()
+
+
+def is_public_running(platform: str) -> bool:
+    return platform in _public_running
+
+
+async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN) -> dict[str, int]:
+    """Một lượt: follower cho tối đa `limit` kênh Facebook (page) / Threads từ trang công khai - không cần tài khoản.
+    Cùng điều kiện chọn kênh với TikTok; hỏi tuần tự, dừng lượt khi FB_MAX_BLOCKED trang liền không đọc được."""
+    if platform in _public_running:
         return {"skipped": 1}
-    _facebook_running = True
+    _public_running.add(platform)
+    url_of, parse = _PUBLIC_SOURCES[platform]
     rows: list[dict[str, Any]] = []
     blocked = 0
     now = datetime.now(tz=UTC).isoformat()
     try:
         await _ensure_table_once()
-        candidates = await _candidates("facebook", limit)
+        candidates = await _candidates(platform, limit)
         async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_FB_HEADERS) as client:
             for row in candidates:
                 handle = str(row["handle"])
                 try:
-                    resp = await client.get(facebook_page_url(handle))
+                    resp = await client.get(url_of(handle))
                 except httpx.HTTPError as exc:
-                    logger.warning("facebook_profile_failed", handle=handle, error=str(exc)[:200])
+                    logger.warning("public_profile_failed", platform=platform, handle=handle, error=str(exc)[:200])
                     continue
                 if resp.status_code == 404:
                     rows.append({"handle": handle, "followers": None, "name": None})
                     blocked = 0
                 else:
-                    profile = parse_facebook_page(resp.text) if resp.status_code == 200 else None
+                    profile = parse(resp.text) if resp.status_code == 200 else None
                     if profile is None:
                         blocked += 1
                         if blocked >= FB_MAX_BLOCKED:
-                            logger.warning("facebook_profiles_blocked", handle=handle, status=resp.status_code, url=str(resp.url)[:120])
+                            logger.warning(
+                                "public_profiles_blocked", platform=platform, handle=handle, status=resp.status_code, url=str(resp.url)[:120]
+                            )
                             break
                     else:
                         blocked = 0
                         rows.append({"handle": handle, **profile})
                 await asyncio.sleep(random.uniform(*FB_DELAY_SECONDS))
-        await _upsert("facebook", rows, now)
+        await _upsert(platform, rows, now)
         found = sum(1 for row in rows if row["followers"] is not None)
-        logger.info("facebook_profiles_refreshed", candidates=len(candidates), found=found, blocked=blocked >= FB_MAX_BLOCKED)
+        logger.info(
+            "public_profiles_refreshed", platform=platform, candidates=len(candidates), found=found, blocked=blocked >= FB_MAX_BLOCKED
+        )
         return {"candidates": len(candidates), "found": found, "blocked": int(blocked >= FB_MAX_BLOCKED)}
     except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; chu kỳ sau thử lại
-        logger.error("facebook_profiles_failed", error=str(exc)[:300])
+        logger.error("public_profiles_failed", platform=platform, error=str(exc)[:300])
         if rows:
-            await _upsert("facebook", rows, now)
+            await _upsert(platform, rows, now)
         return {"failed": 1}
     finally:
-        _facebook_running = False
+        _public_running.discard(platform)
