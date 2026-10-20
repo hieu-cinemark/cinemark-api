@@ -24,6 +24,7 @@ import random
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -33,7 +34,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.services.d1 import d1_query
-from app.services.platform_config_db import get_omar_api_settings
+from app.services.platform_config_db import get_omar_api_settings, list_proxies
 
 logger = get_logger(__name__)
 
@@ -362,9 +363,30 @@ def is_public_running(platform: str) -> bool:
     return platform in _public_running
 
 
+async def _public_routes() -> list[str | None]:
+    """Đường ra cho trang công khai: các proxy đang bật trong platform_proxies (proxy nhà dân - Facebook chuyển IP VPS sang
+    trang đăng nhập sau ~7 page, đo 20/10/2026), cuối cùng là IP VPS. Lỗi đọc bảng proxy thì chỉ dùng IP VPS."""
+    try:
+        proxies = await list_proxies()
+    except Exception as exc:  # noqa: BLE001 - Supabase trục trặc không được chặn cả lượt
+        logger.warning("public_profiles_proxies_failed", error=str(exc)[:200])
+        proxies = []
+    routes: list[str | None] = []
+    for proxy in proxies:
+        if not proxy.get("enabled") or not proxy.get("proxy_url"):
+            continue
+        address = str(proxy["proxy_url"]).removeprefix("http://").removeprefix("https://")
+        auth = f"{quote(str(proxy['username']), safe='')}:{quote(str(proxy.get('password') or ''), safe='')}@" if proxy.get("username") else ""
+        routes.append(f"http://{auth}{address}")
+    random.shuffle(routes)
+    return [*routes, None]
+
+
 async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN) -> dict[str, int]:
     """Một lượt: follower cho tối đa `limit` kênh Facebook (page) / Threads từ trang công khai - không cần tài khoản.
-    Cùng điều kiện chọn kênh với TikTok; hỏi tuần tự, dừng lượt khi FB_MAX_BLOCKED trang liền không đọc được."""
+    Cùng điều kiện chọn kênh với TikTok; hỏi tuần tự, xoay vòng qua các proxy (_public_routes). Đường nào bị đưa sang trang
+    đăng nhập thì bỏ đường đó tới hết lượt; mỗi kênh thử tối đa 2 đường. Dừng lượt khi hết đường hoặc FB_MAX_BLOCKED kênh
+    liền không đọc được."""
     if platform in _public_running:
         return {"skipped": 1}
     _public_running.add(platform)
@@ -372,43 +394,70 @@ async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN) -
     rows: list[dict[str, Any]] = []
     blocked = 0
     now = datetime.now(tz=UTC).isoformat()
+    clients: dict[str | None, httpx.AsyncClient] = {}
     try:
         await _ensure_table_once()
         candidates = await _candidates(platform, limit)
-        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_FB_HEADERS) as client:
-            for row in candidates:
-                handle = str(row["handle"])
+        alive = await _public_routes()
+        turn = 0
+
+        def client_for(route: str | None) -> httpx.AsyncClient:
+            if route not in clients:
+                clients[route] = httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_FB_HEADERS, proxy=route)
+            return clients[route]
+
+        for row in candidates:
+            if not alive:
+                break
+            handle = str(row["handle"])
+            profile: dict[str, Any] | None = None
+            not_found = False
+            for _attempt in range(min(2, len(alive))):
+                route = alive[turn % len(alive)]
+                turn += 1
                 try:
-                    resp = await client.get(url_of(handle))
+                    resp = await client_for(route).get(url_of(handle))
                 except httpx.HTTPError as exc:
-                    logger.warning("public_profile_failed", platform=platform, handle=handle, error=str(exc)[:200])
+                    logger.warning("public_profile_failed", platform=platform, handle=handle, proxy=bool(route), error=str(exc)[:200])
                     continue
                 if resp.status_code == 404:
-                    rows.append({"handle": handle, "followers": None, "name": None})
-                    blocked = 0
-                else:
-                    profile = parse(resp.text) if resp.status_code == 200 else None
-                    if profile is None:
-                        blocked += 1
-                        if blocked >= FB_MAX_BLOCKED:
-                            logger.warning(
-                                "public_profiles_blocked", platform=platform, handle=handle, status=resp.status_code, url=str(resp.url)[:120]
-                            )
-                            break
-                    else:
-                        blocked = 0
-                        rows.append({"handle": handle, **profile})
-                await asyncio.sleep(random.uniform(*FB_DELAY_SECONDS))
+                    not_found = True
+                    break
+                if "/login" in resp.url.path:
+                    # Trang đăng nhập: đường này đã bị chặn - bỏ tới hết lượt, thử kênh này qua đường khác.
+                    alive.remove(route)
+                    logger.warning("public_profiles_route_blocked", platform=platform, proxy=bool(route), left=len(alive))
+                    if not alive:
+                        break
+                    continue
+                profile = parse(resp.text) if resp.status_code == 200 else None
+                if profile is not None:
+                    break
+            if profile is not None:
+                blocked = 0
+                rows.append({"handle": handle, **profile})
+            elif not_found:
+                blocked = 0
+                rows.append({"handle": handle, "followers": None, "name": None})
+            else:
+                blocked += 1
+                if blocked >= FB_MAX_BLOCKED:
+                    logger.warning("public_profiles_blocked", platform=platform, handle=handle, routes_left=len(alive))
+                    break
+            await asyncio.sleep(random.uniform(*FB_DELAY_SECONDS))
+        stopped = blocked >= FB_MAX_BLOCKED or not alive
         await _upsert(platform, rows, now)
         found = sum(1 for row in rows if row["followers"] is not None)
         logger.info(
-            "public_profiles_refreshed", platform=platform, candidates=len(candidates), found=found, blocked=blocked >= FB_MAX_BLOCKED
+            "public_profiles_refreshed", platform=platform, candidates=len(candidates), found=found, blocked=stopped, routes_left=len(alive)
         )
-        return {"candidates": len(candidates), "found": found, "blocked": int(blocked >= FB_MAX_BLOCKED)}
+        return {"candidates": len(candidates), "found": found, "blocked": int(stopped)}
     except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; chu kỳ sau thử lại
         logger.error("public_profiles_failed", platform=platform, error=str(exc)[:300])
         if rows:
             await _upsert(platform, rows, now)
         return {"failed": 1}
     finally:
+        for client in clients.values():
+            await client.aclose()
         _public_running.discard(platform)
