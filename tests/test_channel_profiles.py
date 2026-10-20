@@ -68,18 +68,18 @@ def test_enqueue_threads_adds_handles_and_publishes(monkeypatch) -> None:
     redis = FakeRedis()
     calls: list[tuple[str, list[Any]]] = []
     published = _patch(monkeypatch, redis, calls, [{"handle": "a", "posts": 5}, {"handle": "b", "posts": 2}])
-    result = asyncio.run(cp.enqueue_threads_profiles(200))
+    result = asyncio.run(cp.enqueue_threads_profiles(True, 200))
     assert result == {"pending": 0, "added": 2, "published": 1}
     assert redis.sets[cp.THREADS_QUEUE_KEY] == {"a", "b"}
     assert published == [200]
 
 
-def test_enqueue_threads_with_pending_queue_only_retriggers(monkeypatch) -> None:
+def test_enqueue_threads_batch_without_fill_only_retriggers(monkeypatch) -> None:
     redis = FakeRedis()
     redis.sets[cp.THREADS_QUEUE_KEY] = {"left"}
     calls: list[tuple[str, list[Any]]] = []
     published = _patch(monkeypatch, redis, calls, [{"handle": "new", "posts": 9}])
-    result = asyncio.run(cp.enqueue_threads_profiles(200))
+    result = asyncio.run(cp.enqueue_threads_profiles(False, 200))
     assert result["added"] == 0 and result["pending"] == 1 and published == [200]
     assert not calls  # không chọn kênh mới
     assert redis.sets[cp.THREADS_QUEUE_KEY] == {"left"}
@@ -88,8 +88,19 @@ def test_enqueue_threads_with_pending_queue_only_retriggers(monkeypatch) -> None
 def test_enqueue_threads_nothing_to_do_does_not_publish(monkeypatch) -> None:
     redis = FakeRedis()
     published = _patch(monkeypatch, redis, [], [])
-    assert asyncio.run(cp.enqueue_threads_profiles(200))["published"] == 0
+    assert asyncio.run(cp.enqueue_threads_profiles(True, 200))["published"] == 0
     assert published == []
+
+
+def test_enqueue_threads_daily_fill_adds_to_pending_queue(monkeypatch) -> None:
+    redis = FakeRedis()
+    redis.sets[cp.THREADS_QUEUE_KEY] = {"left"}
+    calls: list[tuple[str, list[Any]]] = []
+    published = _patch(monkeypatch, redis, calls, [{"handle": "new", "posts": 9}, {"handle": "left", "posts": 3}])
+    result = asyncio.run(cp.enqueue_threads_profiles(True, 200))
+    assert result["added"] == 1 and published == [200]
+    assert calls[0][1][4] == cp.THREADS_FILL_LIMIT
+    assert redis.sets[cp.THREADS_QUEUE_KEY] == {"left", "new"}
 
 
 def test_collect_threads_results_upserts_and_clears(monkeypatch) -> None:

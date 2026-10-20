@@ -40,6 +40,8 @@ REFRESH_DAYS = 7
 MAX_PER_RUN = 1000
 CONCURRENCY = 4
 THREADS_MAX_PER_RUN = 200
+# Mỗi lần xếp hàng hằng ngày lấy tối đa chừng này kênh (cả tồn đọng) - mẻ THREADS_MAX_PER_RUN chạy dần trong ngày.
+THREADS_FILL_LIMIT = 5000
 
 # Trùng PROFILE_QUEUE_REDIS_KEY/PROFILE_RESULTS_REDIS_KEY ở constants/threads.py của spider-hub (RedisCache bên đó tự thêm
 # prefix social_crawler:).
@@ -200,9 +202,10 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
         _running = False
 
 
-async def enqueue_threads_profiles(limit: int = THREADS_MAX_PER_RUN) -> dict[str, int]:
-    """Một lượt Threads: SADD tối đa `limit` handle vào hàng đợi rồi xếp type=profiles cho spider-hub. Lượt trước còn
-    handle chưa hỏi (spider-hub lỗi/bị Dừng) thì không thêm mới, chỉ kích hoạt lại cho phần còn lại."""
+async def enqueue_threads_profiles(fill: bool, limit: int = THREADS_MAX_PER_RUN) -> dict[str, int]:
+    """fill=True (mỗi ngày): SADD mọi kênh cần hỏi (tối đa THREADS_FILL_LIMIT, trùng thì set tự bỏ) vào hàng đợi. Sau đó
+    hàng đợi còn handle thì xếp một mẻ type=profiles tối đa `limit` kênh cho spider-hub (scheduler gọi mỗi
+    settings.threads_profiles_batch_hours giờ)."""
     global _threads_running
     if _threads_running:
         return {"skipped": 1}
@@ -212,8 +215,8 @@ async def enqueue_threads_profiles(limit: int = THREADS_MAX_PER_RUN) -> dict[str
         redis = get_redis_client()
         pending = int(await redis.scard(THREADS_QUEUE_KEY) or 0)
         added = 0
-        if not pending:
-            candidates = await _candidates("threads", limit)
+        if fill:
+            candidates = await _candidates("threads", THREADS_FILL_LIMIT)
             handles = [str(row["handle"]) for row in candidates if row.get("handle")]
             if handles:
                 added = int(await redis.sadd(THREADS_QUEUE_KEY, *handles) or 0)
