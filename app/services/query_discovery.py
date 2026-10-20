@@ -11,7 +11,8 @@ câu - mỗi câu khác nhau trả về một tập bài khác. Kompa (đo 2026-
    mỗi lượt; mỗi câu được thêm cho Facebook và Threads (nền tảng phim đang theo dõi). Không xếp crawl ngay - lịch crawl
    hằng ngày lấy chúng ở lượt kế tiếp (tránh dồn thêm hàng chục lượt quét Facebook cùng lúc).
 5. Tự dọn: câu đã thêm PRUNE_AFTER_DAYS ngày mà đem về ít hơn MIN_NEW_POSTS bài MỚI (bài chưa có từ câu khác - posts
-   chỉ lưu keyword_id của câu tìm ra đầu tiên) thì tắt.
+   chỉ lưu keyword_id của câu tìm ra đầu tiên) thì tắt. Không dọn câu của phim chưa chiếu / mới chiếu chưa đủ
+   PRUNE_AFTER_DAYS ngày, và câu đã bị dọn của phim chưa chiếu được bật lại (_revive_upcoming, từ 20/10/2026).
 
 Quyết định nằm chung bảng hashtag_ai_decisions với tag "<nền tảng>:<câu không dấu>" (source "query")."""
 
@@ -37,17 +38,25 @@ logger = get_logger(__name__)
 
 TASK = "query_discovery"
 PLATFORMS = ("facebook", "threads")
-# Nền tảng được THÊM câu mới. Threads tắt từ 19/10/2026: câu AI sinh cho Threads gần như không ra bài (log: "cừu Shaun
-# Halloween", "Shaun quái thú", "Steve Cox Shaun"... 0-1 bài, 9-34 bài lạc đề mỗi câu). Câu Threads đã có vẫn được dọn.
-ADD_PLATFORMS = ("facebook", "threads") if os.getenv("QUERY_DISCOVERY_THREADS", "").lower() in ("1", "true", "yes") else ("facebook",)
-QUERY_TEMPLATES = ("phim {title}", "review {title}", "đi xem {title}")
+# Nền tảng được THÊM câu mới. Threads chỉ nhận câu THEO MẪU (QUERY_TEMPLATES): câu AI tự sinh cho Threads gần như không ra
+# bài (19/10/2026, log: "cừu Shaun Halloween", "Shaun quái thú", "Steve Cox Shaun"... 0-1 bài, 9-34 bài lạc đề mỗi câu) nên
+# bị tắt hẳn ngày 19/10; bật lại cho câu theo mẫu từ 20/10. QUERY_DISCOVERY_THREADS=0 tắt Threads.
+ADD_PLATFORMS = (
+    ("facebook",)
+    if os.getenv("QUERY_DISCOVERY_THREADS", "").lower() in ("0", "false", "no")
+    else ("facebook", "threads")
+)
+TEMPLATE_ONLY_PLATFORMS = ("threads",)
+# "trailer" / "suất chiếu sớm": giai đoạn hóng trước ngày chiếu, khi chưa ai "review" / "đi xem" (20/10/2026).
+QUERY_TEMPLATES = ("phim {title}", "review {title}", "đi xem {title}", "{title} trailer", "{title} suất chiếu sớm")
 MAX_CAST = 3
 MIN_CONFIDENCE = 80
 # Nâng 2026-10-16 (2 -> 4, 12 -> 30): câu kém đã tự bị tắt theo tỉ lệ liên quan (keyword_yield), nên thêm nhiều câu hơn
 # để lấy nhiều bài nhất có thể.
 MAX_ADDS_PER_MOVIE = 4
 MAX_ADDS_PER_RUN = 30
-ACTIVE_BEFORE_DAYS = 30
+# 45 (trước 20/10/2026: 30) - phim sắp chiếu cần câu tìm từ sớm để bắt giai đoạn hóng.
+ACTIVE_BEFORE_DAYS = 45
 ACTIVE_AFTER_DAYS = 45
 PRUNE_AFTER_DAYS = 3
 # Câu chạy được chừng này ngày (đã qua vài lượt crawl) mà chưa lưu bài nào và spider chưa thấy bài nào khớp -> tắt luôn.
@@ -188,7 +197,8 @@ async def _prune(dry_run: bool) -> int:
     cutoff = (now - timedelta(days=EARLY_PRUNE_DAYS)).isoformat()
     rows = await d1_query(
         "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, d.decided_at, "
-        "(SELECT count(*) FROM posts p WHERE p.keyword_id = d.keyword_id) AS found "
+        "(SELECT count(*) FROM posts p WHERE p.keyword_id = d.keyword_id) AS found, "
+        "(SELECT m.released_at FROM movies m WHERE m.id = d.movie_id) AS released_at "
         "FROM hashtag_ai_decisions d WHERE d.source = 'query' AND d.status = 'added' AND d.decided_at < ? AND d.keyword_id IS NOT NULL",
         [cutoff],
     )
@@ -199,7 +209,12 @@ async def _prune(dry_run: bool) -> int:
         except Exception as exc:  # noqa: BLE001 - không đo được thì chỉ dọn theo số bài mới như trước
             logger.warning("query_ai_yield_failed", platform=platform, error=str(exc)[:200])
     pruned = 0
+    # Phim chưa chiếu (hoặc mới chiếu chưa đủ PRUNE_AFTER_DAYS ngày) ít bài là bình thường - không dọn; câu 0 bài đã được
+    # keyword_yield cho cào thưa (mỗi ZERO_EVERY_DAYS ngày) nên không tốn nhiều.
+    grace_until = (now - timedelta(days=PRUNE_AFTER_DAYS)).date().isoformat()
     for row in rows or []:
+        if str(row.get("released_at") or "")[:10] > grace_until:
+            continue
         stats = yields.get(str(row["keyword_id"])) or {}
         found = int(row.get("found") or 0)
         if str(row.get("decided_at") or "") >= full_cutoff:
@@ -231,9 +246,36 @@ async def _prune(dry_run: bool) -> int:
     return pruned
 
 
+async def _revive_upcoming(dry_run: bool) -> int:
+    """Bật lại câu mà lượt dọn đã tắt (status 'pruned') của phim CHƯA CHIẾU - trước 20/10/2026 câu của phim sắp chiếu bị tắt
+    sau 1 ngày vì chưa có bài. Câu người vận hành tắt không có quyết định 'pruned' nên không bị đụng tới."""
+    today = datetime.now(tz=UTC).date().isoformat()
+    rows = await d1_query(
+        "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, m.title FROM hashtag_ai_decisions d "
+        "JOIN movies m ON m.id = d.movie_id JOIN keywords k ON k.id = d.keyword_id "
+        "WHERE d.source = 'query' AND d.status = 'pruned' AND m.enabled = 1 AND m.released_at > ? AND k.enabled = 0",
+        [today],
+    )
+    revived = 0
+    for row in rows or []:
+        platform = str(row["tag"]).split(":", 1)[0]
+        if platform in TEMPLATE_ONLY_PLATFORMS and _key(row["display"]) not in {
+            _key(q) for q in candidate_queries({"title": row["title"]})
+        }:
+            continue
+        revived += 1
+        logger.info("query_ai_revived", movie_id=row["movie_id"], query=row["display"], dry_run=dry_run)
+        if dry_run:
+            continue
+        await d1_query("UPDATE keywords SET enabled = 1 WHERE id = ?", [row["keyword_id"]])
+        await _record(row["movie_id"], row, {"reason": "bật lại: phim chưa chiếu"}, "added", row["keyword_id"])
+    return revived
+
+
 async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = None) -> dict[str, Any]:
     await _ensure_table()
     pruned = await _prune(dry_run)
+    revived = await _revive_upcoming(dry_run)
     now = datetime.now(tz=UTC)
     movies = (
         await d1_query(
@@ -257,7 +299,16 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
     }
     titles = [m["title"] for m in movies if m.get("title")]
 
-    stats = {"movies": 0, "candidates": 0, "asked": 0, "added": 0, "rejected": 0, "pruned": pruned, "failed": 0}
+    stats = {
+        "movies": 0,
+        "candidates": 0,
+        "asked": 0,
+        "added": 0,
+        "rejected": 0,
+        "pruned": pruned,
+        "revived": revived,
+        "failed": 0,
+    }
 
     def days_from_release(movie: dict[str, Any]) -> float:
         try:
@@ -287,6 +338,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
             except Exception as exc:  # noqa: BLE001 - AI sinh câu lỗi: vẫn xét các câu theo mẫu
                 logger.warning("query_ai_generate_failed", movie_id=movie["id"], error=str(exc)[:300])
         stats["generated"] = stats.get("generated", 0) + len(generated)
+        templated = {_key(q) for q in candidate_queries(movie)}
         queries = [
             q
             for q in dict.fromkeys([*candidate_queries(movie), *generated])
@@ -326,6 +378,8 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
             if dry_run:
                 continue
             for platform in platforms:
+                if platform in TEMPLATE_ONLY_PLATFORMS and _key(query) not in templated:
+                    continue
                 cand = {"tag": f"{platform}:{_key(query)}", "display": query, "source": "query", "seen": 0}
                 keyword_id = None
                 if accept:

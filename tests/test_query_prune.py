@@ -50,5 +50,20 @@ def test_full_age_rules_unchanged(monkeypatch):
     assert disabled == ["few"] and pruned == 1
 
 
-def test_threads_not_added_by_default():
-    assert qd.ADD_PLATFORMS == ("facebook",)
+def test_threads_only_gets_template_queries():
+    assert qd.ADD_PLATFORMS == ("facebook", "threads")
+    assert qd.TEMPLATE_ONLY_PLATFORMS == ("threads",)
+    queries = qd.candidate_queries({"title": "Huyết Thống", "cast": None})
+    assert "Huyết Thống trailer" in queries and "phim Huyết Thống" in queries
+
+
+def test_no_prune_before_release(monkeypatch):
+    upcoming = (datetime.now(tz=UTC) + timedelta(days=10)).date().isoformat()
+    just_out = (datetime.now(tz=UTC) - timedelta(days=1)).date().isoformat()
+    rows = [
+        {**_row("pre", 4, 0), "released_at": upcoming},
+        {**_row("fresh", 4, 0), "released_at": just_out},
+        {**_row("old", 4, 0), "released_at": "2026-09-01"},
+    ]
+    pruned, disabled, _ = _run(monkeypatch, rows, {})
+    assert disabled == ["old"] and pruned == 1
