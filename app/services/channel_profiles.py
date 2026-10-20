@@ -41,8 +41,21 @@ TABLE_SQL = """CREATE TABLE IF NOT EXISTS channel_profiles (
   niche_reason TEXT,
   niche_source TEXT,
   niche_at TEXT,
+  custom_name TEXT,
+  custom_url TEXT,
+  followers_source TEXT,
   PRIMARY KEY (platform, handle)
 )"""
+# Cột thêm sau (bảng tạo trước 20/10/2026 chưa có) - follower nhập tay ở trang xuất có followers_source = 'manual', không ghi đè.
+_EXTRA_COLUMNS = ("custom_name TEXT", "custom_url TEXT", "followers_source TEXT")
+
+
+async def _ensure_table() -> None:
+    await d1_query(TABLE_SQL)
+    have = {str(row.get("name")) for row in (await d1_query("PRAGMA table_info(channel_profiles)") or [])}
+    for column in _EXTRA_COLUMNS:
+        if column.split(" ")[0] not in have:
+            await d1_query(f"ALTER TABLE channel_profiles ADD COLUMN {column}")
 
 # Handle TikTok trong link bài: https://www.tiktok.com/@<handle>/video/...
 _HANDLE_SQL = "lower(substr(p.url, instr(p.url, '@') + 1, instr(substr(p.url, instr(p.url, '@') + 1) || '/', '/') - 1))"
@@ -66,7 +79,7 @@ async def _candidates(limit: int) -> list[dict[str, Any]]:
           GROUP BY 1 HAVING COUNT(*) >= ?2
         ) c
         LEFT JOIN channel_profiles cp ON cp.platform = 'tiktok' AND cp.handle = c.handle
-        WHERE c.handle != '' AND (cp.followers_at IS NULL OR cp.followers_at < ?3)
+        WHERE c.handle != '' AND COALESCE(cp.followers_source, '') != 'manual' AND (cp.followers_at IS NULL OR cp.followers_at < ?3)
         ORDER BY c.posts DESC LIMIT ?4
         """,
         [since, CHANNEL_MIN_POSTS, fresh_after, limit],
@@ -106,7 +119,7 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
         return {"skipped": 1}
     _running = True
     try:
-        await d1_query(TABLE_SQL)
+        await _ensure_table()
         api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
         if not api_key:
             return {"no_key": 1}
@@ -136,7 +149,8 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
                 SELECT 'tiktok', value ->> 'handle', value ->> 'name', value ->> 'followers', ?2 FROM json_each(?1) WHERE true
                 ON CONFLICT(platform, handle) DO UPDATE SET
                   followers = COALESCE(excluded.followers, channel_profiles.followers),
-                  name = COALESCE(excluded.name, channel_profiles.name), followers_at = excluded.followers_at""",
+                  name = COALESCE(excluded.name, channel_profiles.name), followers_at = excluded.followers_at
+                WHERE COALESCE(channel_profiles.followers_source, '') != 'manual'""",
                 [json.dumps(rows[start : start + 200], ensure_ascii=False), now],
                 timeout=60.0,
             )
