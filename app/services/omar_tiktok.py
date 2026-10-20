@@ -813,9 +813,10 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             return _stop_requested or halted
 
         halted = False
-        # Bình luận tuần (app/services/omar_comments.py) chạy SONG SONG với phần hashtag, tối đa
-        # settings.omar_comments_budget_share ngân sách. Trước 12/10/2026 nó chạy trước và hàng đợi tuần (hàng chục nghìn
-        # request, vài giờ) chặn mọi hashtag - hashtag mới đứng "Chưa bắt đầu" cả buổi.
+        # Bình luận (app/services/omar_comments.py) chạy SAU phần video mới (hashtag chưa xong, tìm kiếm, kênh), tối đa
+        # settings.omar_comments_budget_share ngân sách, và TRƯỚC phần cào lại hashtag đã xong (phần đó dùng hết hạn mức
+        # còn lại nên đặt sau thì bình luận không bao giờ tới lượt). Ưu tiên video (20/10/2026); trước đó bình luận chạy
+        # song song và tranh nhịp gọi mỗi phút với video. Trước 12/10/2026 nó chạy trước và chặn mọi hashtag.
         comment_budget = Budget(int(budget * settings.omar_comments_budget_share), parent=spend)
 
         async def run_comments() -> None:
@@ -830,7 +831,6 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
                 logger.error("omar_comments_failed", error=str(exc)[:300])
 
-        comments_task = asyncio.create_task(run_comments())
         # Tìm theo từ khoá (app/services/omar_search.py) mỗi ngày một lần mỗi câu - bắt bài không gắn/gắn sai hashtag phim.
         # Phần của tìm kiếm / kênh chỉnh theo hiệu quả đo được (bài mới trên mỗi request so với hashtag - omar_yield).
         shares = await omar_yield.adaptive_shares()
@@ -1049,6 +1049,10 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         await run_round_robin(
             deep, crawl_page, workers=settings.omar_concurrency, should_stop=lambda: should_stop() or spend.exhausted
         )
+        await search_task
+        await channels_task
+        if not spend.exhausted and not should_stop():
+            await run_comments()
         # Còn ngân sách: cào lại TỪ ĐẦU các hashtag đã xong lâu nhất (crawl tự đặt lại con trỏ khi có done_at) - bắt video
         # mới và cập nhật tương tác thay vì để hạn mức ngày bỏ phí.
         stats["recrawl_keywords"] = len(fresh)
@@ -1067,9 +1071,6 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 return False
 
             await pool(info_job, [(kw, 1) for kw in stale_info])
-        await comments_task
-        await search_task
-        await channels_task
 
     pending = sum(1 for kw in keywords if todo(kw))
     stats["pending_keywords"] = pending

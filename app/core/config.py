@@ -168,7 +168,7 @@ class Settings(BaseSettings):
     # Bình luận TikTok qua Omar (app/services/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", từ 20/10/2026 khi
     # gói lên 50.000 request/ngày) hoặc mỗi tuần vào thứ omar_comments_weekday (0 = thứ Hai), lúc omar_comments_time giờ VN,
     # mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm
-    # trả lời nếu omar_comments_replies). Hàng đợi chạy trước phần hashtag của mỗi lượt Omar. Chạy mỗi ngày thì chỉ lấy video
+    # trả lời nếu omar_comments_replies). Hàng đợi chạy sau phần video mới của mỗi lượt Omar (ưu tiên video). Chạy mỗi ngày thì chỉ lấy video
     # Omar chưa cào, hoặc đã cào nhưng số bình luận tăng từ omar_comments_regrowth_min và từ omar_comments_regrowth_ratio
     # (tỉ lệ) kể từ lần cào - không lật lại từ đầu video không có gì mới.
     omar_comments_cadence: str = "daily"

@@ -3,7 +3,7 @@
 Mỗi ngày (hoặc từ thứ settings.omar_comments_weekday) lúc settings.omar_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
 hashtag TikTok đang bật settings.omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất (thích +
 3 x bình luận + chia sẻ, chỉ bài liên quan và có bình luận), rồi xếp vào hàng đợi Redis (omar:comments:jobs). Mỗi lượt
-Omar (omar_tiktok.run_omar_round) xử lý hàng đợi TRƯỚC phần hashtag: mỗi video lật /comments tới hết, bình luận nào có
+Omar (omar_tiktok.run_omar_round) xử lý hàng đợi SAU phần video mới (ưu tiên video): mỗi video lật /comments tới hết, bình luận nào có
 trả lời thì lật /comment_replies tới hết. Con trỏ lưu sau mỗi trang - hết ngân sách / dừng / restart thì lượt sau đi
 tiếp đúng chỗ; xong video thì xoá khỏi hàng đợi và đánh dấu posts.comments_crawled_* (lý do "omar_weekly").
 
