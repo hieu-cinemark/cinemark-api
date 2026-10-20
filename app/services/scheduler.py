@@ -40,7 +40,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
-from app.services import omar_comments, omar_trending, ops_alerts
+from app.services import channel_profiles, omar_comments, omar_trending, ops_alerts
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -550,6 +550,20 @@ async def _omar_trending_tick() -> None:
     _spawn(_run_omar_trending())
 
 
+_CHANNEL_PROFILES_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles"
+
+
+async def _channel_profiles_tick() -> None:
+    """Follower kênh TikTok (app/services/channel_profiles.py) mỗi settings.channel_profiles_interval_hours giờ. Khoá Redis
+    sống một chu kỳ nên restart API không chạy lặp; chạy nền vì một lượt mất vài phút. Omar hết hạn mức thì chờ."""
+    if settings.channel_profiles_interval_hours <= 0 or channel_profiles.is_running() or await get_omar_pause():
+        return
+    ttl = max(60, int(settings.channel_profiles_interval_hours * 3600) - 120)
+    if not await get_redis_client().set(_CHANNEL_PROFILES_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):
+        return
+    _spawn(channel_profiles.refresh_followers())
+
+
 async def _loop() -> None:
     while True:
         try:
@@ -603,6 +617,12 @@ async def _loop() -> None:
             logger.error("scheduler_omar_trending_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_omar_trending_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_channel_profiles_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_channel_profiles_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_channel_profiles_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_ops_alerts_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:

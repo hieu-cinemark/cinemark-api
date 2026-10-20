@@ -229,6 +229,8 @@ class Settings(BaseSettings):
     # video_info (1 request/video, tối đa omar_trending_max_requests mỗi lượt) -> bảng D1 omar_video_stats. Video có
     # >= omar_trending_rising_comments_per_hour bình luận/giờ (tối đa omar_trending_rising_limit mỗi lượt, chưa cào bình
     # luận trong omar_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận Omar.
+    # Follower kênh TikTok cho trang "Xuất thông tin theo kênh" (app/services/channel_profiles.py) - mỗi chừng này giờ một lượt.
+    channel_profiles_interval_hours: float = 6
     omar_trending_enabled: bool = True
     omar_trending_interval_hours: float = 3
     omar_trending_per_movie: int = 30
