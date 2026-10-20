@@ -17,7 +17,10 @@ Scheduler chạy mỗi settings.channel_profiles_interval_hours giờ (app/servi
 from __future__ import annotations
 
 import asyncio
+import html
 import json
+import random
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -79,8 +82,22 @@ async def _ensure_table() -> None:
 # Handle trong link bài: https://www.tiktok.com/@<handle>/video/..., https://www.threads.com/@<handle>/post/...
 _HANDLE_SQL = "lower(substr(p.url, instr(p.url, '@') + 1, instr(substr(p.url, instr(p.url, '@') + 1) || '/', '/') - 1))"
 
+# Handle page Facebook trong link bài, giống extractHandle (api/common/heat-engine.ts của cinemark): profile.php?id=<id> /
+# permalink.php?...&id=<id> lấy id, còn lại lấy đoạn đầu đường dẫn (facebook.com/<handle>/posts/...). Reel / watch / group...
+# không có handle page - bỏ (trang xuất gộp các bài đó vào page cùng tên).
+_FB_RESERVED = ("groups", "watch", "reel", "reels", "story.php", "photo", "photo.php", "pages", "share", "events", "videos", "hashtag", "")
+_FB_HANDLE_SQL = """CASE
+  WHEN instr(p.url, 'profile.php?id=') > 0 THEN substr(p.url, instr(p.url, 'profile.php?id=') + 15,
+    instr(substr(p.url, instr(p.url, 'profile.php?id=') + 15) || '&', '&') - 1)
+  WHEN instr(p.url, 'permalink.php') > 0 AND instr(p.url, '&id=') > 0 THEN substr(p.url, instr(p.url, '&id=') + 4,
+    instr(substr(p.url, instr(p.url, '&id=') + 4) || '&', '&') - 1)
+  ELSE lower(substr(substr(p.url, instr(p.url, 'facebook.com/') + 13), 1,
+    instr(substr(p.url, instr(p.url, 'facebook.com/') + 13) || '/', '/') - 1))
+END"""
+
 _running = False
 _threads_running = False
+_facebook_running = False
 _table_ready = False
 
 
@@ -90,6 +107,10 @@ def is_running() -> bool:
 
 def is_threads_running() -> bool:
     return _threads_running
+
+
+def is_facebook_running() -> bool:
+    return _facebook_running
 
 
 async def _ensure_table_once() -> None:
@@ -103,17 +124,24 @@ async def _candidates(platform: str, limit: int) -> list[dict[str, Any]]:
     """Kênh `platform` cần hỏi follower (xem docstring module), nhiều bài nhất trước."""
     since = (datetime.now(tz=UTC) - timedelta(days=LOOKBACK_DAYS)).isoformat()
     fresh_after = (datetime.now(tz=UTC) - timedelta(days=REFRESH_DAYS)).isoformat()
+    if platform == "facebook":
+        handle_sql = _FB_HANDLE_SQL
+        url_filter = "instr(p.url, 'facebook.com/') > 0 AND instr(p.url, '/groups/') = 0"
+        reserved = "AND c.handle NOT IN (" + ", ".join(f"'{seg}'" for seg in _FB_RESERVED) + ")"
+    else:
+        handle_sql, url_filter, reserved = _HANDLE_SQL, "instr(p.url, '@') > 0", ""
     rows = await d1_query(
         f"""
         SELECT c.handle, SUM(c.posts) AS posts FROM (
-          SELECT p.movie_id, {_HANDLE_SQL} AS handle, COUNT(*) AS posts
+          SELECT p.movie_id, {handle_sql} AS handle, COUNT(*) AS posts
           FROM posts p
-          WHERE p.platform = ?1 AND p.posted_at >= ?2 AND p.movie_id IS NOT NULL AND instr(p.url, '@') > 0
+          WHERE p.platform = ?1 AND p.posted_at >= ?2 AND p.movie_id IS NOT NULL AND {url_filter}
             AND {RELEVANT_POST_SQL}
           GROUP BY p.movie_id, handle HAVING COUNT(*) >= ?3
         ) c
         LEFT JOIN channel_profiles cp ON cp.platform = ?1 AND cp.handle = c.handle
-        WHERE c.handle != '' AND COALESCE(cp.followers_source, '') != 'manual' AND (cp.followers_at IS NULL OR cp.followers_at < ?4)
+        WHERE c.handle != '' {reserved} AND COALESCE(cp.followers_source, '') != 'manual'
+          AND (cp.followers_at IS NULL OR cp.followers_at < ?4)
         GROUP BY c.handle
         ORDER BY posts DESC LIMIT ?5
         """,
@@ -258,3 +286,99 @@ async def collect_threads_results() -> dict[str, int]:
     found = sum(1 for row in rows if row["followers"] is not None)
     logger.info("threads_profiles_collected", collected=len(rows), found=found)
     return {"collected": len(rows), "found": found}
+
+
+# --- Facebook page: HTML công khai (không đăng nhập) của facebook.com/<handle> có og:description dạng
+# "Rạp Phim, Thành phố Hồ Chí Minh. 1.034.733 người theo dõi · 71.482 người đang nói về điều này..." (đã thử 20/10/2026).
+# Group không có số thành viên khi chưa đăng nhập - chưa hỗ trợ. Facebook chặn IP hỏi dồn bằng trang đăng nhập nên hỏi
+# tuần tự, giãn FB_DELAY_SECONDS, và dừng lượt khi FB_MAX_BLOCKED trang liên tiếp không có og:description.
+FB_MAX_PER_RUN = 500
+FB_DELAY_SECONDS = (2.0, 4.5)
+FB_MAX_BLOCKED = 5
+_FB_HEADERS = {
+    "user-agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/155.0.0.0 Safari/537.36"
+    ),
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "vi-VN,vi;q=0.9,en;q=0.8",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-site": "none",
+}
+_META_RE = re.compile(r'<meta\s+property="og:(description|title)"\s+content="([^"]*)"', re.I)
+_FOLLOWERS_RE = re.compile(r"([\d][\d.,]*)\s*(K|M|N|Tr|triệu|nghìn)?\s*(?:người theo dõi|followers)", re.I)
+_LIKES_RE = re.compile(r"([\d][\d.,]*)\s*(K|M|N|Tr|triệu|nghìn)?\s*(?:lượt thích|likes)", re.I)
+_SUFFIX = {"k": 1e3, "n": 1e3, "nghìn": 1e3, "m": 1e6, "tr": 1e6, "triệu": 1e6}
+
+
+def _parse_count(number: str, suffix: str | None) -> int:
+    """ "1.034.733" -> 1034733; "1,2" + "Tr" / "1.2" + "M" -> 1200000."""
+    if suffix:
+        return int(float(number.replace(",", ".")) * _SUFFIX[suffix.lower()])
+    return int(re.sub(r"[.,]", "", number))
+
+
+def parse_facebook_page(page_html: str) -> dict[str, Any] | None:
+    """{name, followers} từ HTML trang Facebook; None khi không có og:description (trang đăng nhập / bị chặn)."""
+    meta = {key.lower(): html.unescape(value) for key, value in _META_RE.findall(page_html)}
+    description = meta.get("description")
+    if not description:
+        return None
+    match = _FOLLOWERS_RE.search(description) or _LIKES_RE.search(description)
+    return {
+        # og:title = "Rạp Phim | Ho Chi Minh City" - bỏ phần địa điểm.
+        "name": (meta.get("title") or "").split(" | ")[0].strip() or None,
+        "followers": _parse_count(match.group(1), match.group(2)) if match else None,
+    }
+
+
+def facebook_page_url(handle: str) -> str:
+    return f"https://www.facebook.com/profile.php?id={handle}" if handle.isdigit() else f"https://www.facebook.com/{handle}"
+
+
+async def refresh_facebook_followers(limit: int = FB_MAX_PER_RUN) -> dict[str, int]:
+    """Một lượt: follower cho tối đa `limit` page Facebook (cùng điều kiện chọn kênh với TikTok/Threads)."""
+    global _facebook_running
+    if _facebook_running:
+        return {"skipped": 1}
+    _facebook_running = True
+    rows: list[dict[str, Any]] = []
+    blocked = 0
+    now = datetime.now(tz=UTC).isoformat()
+    try:
+        await _ensure_table_once()
+        candidates = await _candidates("facebook", limit)
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True, headers=_FB_HEADERS) as client:
+            for row in candidates:
+                handle = str(row["handle"])
+                try:
+                    resp = await client.get(facebook_page_url(handle))
+                except httpx.HTTPError as exc:
+                    logger.warning("facebook_profile_failed", handle=handle, error=str(exc)[:200])
+                    continue
+                if resp.status_code == 404:
+                    rows.append({"handle": handle, "followers": None, "name": None})
+                    blocked = 0
+                else:
+                    profile = parse_facebook_page(resp.text) if resp.status_code == 200 else None
+                    if profile is None:
+                        blocked += 1
+                        if blocked >= FB_MAX_BLOCKED:
+                            logger.warning("facebook_profiles_blocked", handle=handle, status=resp.status_code, url=str(resp.url)[:120])
+                            break
+                    else:
+                        blocked = 0
+                        rows.append({"handle": handle, **profile})
+                await asyncio.sleep(random.uniform(*FB_DELAY_SECONDS))
+        await _upsert("facebook", rows, now)
+        found = sum(1 for row in rows if row["followers"] is not None)
+        logger.info("facebook_profiles_refreshed", candidates=len(candidates), found=found, blocked=blocked >= FB_MAX_BLOCKED)
+        return {"candidates": len(candidates), "found": found, "blocked": int(blocked >= FB_MAX_BLOCKED)}
+    except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; chu kỳ sau thử lại
+        logger.error("facebook_profiles_failed", error=str(exc)[:300])
+        if rows:
+            await _upsert("facebook", rows, now)
+        return {"failed": 1}
+    finally:
+        _facebook_running = False

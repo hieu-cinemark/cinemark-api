@@ -553,6 +553,7 @@ async def _omar_trending_tick() -> None:
 _CHANNEL_PROFILES_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles"
 _CHANNEL_PROFILES_THREADS_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles_threads"
 _CHANNEL_PROFILES_THREADS_FILL_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles_threads_fill"
+_CHANNEL_PROFILES_FB_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles_facebook"
 _threads_collecting = False
 
 
@@ -589,6 +590,9 @@ async def _channel_profiles_tick() -> None:
             fill = bool(await redis.set(_CHANNEL_PROFILES_THREADS_FILL_KEY, now_iso, nx=True, ex=fill_ttl))
             _spawn(channel_profiles.enqueue_threads_profiles(fill))
     ttl = max(60, int(settings.channel_profiles_interval_hours * 3600) - 120)
+    # Facebook page: HTML công khai, không cần tài khoản - khoá riêng, không phụ thuộc Omar.
+    if not channel_profiles.is_facebook_running() and await redis.set(_CHANNEL_PROFILES_FB_KEY, now_iso, nx=True, ex=ttl):
+        _spawn(channel_profiles.refresh_facebook_followers())
     if channel_profiles.is_running() or await get_omar_pause():
         return
     if not await redis.set(_CHANNEL_PROFILES_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):

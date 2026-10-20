@@ -128,3 +128,19 @@ def test_collect_threads_results_empty_is_noop(monkeypatch) -> None:
     _patch(monkeypatch, FakeRedis(), calls)
     assert asyncio.run(cp.collect_threads_results()) == {"collected": 0}
     assert not calls
+
+
+def test_parse_facebook_page_followers_and_name() -> None:
+    page = (
+        '<meta property="og:title" content="R&#x1ea1;p Phim | Ho Chi Minh City" />'
+        '<meta property="og:description" content="R&#x1ea1;p Phim, Th&#xe0;nh ph&#x1ed1; H&#x1ed3; Ch&#xed; Minh. '
+        '1.034.733 ng&#x1b0;&#x1edd;i theo d&#xf5;i &#xb7; 71.482 ng&#x1b0;&#x1edd;i &#x111;ang n&#xf3;i v&#x1ec1; &#x111;i&#x1ec1;u n&#xe0;y." />'
+    )
+    assert cp.parse_facebook_page(page) == {"name": "Rạp Phim", "followers": 1034733}
+
+
+def test_parse_facebook_page_suffix_and_login_wall() -> None:
+    page = '<meta property="og:description" content="Page. 1,2 Tr người theo dõi" />'
+    assert cp.parse_facebook_page(page)["followers"] == 1_200_000
+    assert cp.parse_facebook_page("<html><title>Log in</title></html>") is None
+    assert cp.facebook_page_url("61560995677283") == "https://www.facebook.com/profile.php?id=61560995677283"
