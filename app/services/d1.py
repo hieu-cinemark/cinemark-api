@@ -519,8 +519,7 @@ async def get_report_sample_for_movie(
 
     rows = await d1_query(
         f"""
-        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment,
-               c.author_name, c.author_url, c.author_profile_picture
+        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment
         FROM comments c
         JOIN posts p ON p.id = c.post_id
         WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL}
@@ -601,9 +600,7 @@ def _pick_quotes(rows: list[dict[str, Any]], posts: dict[str, dict[str, Any]]) -
                 "id": row["id"],
                 "text": message,
                 "likes": row.get("reactions_count") or 0,
-                "author_name": row.get("author_name"),
-                "author_url": row.get("author_url"),
-                "author_profile_picture": row.get("author_profile_picture"),
+                # Không kèm tên / link / ảnh người bình luận: trích dẫn hiện cho khách hàng (chính sách nền tảng).
                 "post_url": post.get("post_url"),
                 "post_content": post.get("post_content"),
                 "post_author": post.get("post_author"),
@@ -631,7 +628,7 @@ async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
     rows = await d1_query(
         f"""
         SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage,
-               c.posted_at, c.author_name, c.author_url, c.author_profile_picture
+               c.posted_at
         FROM comments c
         JOIN posts p ON p.id = c.post_id
         WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL}

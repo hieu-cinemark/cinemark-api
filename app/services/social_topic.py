@@ -49,10 +49,8 @@ def _norm_comment_text(value: str | None) -> str:
 
 
 def _source_fields(comment: dict) -> dict:
+    # Không kèm tên / link / ảnh người bình luận - report hiện cho khách hàng (chính sách nền tảng, 20/10/2026).
     return {
-        "author_name": comment.get("author_name"),
-        "author_url": comment.get("author_url"),
-        "author_profile_picture": comment.get("author_profile_picture"),
         "post_url": comment.get("post_url"),
         "post_content": comment.get("post_content"),
         "post_author": comment.get("post_author"),
@@ -81,9 +79,6 @@ def _hydrate_item(item: dict, comments: tuple[dict, dict], posts_by_id: dict[str
             **item,
             "source": "post",
             "text": text[:_POST_EVIDENCE_TEXT_CHARS] if text else item.get("text"),
-            "author_name": post.get("post_author"),
-            "author_url": None,
-            "author_profile_picture": None,
             "post_url": post.get("post_url"),
             "post_content": None,
             "post_author": post.get("post_author"),

@@ -130,7 +130,8 @@ async def test_happy_path_upserts_with_sql_computed_percentages_not_llm_guessed(
     assert data["overall_sentiment"]["analysis"] == "Nhìn chung tích cực."
     assert data["top_10_topics"] == TOPICS_RESULT["top_10_topics"]
     assert data["top_10_verbatims"][0]["text"] == "Hay quá"
-    assert data["top_10_verbatims"][0]["author_name"] == "Lan"
+    # Không lộ người bình luận ra report (chính sách nền tảng).
+    assert "author_name" not in data["top_10_verbatims"][0]
     assert data["top_10_verbatims"][0]["post_url"] == "https://example.com/p1"
     assert data["aspects"] == ASPECT_STATS
     assert data["accuracy"] == ACCURACY
@@ -191,11 +192,11 @@ def test_post_evidence_is_hydrated_from_the_post_itself() -> None:
     post, comment = result["top_10_topics"][0]["evidence_comments"]
     assert post["source"] == "post"
     assert post["text"] == "Phim Test hay nhất năm, ai chưa xem thì đi ngay"  # bản đầy đủ, không phải bản AI thấy
-    assert post["author_name"] == "reviewer"
+    assert "author_name" not in post
     assert post["post_url"] == "https://example.com/p9"
     assert post["post_content"] is None
     assert comment["source"] == "comment"
-    assert comment["author_name"] == "Lan"
+    assert not {"author_name", "author_url", "author_profile_picture"} & comment.keys()
     # Không có "source" nhưng id là bài cha của một comment trong mẫu -> vẫn nhận ra là bài viết.
     assert result["top_10_verbatims"][0]["source"] == "post"
     assert result["top_10_verbatims"][0]["post_url"] == "https://example.com/p1"
