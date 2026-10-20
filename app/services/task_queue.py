@@ -31,6 +31,8 @@ def task_label(request: dict[str, Any]) -> str:
     if kind == "channel_videos":
         username = str(request.get("username") or "").lstrip("@")
         return f"@{username}" if username else ""
+    if kind == "profiles":
+        return f"Follower kênh (tối đa {request.get('max') or 200})"
     if kind == "nurture":
         return str(request.get("account") or "")
     if kind in ("refresh_token", "cookie_import"):
