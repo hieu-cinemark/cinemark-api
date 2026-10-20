@@ -9,8 +9,12 @@ Mỗi bài một dòng trong bảng post_visuals (D1 scraper):
     embedding (float16, base64) chỉ lưu cho screen/venue - dùng gom ảnh cùng cảnh / bỏ ảnh đăng lại.
   - status 'unavailable': link hết hạn hoặc không phải ảnh - không thử lại.
 
+Sau mỗi lượt, phim có ảnh screen mới được gom lại cảnh (app/vision/scenes.py) vào bảng movie_scenes - khối "Cảnh được
+bàn nhiều" của Social Topic đọc bảng này.
+
 Cách dùng:
     python -m scripts.post_visuals                       # bài thu trong 6 giờ qua (timer)
+    python -m scripts.post_visuals --scenes-only         # chỉ gom lại cảnh cho mọi phim
     python -m scripts.post_visuals --hours 72 --limit 5000
     python -m scripts.post_visuals --from-dir ~/cinemark-ml/cinema_frames/raw   # ảnh đã tải sẵn, tên <post_id>.jpg
     python -m scripts.post_visuals --dry-run --limit 20
@@ -35,6 +39,7 @@ from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.services.d1 import d1_query
 from app.vision.cinema_frames import MODEL_TAG, CinemaFrameClassifier, shrink_jpeg
+from app.vision.scenes import MAX_IMAGES, cluster_scenes
 
 logger = get_logger(__name__)
 
@@ -65,6 +70,28 @@ CREATE TABLE IF NOT EXISTS post_visuals (
 )"""
 INDEX_SQL = "CREATE INDEX IF NOT EXISTS idx_post_visuals_movie_label ON post_visuals(movie_id, label, confidence)"
 
+SCENES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS movie_scenes (
+  movie_id TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  rep_post_id TEXT NOT NULL,
+  r2_key TEXT NOT NULL,
+  posts INTEGER NOT NULL,
+  authors INTEGER NOT NULL,
+  discussions INTEGER NOT NULL,
+  views INTEGER NOT NULL,
+  first_at TEXT,
+  last_at TEXT,
+  cohesion REAL,
+  thumbs TEXT,
+  samples TEXT,
+  computed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (movie_id, rank)
+)"""
+# Ảnh screen dùng để gom: đủ chắc là chụp màn hình rạp.
+SCENE_MIN_CONFIDENCE = 0.7
+SCENES_PER_MOVIE = 12
+
 COVER_SQL = "json_extract(p.raw_json, '$.cover_url')"
 RELEASED_SQL = "m.released_at IS NOT NULL AND date(p.posted_at, '+7 hours') >= date(m.released_at, '-1 day')"
 
@@ -72,6 +99,7 @@ RELEASED_SQL = "m.released_at IS NOT NULL AND date(p.posted_at, '+7 hours') >= d
 async def ensure_table() -> None:
     await d1_query(TABLE_SQL)
     await d1_query(INDEX_SQL)
+    await d1_query(SCENES_TABLE_SQL)
 
 
 async def recent_candidates(hours: float, limit: int) -> list[dict[str, Any]]:
@@ -199,13 +227,126 @@ def _base(row: dict[str, Any]) -> dict[str, Any]:
     return {"post_id": row["post_id"], "movie_id": row["movie_id"], "platform": row.get("platform")}
 
 
+def _decode_embedding(text: str) -> np.ndarray:
+    return np.frombuffer(base64.b64decode(text), dtype=np.float16).astype(np.float32)
+
+
+async def build_scenes(movie_id: str) -> int:
+    """Gom lại cảnh của một phim, thay toàn bộ dòng movie_scenes của phim đó. Trả về số cảnh."""
+    rows: list[dict[str, Any]] = []
+    while True:
+        page = await d1_query(
+            f"""SELECT v.post_id, v.r2_key, v.embedding, p.author, p.url, p.platform, substr(p.content, 1, 240) AS text,
+                   COALESCE(p.reply_count, 0) AS replies, COALESCE(p.view_count, 0) AS views, p.posted_at
+            FROM post_visuals v JOIN posts p ON p.id = v.post_id
+            WHERE v.movie_id = ?1 AND v.label = 'screen' AND v.confidence >= ?2 AND v.embedding IS NOT NULL
+              AND {RELEVANT_POST_SQL}
+            ORDER BY v.post_id LIMIT 500 OFFSET ?3""",
+            [movie_id, SCENE_MIN_CONFIDENCE, len(rows)],
+            timeout=60.0,
+        )
+        rows.extend(page or [])
+        if not page or len(page) < 500 or len(rows) >= MAX_IMAGES:
+            break
+    rows = rows[:MAX_IMAGES]
+    clusters = (
+        cluster_scenes(
+            np.stack([_decode_embedding(r["embedding"]) for r in rows]), [r.get("author") or r["post_id"] for r in rows]
+        )
+        if len(rows) >= 2
+        else []
+    )
+
+    scenes = []
+    for rank, cluster in enumerate(clusters[:SCENES_PER_MOVIE], 1):
+        members = [rows[i] for i in cluster.members]
+        rep = rows[cluster.representative]
+        by_talk = sorted(members, key=lambda r: -(int(r["replies"]) + 1))
+        seen_authors: set[str] = set()
+        thumbs = []
+        for r in by_talk:
+            author = (r.get("author") or "").lower()
+            if r["post_id"] != rep["post_id"] and author not in seen_authors and len(thumbs) < 4:
+                thumbs.append(r["r2_key"])
+            seen_authors.add(author)
+        dates = sorted(r["posted_at"] for r in members if r.get("posted_at"))
+        scenes.append(
+            {
+                "movie_id": movie_id,
+                "rank": rank,
+                "rep_post_id": rep["post_id"],
+                "r2_key": rep["r2_key"],
+                "posts": len(members),
+                "authors": len({(r.get("author") or r["post_id"]).lower() for r in members}),
+                "discussions": sum(int(r["replies"]) + 1 for r in members),
+                "views": sum(int(r["views"]) for r in members),
+                "first_at": dates[0] if dates else None,
+                "last_at": dates[-1] if dates else None,
+                "cohesion": round(cluster.cohesion, 3),
+                "thumbs": json.dumps(thumbs),
+                "samples": json.dumps(
+                    [
+                        {
+                            "postId": r["post_id"],
+                            "url": r.get("url"),
+                            "platform": r.get("platform"),
+                            "author": r.get("author"),
+                            "text": (r.get("text") or "").strip(),
+                            "discussions": int(r["replies"]) + 1,
+                        }
+                        for r in by_talk[:3]
+                    ],
+                    ensure_ascii=False,
+                ),
+            }
+        )
+    await d1_query("DELETE FROM movie_scenes WHERE movie_id = ?1", [movie_id])
+    if scenes:
+        await d1_query(
+            """INSERT INTO movie_scenes (movie_id, rank, rep_post_id, r2_key, posts, authors, discussions, views, first_at, last_at,
+                                       cohesion, thumbs, samples)
+            SELECT value ->> 'movie_id', value ->> 'rank', value ->> 'rep_post_id', value ->> 'r2_key', value ->> 'posts',
+                   value ->> 'authors', value ->> 'discussions', value ->> 'views', value ->> 'first_at', value ->> 'last_at',
+                   value ->> 'cohesion', value ->> 'thumbs', value ->> 'samples'
+            FROM json_each(?1)""",
+            [json.dumps(scenes, ensure_ascii=False)],
+            timeout=60.0,
+        )
+    logger.info(
+        "post_visuals_scenes",
+        movie_id=movie_id,
+        screens=len(rows),
+        scenes=len(scenes),
+        top=[s["authors"] for s in scenes[:5]],
+    )
+    return len(scenes)
+
+
+async def movies_with_screens(since: str | None) -> list[str]:
+    """Phim có ảnh screen (mới chấm từ `since`, hoặc mọi lúc)."""
+    where = "label = 'screen' AND confidence >= ?1" + (" AND scored_at >= ?2" if since else "")
+    rows = await d1_query(
+        f"SELECT DISTINCT movie_id FROM post_visuals WHERE {where}",
+        [SCENE_MIN_CONFIDENCE, since] if since else [SCENE_MIN_CONFIDENCE],
+        timeout=60.0,
+    )
+    return [r["movie_id"] for r in rows or []]
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--hours", type=float, default=6, help="bài thu trong chừng này giờ qua")
     parser.add_argument("--limit", type=int, default=3000)
     parser.add_argument("--from-dir", type=Path, help="ảnh đã tải sẵn (<post_id>.jpg) thay vì tải từ link")
     parser.add_argument("--dry-run", action="store_true", help="không ghi R2/D1")
+    parser.add_argument("--scenes-only", action="store_true", help="chỉ gom lại cảnh cho mọi phim có ảnh screen")
     args = parser.parse_args()
+
+    if args.scenes_only:
+        await ensure_table()
+        for movie_id in await movies_with_screens(None):
+            await build_scenes(movie_id)
+        return
 
     if not args.dry_run and not lake_configured():
         raise SystemExit("Thiếu R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY")
@@ -220,6 +361,7 @@ async def main() -> None:
         return
 
     started = time.monotonic()
+    run_started = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())  # cùng dạng CURRENT_TIMESTAMP của scored_at
     clf = CinemaFrameClassifier()
     totals: Counter[str] = Counter()
     sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
@@ -233,6 +375,9 @@ async def main() -> None:
             totals += await process_chunk(clf, chunk, list(images), args.dry_run)
             if (start // CHUNK) % 10 == 0:
                 logger.info("post_visuals_progress", done=start + len(chunk), total=len(rows), counts=dict(totals))
+    if not args.dry_run:
+        for movie_id in await movies_with_screens(run_started):
+            await build_scenes(movie_id)
     logger.info(
         "post_visuals_finished",
         minutes=round((time.monotonic() - started) / 60, 1),
