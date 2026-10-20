@@ -382,7 +382,7 @@ async def _public_routes() -> list[str | None]:
     return [*routes, None]
 
 
-async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN) -> dict[str, int]:
+async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN, handles: list[str] | None = None) -> dict[str, int]:
     """Một lượt: follower cho tối đa `limit` kênh Facebook (page) / Threads từ trang công khai - không cần tài khoản.
     Cùng điều kiện chọn kênh với TikTok; hỏi tuần tự, xoay vòng qua các proxy (_public_routes). Đường nào bị đưa sang trang
     đăng nhập thì bỏ đường đó tới hết lượt; mỗi kênh thử tối đa 2 đường. Dừng lượt khi hết đường hoặc FB_MAX_BLOCKED kênh
@@ -397,7 +397,8 @@ async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN) -
     clients: dict[str | None, httpx.AsyncClient] = {}
     try:
         await _ensure_table_once()
-        candidates = await _candidates(platform, limit)
+        # `handles`: hỏi đúng các kênh này (kênh ưu tiên - priority_channels.py) thay vì danh sách theo điều kiện chọn kênh.
+        candidates = [{"handle": h} for h in handles] if handles is not None else await _candidates(platform, limit)
         alive = await _public_routes()
         turn = 0
 
@@ -461,3 +462,22 @@ async def refresh_public_followers(platform: str, limit: int = FB_MAX_PER_RUN) -
         for client in clients.values():
             await client.aclose()
         _public_running.discard(platform)
+
+
+async def refresh_tiktok_handles(handles: list[str]) -> int:
+    """Follower TikTok qua Omar /profile cho đúng các kênh này (kênh ưu tiên); trả số kênh có follower."""
+    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
+    if not api_key or not handles:
+        return 0
+    await _ensure_table_once()
+    rows: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for handle in handles:
+            try:
+                profile = await _fetch_profile(client, api_key, handle)
+            except httpx.HTTPError as exc:
+                logger.warning("channel_profile_failed", handle=handle, error=str(exc)[:200])
+                continue
+            rows.append({"handle": handle, "followers": (profile or {}).get("followers"), "name": (profile or {}).get("name")})
+    await _upsert("tiktok", rows, datetime.now(tz=UTC).isoformat())
+    return sum(1 for row in rows if row["followers"] is not None)

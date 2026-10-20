@@ -40,7 +40,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
-from app.services import channel_profiles, omar_comments, omar_trending, ops_alerts
+from app.services import channel_profiles, omar_comments, omar_trending, ops_alerts, priority_channels
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -574,6 +574,9 @@ async def _channel_profiles_tick() -> None:
       hạn mức không làm trễ. Kết quả còn sót của đường spider-hub cũ (Redis) vẫn được gom mỗi vòng.
     - TikTok (Omar): Omar hết hạn mức thì chờ."""
     global _threads_collecting
+    # Kênh ưu tiên (danh sách booking chưa có bài): crawl ngay, mỗi vòng - app/services/priority_channels.py.
+    if not priority_channels.is_running():
+        _spawn(priority_channels.process_pending())
     if settings.channel_profiles_interval_hours <= 0:
         return
     redis = get_redis_client()

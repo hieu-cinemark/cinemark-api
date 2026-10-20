@@ -67,6 +67,11 @@ async def load_channels() -> list[str]:
         or []
     )
     handles = [str(row["handle"]) for row in rows]
+    # Kênh ưu tiên (danh sách booking - app/services/priority_channels.py) luôn đứng đầu hàng, kể cả khi chưa có bài nào.
+    from app.services.priority_channels import priority_tiktok_handles
+
+    priority = await priority_tiktok_handles()
+    handles = [*priority, *(handle for handle in handles if handle not in set(priority))]
     try:
         resting = await get_redis_client().hgetall(REST_KEY) or {}
     except Exception:  # noqa: BLE001
@@ -252,42 +257,48 @@ async def channel_status() -> dict[str, Any]:
 _manual_tasks: set[asyncio.Task] = set()
 
 
-def crawl_channel_now(username: str, max_pages: int | None = None) -> bool:
-    """Nút "Cào kênh" (POST /tiktok/channels/run): cào ngay một kênh qua Omar, độc lập với lượt đang chạy."""
+async def crawl_channel_once(handle: str, max_pages: int | None = None) -> dict[str, Any]:
+    """Cào ngay một kênh qua Omar (không chờ lượt Omar) - dùng cho nút "Cào kênh" và kênh ưu tiên. Trả stats."""
     from app.services.omar_tiktok import _Pacer
     from app.services.platform_config_db import get_omar_api_settings
 
+    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
+    if not api_key:
+        logger.warning("omar_channel_manual_no_key", handle=handle)
+        return {"no_key": 1}
+    stats: dict[str, Any] = {}
+    left = [max_pages or settings.omar_channels_max_pages]
+
+    def take() -> bool:
+        left[0] -= 1
+        return left[0] >= 0
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
+            await crawl_channel(
+                client,
+                _Pacer(settings.omar_manual_requests_per_minute),
+                api_key,
+                handle,
+                await load_movie_matchers(),
+                stats,
+                take,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("omar_channel_manual_failed", handle=handle, error=str(exc)[:300])
+        stats["error"] = str(exc)[:200]
+    logger.info("omar_channel_manual_finished", handle=handle, **stats)
+    return stats
+
+
+def crawl_channel_now(username: str, max_pages: int | None = None) -> bool:
+    """Nút "Cào kênh" (POST /tiktok/channels/run): cào ngay một kênh qua Omar, độc lập với lượt đang chạy."""
     handle = username.strip().lstrip("@").split("/")[0].lower()
     if not handle:
         return False
 
     async def run() -> None:
-        api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
-        if not api_key:
-            logger.warning("omar_channel_manual_no_key", handle=handle)
-            return
-        stats: dict[str, Any] = {}
-        pages = max_pages or settings.omar_channels_max_pages
-        left = [pages]
-
-        def take() -> bool:
-            left[0] -= 1
-            return left[0] >= 0
-
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-                await crawl_channel(
-                    client,
-                    _Pacer(settings.omar_manual_requests_per_minute),
-                    api_key,
-                    handle,
-                    await load_movie_matchers(),
-                    stats,
-                    take,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("omar_channel_manual_failed", handle=handle, error=str(exc)[:300])
-        logger.info("omar_channel_manual_finished", handle=handle, **stats)
+        await crawl_channel_once(handle, max_pages)
 
     task = asyncio.create_task(run())
     _manual_tasks.add(task)
