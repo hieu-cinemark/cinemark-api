@@ -41,7 +41,17 @@ def test_map_comment_reply_and_missing_id():
     assert map_comment({"text": "x"}) is None
 
 
+def test_daily_due(monkeypatch):
+    monkeypatch.setattr(settings, "omar_comments_cadence", "daily")
+    monkeypatch.setattr(settings, "omar_comments_time", "01:00")
+    assert not weekly_due(datetime(2026, 10, 20, 0, 59, tzinfo=VN))
+    assert weekly_due(datetime(2026, 10, 20, 1, 0, tzinfo=VN))
+    assert weekly_due(datetime(2026, 10, 21, 1, 0, tzinfo=VN))  # thứ nào cũng chạy
+    assert iso_week(datetime(2026, 10, 20, 23, tzinfo=VN)) == "2026-10-20"
+
+
 def test_weekly_due(monkeypatch):
+    monkeypatch.setattr(settings, "omar_comments_cadence", "weekly")
     monkeypatch.setattr(settings, "omar_comments_weekday", 0)
     monkeypatch.setattr(settings, "omar_comments_time", "01:00")
     assert not weekly_due(datetime(2026, 10, 12, 0, 59, tzinfo=VN))  # thứ Hai, trước giờ

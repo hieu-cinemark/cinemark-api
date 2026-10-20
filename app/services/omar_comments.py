@@ -1,6 +1,6 @@
-"""Bình luận TikTok qua Omar API - MỖI TUẦN một lần (từ 2026-10-12).
+"""Bình luận TikTok qua Omar API - MỖI NGÀY (settings.omar_comments_cadence, từ 2026-10-20; mỗi tuần từ 2026-10-12).
 
-Từ thứ settings.omar_comments_weekday lúc settings.omar_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
+Mỗi ngày (hoặc từ thứ settings.omar_comments_weekday) lúc settings.omar_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
 hashtag TikTok đang bật settings.omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất (thích +
 3 x bình luận + chia sẻ, chỉ bài liên quan và có bình luận), rồi xếp vào hàng đợi Redis (omar:comments:jobs). Mỗi lượt
 Omar (omar_tiktok.run_omar_round) xử lý hàng đợi TRƯỚC phần hashtag: mỗi video lật /comments tới hết, bình luận nào có
@@ -69,18 +69,35 @@ def map_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None) ->
     }
 
 
+def _daily() -> bool:
+    return settings.omar_comments_cadence.strip().lower() == "daily"
+
+
 def iso_week(now: datetime) -> str:
+    """Mã của kỳ xếp hàng: ngày (YYYY-MM-DD) khi chạy mỗi ngày, tuần ISO (YYYY-Www) khi chạy mỗi tuần."""
+    if _daily():
+        return now.date().isoformat()
     year, week, _ = now.isocalendar()
     return f"{year}-W{week:02d}"
 
 
 def weekly_due(now: datetime) -> bool:
-    """Đã qua mốc (thứ, giờ) của tuần này chưa - bỏ lỡ mốc (API tắt) thì chạy bù khi bật lại trong tuần."""
+    """Đã qua mốc giờ của hôm nay (mỗi ngày) / mốc (thứ, giờ) của tuần này (mỗi tuần) chưa - bỏ lỡ mốc (API tắt) thì chạy
+    bù khi bật lại trong kỳ."""
     try:
         hour, minute = (int(part) for part in settings.omar_comments_time.split(":", 1))
     except ValueError:
         return False
+    if _daily():
+        return now.hour * 60 + now.minute >= hour * 60 + minute
     return (now.weekday(), now.hour * 60 + now.minute) >= (settings.omar_comments_weekday, hour * 60 + minute)
+
+
+# Chạy mỗi ngày: bỏ video Omar đã cào hết mà chưa có thêm đủ bình luận. Chỉ tính lần cào của Omar (lý do "omar_..."):
+# spider cũng ghi comments_crawled_* nhưng chỉ quét vài trang đầu (comment_planner), video đó vẫn cần Omar cào hết.
+_NEEDS_CRAWL_SQL = """(COALESCE(p.comments_crawl_reason, '') NOT LIKE 'omar%'
+  OR (p.reply_count - COALESCE(p.comments_crawled_replies, 0) >= ?
+      AND p.reply_count >= COALESCE(p.comments_crawled_replies, 0) * (1 + ?)))"""
 
 
 async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[str, list[dict[str, Any]]]:
@@ -89,6 +106,8 @@ async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[st
     dashboard hết giờ chờ 15 giây. Danh sách id truyền qua json_each (D1 giới hạn 100 tham số mỗi câu)."""
     if not keyword_ids:
         return {}
+    needs = f" AND {_NEEDS_CRAWL_SQL}" if _daily() else ""
+    regrowth = [settings.omar_comments_regrowth_min, settings.omar_comments_regrowth_ratio] if _daily() else []
     rows = (
         await d1_query(
             f"""
@@ -101,10 +120,10 @@ async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[st
                      ) AS rn
               FROM posts p
               WHERE p.platform = 'tiktok' AND p.keyword_id IN (SELECT value FROM json_each(?))
-                AND p.posted_at >= ? AND p.reply_count > 0 AND {RELEVANT_POST_SQL}
+                AND p.posted_at >= ? AND p.reply_count > 0 AND {RELEVANT_POST_SQL}{needs}
             ) WHERE rn <= ? ORDER BY keyword_id, rn
             """,
-            [json.dumps(keyword_ids), since, limit],
+            [json.dumps(keyword_ids), since, *regrowth, limit],
             quiet=True,
             timeout=60.0,
         )
@@ -255,6 +274,7 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
                     "post_id": row["id"],
                     "hashtag": kw["keyword"],
                     "rank": rank,
+                    "reason": "omar_daily" if _daily() else "omar_weekly",
                     "reply_count": int(row.get("reply_count") or 0),
                     "cursor": "0",
                     "pages": 0,

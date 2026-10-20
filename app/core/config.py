@@ -165,9 +165,15 @@ class Settings(BaseSettings):
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_tiktok._claim_unseen.
     omar_republish_hours: float = 48
     omar_recrawl_days: int = 7
-    # Bình luận TikTok qua Omar mỗi tuần một lần (app/services/omar_comments.py): từ thứ omar_comments_weekday (0 = thứ Hai)
-    # lúc omar_comments_time giờ VN, mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao
-    # nhất, cào HẾT bình luận (kèm trả lời nếu omar_comments_replies). Hàng đợi chạy trước phần hashtag của mỗi lượt Omar.
+    # Bình luận TikTok qua Omar (app/services/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", từ 20/10/2026 khi
+    # gói lên 50.000 request/ngày) hoặc mỗi tuần vào thứ omar_comments_weekday (0 = thứ Hai), lúc omar_comments_time giờ VN,
+    # mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm
+    # trả lời nếu omar_comments_replies). Hàng đợi chạy trước phần hashtag của mỗi lượt Omar. Chạy mỗi ngày thì chỉ lấy video
+    # Omar chưa cào, hoặc đã cào nhưng số bình luận tăng từ omar_comments_regrowth_min và từ omar_comments_regrowth_ratio
+    # (tỉ lệ) kể từ lần cào - không lật lại từ đầu video không có gì mới.
+    omar_comments_cadence: str = "daily"
+    omar_comments_regrowth_min: int = 20
+    omar_comments_regrowth_ratio: float = 0.3
     omar_comments_weekday: int = 0
     omar_comments_time: str = "01:00"
     omar_comments_top_per_hashtag: int = 100

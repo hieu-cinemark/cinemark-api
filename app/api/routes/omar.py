@@ -39,6 +39,7 @@ async def omar_status() -> dict[str, Any]:
         "channels": await omar_channels.channel_status(),
         "comments": {
             **await omar_comments.job_status(),
+            "cadence": settings.omar_comments_cadence,
             "weekday": settings.omar_comments_weekday,
             "time": settings.omar_comments_time,
             "top_per_hashtag": settings.omar_comments_top_per_hashtag,
