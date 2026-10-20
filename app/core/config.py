@@ -96,6 +96,9 @@ class Settings(BaseSettings):
     jev_api_base_url: str = "https://api.typesafe.ai/v1"
     jev_model: str = "jev-latest"
     jev_concurrency: int = 16
+    # Số lời gọi song song tối đa tới MỖI nhà cung cấp AI (Kira, Bee...) trong một tiến trình - xem app/ai/client.py.
+    # Service giữ 2; script backfill (scripts/kira_label_comments.py --concurrency) nâng lên trong tiến trình của nó.
+    ai_provider_concurrency: int = 2
     # Dưới ngưỡng tự tin: cảm xúc -> neutral, giai đoạn -> khac, khía cạnh -> không gắn.
     jev_min_confidence: float = 0.6
     jev_stage_min_confidence: float = 0.5

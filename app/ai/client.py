@@ -26,6 +26,7 @@ from typing import Any
 import openai
 from openai import OpenAI
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.ops_alerts import note_ai_wallet_error
 
@@ -164,7 +165,7 @@ def _client_for(cfg: ProviderConfig) -> OpenAI:
 def _concurrency_for(key: str) -> asyncio.Semaphore:
     sem = _concurrency.get(key)
     if sem is None:
-        sem = asyncio.Semaphore(2)
+        sem = asyncio.Semaphore(max(1, settings.ai_provider_concurrency))
         _concurrency[key] = sem
     return sem
 
