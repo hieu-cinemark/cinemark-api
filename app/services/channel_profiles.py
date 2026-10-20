@@ -302,9 +302,9 @@ _FB_HEADERS = {
     "sec-fetch-dest": "document",
     "sec-fetch-site": "none",
 }
-_META_RE = re.compile(r'<meta\s+property="og:(description|title)"\s+content="([^"]*)"', re.I)
-_FOLLOWERS_RE = re.compile(r"([\d][\d.,]*)\s*(K|M|N|Tr|triệu|nghìn)?\s*(?:người theo dõi|followers)", re.I)
-_LIKES_RE = re.compile(r"([\d][\d.,]*)\s*(K|M|N|Tr|triệu|nghìn)?\s*(?:lượt thích|likes)", re.I)
+_META_RE = re.compile(r'<meta\s+property="og:(description|title)"\s+content="([^"]*)"', re.IGNORECASE)
+_FOLLOWERS_RE = re.compile(r"([\d][\d.,]*)\s*(K|M|N|Tr|triệu|nghìn)?\s*(?:người theo dõi|followers)", re.IGNORECASE)
+_LIKES_RE = re.compile(r"([\d][\d.,]*)\s*(K|M|N|Tr|triệu|nghìn)?\s*(?:lượt thích|likes)", re.IGNORECASE)
 _SUFFIX = {"k": 1e3, "n": 1e3, "nghìn": 1e3, "m": 1e6, "tr": 1e6, "triệu": 1e6}
 
 
