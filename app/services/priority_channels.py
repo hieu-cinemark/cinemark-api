@@ -1,9 +1,8 @@
 """Kênh ưu tiên (từ 20/10/2026): kênh trong danh sách booking (trang "Xuất thông tin theo kênh" › Nghiệm thu booking của
 cinemark) mà D1 chưa có bài nào - Worker ghi vào bảng D1 priority_channels (api/lib/bookingReport.ts), bên này:
 
-- crawl ngay (mỗi vòng scheduler, tối đa BATCH kênh): TikTok - video của kênh qua Omar /posts (chỉ giữ video nhắc tới phim
-  đang theo dõi, như omar_channels) + follower qua Omar /profile; Facebook / Threads - follower, tên kênh qua trang công
-  khai (channel_profiles.refresh_public_followers). Chưa có crawler bài theo page cho Facebook / Threads.
+- crawl ngay (mỗi vòng scheduler, tối đa BATCH kênh) kênh TikTok: video của kênh qua Omar /posts (chỉ giữ video nhắc tới
+  phim đang theo dõi, như omar_channels) + follower qua Omar /profile. Facebook / Threads không tự crawl (spider-hub lo).
 - kênh TikTok yêu cầu trong KEEP_DAYS ngày luôn đứng đầu hàng cào kênh của các lượt Omar (omar_channels.load_channels).
 """
 
@@ -72,7 +71,7 @@ async def process_pending() -> dict[str, int]:
     try:
         await _ensure_table()
         rows = await d1_query(
-            "SELECT platform, handle FROM priority_channels WHERE crawled_at IS NULL ORDER BY requested_at LIMIT ?",
+            "SELECT platform, handle FROM priority_channels WHERE platform = 'tiktok' AND crawled_at IS NULL ORDER BY requested_at LIMIT ?",
             [BATCH],
             quiet=True,
         )
@@ -94,12 +93,6 @@ async def process_pending() -> dict[str, int]:
             }
         if by_platform.get("tiktok"):
             await channel_profiles.refresh_tiktok_handles(by_platform["tiktok"])
-        for platform in ("facebook", "threads"):
-            handles = by_platform.get(platform) or []
-            if handles:
-                summary = await channel_profiles.refresh_public_followers(platform, len(handles), handles=handles)
-                for handle in handles:
-                    results[(platform, handle)] = {"profile": summary}
         now = datetime.now(tz=UTC).isoformat()
         for (platform, handle), result in results.items():
             await d1_query(

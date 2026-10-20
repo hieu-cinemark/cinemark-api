@@ -551,8 +551,6 @@ async def _omar_trending_tick() -> None:
 
 
 _CHANNEL_PROFILES_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles"
-_CHANNEL_PROFILES_THREADS_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles_threads"
-_CHANNEL_PROFILES_FB_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles_facebook"
 _threads_collecting = False
 
 
@@ -570,8 +568,7 @@ async def _channel_profiles_tick() -> None:
     """Follower kênh (app/services/channel_profiles.py) mỗi settings.channel_profiles_interval_hours giờ. Khoá Redis
     sống một chu kỳ nên restart API không chạy lặp; chạy nền vì một lượt mất vài phút.
 
-    - Facebook page / Threads: đọc trang hồ sơ công khai (không tốn tài khoản), khoá riêng với TikTok để Omar hết
-      hạn mức không làm trễ. Kết quả còn sót của đường spider-hub cũ (Redis) vẫn được gom mỗi vòng.
+    - Facebook / Threads: không tự crawl (spider-hub lo); kết quả spider-hub ghi vào Redis (nếu có) vẫn được gom mỗi vòng.
     - TikTok (Omar): Omar hết hạn mức thì chờ."""
     global _threads_collecting
     # Kênh ưu tiên (danh sách booking chưa có bài): crawl ngay, mỗi vòng - app/services/priority_channels.py.
@@ -583,12 +580,7 @@ async def _channel_profiles_tick() -> None:
     if not _threads_collecting and await redis.hlen(channel_profiles.THREADS_RESULTS_KEY):
         _threads_collecting = True
         _spawn(_collect_threads_profiles())
-    now_iso = datetime.now(TIMEZONE).isoformat()
     ttl = max(60, int(settings.channel_profiles_interval_hours * 3600) - 120)
-    # Facebook page / Threads: trang công khai, không cần tài khoản - khoá riêng từng nền tảng, không phụ thuộc Omar.
-    for platform, key in (("facebook", _CHANNEL_PROFILES_FB_KEY), ("threads", _CHANNEL_PROFILES_THREADS_KEY)):
-        if not channel_profiles.is_public_running(platform) and await redis.set(key, now_iso, nx=True, ex=ttl):
-            _spawn(channel_profiles.refresh_public_followers(platform))
     if channel_profiles.is_running() or await get_omar_pause():
         return
     if not await redis.set(_CHANNEL_PROFILES_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=ttl):
