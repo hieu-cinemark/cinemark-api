@@ -27,6 +27,7 @@ from app.ai.prompts.report import (
     TOPICS_DATA_PROMPT,
     TOPICS_SYSTEM_PROMPT,
 )
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import REPORT_POST_TEXT_CHARS
 
@@ -53,6 +54,7 @@ async def _call_provider(
         user_prompt=user_prompt,
         max_tokens=max_tokens,
         temperature=temperature,
+        model=settings.bee_report_model.strip() or None,
     )
 
 
@@ -102,6 +104,9 @@ def _parse_narrative(response: str) -> str:
 # Comment dài hơn bấy nhiêu ký tự được cắt bớt trong prompt (dashboard vẫn hiện bản đầy đủ - xem
 # hydrate_report_comments) - vài comment dài cả nghìn chữ không được chiếm chỗ của hàng chục comment khác.
 _COMMENT_TEXT_CHARS = 500
+# Bài chỉ có mặt vì chứa comment trong mẫu (không thuộc mẫu bài của khán giả): đủ để biết comment đang trả lời bài gì.
+# Mẫu 2.000 comment kéo theo ~420 bài như vậy - để 400 ký tự thì riêng chúng chiếm ~40% prompt (đo 20/10/2026).
+_CONTEXT_POST_TEXT_CHARS = 160
 
 
 def _clip(text: str | None, limit: int) -> str:
@@ -120,7 +125,7 @@ def build_topics_payload(
     post_alias: dict[str, str] = {}
     posts_payload: list[dict[str, Any]] = []
 
-    def add_post(post_id: str, row: dict[str, Any]) -> None:
+    def add_post(post_id: str, row: dict[str, Any], text_chars: int = REPORT_POST_TEXT_CHARS) -> None:
         alias = f"p{len(posts_payload) + 1}"
         post_alias[post_id] = alias
         aliases[alias] = ("post", post_id)
@@ -131,7 +136,7 @@ def build_topics_payload(
                 "author": row.get("post_author"),
                 # "channel": studio/trang showbiz/fanpage của phim - chỉ là ngữ cảnh, prompt cấm làm bằng chứng.
                 "kind": "channel" if row.get("is_channel") else "audience",
-                "text": _clip(row.get("post_content"), REPORT_POST_TEXT_CHARS),
+                "text": _clip(row.get("post_content"), text_chars),
                 "likes": row.get("post_likes") or 0,
                 "comments": row.get("post_comments") or 0,
                 "shares": row.get("post_shares") or 0,
@@ -144,7 +149,7 @@ def build_topics_payload(
     for comment in comments:
         post_id = comment.get("post_id")
         if post_id and post_id not in post_alias and comment.get("post_content"):
-            add_post(post_id, comment)
+            add_post(post_id, comment, _CONTEXT_POST_TEXT_CHARS)
 
     comments_payload: list[dict[str, Any]] = []
     for index, comment in enumerate(comments, start=1):

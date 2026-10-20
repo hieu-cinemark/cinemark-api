@@ -25,6 +25,7 @@ from typing import Literal
 
 from app.ai.client import load_provider
 from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import (
     MIN_COMMENTS_FOR_REPORT,
@@ -230,6 +231,8 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
     provider = topics_result.get("provider") or "kira"
     provider_cfg = await load_provider(provider)
     model = (provider_cfg.model if provider_cfg else "") or provider
+    if provider == "bee" and settings.bee_report_model.strip():
+        model = settings.bee_report_model.strip()  # report dùng model Bee riêng (config.bee_report_model)
 
     ok = await upsert_social_topic_report(
         movie_id=movie_id,

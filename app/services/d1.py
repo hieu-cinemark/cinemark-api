@@ -360,8 +360,14 @@ MIN_COMMENTS_FOR_REPORT = 15
 # tương tác trước, nên nếu phim có nhiều comment đã phân loại hơn mức này thì những
 # comment có tín hiệu cao nhất là những comment được giữ lại. Nâng 400 -> 800 (2026-10-07)
 # cùng lúc bỏ khỏi mẫu các comment không mang ý kiến (chỉ tag bạn bè/emoji/quá ngắn - xem
-# rule_sentiment) và comment bị gắn not_related, nên 800 chỗ đều là comment có nội dung.
-REPORT_COMMENT_SAMPLE_SIZE = 800
+# rule_sentiment) và comment bị gắn not_related, nên 800 chỗ đều là comment có nội dung. Nâng 800 -> 2000 (2026-10-20,
+# Bee claude-opus-4-8 viết report): 800 chỉ là ~2% bình luận của phim lớn (Trại Buôn Người ~43k), chủ đề nhỏ bị sót.
+# Tỉ lệ cảm xúc / khía cạnh vẫn tính trên toàn bộ bình luận (SQL) - mẫu chỉ phục vụ chủ đề / trích dẫn / nhận định.
+REPORT_COMMENT_SAMPLE_SIZE = 2000
+
+# Mỗi khía cạnh x chiều (vd. "dien_vien:-") được giữ trước chừng này comment trong mẫu, rồi mới rút phần còn lại theo tỉ
+# lệ - để khía cạnh ít người nhắc (âm nhạc, kỹ xảo...) vẫn có mặt cho AI gom thành chủ đề.
+REPORT_ASPECT_RESERVE = 12
 
 # Tối đa bấy nhiêu comment của cùng một bài trong mẫu - comment tới theo thứ tự tương tác,
 # nên không có trần này một bài viral có thể chiếm phần lớn mẫu và AI chỉ thấy một cuộc
@@ -371,7 +377,7 @@ REPORT_COMMENTS_PER_POST = 15
 # Số bài viết của khán giả (rút ngẫu nhiên, cùng cổng liên quan với mẫu comment) đưa vào lời gọi
 # gom topic như một nguồn ý kiến riêng - trên Threads/TikTok bản thân bài viết thường chính là ý
 # kiến của khán giả về phim, không chỉ là chỗ chứa comment.
-REPORT_POST_SAMPLE_SIZE = 60
+REPORT_POST_SAMPLE_SIZE = 150
 
 # Tác giả là "kênh" (studio, trang showbiz/tin phim - bài của họ chỉ làm ngữ cảnh, không phải ý
 # kiến khán giả) khi đã đăng về >= CHANNEL_MIN_MOVIES phim khác nhau, hoặc >= CHANNEL_MIN_POSTS
@@ -398,7 +404,21 @@ def _normalize_comment_text(message: str) -> str:
     dưới nhiều bài) mà không tốn chi phí/độ phức tạp của so khớp mờ thật sự - xem
     docstring của get_report_sample_for_movie để biết vì sao điều này quan trọng với một
     mẫu mà LLM coi là đại diện."""
-    return " ".join(message.split()).casefold()
+    # 20/10/2026: bỏ dấu câu / emoji và rút chữ kéo dài - "Phim hay quá!!!", "phim hayyy quá 😍" là một ý.
+    text = re.sub(r"[^\w\s]", " ", message.casefold())
+    text = re.sub(r"(\w)\1{2,}", r"\1", text)
+    return " ".join(text.split())
+
+
+def _aspect_tags(raw: Any) -> list[str]:
+    """Cột comments.aspects (JSON ["dien_vien:+", ...]) -> danh sách tag; hỏng / trống -> []."""
+    if not raw:
+        return []
+    try:
+        tags = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return []
+    return [str(tag) for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
 
 
 def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
@@ -519,7 +539,7 @@ async def get_report_sample_for_movie(
 
     rows = await d1_query(
         f"""
-        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment
+        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage
         FROM comments c
         JOIN posts p ON p.id = c.post_id
         WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL}
@@ -545,13 +565,29 @@ async def get_report_sample_for_movie(
 
     rng.shuffle(candidates)
     per_post: Counter[str] = Counter()
-    by_sentiment: dict[str, list[dict[str, Any]]] = {k: [] for k in _SENTIMENT_BUCKETS}
+    eligible: list[dict[str, Any]] = []
     for row in candidates:
         if per_post[row["post_id"]] >= REPORT_COMMENTS_PER_POST:
             continue
         per_post[row["post_id"]] += 1
-        by_sentiment[row["sentiment"]].append(row)
-    comments = _stratified_sample(by_sentiment, comment_limit)
+        eligible.append(row)
+
+    # Giữ chỗ trước cho từng khía cạnh x chiều, rồi rút phần còn lại theo đúng tỉ lệ (cảm xúc x giai đoạn hóng/đã xem).
+    reserved: list[dict[str, Any]] = []
+    per_aspect: Counter[str] = Counter()
+    for row in eligible:
+        tags = _aspect_tags(row.get("aspects"))
+        if any(per_aspect[tag] < REPORT_ASPECT_RESERVE for tag in tags):
+            reserved.append(row)
+            per_aspect.update(tags)
+    reserved = reserved[: comment_limit // 4]
+    taken = {row["id"] for row in reserved}
+    by_bucket: dict[str, list[dict[str, Any]]] = {}
+    for row in eligible:
+        if row["id"] not in taken:
+            by_bucket.setdefault(f"{row['sentiment']}:{row.get('audience_stage') or 'khac'}", []).append(row)
+    comments = _stratified_sample(by_bucket, comment_limit - len(reserved)) + reserved
+    comments.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
 
     audience_posts = [
         post
