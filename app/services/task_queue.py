@@ -28,7 +28,7 @@ def task_label(request: dict[str, Any]) -> str:
     kind = request.get("type") or "search"
     if kind == "comments":
         return str(request.get("post_id") or "")
-    if kind == "channel_videos":
+    if kind in ("channel_videos", "channel_posts"):
         username = str(request.get("username") or "").lstrip("@")
         return f"@{username}" if username else ""
     if kind == "profiles":

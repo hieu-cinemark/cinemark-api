@@ -380,6 +380,37 @@ async def publish_threads_profiles_request(max_profiles: int) -> bool:
     )
 
 
+async def publish_threads_channel_posts_request(
+    *,
+    username: str,
+    keyword_id: str,
+    keyword: str | None = None,
+    match_terms: list[str] | None = None,
+    match_hashtags: list[str] | None = None,
+    max_pages: int = 3,
+    days: int = 60,
+) -> bool:
+    """Xếp hàng type=channel_posts (Threads) để crawl_request_consumer của spider-hub chạy scrapy threads_channel_posts
+    cho một @username: bài trong `days` ngày gần nhất (tối đa max_pages trang x 10 thread) nhắc tới phim - hashtag trùng
+    một mục của match_hashtags, chứa một tên trong match_terms, hoặc chứa từ khoá - được publish lên raw_posts với
+    keyword_id này, đi qua ingest như bài tìm kiếm. Dùng cho kênh booking chưa có bài (app/services/priority_channels.py).
+    bypass_drain mặc định (True) như mọi lần kích hoạt lẻ có chủ đích - một lần Dừng cũ không nuốt mất nó."""
+    payload: dict[str, Any] = {
+        "username": username.strip().lstrip("@"),
+        "keyword_id": keyword_id,
+        "max_pages": max_pages,
+        "days": days,
+        "run_id": str(uuid.uuid4()),
+    }
+    if keyword:
+        payload["keyword"] = keyword
+    if match_terms:
+        payload["match_terms"] = match_terms
+    if match_hashtags:
+        payload["match_hashtags"] = match_hashtags
+    return await publish_action_request("threads", "channel_posts", payload)
+
+
 async def publish_cookie_check_request(platform: str = "facebook", *, stale_hours: float | None = None) -> bool:
     """Xếp hàng type=cookie_check để crawl_request_consumer của spider-hub chạy scripts/check_facebook_cookies.py
     (chỉ tài khoản chưa được kiểm tra trong `stale_hours` giờ). Chung hàng đợi với crawl nên không mở cùng một
