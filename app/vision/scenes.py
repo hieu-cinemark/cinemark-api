@@ -19,6 +19,10 @@ import numpy as np
 SCENE_DISTANCE = 0.12
 MIN_COHESION = 0.9
 MIN_AUTHORS = 2
+# Hai cụm có tâm giống nhau từ mức này là một cảnh chụp khác độ mờ / có chữ đè (Trại Buôn Người: cảnh điện thoại tách
+# thành 3 cụm, tâm giống 0,90-0,92) - gộp vào cụm lớn hơn để khối "cảnh tiêu biểu" không hiện hai ảnh của cùng một cảnh.
+# Phim toàn cảnh hội thoại trong phòng tối có thể bị gộp quá tay (ít cảnh hơn) - chấp nhận, trùng trông tệ hơn.
+MERGE_SIMILARITY = 0.89
 MAX_IMAGES = 2500
 
 
@@ -70,4 +74,16 @@ def cluster_scenes(embeddings: np.ndarray, authors: list[str]) -> list[SceneClus
             SceneCluster(members=idx, representative=idx[int(np.argmax(embeddings[idx] @ centre))], cohesion=cohesion)
         )
     out.sort(key=lambda c: (-len({authors[i].strip().lower() for i in c.members}), -len(c.members)))
-    return out
+
+    merged: list[SceneCluster] = []
+    centres: list[np.ndarray] = []
+    for cluster in out:
+        centre = embeddings[cluster.members].mean(axis=0)
+        centre /= np.linalg.norm(centre)
+        twin = next((k for k, other in enumerate(centres) if float(centre @ other) >= MERGE_SIMILARITY), None)
+        if twin is None:
+            merged.append(cluster)
+            centres.append(centre)
+        else:
+            merged[twin].members.extend(cluster.members)
+    return merged
