@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     ai_provider_concurrency: int = 2
     # Model Bee RIÊNG cho việc viết report Social Topic (app/ai/tasks/report.py) - mọi lời gọi Bee khác dùng model của dòng
     # "bee" trong ai_providers (Admin › AI). Rỗng = dùng model đó cho cả report. Từ 20/10/2026.
-    bee_report_model: str = "bee/claude-fable-5"
+    bee_report_model: str = ""
     # Dưới ngưỡng tự tin: cảm xúc -> neutral, giai đoạn -> khac, khía cạnh -> không gắn.
     jev_min_confidence: float = 0.6
     jev_stage_min_confidence: float = 0.5

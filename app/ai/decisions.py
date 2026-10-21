@@ -11,6 +11,7 @@ Chỉ dùng cho CA KHÓ: luật và model nhà trồng (ViSoBERT - app/ai/visobe
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import httpx
@@ -24,6 +25,19 @@ POST_MODEL_DEFAULT = "openai/gpt-6-luna-decisions"
 
 # Tổng token kể từ lúc tiến trình chạy (log, script đo chi phí).
 usage_totals = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
+
+# Nhà cung cấp của dòng "bee" không có /decisions (vd. tạm trỏ sang Kira khi Bee hết số dư - 404): đánh dấu trong chừng này
+# giây; trong lúc đó bên gọi dùng chat (model của dòng bee, vd. qwen3.8-flash) cho ca khó thay vì model quyết định.
+_UNSUPPORTED_SECONDS = 1800
+_unsupported_until = 0.0
+
+
+class DecisionsUnsupportedError(RuntimeError):
+    pass
+
+
+def decisions_supported() -> bool:
+    return time.monotonic() >= _unsupported_until
 
 
 def comment_model() -> str:
@@ -49,7 +63,11 @@ async def decide(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Một request: `answers` theo tên câu hỏi. Thử lại 3 lần với 429/5xx/lỗi mạng rồi raise."""
+    """Một request: `answers` theo tên câu hỏi. Thử lại 3 lần với 429/5xx/lỗi mạng rồi raise. 404 (nhà cung cấp không có
+    /decisions) -> DecisionsUnsupportedError và decisions_supported() = False một lúc."""
+    global _unsupported_until
+    if not decisions_supported():
+        raise DecisionsUnsupportedError("decisions_unsupported")
     url, headers = await bee_endpoint()
     own = client is None
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(30.0))
@@ -63,6 +81,9 @@ async def decide(
                     raise
                 await asyncio.sleep(1 + attempt)
                 continue
+            if resp.status_code in (404, 405):
+                _unsupported_until = time.monotonic() + _UNSUPPORTED_SECONDS
+                raise DecisionsUnsupportedError(f"decisions_unsupported HTTP {resp.status_code}")
             await ops_alerts.note_jev_response(resp.status_code, resp.text if resp.status_code >= 400 else "")
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < 2:
                 await asyncio.sleep(2 * (attempt + 1))

@@ -31,10 +31,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.ai.decisions import decisions_supported
 from app.ai.jev import classify_post_relevance_jev, use_jev
-from app.ai.runtime import call_llm, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
+from app.ai.runtime import call_llm, parse_json_response
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -219,10 +220,13 @@ async def classify_post_relevance_kira(
     sai định dạng. Được gom lô chung với các bài khác đang phân loại cùng lúc."""
     if not content or not content.strip() or not movie.get("title"):
         return None
-    if use_jev():
-        return await classify_post_relevance_jev(
+    if use_jev() and decisions_supported():
+        verdict = await classify_post_relevance_jev(
             content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles
         )
+        # Nhà cung cấp không có /decisions (dòng bee tạm trỏ sang Kira): bài này đi tiếp đường chat bên dưới.
+        if verdict is not None or decisions_supported():
+            return verdict
     if not await _within_daily_cap():
         return None
     future: asyncio.Future[Verdict | None] = asyncio.get_running_loop().create_future()

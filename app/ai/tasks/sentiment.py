@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from app.ai import visobert
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
-from app.ai.decisions import post_model
+from app.ai.decisions import decisions_supported, post_model
 from app.ai.jev import classify_comments_jev, use_jev
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
@@ -203,7 +203,8 @@ async def classify_comments(
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
     # 5. Chat Bee: khi không dùng model quyết định, hoặc Jev lỗi và bật settings.jev_kira_fallback. Ghi nhãn vào cache cho lần gặp lại.
-    if rest and (not jev_mode or settings.jev_kira_fallback) and await ai_is_enabled():
+    # Cả khi nhà cung cấp không có /decisions (dòng bee tạm trỏ sang Kira): ca khó dùng chat (vd. qwen3.8-flash).
+    if rest and (not jev_mode or settings.jev_kira_fallback or not decisions_supported()) and await ai_is_enabled():
         for start in range(0, len(rest), BATCH_SIZE):
             chunk = rest[start : start + BATCH_SIZE]
             chunk_films = [films[i] if films else None for i, _ in chunk]
