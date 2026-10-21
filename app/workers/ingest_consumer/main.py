@@ -55,6 +55,7 @@ from app.services.relevance_rules import (
     mentions_film_manual,
     mentions_keyword_or_title,
     mentions_other_film,
+    mentions_short_title,
     no_diacritics_reason,
     resolve_relevance,
 )
@@ -146,16 +147,17 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
 _film_keyword_cache: dict[str, str | None] = {}
 
 
-async def _route_shared_page_post(content: str | None) -> str | None:
+async def _route_shared_page_post(content: str | None, posted_at: object = None) -> str | None:
     """keyword_id (từ khoá Facebook của phim, ưu tiên từ khoá đúng tên phim) của phim đang theo dõi mà bài nêu tên
-    (tên phim hoặc một từ khoá của phim). Nhiều phim thì lấy phim có tên dài nhất khớp (cụ thể nhất)."""
+    (tên phim hoặc một từ khoá của phim). Nhiều phim thì lấy phim có tên dài nhất khớp (cụ thể nhất). Không phim nào
+    khớp đủ tên thì thử tên rút gọn quanh ngày công chiếu (mentions_short_title) - chỉ nhận khi đúng một phim khớp."""
     if not content:
         return None
-    matches = [
-        movie
-        for movie in (await _tracked_movies()).values()
-        if movie.get("keywords") and mentions_keyword_or_title(content, movie["keywords"], movie.get("title"))
-    ]
+    movies = [movie for movie in (await _tracked_movies()).values() if movie.get("keywords")]
+    matches = [movie for movie in movies if mentions_keyword_or_title(content, movie["keywords"], movie.get("title"))]
+    if not matches:
+        short = [movie for movie in movies if mentions_short_title(content, movie, posted_at)]
+        matches = short if len(short) == 1 else []
     if not matches:
         return None
     movie = max(matches, key=lambda m: len(str(m.get("title") or "")))
@@ -245,7 +247,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if not keyword_id and payload.get("source") == "page":
         # Trang nguồn CHUNG (CGV, trang review... - không gắn phim): tìm phim đang theo dõi mà bài nêu tên, rồi đi
         # qua đúng các cổng liên quan như bài tìm kiếm của phim đó. Không nêu phim nào thì bỏ.
-        keyword_id = await _route_shared_page_post(mapper(payload).get("content"))
+        mapped = mapper(payload)
+        keyword_id = await _route_shared_page_post(mapped.get("content"), mapped.get("posted_at"))
         if not keyword_id:
             await _drop(platform=platform, post_id=post_id, reason="source_page_no_film")
             return
@@ -318,14 +321,16 @@ async def handle_post(payload: dict[str, Any]) -> None:
     movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
     movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
     mentions = mentions_film_manual if settings.relevance_rules_only else mentions_keyword_or_title
-    if not mentions(draft.get("content"), movie_keywords, keyword.get("movie_title")):
+    if not mentions(draft.get("content"), movie_keywords, keyword.get("movie_title")) and not mentions_short_title(
+        draft.get("content"), movie, draft.get("posted_at")
+    ):
         other_film = mentions_other_film(
             draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
         )
         if other_film and not payload.get("_rerouted"):
             # Bài tìm ra bằng từ khoá phim A nhưng chỉ nói về phim B đang theo dõi: chuyển sang phim B (đi lại mọi cổng
             # như bài của B) thay vì bỏ - 16/10/2026 thấy bài về Hộ Linh Tráng Sĩ tìm ra bằng từ khoá Án Mạng Xém Hoàn Hảo.
-            other_keyword_id = await _route_shared_page_post(draft.get("content"))
+            other_keyword_id = await _route_shared_page_post(draft.get("content"), draft.get("posted_at"))
             if other_keyword_id and other_keyword_id != keyword_id:
                 logger.info("post_rerouted_other_film", platform=platform, post_id=post_id, other_film=other_film)
                 await handle_post({**payload, "keyword_id": other_keyword_id, "_rerouted": True})

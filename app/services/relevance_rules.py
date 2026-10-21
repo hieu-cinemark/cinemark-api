@@ -617,6 +617,53 @@ def in_release_window(content: str | None, movie: dict | None, posted_at: object
     return any(_contains_phrase(text, phrase) for phrase in _RELEASE_CONTEXT_PHRASES)
 
 
+# --- Tên rút gọn quanh ngày công chiếu (short_title, 21/10/2026) ---
+# Bài booking / page chung hay chỉ viết tên ngắn: "Phim Scotty đang chiếu", "#scotty" cho "SCOTTY: GIẢI CỨU HOÀNG THƯỢNG" -
+# cổng mentions_keyword_or_title cần đủ tên nên loại (đo 21/10: 4 bài booking Scotty của Fan Xi Nê Ma bị loại như vậy).
+# Nhận tên rút gọn (phần trước / sau ":" hoặc " - ", tên trong ngoặc) khi bài đăng trong khoảng quanh ngày công chiếu -
+# quảng bá thường bắt đầu cả tháng trước ngày chiếu nên cửa sổ trước rộng hơn RELEASE_WINDOW_BEFORE_DAYS.
+SHORT_TITLE_BEFORE_DAYS = 30
+SHORT_TITLE_AFTER_DAYS = 60
+# Tên một chữ phải dài từ chừng này ký tự ("scotty") - chữ ngắn ("mai", "nha") là từ thường ngày.
+SHORT_TITLE_MIN_SINGLE_WORD = 6
+
+
+def short_title_names(title: str | None) -> list[str]:
+    """Các tên rút gọn (đã bỏ dấu) của phim có tên dạng "A: B" / "A - B" / "A (B)": A, B và tên trong ngoặc - hai chữ trở
+    lên (từ 8 ký tự viết liền), hoặc một chữ từ SHORT_TITLE_MIN_SINGLE_WORD ký tự. Tên không có phần tách thì rỗng (đã có
+    cổng tên đầy đủ)."""
+    raw = str(title or "")
+    pieces = [*re.split(r"\s*[:：]\s*|\s+[-–]\s+", raw), *re.findall(r"[(（]([^)）]+)[)）]", raw)]
+    if len(pieces) < 2:
+        return []
+    names: list[str] = []
+    for piece in pieces:
+        words = [word for word in normalize_title(re.sub(r"[(（][^)）]*[)）]", "", piece)).split() if not word.isdigit()]
+        name = " ".join(words)
+        long_enough = (len(words) >= 2 and len(_squash(name)) >= 8) or (
+            len(words) == 1 and len(name) >= SHORT_TITLE_MIN_SINGLE_WORD
+        )
+        if long_enough and name not in names and name != normalize_title(raw):
+            names.append(name)
+    return names
+
+
+def mentions_short_title(content: str | None, movie: dict | None, posted_at: object) -> bool:
+    """Bài nhắc tên rút gọn của phim (chữ hoặc hashtag) và đăng trong [công chiếu - SHORT_TITLE_BEFORE_DAYS, công chiếu
+    + SHORT_TITLE_AFTER_DAYS]. Không có ngày công chiếu / ngày đăng thì không nhận."""
+    movie = movie or {}
+    released, posted = _to_date(movie.get("released_at")), _to_date(posted_at)
+    if not released or not posted:
+        return False
+    if not released - timedelta(days=SHORT_TITLE_BEFORE_DAYS) <= posted <= released + timedelta(days=SHORT_TITLE_AFTER_DAYS):
+        return False
+    text = normalize_title(content)
+    if not text:
+        return False
+    tags = _hashtags(content)
+    return any(_contains_phrase(text, name) or _squash(name) in tags for name in short_title_names(movie.get("title")))
+
+
 def resolve_relevance(
     label: str | None,
     content: str | None,
@@ -658,6 +705,8 @@ def resolve_relevance(
         return True, "related", "full_title"
     if not strict and full_title_rule and in_release_window(content, movie, posted_at):
         return True, "related", "release_window"
+    if not strict and full_title_rule and mentions_short_title(content, movie, posted_at):
+        return True, "related", "short_title"
     if has_keyword or label == "uncertain":
         return False, label or "uncertain", None
     return None, label, None
