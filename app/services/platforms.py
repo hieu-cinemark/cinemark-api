@@ -56,7 +56,9 @@ def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
         "repost_count": payload.get("shares_count") or 0,
         "quote_count": 0,
         "reshare_count": 0,
-        "view_count": 0,
+        # Tìm kiếm / bảng tin không trả lượt xem; spider-hub chỉ có view_count từ tab Reels của trang (message
+        # kind="metrics", xem handle_post) - persist_post giữ số đã có khi lần crawl lại gửi 0.
+        "view_count": payload.get("view_count") or 0,
         "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
         "raw": payload,
     }

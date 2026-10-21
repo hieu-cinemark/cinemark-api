@@ -64,6 +64,7 @@ from app.repositories.d1.posts import (
     post_mentions_movie,
     post_repo,
     reputable_authors,
+    update_post_views,
 )
 
 logger = get_logger(__name__)
@@ -91,6 +92,7 @@ __all_reexports__ = (
     persist_post,
     post_mentions_movie,
     reputable_authors,
+    update_post_views,
 )
 
 

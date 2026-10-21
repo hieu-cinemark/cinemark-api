@@ -684,6 +684,16 @@ class PostRepository:
                 break
         return selected
 
+    async def update_post_views(self, platform: str, external_id: str, view_count: int) -> bool:
+        """Chỉ cập nhật lượt xem của một bài đã có (message kind="metrics" của spider-hub - lượt xem reel Facebook từ tab
+        Reels của trang). Bài chưa có thì không làm gì (không đủ dữ liệu để tạo). False khi câu lệnh lỗi."""
+        result = await d1_query(
+            "UPDATE posts SET view_count = ? WHERE platform = ? AND external_id = ? AND view_count != ?",
+            [int(view_count), platform, external_id, int(view_count)],
+            quiet=True,
+        )
+        return result is not None
+
     async def get_post_by_external_id(self, platform: str, external_id: str) -> dict[str, Any] | None:
         """Một bài theo (platform, external_id) - id mà payload comment của spider-hub mang theo
         (xem handle_comment trong app/workers/ingest_consumer/main.py), khác với id nội bộ D1
@@ -828,6 +838,10 @@ class PostRepository:
             return True
 
         post_id = existing["id"]
+        # Lượt xem không bao giờ về 0: Facebook chỉ có lượt xem reel từ tab Reels của trang (update_post_views) - lần
+        # crawl lại từ tìm kiếm / bảng tin gửi 0 thì giữ số đã có thay vì xoá.
+        if not engagement["view_count"] and existing.get("view_count"):
+            engagement["view_count"] = existing["view_count"]
         changed = any(existing.get(field) != engagement[field] for field in ENGAGEMENT_FIELDS)
 
         # relevance_* dùng COALESCE(?, column) thay vì ghi đè thẳng: nhánh này chạy lại mỗi
@@ -904,6 +918,10 @@ async def list_posts_needing_comments(**kwargs: Any) -> list[dict[str, Any]]:
 
 async def get_post_by_external_id(platform: str, external_id: str) -> dict[str, Any] | None:
     return await post_repo.get_post_by_external_id(platform, external_id)
+
+
+async def update_post_views(platform: str, external_id: str, view_count: int) -> bool:
+    return await post_repo.update_post_views(platform, external_id, view_count)
 
 
 async def get_post(post_id: str) -> dict[str, Any] | None:

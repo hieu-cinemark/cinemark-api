@@ -46,6 +46,7 @@ from app.services.d1 import (
     get_post_by_external_id,
     persist_comment,
     persist_post,
+    update_post_views,
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
 from app.services.relevance_rules import (
@@ -225,6 +226,13 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # quyết định ingest của TikTok đều gửi đi với post_id=None và không bao giờ join lại
     # được với bài của nó trong lake (app/lake/silver.py).
     post_id = payload.get("post_id") or payload.get("video_id")
+
+    if payload.get("kind") == "metrics":
+        # Chỉ số liệu của bài đã có (lượt xem reel Facebook từ tab Reels của trang, spider-hub page_feed) - không qua
+        # các cổng liên quan, không tạo bài mới.
+        if post_id and payload.get("view_count"):
+            await update_post_views(str(platform), str(post_id), int(payload["view_count"]))
+        return
 
     mapper = get_post_mapper(platform)
     if mapper is None:
