@@ -17,7 +17,7 @@ POST_RELEVANCE_SYSTEM_PROMPT là giá trị mặc định) chứa tiêu chí gá
 JSON theo lô nằm trong user prompt dựng ở đây, nên system prompt bị sửa cũng không
 làm hỏng việc parse.
 
-Kiểm soát chi phí: tuân theo nút bật/tắt Kira trên dashboard (call_kira không có
+Kiểm soát chi phí: tuân theo nút bật/tắt Kira trên dashboard (call_llm không có
 force) và giới hạn số bài mỗi ngày (settings.kira_post_relevance_daily_cap, đếm
 trong Redis). Fail open: bài nào gặp bất kỳ vấn đề gì sẽ nhận None, và bên gọi khi
 đó giữ bài lại thay vì loại.
@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.ai.jev import classify_post_relevance_jev, use_jev
-from app.ai.kira import call_kira, parse_json_response
+from app.ai.runtime import call_llm, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
 from app.core.config import settings
@@ -104,7 +104,7 @@ def _verdict(entry: Any) -> Verdict | None:
 async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
     started = time.monotonic()
     try:
-        response = await call_kira(
+        response = await call_llm(
             task=TASK,
             system_prompt=POST_RELEVANCE_SYSTEM_PROMPT,
             user_prompt=batch_prompt(jobs),

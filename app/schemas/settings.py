@@ -298,7 +298,8 @@ class AiSettingsUpdate(BaseModel):
     enabled: bool
     model: str = Field(min_length=1, max_length=120)
     prompts: dict[str, str] = Field(default_factory=dict)
-    active_report_provider: str = Field(default="kira", pattern="^(kira|bee)$")
+    # Không còn dùng (Kira đã bỏ 2026-10-21, report luôn do Bee viết) - giữ để dashboard cũ gửi lên không bị 422.
+    active_report_provider: str = Field(default="bee", pattern="^(kira|bee)$")
 
 
 class AiProviderOut(BaseModel):

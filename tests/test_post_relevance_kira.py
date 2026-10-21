@@ -65,7 +65,7 @@ def _reply_with(monkeypatch: pytest.MonkeyPatch, answer, seen: list | None = Non
         count = len(re.findall(r"^\[\d+\] TARGET FILM", kwargs["user_prompt"], flags=re.MULTILINE))
         return json.dumps({"results": answer(count)})
 
-    monkeypatch.setattr(post_relevance, "call_kira", fake_call_kira)
+    monkeypatch.setattr(post_relevance, "call_llm", fake_call_kira)
 
 
 def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
@@ -139,7 +139,7 @@ def test_cap_zero_disables(monkeypatch, fake_redis) -> None:
 
 
 @pytest.mark.parametrize(
-    "answer", [RuntimeError("kira_temporarily_disabled"), "not json", '{"classification": "relevant"}']
+    "answer", [RuntimeError("ai_temporarily_disabled"), "not json", '{"classification": "relevant"}']
 )
 def test_failures_fail_open(monkeypatch, fake_redis, answer) -> None:
     _reply_with(monkeypatch, answer)

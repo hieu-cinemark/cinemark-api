@@ -26,7 +26,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
-from app.ai.kira import call_kira, parse_json_response
+from app.ai.runtime import call_llm, parse_json_response
 from app.clients.kafka import publish_action_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.errors import NotFoundError, ValidationError
@@ -406,7 +406,7 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
                 + "\n".join(f"    * {text}" for text in samples)
             )
         try:
-            raw = await call_kira(
+            raw = await call_llm(
                 task=REVIEW_TASK, system_prompt=REVIEW_PROMPT, user_prompt="\n".join(blocks), max_tokens=6000
             )
         except Exception as exc:  # noqa: BLE001 - Kira tắt/lỗi: lượt sau xét lại

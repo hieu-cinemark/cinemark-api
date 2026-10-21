@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.ai.kira import call_kira, parse_json_response
+from app.ai.runtime import call_llm, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.clients.kafka import publish_crawl_request
 from app.core.config import settings
@@ -212,7 +212,7 @@ async def _ask_kira(
         "Candidate hashtags (seen = number of TikTok videos it appeared on together with this film's hashtags; 0 = generated from the title):\n"
         + "\n".join(f"- {c['display']} (seen={c.get('seen', 0)})" for c in candidates)
     )
-    raw = await call_kira(task=TASK, system_prompt=SYSTEM_PROMPT, user_prompt=user, max_tokens=8000)
+    raw = await call_llm(task=TASK, system_prompt=SYSTEM_PROMPT, user_prompt=user, max_tokens=8000)
     parsed = parse_json_response(raw)
     results = parsed.get("results") if isinstance(parsed, dict) else None
     out: dict[str, dict[str, Any]] = {}

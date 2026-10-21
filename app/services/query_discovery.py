@@ -25,7 +25,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.ai.kira import call_kira, parse_json_response
+from app.ai.runtime import call_llm, parse_json_response
 from app.ai.movie_context import cast_list, movie_context_block
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
@@ -126,7 +126,7 @@ async def _generate_queries(movie: dict[str, Any], existing: list[str]) -> list[
         f"Câu đang có: {', '.join(existing[:20]) or '(chưa có)'}\n\n"
         "Bài mẫu:\n" + "\n".join(f"- {text}" for text in samples)
     )
-    raw = await call_kira(task=GENERATE_TASK, system_prompt=GENERATE_PROMPT, user_prompt=user, max_tokens=4000)
+    raw = await call_llm(task=GENERATE_TASK, system_prompt=GENERATE_PROMPT, user_prompt=user, max_tokens=4000)
     parsed = parse_json_response(raw)
     queries = parsed.get("queries") if isinstance(parsed, dict) else None
     out = []
@@ -173,7 +173,7 @@ async def _ask_kira(
         f"Other films being tracked: {', '.join(others)}\n\n"
         "Candidate search queries:\n" + "\n".join(f"- {q}" for q in queries)
     )
-    raw = await call_kira(task=TASK, system_prompt=SYSTEM_PROMPT, user_prompt=user, max_tokens=6000)
+    raw = await call_llm(task=TASK, system_prompt=SYSTEM_PROMPT, user_prompt=user, max_tokens=6000)
     parsed = parse_json_response(raw)
     results = parsed.get("results") if isinstance(parsed, dict) else None
     out: dict[str, dict[str, Any]] = {}

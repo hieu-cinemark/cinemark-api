@@ -228,7 +228,7 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
 
     # Model thực sự đã viết topics: model của provider đó trong ai_providers (hoặc chính
     # key của provider nếu dòng đó không có model).
-    provider = topics_result.get("provider") or "kira"
+    provider = topics_result.get("provider") or "bee"
     provider_cfg = await load_provider(provider)
     model = (provider_cfg.model if provider_cfg else "") or provider
     if provider == "bee" and settings.bee_report_model.strip():

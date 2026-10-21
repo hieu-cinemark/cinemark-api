@@ -1,13 +1,11 @@
-"""Client LLM tương thích OpenAI dùng chung cho mọi provider (kira, bee, ...). Thông
+"""Client LLM tương thích OpenAI dùng chung cho mọi provider (hiện chỉ bee). Thông
 tin của provider (base_url/api_key/model) là các dòng trong bảng ai_providers trên
 Supabase (xem app/services/platform_config_db.py) - được nạp và cache ở đây thay vì
 dùng biến môi trường, nên có thể đổi key hay thêm provider mới từ dashboard mà
 không cần deploy lại.
 
-app/ai/kira.py và app/ai/bee.py là các lớp mỏng, riêng cho từng provider, bọc
-call_ai() bên dưới: mỗi lớp giữ chính sách riêng của provider đó (Kira có nút
-bật/tắt và prompt ghi đè theo task trong ai_settings; Bee không có cả hai). Module
-này gom những gì trước đây bị lặp giữa client KiraAI và client Bee cũ - tạo
+app/ai/runtime.py và app/ai/bee.py là các lớp mỏng bọc call_ai() bên dưới (runtime.py
+thêm nút bật/tắt và prompt ghi đè theo task trong ai_settings). Module này gom - tạo
 OpenAI client, retry/backoff khi gặp 429, mỗi provider một giới hạn đồng thời, và
 một định dạng log thống nhất cho mỗi lời gọi."""
 
@@ -38,7 +36,7 @@ _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
-# Cùng đánh đổi như _AI_CFG_TTL_SECONDS của app/ai/kira.py (mỗi lần đọc Supabase
+# Cùng đánh đổi như _AI_CFG_TTL_SECONDS của app/ai/runtime.py (mỗi lần đọc Supabase
 # mất khoảng 3 giây).
 _PROVIDER_CACHE_TTL_SECONDS = 60.0
 
@@ -219,7 +217,7 @@ async def call_ai(
     lại - mỗi provider vẫn có semaphore riêng, chỉ là được quản lý theo key ở đây thay
     vì mỗi client một hằng số riêng ở cấp module).
     Raise RuntimeError nếu dòng provider thiếu hoặc chưa đủ thông tin, hoặc raise lỗi
-    OpenAI gốc sau khi đã retry hết - mọi bên gọi trong app/kira và app/bee đều đã bắt
+    OpenAI gốc sau khi đã retry hết - mọi bên gọi trong app/ai đều đã bắt
     rộng và fail open."""
     cfg = await load_provider(provider)
     if cfg is None:

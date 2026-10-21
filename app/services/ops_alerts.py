@@ -304,7 +304,7 @@ async def _ai_alerts(now: datetime) -> list[Alert]:
 
     redis = get_redis_client()
     alerts: list[Alert] = []
-    for provider in ("kira", "bee", "jev"):
+    for provider in ("bee", "jev"):
         raw = await redis.get(f"{_WALLET_PREFIX}{provider}")
         if not raw:
             continue

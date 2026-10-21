@@ -40,8 +40,8 @@ def _reply(*labels: str) -> str:
 def _kira(reply: str | Exception):
     call = AsyncMock(side_effect=reply) if isinstance(reply, Exception) else AsyncMock(return_value=reply)
     return (
-        patch("app.ai.tasks.sentiment.call_kira", call),
-        patch("app.ai.tasks.sentiment.kira_is_enabled", AsyncMock(return_value=True)),
+        patch("app.ai.tasks.sentiment.call_llm", call),
+        patch("app.ai.tasks.sentiment.ai_is_enabled", AsyncMock(return_value=True)),
     )
 
 
@@ -68,8 +68,8 @@ async def test_splits_into_batches_of_batch_size() -> None:
 
     with (
         patch.object(sentiment, "BATCH_SIZE", 3),
-        patch("app.ai.tasks.sentiment.call_kira", fake_call_kira),
-        patch("app.ai.tasks.sentiment.kira_is_enabled", AsyncMock(return_value=True)),
+        patch("app.ai.tasks.sentiment.call_llm", fake_call_kira),
+        patch("app.ai.tasks.sentiment.ai_is_enabled", AsyncMock(return_value=True)),
     ):
         result = await classify_sentiments([f"{LONG} {n}" for n in range(7)])
     assert len(calls) == 3  # 3 + 3 + 1
@@ -84,8 +84,8 @@ async def test_partial_reply_leaves_missing_as_none() -> None:
 
 async def test_kira_switched_off_returns_none_without_calling() -> None:
     with (
-        patch("app.ai.tasks.sentiment.call_kira", AsyncMock()) as mock_call,
-        patch("app.ai.tasks.sentiment.kira_is_enabled", AsyncMock(return_value=False)),
+        patch("app.ai.tasks.sentiment.call_llm", AsyncMock()) as mock_call,
+        patch("app.ai.tasks.sentiment.ai_is_enabled", AsyncMock(return_value=False)),
     ):
         assert await classify_sentiments([LONG]) == [None]
     mock_call.assert_not_awaited()

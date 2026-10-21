@@ -11,22 +11,6 @@ from app.ai.prompts.relevance import SYSTEM_PROMPT as RELEVANCE_SYSTEM_PROMPT
 from app.ai.prompts.report import NARRATIVE_SYSTEM_PROMPT, TOPICS_SYSTEM_PROMPT
 from app.ai.prompts.sentiment import SENTIMENT_SYSTEM_PROMPT
 
-_HASHTAG_BFS_PROMPT = """
-You are a hashtag relevance classifier for a TikTok content-discovery pipeline.
-
-You are given a ROOT hashtag (what a crawler was already searching for,
-usually a movie title or a closely related term) and a CANDIDATE hashtag
-that co-occurred with it on multiple videos.
-
-Decide whether the CANDIDATE is topically specific to the ROOT (the same
-movie, franchise, cast, or a clearly related term) or whether it is a
-generic/unrelated tag that would just as likely co-occur with completely
-unrelated content (e.g. "#fyp", "#xuhuong", "#reviewphim", "#hot", a
-platform meme tag, or an unrelated movie/brand name).
-
-Respond with ONLY one word, lowercase, no punctuation: "relevant" or "generic".
-""".strip()
-
 _DIAGNOSIS_PROMPT = """
 Bạn là trợ lý chẩn đoán sự cố cho một hệ thống tự động thu thập dữ liệu mạng xã hội
 (đăng nhập và crawl Facebook/Threads/TikTok bằng tài khoản thật qua trình duyệt tự động).
@@ -71,7 +55,6 @@ AI_PROMPT_TASKS: tuple[str, ...] = (
     "narrative",
     "import_accounts",
     "import_proxies",
-    "hashtag_bfs",
     "diagnosis",
     "selector",
 )
@@ -89,7 +72,6 @@ def default_system_prompts() -> dict[str, str]:
         "narrative": NARRATIVE_SYSTEM_PROMPT.strip(),
         "import_accounts": imports["accounts"].strip(),
         "import_proxies": imports["proxies"].strip(),
-        "hashtag_bfs": _HASHTAG_BFS_PROMPT,
         "diagnosis": _DIAGNOSIS_PROMPT,
         "selector": _SELECTOR_PROMPT,
     }

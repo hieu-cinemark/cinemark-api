@@ -1,15 +1,6 @@
-"""Client LLM của Beeknoee (platform.beeknoee.com) - một proxy tương thích OpenAI mà
-sản phẩm dùng cho Claude Sonnet 5. Là lớp mỏng, riêng cho provider, bọc
-app.ai.client.call_ai(provider="bee", ...): HTTP client thực sự, retry/backoff và
-giới hạn đồng thời đều nằm ở đó (cùng cấu trúc với app/ai/kira.py, nhưng Bee có
-semaphore riêng, nên Bee sập hay bị rate limit cũng không làm Kira bị nghẽn, và
-ngược lại).
-
-Từ 2026-10-03 không còn dùng mặc định (hết số dư): report và mọi bộ phân loại đều
-chạy trên Kira. Bee chỉ viết report social topic trở lại khi report provider trên
-dashboard được đặt là "bee" (app/ai/tasks/report.py), và khi đó Kira làm dự phòng
-nếu lời gọi Bee lỗi.
-"""
+"""Lớp mỏng call_bee bọc app.ai.client.call_ai(provider="bee", ...) - HTTP client, retry/backoff và giới hạn đồng thời
+đều nằm ở đó. Dùng cho report (chọn model riêng); các task khác đi qua app/ai/runtime.call_llm (cũng là Bee, thêm nút
+bật/tắt và prompt ghi đè). Kira đã bỏ từ 2026-10-21."""
 
 from __future__ import annotations
 
@@ -32,8 +23,7 @@ async def call_bee(
     task: str = "chat",
 ) -> str:
     """Một lần chat completion qua Beeknoee. Raise khi lỗi (kể cả khi "chưa cấu hình") -
-    bên gọi nên bắt rộng và bỏ qua lỗi (fail open), giống quy ước của mọi bộ phân loại
-    dùng Kira."""
+    bên gọi nên bắt rộng và bỏ qua lỗi (fail open), giống quy ước của mọi bộ phân loại."""
     return await call_ai(
         provider="bee",
         task=task,

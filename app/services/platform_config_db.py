@@ -645,7 +645,7 @@ async def _ensure_ai_settings_table() -> None:
         )
         # Thêm ngày 2026-09-25 vào một bảng đã có trên production, nên câu CREATE TABLE IF NOT
         # EXISTS trần ở trên sẽ không tự thêm cột này về sau - cột chọn provider nào
-        # (call_bee hay call_kira trong app/ai/tasks/report.py) tạo social_topic_reports, đổi
+        # (call_bee hay call_llm trong app/ai/tasks/report.py) tạo social_topic_reports, đổi
         # được từ dashboard mà không đụng tới thông tin đăng nhập trong ai_providers (xem
         # docstring của app/ai/tasks/report.py để biết vì sao có cột này: khi đó Kira gần như
         # ngồi không trên production - task LLM duy nhất còn lại có lượng gọi đáng kể là tạo
@@ -675,7 +675,7 @@ async def get_ai_settings() -> dict[str, Any]:
         "enabled": False,
         "model": "",
         "prompts": {},
-        "active_report_provider": "kira",
+        "active_report_provider": "bee",
         "updated_at": None,
     }
 

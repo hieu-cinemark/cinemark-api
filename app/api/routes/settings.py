@@ -401,8 +401,9 @@ async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) ->
 
 async def _ai_settings_out(row: dict) -> AiSettingsOut:
     from app.ai.defaults import AI_PROMPT_TASKS, default_system_prompts
+    from app.ai.runtime import AI_PROVIDER
 
-    provider = await db.get_ai_provider("kira")
+    provider = await db.get_ai_provider(AI_PROVIDER)
     defaults = default_system_prompts()
     stored = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
     prompts = []
@@ -422,7 +423,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
         model=str((provider or {}).get("model") or ""),
         configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
         prompts=prompts,
-        active_report_provider=str(row.get("active_report_provider") or "kira"),
+        active_report_provider="bee",
         updated_at=row.get("updated_at"),
     )
 
@@ -437,7 +438,7 @@ async def get_ai_settings() -> AiSettingsOut:
 async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
     from app.ai.client import invalidate_provider_cache
     from app.ai.defaults import AI_PROMPT_TASKS
-    from app.ai.kira import invalidate_ai_runtime_cache
+    from app.ai.runtime import AI_PROVIDER, invalidate_ai_runtime_cache
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
@@ -445,14 +446,14 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
         enabled=payload.enabled, prompts=prompts, active_report_provider=payload.active_report_provider
     )
 
-    existing_provider = await db.get_ai_provider("kira")
+    existing_provider = await db.get_ai_provider(AI_PROVIDER)
     await db.upsert_ai_provider(
-        "kira",
+        AI_PROVIDER,
         base_url=(existing_provider or {}).get("base_url") or "",
         api_key=None,
         model=payload.model.strip(),
     )
-    invalidate_provider_cache("kira")
+    invalidate_provider_cache(AI_PROVIDER)
     invalidate_ai_runtime_cache()
     logger.info(
         "ai_settings_updated", enabled=payload.enabled, model=payload.model.strip(), prompt_tasks=sorted(prompts)

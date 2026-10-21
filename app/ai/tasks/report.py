@@ -4,13 +4,9 @@ app/ai/prompts/report.py để biết vì sao tách hai lời gọi). Cả hai �
 (trả về None khi có bất kỳ lỗi nào), cùng quy ước với mọi bộ phân loại trong
 codebase - bên gọi tự quyết "lần này không có report" nghĩa là gì.
 
-Mặc định Kira viết report (Bee hết số dư từ 2026-10-03); tab AI settings trên
-dashboard chọn provider (active_report_provider() trong app/ai/kira.py, mặc định
-"kira"). Chọn "bee" thì Bee viết trước, và khi lời gọi Bee lỗi hoặc trả về thứ
-không dùng được (lỗi, JSON bị cắt hoặc sai cấu trúc) thì cùng prompt đó được gửi
-sang Kira. force=True của call_kira bỏ qua nút bật/tắt của các bộ phân loại ingest,
-giống các lời gọi do người vận hành bấm trong app/ai/tasks/import_parser.py - mỗi
-lần chạy report là một yêu cầu tường minh."""
+Bee viết report (Kira đã bỏ từ 2026-10-21). Lời gọi lỗi hoặc trả về thứ không dùng được (JSON bị cắt hoặc sai cấu
+trúc) thì thử lại Bee một lần với temperature lệch đi một chút - Beeknoee cache theo (model, messages, temperature), giữ
+nguyên temperature thì lần thử lại chỉ nhận lại đúng câu trả lời hỏng đã cache."""
 
 from __future__ import annotations
 
@@ -19,7 +15,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from app.ai.bee import call_bee
-from app.ai.kira import active_report_provider, call_kira, parse_json_response
+from app.ai.runtime import parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.report import (
     NARRATIVE_DATA_PROMPT,
@@ -36,52 +32,27 @@ logger = get_logger(__name__)
 T = TypeVar("T")
 
 
-async def _call_provider(
-    provider: str, *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float
-) -> str:
-    if provider == "kira":
-        return await call_kira(
-            task=task,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            force=True,
-        )
-    return await call_bee(
-        task=task,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        model=settings.bee_report_model.strip() or None,
-    )
-
-
 async def _generate(
     *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float, parse: Callable[[str], T]
 ) -> tuple[T, str]:
-    """Mặc định chỉ dùng Kira; khi dashboard chọn Bee cho report thì Bee trước, Kira dự
-    phòng. `parse` kiểm tra câu trả lời và raise khi không dùng được, nên câu trả lời
-    bị cắt/sai cấu trúc cũng được chuyển sang dự phòng, không chỉ khi lời gọi lỗi. Trả
-    về (kết quả đã parse, provider đã tạo ra nó); raise lỗi cuối cùng khi mọi provider
-    đều lỗi."""
-    providers = ["kira"] if await active_report_provider() == "kira" else ["bee", "kira"]
+    """Bee viết, thử lại một lần khi lỗi. `parse` kiểm tra câu trả lời và raise khi không dùng được, nên câu trả lời bị
+    cắt/sai cấu trúc cũng được thử lại, không chỉ khi lời gọi lỗi. Trả về (kết quả đã parse, "bee"); raise lỗi cuối cùng
+    khi cả hai lần đều lỗi."""
     last_error: Exception | None = None
-    for provider in providers:
+    for attempt in range(2):
         try:
-            response = await _call_provider(
-                provider,
+            response = await call_bee(
                 task=task,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
-                temperature=temperature,
+                temperature=temperature + 0.1 * attempt,
+                model=settings.bee_report_model.strip() or None,
             )
-            return parse(response), provider
+            return parse(response), "bee"
         except Exception as exc:
             last_error = exc
-            logger.warning("report_provider_failed", task=task, provider=provider, error=str(exc))
+            logger.warning("report_provider_failed", task=task, provider="bee", attempt=attempt + 1, error=str(exc))
     assert last_error is not None
     raise last_error
 
@@ -198,7 +169,7 @@ async def generate_topics_and_verbatims(
     (bài của khán giả). AI đọc cả hai: bài viết vừa là ngữ cảnh cho comment vừa là
     bằng chứng riêng. Trả về {"top_10_topics": [...], "top_10_verbatims": [...]} đúng cấu
     trúc ReportData của frontend (mỗi bằng chứng có "source": "post" | "comment" và id thật),
-    kèm "provider" ("bee" hoặc "kira", bên nào đã viết), hoặc None khi cả hai đều lỗi."""
+    kèm "provider" ("bee"), hoặc None khi lỗi."""
     posts_payload, comments_payload, aliases = build_topics_payload(comments, posts or [])
     prompt = TOPICS_DATA_PROMPT.format(
         movie_info=movie_context_block(movie or {"title": movie_title}),
@@ -206,14 +177,12 @@ async def generate_topics_and_verbatims(
         comments_json=json.dumps(comments_payload, ensure_ascii=False),
     )
     try:
-        # Đã xác nhận thực tế: 8000 (ngân sách cũ của bản Kira trước đây) làm Sonnet 5 bị
+        # Đã xác nhận thực tế: 8000 (ngân sách cũ) làm Sonnet 5 bị
         # cắt giữa chừng JSON (finish_reason="length") với một phim 146 comment - đầu ra của
         # Sonnet cho cùng cấu trúc tối đa 10 topic x evidence_comments cộng tối đa 10
-        # verbatim dài dòng hơn hẳn model mà Kira từng chạy. Sonnet 5 hỗ trợ cửa sổ đầu ra
+        # verbatim dài dòng hơn hẳn model trước đó. Sonnet 5 hỗ trợ cửa sổ đầu ra
         # lớn hơn nhiều, nên có dư địa thật để chi ở đây thay vì cắt bớt prompt/cấu trúc.
-        # Đã nâng lên 150000 (2026-10-04) khi Kira viết report - chưa xác nhận model của
-        # Kira chấp nhận ngân sách đầu ra lớn vậy; nếu mọi lời gọi topics bắt đầu lỗi thì
-        # giảm con số này trước tiên.
+        # Đã nâng lên 150000 (2026-10-04); nếu mọi lời gọi topics bắt đầu lỗi thì giảm con số này trước tiên.
         #
         # temperature=0.3 chứ không phải 0.0: đã xác nhận thực tế là Beeknoee cache theo
         # (model, messages, temperature) nhưng KHÔNG theo max_tokens - lời gọi đầu tiên (bị
@@ -221,9 +190,7 @@ async def generate_topics_and_verbatims(
         # thử lại sau đó ở temperature=0 cứ trả lại nguyên câu trả lời bị cắt đó dù sau này
         # max_tokens được nâng cao đến đâu. temperature khác 0 tránh làm "đầu độc" cache như
         # vậy nếu chuyện này lặp lại với prompt nào đó - và cũng tự nhiên hơn cho một tác vụ
-        # viết so với tính tất định tuyệt đối. Giữ nguyên khi provider đang dùng là Kira -
-        # chưa có bằng chứng backend của nó không cache tương tự, và temperature khác 0 vốn
-        # là mặc định hợp lý cho tác vụ này.
+        # viết so với tính tất định tuyệt đối.
         parsed, provider = await _generate(
             task="topics",
             system_prompt=TOPICS_SYSTEM_PROMPT,
@@ -288,7 +255,7 @@ async def generate_narrative(
     try:
         # Cùng lý do temperature=0.3 như lời gọi của generate_topics_and_verbatims phía trên
         # (tránh cache vĩnh viễn một câu trả lời hỏng/bị cắt ở temperature=0). max_tokens
-        # được nâng so với ngân sách Kira cũ cũng vì lý do reasoning token ăn mất ngân sách,
+        # được nâng so với ngân sách cũ cũng vì lý do reasoning token ăn mất ngân sách,
         # dù prompt ngắn này chưa từng thấy cần tới.
         analysis, _provider = await _generate(
             task="narrative",

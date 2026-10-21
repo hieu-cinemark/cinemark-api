@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.ai.jev import judge_comment_value_jev, use_jev
-from app.ai.kira import call_kira, parse_json_response
+from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 from app.services.d1 import d1_query
 
@@ -83,7 +83,7 @@ async def _judge_movie(title: str, rows: list[dict[str, Any]]) -> dict[str, dict
             f'{i}. [{row.get("platform")}] tác giả "{row.get("author") or "?"}", {row.get("reply_count") or 0} bình luận: {caption}'
         )
     user = f"Phim: {title}\n\nCác bài:\n" + "\n".join(lines)
-    raw = await call_kira(task=TASK, system_prompt=SYSTEM_PROMPT, user_prompt=user, max_tokens=6000)
+    raw = await call_llm(task=TASK, system_prompt=SYSTEM_PROMPT, user_prompt=user, max_tokens=6000)
     parsed = parse_json_response(raw)
     results = parsed.get("results") if isinstance(parsed, dict) else None
     out: dict[str, dict[str, Any]] = {}

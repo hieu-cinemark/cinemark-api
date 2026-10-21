@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from app.ai.kira import call_kira, parse_json_response
+from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -231,7 +231,7 @@ async def parse_import(target: ImportTarget, format_hint: str, content: str) -> 
 
     system_prompt = _SYSTEM_PROMPTS[target]
     user_prompt = f"FORMAT:\n{format_hint.strip()}\n\nCONTENT:\n{content.strip()}"
-    response = await call_kira(
+    response = await call_llm(
         task=f"import_{target}",
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -252,5 +252,5 @@ async def parse_import(target: ImportTarget, format_hint: str, content: str) -> 
             row["login_use_proxy"] = bool(item.get("login_use_proxy", False))
         rows.append(row)
 
-    logger.info("import_parsed", target=target, row_count=len(rows), source="kira")
+    logger.info("import_parsed", target=target, row_count=len(rows), source="ai")
     return rows

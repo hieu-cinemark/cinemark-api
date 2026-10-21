@@ -55,7 +55,7 @@ async def test_classify_uses_jev_then_falls_back(monkeypatch):
 
     monkeypatch.setattr(sentiment, "cached_comment_labels", no_cache)
     monkeypatch.setattr(sentiment, "remember_comment_labels", remember)
-    monkeypatch.setattr(sentiment, "kira_is_enabled", kira_off)
+    monkeypatch.setattr(sentiment, "ai_is_enabled", kira_off)
     monkeypatch.setattr(jev.asyncio, "sleep", lambda *_: _noop())
 
     labels = await sentiment.classify_comments([LONG, LONG + " FAIL"], [{"title": "Trại Buôn Người"}, None])

@@ -6,7 +6,7 @@ report). Cùng lời gọi đó còn gán khía cạnh được khen/chê và gi
 Theo lô: mỗi lời gọi Kira phân loại tối đa BATCH_SIZE comment. Với mỗi comment, chi
 phí cố định của một lời gọi (system prompt, độ trễ, một suất đồng thời) lớn hơn hẳn
 bản thân comment, nên mỗi lời gọi một comment không theo kịp một ngày crawl bận
-(khoảng 22 nghìn comment). Đi qua task "sentiment" của call_kira, nên nút bật/tắt
+(khoảng 22 nghìn comment). Đi qua task "sentiment" của call_llm, nên nút bật/tắt
 Kira và prompt ghi đè trên dashboard đều có hiệu lực.
 
 Được gọi từ vòng sweep chạy nền của ingest consumer
@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
 from app.ai.jev import classify_comments_jev, use_jev
-from app.ai.kira import call_kira, kira_is_enabled, parse_json_response
+from app.ai.runtime import call_llm, ai_is_enabled, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
 from app.ai.tasks.sentiment_rules import cached_comment_labels, remember_comment_labels, rule_sentiment
@@ -110,7 +110,7 @@ async def _classify_batch(
     messages: list[str], films: list[dict[str, Any] | None] | None = None
 ) -> list[CommentLabel | None]:
     try:
-        response = await call_kira(
+        response = await call_llm(
             task="sentiment",
             system_prompt=SENTIMENT_SYSTEM_PROMPT,
             user_prompt=_user_prompt(messages, films),
@@ -123,7 +123,7 @@ async def _classify_batch(
         if not isinstance(results, list):
             raise TypeError(f"unexpected sentiment shape: {str(parsed)[:200]}")
     except Exception as exc:  # noqa: BLE001 - fail open, các comment tạm chưa được phân loại
-        logger.warning("kira_sentiment_failed", error=exc, batch_size=len(messages))
+        logger.warning("llm_sentiment_failed", error=exc, batch_size=len(messages))
         return [None] * len(messages)
 
     labels: list[CommentLabel | None] = [None] * len(messages)
@@ -139,7 +139,7 @@ async def _classify_batch(
             labels[index - 1] = label
     missing = labels.count(None)
     if missing:
-        logger.warning("kira_sentiment_incomplete", missing=missing, batch_size=len(messages))
+        logger.warning("llm_sentiment_incomplete", missing=missing, batch_size=len(messages))
     return labels
 
 
@@ -182,7 +182,7 @@ async def classify_comments(
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
     # 4. Kira: khi không dùng Jev, hoặc Jev lỗi và bật settings.jev_kira_fallback. Ghi nhãn vào cache cho lần gặp lại.
-    if rest and (not jev_mode or settings.jev_kira_fallback) and await kira_is_enabled():
+    if rest and (not jev_mode or settings.jev_kira_fallback) and await ai_is_enabled():
         for start in range(0, len(rest), BATCH_SIZE):
             chunk = rest[start : start + BATCH_SIZE]
             chunk_films = [films[i] if films else None for i, _ in chunk]
@@ -190,8 +190,8 @@ async def classify_comments(
                 labels[i] = label
         done = [(m, label) for i, m in rest if (label := labels[i]) is not None]
         await remember_comment_labels(done)
-        routed["kira"] = len(done)
-        routed["kira_failed"] = len(rest) - len(done)
+        routed["llm"] = len(done)
+        routed["llm_failed"] = len(rest) - len(done)
     if routed:
         logger.info("sentiment_routed", **routed)
     return labels
