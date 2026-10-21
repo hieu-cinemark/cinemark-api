@@ -60,6 +60,7 @@ from app.services.relevance_rules import (
     resolve_relevance,
 )
 from app.services.stats_summary import bump_ingest_decision
+from app.services.tracked_posts import tracked_keyword_for
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
@@ -236,6 +237,12 @@ async def handle_post(payload: dict[str, Any]) -> None:
             await update_post_views(str(platform), str(post_id), int(payload["view_count"]))
         return
 
+    if payload.get("source") != "tracked":
+        # Bài booking đang theo dõi (app/services/tracked_posts.py): ép gán vào phim, lưu như bài trang nguồn của phim.
+        tracked_keyword = await tracked_keyword_for(str(platform), payload)
+        if tracked_keyword:
+            payload = {**payload, "keyword_id": tracked_keyword, "source": "tracked"}
+
     mapper = get_post_mapper(platform)
     if mapper is None:
         logger.warning("post_unregistered_platform", platform=platform, post_id=post_id)
@@ -288,7 +295,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # Cào theo nguồn (spider facebook_page_feed, 2026-10-16): bài đăng trên trang nguồn đã gắn với phim (fanpage chính
     # thức, nhà phát hành...) là về phim đó dù không nhắc tên ("Nó làm gì em chưa???" + ảnh) - bỏ cổng từ khoá/tên phim
     # và Kira, lưu là liên quan. Vẫn qua lọc ngôn ngữ ở trên.
-    if payload.get("source") == "page":
+    if payload.get("source") in ("page", "tracked"):
         ok = await persist_post(
             movie_id=keyword["movie_id"],
             keyword_id=keyword_id,
@@ -303,13 +310,13 @@ async def handle_post(payload: dict[str, Any]) -> None:
             await _note_drop(platform, "d1_write_failed", post_id=post_id)
             await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
             return
-        logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"), source="page")
+        logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"), source=payload.get("source"))
         await _decide(
             platform=platform,
             post_id=post_id,
             keyword_id=keyword_id,
             decision="kept",
-            reason="source_page",
+            reason="tracked" if payload.get("source") == "tracked" else "source_page",
             confidence=None,
             has_keyword=contains_keyword(draft.get("content"), keyword["keyword"]),
         )

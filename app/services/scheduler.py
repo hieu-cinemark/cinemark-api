@@ -40,7 +40,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
-from app.services import channel_profiles, omar_comments, omar_trending, ops_alerts, priority_channels
+from app.services import channel_profiles, omar_comments, omar_trending, ops_alerts, priority_channels, tracked_posts
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -550,6 +550,28 @@ async def _omar_trending_tick() -> None:
     _spawn(_run_omar_trending())
 
 
+# Bài booking đang theo dõi (app/services/tracked_posts.py): cào lại mỗi ngày một lần, từ TRACKED_POSTS_HOUR giờ sáng.
+TRACKED_POSTS_HOUR = 6
+
+
+async def _run_tracked_posts() -> None:
+    try:
+        await tracked_posts.run_daily()
+    except Exception as exc:  # noqa: BLE001 - lượt lỗi: hôm sau chạy lại (hoặc restart trong ngày chạy lại)
+        logger.error("tracked_posts_failed", error=str(exc)[:300])
+
+
+async def _tracked_posts_tick() -> None:
+    now = datetime.now(TIMEZONE)
+    if now.hour < TRACKED_POSTS_HOUR or tracked_posts.is_running():
+        return
+    key = f"{REDIS_KEY_PREFIX}scheduler:tracked_posts:{now.date().isoformat()}"
+    if not await get_redis_client().set(key, now.isoformat(), nx=True, ex=2 * 86400):
+        return
+    logger.info("tracked_posts_firing")
+    _spawn(_run_tracked_posts())
+
+
 _CHANNEL_PROFILES_KEY = f"{REDIS_KEY_PREFIX}scheduler:channel_profiles"
 _threads_collecting = False
 
@@ -653,6 +675,12 @@ async def _loop() -> None:
             logger.error("scheduler_ops_alerts_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_ops_alerts_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_tracked_posts_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_tracked_posts_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_tracked_posts_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 
