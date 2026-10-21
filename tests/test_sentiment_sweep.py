@@ -27,7 +27,7 @@ def d1(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list]]:
 
 
 def _labels(monkeypatch: pytest.MonkeyPatch, labels: list[str | None]) -> None:
-    async def fake_classify(messages, films=None):
+    async def fake_classify(messages, films=None, **_):
         return [
             {"sentiment": label, "aspects": ["dien_xuat:+"] if label == "positive" else [], "stage": "da_xem"}
             if label

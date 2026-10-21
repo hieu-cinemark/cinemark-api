@@ -1,4 +1,4 @@
-"""Gán lại nhãn độ liên quan Kira cho các bài đã vào D1 mà Kira chưa kết luận (relevance_confidence IS NULL): lúc
+"""Gán lại nhãn độ liên quan (luật trước, ca khó mới gọi model quyết định của Bee - openai/gpt-6-luna-decisions) cho các bài đã vào D1 mà Kira chưa kết luận (relevance_confidence IS NULL): lúc
 Kira tắt, lỗi/504, vượt hạn mức ngày, hoặc khi ingest chạy với KIRA_INGEST_RELEVANCE=false (ingest không chờ Kira).
 Cùng bộ gom lô (app/ai/tasks/post_relevance.py) và cùng logic chốt nhãn (relevance_rules.resolve_relevance) như
 ingest consumer - khác duy nhất: bài Kira gán "not_related" được ẨN (relevance_label='not_related', keyword_match=0)
@@ -46,7 +46,7 @@ IDLE_SECONDS = 120.0
 
 async def _select(since: str, movie_id: str | None, limit: int, exclude: set[str]) -> list[dict[str, Any]]:
     sql = (
-        "SELECT p.id, p.movie_id, p.platform, p.content, k.keyword "
+        "SELECT p.id, p.movie_id, p.platform, p.content, p.posted_at, k.keyword "
         "FROM posts p LEFT JOIN keywords k ON k.id = p.keyword_id "
         f"WHERE p.relevance_confidence IS NULL AND p.scraped_at >= ? AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
     )
@@ -69,12 +69,32 @@ async def _relabel(
     movie = movies.get(row["movie_id"])
     if movie is None:
         return None
+    has_keyword = contains_keyword(row["content"], row["keyword"])
+    strict = movie.get("slug") in settings.strict_relevance_movies
+    full_title_rule = movie.get("slug") not in settings.ambiguous_title_movies
+    # Luật trước: tín hiệu phim rõ thì kết luận luôn (confidence 1.0 = luật), không gọi AI - chỉ ca khó tới Bee.
+    rule_relevant, _, context = resolve_relevance(
+        None,
+        row["content"],
+        movie,
+        has_keyword=has_keyword,
+        strict=strict,
+        full_title_rule=full_title_rule,
+        posted_at=row.get("posted_at"),
+    )
+    if rule_relevant is True:
+        if not dry_run:
+            await d1_query(
+                "UPDATE posts SET relevance_label = 'related', relevance_confidence = 1.0, relevance_labeled_at = ?, "
+                "keyword_match = 1 WHERE id = ? AND relevance_confidence IS NULL",
+                [datetime.now(tz=UTC).isoformat(), row["id"]],
+            )
+        return f"rule:{context}"
     verdict = await classify_post_relevance_kira(
         content=row["content"], movie=movie, keyword=row["keyword"], platform=row["platform"], other_titles=titles
     )
     if verdict is None:
         return None
-    has_keyword = contains_keyword(row["content"], row["keyword"])
     if verdict["label"] == "not_related":
         ai_relevant: bool | None = False
         label: str | None = "not_related"
@@ -84,8 +104,9 @@ async def _relabel(
             row["content"],
             movie,
             has_keyword=has_keyword,
-            strict=movie.get("slug") in settings.strict_relevance_movies,
-            full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
+            strict=strict,
+            full_title_rule=full_title_rule,
+            posted_at=row.get("posted_at"),
         )
     keyword_match = int(ai_relevant if ai_relevant is not None else has_keyword)
     if not dry_run:

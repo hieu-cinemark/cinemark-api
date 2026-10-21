@@ -364,6 +364,17 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # settings.kira_ingest_relevance tắt: ingest không chờ Kira (qwen có lúc 60-180 giây một lô, đủ làm
     # Kafka tồn hàng chục nghìn message) - bài vào theo tín hiệu phim/từ khoá như lúc Kira không kết luận, rồi
     # scripts/relabel_post_relevance.py gán lại nhãn Kira ở nền.
+    # Luật trước (model nhà trồng): bài có tín hiệu phim rõ (tên phim đủ / tên rút gọn quanh ngày chiếu / ngữ cảnh phim)
+    # thì kết luận luôn, không gọi AI - chỉ CA KHÓ mới tới model quyết định của Bee (openai/gpt-6-luna-decisions).
+    rule_relevant, _, _ = resolve_relevance(
+        None,
+        draft.get("content"),
+        movie,
+        has_keyword=has_keyword,
+        strict=movie.get("slug") in settings.strict_relevance_movies,
+        full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
+        posted_at=draft.get("posted_at"),
+    )
     verdict = (
         await classify_post_relevance_kira(
             content=draft.get("content"),
@@ -373,7 +384,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             other_titles=await _tracked_titles(),
         )
         # Jev (~0,4 giây/bài) đủ nhanh để phân loại ngay ở ingest; Kira chậm nên chỉ khi bật KIRA_INGEST_RELEVANCE.
-        if (settings.kira_ingest_relevance or use_jev()) and not settings.relevance_rules_only
+        if (settings.kira_ingest_relevance or use_jev()) and not settings.relevance_rules_only and rule_relevant is not True
         else None
     )
     if verdict is not None:

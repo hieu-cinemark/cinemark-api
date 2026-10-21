@@ -87,9 +87,17 @@ class Settings(BaseSettings):
     # cảm xúc comment và report topic/narrative (Beeknoee chỉ là tuỳ chọn cho report).
     kira_enabled: bool = False
     # Việc PHÂN LOẠI - gán nhãn comment (cảm xúc, khía cạnh, giai đoạn), độ liên quan của bài, giá trị comment của bài:
-    # "jev" = TypeSafe AI Jev (app/ai/jev.py, nhanh và rẻ), "kira" = như trước. Không có JEV_API_KEY thì luôn dùng Kira.
-    # Kira vẫn lo việc cần viết chữ: duyệt hashtag BFS, sinh câu tìm kiếm, đọc file import, report.
+    # "jev" = model quyết định của Bee (app/ai/decisions.py, từ 21/10/2026 thay cho gọi thẳng TypeSafe), chạy SAU luật và
+    # ViSoBERT - chỉ ca khó; "llm" = chat Bee như trước. Bình luận dùng bee_comment_model, bài viết dùng bee_post_model.
     classifier: str = "jev"
+    bee_comment_model: str = "typesafe/jev-1.14"
+    bee_post_model: str = "openai/gpt-6-luna-decisions"
+    # Model nhà trồng (ViSoBERT fine-tune, app/ai/visobert.py) chạy trước Bee cho cảm xúc bình luận và nội dung bài: đủ
+    # chắc từ mức này thì lấy luôn, không gọi Bee. Thư mục model (gitignore, 374MB) - thiếu / thiếu torch thì bỏ qua bước này.
+    visobert_enabled: bool = True
+    visobert_min_confidence: float = 0.7
+    visobert_model_dir: str = "models/visobert-cinemark"
+    visobert_batch_size: int = 32
     # Comment Jev lỗi thì thử Kira (tắt mặc định: Kira chỉ còn duyệt BFS).
     jev_kira_fallback: bool = False
     jev_api_key: str | None = None

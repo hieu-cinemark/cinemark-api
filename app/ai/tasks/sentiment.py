@@ -26,11 +26,13 @@ from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
+from app.ai import visobert
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
+from app.ai.decisions import post_model
 from app.ai.jev import classify_comments_jev, use_jev
-from app.ai.runtime import call_llm, ai_is_enabled, parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
+from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
 from app.ai.tasks.sentiment_rules import cached_comment_labels, remember_comment_labels, rule_sentiment
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -144,7 +146,11 @@ async def _classify_batch(
 
 
 async def classify_comments(
-    messages: list[str | None], films: list[dict[str, Any] | None] | None = None
+    messages: list[str | None],
+    films: list[dict[str, Any] | None] | None = None,
+    *,
+    kind: str = "comment",
+    home_model: bool = True,
 ) -> list[CommentLabel | None]:
     """Cùng độ dài/thứ tự với `messages`: {"sentiment", "aspects", "stage"}, hoặc None với tin nhắn quá ngắn để
     phân loại, khi Kira đang tắt, hoặc khi lời gọi của lô đó lỗi. `films` (cùng độ dài, tuỳ chọn) là dòng movies của
@@ -169,10 +175,25 @@ async def classify_comments(
                 routed["cache"] += 1
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
-    # 3. Jev (settings.classifier = "jev"): mỗi comment một request, song song.
+    # 3. Model nhà trồng (ViSoBERT, app/ai/visobert.py): câu đủ chắc lấy luôn - chỉ cảm xúc, không khía cạnh/giai đoạn.
+    #    Lượt chỉ bổ sung khía cạnh/giai đoạn (home_model=False) bỏ qua bước này.
+    if rest and home_model:
+        predictions = await visobert.predict([m for _, m in rest])
+        if predictions is not None:
+            for (i, _), (sentiment, confidence) in zip(rest, predictions, strict=True):
+                if confidence >= settings.visobert_min_confidence:
+                    labels[i] = {"sentiment": sentiment, "aspects": [], "stage": "khac", "source": "visobert"}
+                    routed["visobert"] += 1
+            rest = [(i, m) for i, m in rest if labels[i] is None]
+
+    # 4. Ca khó -> model quyết định của Bee (settings.classifier = "jev"): bình luận jev-1.14, nội dung bài OpenAI.
     jev_mode = use_jev()
     if rest and jev_mode:
-        jev_labels = await classify_comments_jev([m for _, m in rest], [films[i] if films else None for i, _ in rest])
+        jev_labels = await classify_comments_jev(
+            [m for _, m in rest],
+            [films[i] if films else None for i, _ in rest],
+            model=post_model() if kind == "post" else None,
+        )
         for (i, _), label in zip(rest, jev_labels, strict=True):
             if label is not None and (parsed := _label(label)) is not None:
                 labels[i] = parsed
@@ -181,7 +202,7 @@ async def classify_comments(
         routed["jev"] = len(done)
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
-    # 4. Kira: khi không dùng Jev, hoặc Jev lỗi và bật settings.jev_kira_fallback. Ghi nhãn vào cache cho lần gặp lại.
+    # 5. Chat Bee: khi không dùng model quyết định, hoặc Jev lỗi và bật settings.jev_kira_fallback. Ghi nhãn vào cache cho lần gặp lại.
     if rest and (not jev_mode or settings.jev_kira_fallback) and await ai_is_enabled():
         for start in range(0, len(rest), BATCH_SIZE):
             chunk = rest[start : start + BATCH_SIZE]
@@ -200,5 +221,3 @@ async def classify_comments(
 async def classify_sentiments(messages: list[str | None]) -> list[str | None]:
     """Chỉ nhãn cảm xúc của classify_comments()."""
     return [label["sentiment"] if label else None for label in await classify_comments(messages)]
-
-

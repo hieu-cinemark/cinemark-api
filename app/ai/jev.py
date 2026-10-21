@@ -1,13 +1,10 @@
-"""Gán nhãn comment bằng Jev - mô hình "System One" của TypeSafe AI (api.typesafe.ai, từ 2026-10-13).
+"""Câu hỏi + chấm nhãn bằng model quyết định của Bee (app/ai/decisions.py - từ 21/10/2026 thay cho gọi thẳng TypeSafe):
+cảm xúc / giai đoạn / khía cạnh của bình luận và giá trị bình luận dùng typesafe/jev-1.14 (decisions.comment_model), độ
+liên quan và cảm xúc NỘI DUNG BÀI dùng openai/gpt-6-luna-decisions (decisions.post_model).
 
-Jev không viết chữ: nó đọc một đoạn văn bản (`state`) và trả lời các câu hỏi có kiểu - ở đây đều là `choice` (chọn một
-trong các tiêu chí, kèm xác suất từng tiêu chí và độ tự tin). Một request = một comment, mọi câu hỏi cùng lúc: cảm xúc,
-giai đoạn khán giả, và mỗi khía cạnh trong app/ai/aspects.ASPECTS một câu khen / chê / không nhắc (Jev không có câu hỏi
-chọn nhiều). Nhanh (~0,4 giây/comment, chạy song song) và rẻ hơn Kira nhiều - thay Kira cho comment khi
-settings.classifier = "jev" (xem app/ai/tasks/sentiment.py).
-
-Đo 2026-10-13 trên 30 comment thật: cảm xúc trùng Kira 22/30, giai đoạn 20/30 (Kira không phải đáp án chuẩn - nhiều chỗ
-lệch Jev hợp lý hơn). Câu trả lời dưới ngưỡng tự tin rơi về nhãn an toàn (neutral / khac / không gắn khía cạnh).
+Chỉ là CA KHÓ: luật (sentiment_rules / relevance_rules) và ViSoBERT (app/ai/visobert.py) chạy trước. Model quyết định đọc
+một đoạn văn bản (`state`) và trả lời các câu `choice` (kèm xác suất và độ tự tin); một request = một bình luận/bài, mọi câu
+hỏi cùng lúc. Câu trả lời dưới ngưỡng tự tin rơi về nhãn an toàn (neutral / khac / không gắn khía cạnh).
 """
 
 from __future__ import annotations
@@ -18,9 +15,9 @@ from typing import Any
 import httpx
 
 from app.ai.aspects import ASPECTS
+from app.ai.decisions import comment_model, decide, post_model, usage_totals
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services import ops_alerts
 
 logger = get_logger(__name__)
 
@@ -72,12 +69,11 @@ _QUESTIONS = _questions()
 
 # Giá Jev (2026-10): $0,042 / 1 triệu token đầu vào, đầu ra miễn phí - để ước chi phí trong log (jev_usage).
 USD_PER_M_INPUT = 0.042
-# Tổng token kể từ lúc tiến trình chạy (log, script đo chi phí).
-usage_totals = {"requests": 0, "input_tokens": 0, "output_tokens": 0}
 
 
 def jev_is_configured() -> bool:
-    return bool(settings.jev_api_key)
+    # Bee được kiểm tra lúc gọi (app/ai/decisions.bee_endpoint) - chưa cấu hình thì lời gọi lỗi và bên gọi fail open.
+    return True
 
 
 def use_jev() -> bool:
@@ -109,43 +105,31 @@ def _label(answers: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-async def classify_comments_jev(messages: list[str], films: list[dict[str, Any] | None]) -> list[dict[str, Any] | None]:
-    """Cùng độ dài/thứ tự với `messages`: {"sentiment", "aspects", "stage"} hoặc None khi request của comment đó lỗi
-    (bên gọi có thể chuyển sang Kira). Chạy song song tối đa settings.jev_concurrency request."""
+async def classify_comments_jev(
+    messages: list[str], films: list[dict[str, Any] | None], *, model: str | None = None
+) -> list[dict[str, Any] | None]:
+    """Cùng độ dài/thứ tự với `messages`: {"sentiment", "aspects", "stage"} hoặc None khi request của câu đó lỗi.
+    `model` mặc định là model bình luận (jev-1.14); cảm xúc nội dung bài truyền decisions.post_model(). Chạy song song tối
+    đa settings.jev_concurrency request."""
     semaphore = asyncio.Semaphore(max(1, settings.jev_concurrency))
     failures: list[str] = []
+    model = model or comment_model()
 
     async def one(client: httpx.AsyncClient, message: str, film: dict[str, Any] | None) -> dict[str, Any] | None:
         title = (film or {}).get("title")
         state = f"Phim: {title}\nBình luận: {message}" if title else f"Bình luận: {message}"
-        body = {"model": settings.jev_model, "state": state, "questions": _QUESTIONS}
         async with semaphore:
-            for attempt in range(3):
-                try:
-                    resp = await client.post(f"{settings.jev_api_base_url.rstrip('/')}/systemone", json=body)
-                    await ops_alerts.note_jev_response(resp.status_code, resp.text if resp.status_code >= 400 else "")
-                    if resp.status_code == 429 or resp.status_code >= 500:
-                        await asyncio.sleep(2 * (attempt + 1))
-                        continue
-                    resp.raise_for_status()
-                    data = resp.json() or {}
-                    usage = data.get("usage") or {}
-                    usage_totals["requests"] += 1
-                    usage_totals["input_tokens"] += int(usage.get("input_tokens") or 0)
-                    usage_totals["output_tokens"] += int(usage.get("output_tokens") or 0)
-                    await ops_alerts.note_jev_tokens(int(usage.get("input_tokens") or 0))  # chi phí ngày, cảnh báo
-                    return _label(data.get("answers") or {})
-                except (httpx.HTTPError, ValueError) as exc:
-                    if attempt == 2:
-                        failures.append(str(exc)[:200])
-                    await asyncio.sleep(1)
-            return None
+            try:
+                return _label(await decide(model, state, _QUESTIONS, client=client))
+            except Exception as exc:  # noqa: BLE001 - câu này để lượt sau
+                failures.append(str(exc)[:200])
+                return None
 
-    headers = {"Authorization": f"Bearer {settings.jev_api_key}"}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0), headers=headers) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
         labels = await asyncio.gather(*(one(client, m, f) for m, f in zip(messages, films, strict=True)))
     logger.info(
         "jev_usage",
+        model=model,
         comments=len(messages),
         total_requests=usage_totals["requests"],
         total_input_tokens=usage_totals["input_tokens"],
@@ -157,33 +141,14 @@ async def classify_comments_jev(messages: list[str], films: list[dict[str, Any] 
 
 
 async def ask(
-    state: str, questions: dict[str, dict[str, Any]], *, client: httpx.AsyncClient | None = None
+    state: str,
+    questions: dict[str, dict[str, Any]],
+    *,
+    client: httpx.AsyncClient | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
-    """Một request Jev: `answers` theo tên câu hỏi. Lỗi (sau 3 lần thử với 429/5xx) thì raise."""
-    own = client is None
-    client = client or httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0), headers={"Authorization": f"Bearer {settings.jev_api_key}"}
-    )
-    body = {"model": settings.jev_model, "state": state, "questions": questions}
-    try:
-        for attempt in range(3):
-            resp = await client.post(f"{settings.jev_api_base_url.rstrip('/')}/systemone", json=body)
-            await ops_alerts.note_jev_response(resp.status_code, resp.text if resp.status_code >= 400 else "")
-            if (resp.status_code == 429 or resp.status_code >= 500) and attempt < 2:
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
-            resp.raise_for_status()
-            data = resp.json() or {}
-            usage = data.get("usage") or {}
-            usage_totals["requests"] += 1
-            usage_totals["input_tokens"] += int(usage.get("input_tokens") or 0)
-            usage_totals["output_tokens"] += int(usage.get("output_tokens") or 0)
-            await ops_alerts.note_jev_tokens(int(usage.get("input_tokens") or 0))  # chi phí ngày, cảnh báo
-            return data.get("answers") or {}
-        raise RuntimeError("jev_retries_exhausted")
-    finally:
-        if own:
-            await client.aclose()
+    """Một request: `answers` theo tên câu hỏi (mặc định model bình luận). Lỗi sau 3 lần thử thì raise."""
+    return await decide(model or comment_model(), state, questions, client=client)
 
 
 # --- Độ liên quan của bài (thay Kira ở app/ai/tasks/post_relevance.py khi settings.classifier = "jev") -----------------
@@ -221,7 +186,7 @@ async def classify_post_relevance_jev(
         }
     }
     try:
-        answer = (await ask(state, question)).get("relevance") or {}
+        answer = (await ask(state, question, model=post_model())).get("relevance") or {}
     except Exception as exc:  # noqa: BLE001 - fail open như Kira
         logger.warning("jev_post_relevance_failed", error=str(exc)[:200])
         return None
@@ -259,9 +224,7 @@ async def judge_comment_value_jev(title: str, rows: list[dict[str, Any]]) -> dic
         }
     }
     out: dict[str, dict[str, Any]] = {}
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0), headers={"Authorization": f"Bearer {settings.jev_api_key}"}
-    ) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
 
         async def one(row: dict[str, Any]) -> None:
             caption = " ".join(str(row.get("content") or "").split())[:400]

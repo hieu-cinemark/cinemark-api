@@ -85,6 +85,15 @@ async def _save(labels: dict[str, CommentLabel], *, insights_only: bool = False,
         await d1_query(
             f"UPDATE comments SET sentiment_source = 'rule' WHERE id IN ({','.join('?' * len(rule_ids))})", rule_ids
         )
+    # Nhãn ViSoBERT chỉ có cảm xúc: ghi nguồn và để insights_classified_at NULL - lượt bổ sung khía cạnh/giai đoạn
+    # (classify_pending(insights_only=True), model quyết định của Bee) còn lấy được các dòng này.
+    viso_ids = [cid for cid, label in labels.items() if label.get("source") == "visobert"]
+    if viso_ids and not insights_only and table == "comments":
+        await d1_query(
+            "UPDATE comments SET sentiment_source = 'visobert', insights_classified_at = NULL "
+            f"WHERE id IN ({','.join('?' * len(viso_ids))})",
+            viso_ids,
+        )
     return len(ids)
 
 
@@ -142,10 +151,11 @@ async def classify_pending(
     for start in range(0, len(rows), BATCH_SIZE):
         batch = rows[start : start + BATCH_SIZE]
         films = [{k: row.get(k) for k in _FILM_FIELDS} if row.get("title") else None for row in batch]
-        labels = await classify_comments([row["message"] for row in batch], films)
+        labels = await classify_comments([row["message"] for row in batch], films, home_model=not insights_only)
         done = {row["id"]: label for row, label in zip(batch, labels, strict=True) if label is not None}
         failed_ids.extend(row["id"] for row, label in zip(batch, labels, strict=True) if label is None)
         stats.update(label["sentiment"] for label in done.values())
+        stats["visobert"] += sum(1 for label in done.values() if label.get("source") == "visobert")
         stats["with_aspects"] += sum(1 for label in done.values() if label["aspects"])
         stats["classified"] += len(done) if dry_run else await _save(done, insights_only=insights_only)
     stats["failed"] = len(failed_ids)
@@ -192,7 +202,7 @@ async def classify_pending_posts(
     for start in range(0, len(rows), BATCH_SIZE):
         batch = rows[start : start + BATCH_SIZE]
         films = [{k: row.get(k) for k in _FILM_FIELDS} if row.get("title") else None for row in batch]
-        labels = await classify_comments([row["message"] for row in batch], films)
+        labels = await classify_comments([row["message"] for row in batch], films, kind="post")
         done = {row["id"]: label for row, label in zip(batch, labels, strict=True) if label is not None}
         failed_ids.extend(row["id"] for row, label in zip(batch, labels, strict=True) if label is None)
         stats.update(label["sentiment"] for label in done.values())
