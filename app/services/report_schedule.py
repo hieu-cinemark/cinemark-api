@@ -1,6 +1,6 @@
 """Ngày hẹn tạo report Social Topic (22/10/2026): người xem trang Social Topic của cinemark chọn "ngày muốn nhận báo cáo
-tiếp theo" (Worker ghi D1 bảng report_schedules - cinemark api/lib/reportSchedule.ts). Scheduler (app/services/scheduler.py)
-mỗi REPORT_SCHEDULE_CHECK_SECONDS kiểm tra: tới ngày hẹn và đã qua REPORT_SCHEDULE_HOUR giờ VN thì tạo report cho phim
+tiếp theo" + giờ (Worker ghi D1 bảng report_schedules - cinemark api/lib/reportSchedule.ts). Scheduler (app/services/scheduler.py)
+mỗi REPORT_SCHEDULE_CHECK_SECONDS kiểm tra: tới ngày hẹn và đã qua giờ hẹn (giờ VN, mặc định DEFAULT_REPORT_TIME) thì tạo report cho phim
 đó (cùng generate_report_for_movie với nút "Tạo report" / cron), ghi last_run_for / last_run_at / last_result và xoá
 ngày hẹn. Lượt report hằng ngày (scripts/generate_social_topic_reports.py) bỏ qua phim có ngày hẹn ở tương lai.
 """
@@ -16,7 +16,7 @@ from app.services.d1 import d1_query
 logger = get_logger(__name__)
 
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
-REPORT_SCHEDULE_HOUR = 6
+DEFAULT_REPORT_TIME = "06:00"
 
 _TABLE_SQL = """CREATE TABLE IF NOT EXISTS report_schedules (
   movie_id TEXT PRIMARY KEY,
@@ -31,6 +31,8 @@ _TABLE_SQL = """CREATE TABLE IF NOT EXISTS report_schedules (
 
 async def _ensure_table() -> None:
     await d1_query(_TABLE_SQL, quiet=True)
+    # Cột giờ thêm 22/10/2026 (bảng tạo trước đó chưa có) - đã có thì D1 báo trùng cột, bỏ qua.
+    await d1_query("ALTER TABLE report_schedules ADD COLUMN next_report_time TEXT", quiet=True)
 
 
 async def future_scheduled_movie_ids() -> set[str]:
@@ -45,14 +47,13 @@ async def run_due_reports() -> int:
     """Tạo report cho mọi phim tới ngày hẹn. Nhận việc bằng UPDATE ... RETURNING (xoá ngày hẹn, ghi last_run_for) trước khi
     chạy nên hai tiến trình / hai lượt không tạo trùng. Số phim đã nhận."""
     now = datetime.now(TIMEZONE)
-    if now.hour < REPORT_SCHEDULE_HOUR:
-        return 0
     await _ensure_table()
-    today = now.date().isoformat()
+    today, clock = now.date().isoformat(), now.strftime("%H:%M")
     claimed = await d1_query(
         "UPDATE report_schedules SET last_run_for = next_report_date, next_report_date = NULL, last_run_at = ?, "
-        "last_result = 'running' WHERE next_report_date IS NOT NULL AND next_report_date <= ? RETURNING movie_id, last_run_for",
-        [datetime.now(tz=UTC).isoformat(), today],
+        "last_result = 'running' WHERE next_report_date IS NOT NULL AND (next_report_date < ? OR "
+        "(next_report_date = ? AND COALESCE(next_report_time, ?) <= ?)) RETURNING movie_id, last_run_for",
+        [datetime.now(tz=UTC).isoformat(), today, today, DEFAULT_REPORT_TIME, clock],
     )
     from app.services.social_topic import generate_report_for_movie, get_movie_for_report
 
