@@ -53,6 +53,12 @@ _LABELS = {"relevant": "related", "irrelevant": "not_related", "uncertain": "unc
 Verdict = dict[str, Any]
 
 
+def max_tokens_for(posts: int) -> int:
+    """Haiku 5.5 (gói bee-tok, 2026-10-22) suy luận ẩn trước khi trả lời: ~1.200 token cho một lô 10 bài, nên
+    300 + 120/bài cũ bị cắt giữa JSON (finish_reason=length) và cả lô mất nhãn."""
+    return 2000 + 300 * posts
+
+
 def movie_block(movie: dict[str, Any]) -> str:
     # Logline ngắn: đủ để nhận ra tên nhân vật/bối cảnh của phim mà không phình prompt của cả lô BATCH_SIZE bài.
     return movie_context_block(movie, logline_chars=250)
@@ -109,7 +115,7 @@ async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
             task=TASK,
             system_prompt=POST_RELEVANCE_SYSTEM_PROMPT,
             user_prompt=batch_prompt(jobs),
-            max_tokens=300 + 120 * len(jobs),
+            max_tokens=max_tokens_for(len(jobs)),
             platform=jobs[0].platform if len({job.platform for job in jobs}) == 1 else None,
         )
         parsed = parse_json_response(response)
