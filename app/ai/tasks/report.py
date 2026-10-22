@@ -15,7 +15,6 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from app.ai.bee import call_bee
-from app.ai.runtime import parse_json_response
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.report import (
     NARRATIVE_DATA_PROMPT,
@@ -23,6 +22,7 @@ from app.ai.prompts.report import (
     TOPICS_DATA_PROMPT,
     TOPICS_SYSTEM_PROMPT,
 )
+from app.ai.runtime import parse_json_response
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.d1 import REPORT_POST_TEXT_CHARS
