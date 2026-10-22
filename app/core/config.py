@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     visobert_min_confidence: float = 0.7
     visobert_model_dir: str = "models/visobert-cinemark"
     visobert_batch_size: int = 32
+    # Model độ liên quan của bài (app/ai/visobert_relevance.py) chạy trước AI: lấy luôn khi đủ chắc theo ngưỡng từng nhãn.
+    visobert_relevance_enabled: bool = True
+    visobert_relevance_model_dir: str = "models/visobert-relevance-relabel"
+    visobert_relevance_related_min: float = 0.9
+    visobert_relevance_not_related_min: float = 0.95
     # Comment Jev lỗi thì thử Kira (tắt mặc định: Kira chỉ còn duyệt BFS).
     jev_kira_fallback: bool = False
     jev_api_key: str | None = None

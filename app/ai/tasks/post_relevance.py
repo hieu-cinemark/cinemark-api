@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from app.ai import visobert_relevance
 from app.ai.decisions import decisions_supported
 from app.ai.jev import classify_post_relevance_jev, use_jev
 from app.ai.movie_context import movie_context_block
@@ -226,6 +227,10 @@ async def classify_post_relevance_kira(
     sai định dạng. Được gom lô chung với các bài khác đang phân loại cùng lúc."""
     if not content or not content.strip() or not movie.get("title"):
         return None
+    # Model nhà trồng trước (nhanh, không tốn lời gọi) - chỉ bài nó chưa chắc mới tới AI.
+    verdict = await visobert_relevance.decide(content, movie, keyword)
+    if verdict is not None:
+        return verdict
     if use_jev() and decisions_supported():
         verdict = await classify_post_relevance_jev(
             content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles
