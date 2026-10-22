@@ -24,6 +24,7 @@ import asyncio
 
 from app.core.logging import get_logger
 from app.services.d1 import list_movies
+from app.services.report_schedule import future_scheduled_movie_ids
 from app.services.social_topic import generate_report_for_movie, get_movie_for_report
 
 logger = get_logger(__name__)
@@ -38,6 +39,11 @@ async def generate(movie_id: str | None, dry_run: bool) -> None:
         movies = [movie]
     else:
         movies = await list_movies()
+        # Phim có "ngày muốn nhận báo cáo tiếp theo" ở tương lai: giữ report hiện tại tới ngày đó (app/services/report_schedule.py).
+        scheduled = await future_scheduled_movie_ids()
+        if scheduled:
+            logger.info("generate_social_topic_reports_skip_scheduled", count=len(scheduled))
+            movies = [movie for movie in movies if movie["id"] not in scheduled]
 
     logger.info("generate_social_topic_reports_started", count=len(movies), dry_run=dry_run)
     for movie in movies:

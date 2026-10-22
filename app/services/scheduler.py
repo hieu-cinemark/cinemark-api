@@ -555,6 +555,33 @@ async def _omar_trending_tick() -> None:
 AI_RUNTIME_SYNC_SECONDS = 600
 
 
+# Report Social Topic theo ngày hẹn (app/services/report_schedule.py): kiểm tra mỗi chừng này giây.
+REPORT_SCHEDULE_CHECK_SECONDS = 600
+_report_schedule_running = False
+
+
+async def _run_report_schedule() -> None:
+    global _report_schedule_running
+    from app.services.report_schedule import run_due_reports
+
+    try:
+        await run_due_reports()
+    except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
+        logger.error("scheduler_report_schedule_failed", error=str(exc)[:300])
+    finally:
+        _report_schedule_running = False
+
+
+async def _report_schedule_tick() -> None:
+    global _report_schedule_running
+    key = f"{REDIS_KEY_PREFIX}scheduler:report_schedule"
+    if _report_schedule_running:
+        return
+    if await get_redis_client().set(key, datetime.now(TIMEZONE).isoformat(), nx=True, ex=REPORT_SCHEDULE_CHECK_SECONDS):
+        _report_schedule_running = True
+        _spawn(_run_report_schedule())
+
+
 async def _ai_runtime_tick() -> None:
     from app.services.ai_runtime_sync import sync_ai_runtime
 
@@ -698,6 +725,10 @@ async def _loop() -> None:
             await asyncio.wait_for(_ai_runtime_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_ai_runtime_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_report_schedule_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_report_schedule_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 
