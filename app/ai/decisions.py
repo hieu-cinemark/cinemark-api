@@ -98,6 +98,9 @@ async def decide(
             if resp.status_code in (404, 405):
                 _unsupported_until = time.monotonic() + _UNSUPPORTED_SECONDS
                 raise DecisionsUnsupportedError(f"decisions_unsupported HTTP {resp.status_code}")
+            if resp.status_code == 429 and "do not exist" in resp.text:
+                # Bee trả 429 khi model không phải model quyết định (vd. điền model chat vào ô comment/post model).
+                raise RuntimeError(f"decision_model_invalid model={model} - phải là model quyết định (jev / luna)")
             await ops_alerts.note_jev_response(resp.status_code, resp.text if resp.status_code >= 400 else "")
             if (resp.status_code == 429 or resp.status_code >= 500) and attempt < 2:
                 await asyncio.sleep(2 * (attempt + 1))
