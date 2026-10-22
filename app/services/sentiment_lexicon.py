@@ -2,7 +2,7 @@
 
 Dùng cùng nhãn với app/ai/tasks/sentiment.py và dashboard Social Topic. Dùng để
 backfill hàng loạt khi Kira không dùng được hoặc để gắn nhãn nhanh theo heuristic -
-xem scripts/label_comment_sentiment_lexicon.py và app/services/sentiment_lexicon.md.
+xem app/services/sentiment_lexicon.md.
 """
 
 from __future__ import annotations

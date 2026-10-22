@@ -244,7 +244,7 @@ async def publish_comments_crawl_request(
     không âm thầm nuốt mất nó (xem docstring của publish_action_request). Những chỗ gọi
     cố ý publish RẤT NHIỀU request loại này cùng lúc - lịch quét comment hằng ngày
     (_trigger_comments_platform trong app/services/scheduler.py) và backfill hàng loạt
-    bằng tay (scripts/trigger_recent_keyword_comments.py) - thì truyền
+    bằng tay - thì truyền
     bypass_drain=False, để chính hàng tồn đó là thứ nút Dừng của nền tảng huỷ được. Đã
     xác nhận thực tế 2026-09-24: khi mọi request comment đều bị gán cứng
     bypass_drain=True, một hàng tồn comment tiktok bị kẹt/chậm (sâu hơn 500) hoàn toàn

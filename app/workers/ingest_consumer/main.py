@@ -392,7 +392,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         relevance_confidence = verdict["confidence"]
     if relevance_label == "not_related":
         # Từ 17/10/2026 LƯU nhưng ẩn (nhãn not_related) thay vì bỏ: bộ phân loại loại nhầm khá nhiều bài thật (vd. "Xem QUỶ
-        # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/relabel_full_title.py...); job
+        # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/relabel_hidden_posts.py); job
         # dọn bài not_related (app/services/cleanup.py) đã tắt trong Settings để không xoá chúng.
         logger.info(
             "post_hidden_irrelevant",
@@ -430,7 +430,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # Bài chỉ nối với phim bằng hashtag nhét vào nội dung khác ("... anh hùng💕 #traibuonnguoi #fyp"): Jev hay gán
     # "related" cho loại này. Lưu nhưng ẩn (not_related, lý do hashtag_only) trừ khi bộ phân loại rất tự tin.
     # Tắt mặc định (settings.hashtag_only_filter): dry-run 13/10/2026 chỉ đúng khoảng một nửa - bật khi đã bổ sung tên diễn
-    # viên cho các phim và xem lại mẫu (scripts/relabel_hashtag_only.py --random 20).
+    # viên cho các phim và xem lại mẫu.
     hashtag_only = settings.hashtag_only_filter and hashtag_only_mention(draft.get("content"), movie, movie_keywords)
     # Kira "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
     if settings.relevance_rules_only:
