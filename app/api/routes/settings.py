@@ -26,6 +26,7 @@ from app.schemas.settings import (
     AccountOut,
     AccountSetProxy,
     AccountUpdate,
+    AiActiveProviderUpdate,
     AiProviderOut,
     AiProviderUpdate,
     AiSettingsOut,
@@ -400,10 +401,11 @@ async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) ->
 
 
 async def _ai_settings_out(row: dict) -> AiSettingsOut:
+    from app.ai.client import active_provider_key
     from app.ai.defaults import AI_PROMPT_TASKS, default_system_prompts
-    from app.ai.runtime import AI_PROVIDER
 
-    provider = await db.get_ai_provider(AI_PROVIDER)
+    active = await active_provider_key()
+    provider = await db.get_ai_provider(active)
     defaults = default_system_prompts()
     stored = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
     prompts = []
@@ -424,6 +426,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
         configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
         prompts=prompts,
         active_report_provider="bee",
+        active_provider=active,
         updated_at=row.get("updated_at"),
     )
 
@@ -436,9 +439,10 @@ async def get_ai_settings() -> AiSettingsOut:
 
 @router.put("/ai", response_model=AiSettingsOut)
 async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
-    from app.ai.client import invalidate_provider_cache
+    from app.ai.client import active_provider_key, invalidate_provider_cache
     from app.ai.defaults import AI_PROMPT_TASKS
-    from app.ai.runtime import AI_PROVIDER, invalidate_ai_runtime_cache
+    from app.ai.runtime import invalidate_ai_runtime_cache
+    from app.services.ai_runtime_sync import sync_ai_runtime
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
@@ -446,15 +450,18 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
         enabled=payload.enabled, prompts=prompts, active_report_provider=payload.active_report_provider
     )
 
-    existing_provider = await db.get_ai_provider(AI_PROVIDER)
+    # Ô "Model" của thẻ AI = model chat của nhà cung cấp đang chọn.
+    active = await active_provider_key()
+    existing_provider = await db.get_ai_provider(active)
     await db.upsert_ai_provider(
-        AI_PROVIDER,
+        active,
         base_url=(existing_provider or {}).get("base_url") or "",
         api_key=None,
         model=payload.model.strip(),
     )
-    invalidate_provider_cache(AI_PROVIDER)
+    invalidate_provider_cache()
     invalidate_ai_runtime_cache()
+    await sync_ai_runtime()
     logger.info(
         "ai_settings_updated", enabled=payload.enabled, model=payload.model.strip(), prompt_tasks=sorted(prompts)
     )
@@ -467,8 +474,32 @@ def _ai_provider_out(row: dict) -> AiProviderOut:
         base_url=row.get("base_url") or "",
         api_key_set=bool(row.get("api_key")),
         model=row.get("model") or "",
+        chat_path=row.get("chat_path") or "/chat/completions",
+        image_model=row.get("image_model") or "",
+        decisions_path=row.get("decisions_path") or "",
+        comment_model=row.get("comment_model") or "",
+        post_model=row.get("post_model") or "",
         updated_at=row.get("updated_at"),
     )
+
+
+@router.put("/ai/active", response_model=AiSettingsOut)
+async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsOut:
+    """Chọn nhà cung cấp cho MỌI lời gọi AI (Bee / Kira) - cinemark-api, spider-hub (đọc Supabase) và Worker cinemark
+    (qua ai_runtime của D1) đều theo trong vòng một phút."""
+    from app.ai.client import invalidate_provider_cache
+    from app.ai.runtime import invalidate_ai_runtime_cache
+    from app.services.ai_runtime_sync import sync_ai_runtime
+
+    row = await db.get_ai_provider(payload.provider)
+    if not row or not row.get("base_url") or not row.get("api_key"):
+        raise ValidationError(f"Nhà cung cấp {payload.provider} chưa đủ base URL / API key")
+    await db.set_active_ai_provider(payload.provider)
+    invalidate_provider_cache()
+    invalidate_ai_runtime_cache()
+    await sync_ai_runtime()
+    logger.info("ai_active_provider_set", provider=payload.provider)
+    return await _ai_settings_out(await db.get_ai_settings())
 
 
 @router.get("/ai/providers", response_model=list[AiProviderOut])
@@ -484,12 +515,22 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     """Upsert - `key` không cần có sẵn, nên có thể thêm provider mới từ đây mà không phải
     sửa code/schema. Bỏ trống hoặc không gửi api_key thì giữ nguyên secret đã lưu."""
     from app.ai.client import invalidate_provider_cache
+    from app.services.ai_runtime_sync import sync_ai_runtime
 
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
     row = await db.upsert_ai_provider(
-        key, base_url=payload.base_url.strip(), api_key=api_key, model=payload.model.strip()
+        key,
+        base_url=payload.base_url.strip(),
+        api_key=api_key,
+        model=payload.model.strip(),
+        chat_path=payload.chat_path,
+        image_model=payload.image_model,
+        decisions_path=payload.decisions_path,
+        comment_model=payload.comment_model,
+        post_model=payload.post_model,
     )
-    invalidate_provider_cache(key)
+    invalidate_provider_cache()
+    await sync_ai_runtime()
     logger.info("ai_provider_updated", key=key, base_url=payload.base_url.strip(), model=payload.model.strip())
     return _ai_provider_out(row)
 

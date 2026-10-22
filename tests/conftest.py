@@ -28,6 +28,10 @@ def _fake_bee_decisions(monkeypatch):
     from app.ai import decisions
 
     async def endpoint():
-        return "https://bee.test/v1/decisions", {"Authorization": "Bearer k"}
+        return (
+            "https://bee.test/v1/decisions",
+            {"Authorization": "Bearer k"},
+            {"comment": "typesafe/jev-1.14", "post": "openai/gpt-6-luna-decisions"},
+        )
 
     monkeypatch.setattr(decisions, "bee_endpoint", endpoint)

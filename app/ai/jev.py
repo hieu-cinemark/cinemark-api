@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from app.ai.aspects import ASPECTS
-from app.ai.decisions import comment_model, decide, post_model, usage_totals
+from app.ai.decisions import COMMENT, POST, decide, usage_totals
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -106,21 +106,20 @@ def _label(answers: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def classify_comments_jev(
-    messages: list[str], films: list[dict[str, Any] | None], *, model: str | None = None
+    messages: list[str], films: list[dict[str, Any] | None], *, kind: str = COMMENT
 ) -> list[dict[str, Any] | None]:
     """Cùng độ dài/thứ tự với `messages`: {"sentiment", "aspects", "stage"} hoặc None khi request của câu đó lỗi.
     `model` mặc định là model bình luận (jev-1.14); cảm xúc nội dung bài truyền decisions.post_model(). Chạy song song tối
     đa settings.jev_concurrency request."""
     semaphore = asyncio.Semaphore(max(1, settings.jev_concurrency))
     failures: list[str] = []
-    model = model or comment_model()
 
     async def one(client: httpx.AsyncClient, message: str, film: dict[str, Any] | None) -> dict[str, Any] | None:
         title = (film or {}).get("title")
         state = f"Phim: {title}\nBình luận: {message}" if title else f"Bình luận: {message}"
         async with semaphore:
             try:
-                return _label(await decide(model, state, _QUESTIONS, client=client))
+                return _label(await decide(kind, state, _QUESTIONS, client=client))
             except Exception as exc:  # noqa: BLE001 - câu này để lượt sau
                 failures.append(str(exc)[:200])
                 return None
@@ -129,7 +128,7 @@ async def classify_comments_jev(
         labels = await asyncio.gather(*(one(client, m, f) for m, f in zip(messages, films, strict=True)))
     logger.info(
         "jev_usage",
-        model=model,
+        kind=kind,
         comments=len(messages),
         total_requests=usage_totals["requests"],
         total_input_tokens=usage_totals["input_tokens"],
@@ -145,10 +144,10 @@ async def ask(
     questions: dict[str, dict[str, Any]],
     *,
     client: httpx.AsyncClient | None = None,
-    model: str | None = None,
+    kind: str = COMMENT,
 ) -> dict[str, Any]:
     """Một request: `answers` theo tên câu hỏi (mặc định model bình luận). Lỗi sau 3 lần thử thì raise."""
-    return await decide(model or comment_model(), state, questions, client=client)
+    return await decide(kind, state, questions, client=client)
 
 
 # --- Độ liên quan của bài (thay Kira ở app/ai/tasks/post_relevance.py khi settings.classifier = "jev") -----------------
@@ -186,7 +185,7 @@ async def classify_post_relevance_jev(
         }
     }
     try:
-        answer = (await ask(state, question, model=post_model())).get("relevance") or {}
+        answer = (await ask(state, question, kind=POST)).get("relevance") or {}
     except Exception as exc:  # noqa: BLE001 - fail open như Kira
         logger.warning("jev_post_relevance_failed", error=str(exc)[:200])
         return None

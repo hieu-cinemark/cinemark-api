@@ -550,6 +550,19 @@ async def _omar_trending_tick() -> None:
     _spawn(_run_omar_trending())
 
 
+# Cấu hình AI cho Worker cinemark (app/services/ai_runtime_sync.py): chép sang D1 mỗi AI_RUNTIME_SYNC_SECONDS - lưu ở
+# dashboard thì đã chép ngay, vòng này bắt cả thay đổi sửa thẳng trên Supabase.
+AI_RUNTIME_SYNC_SECONDS = 600
+
+
+async def _ai_runtime_tick() -> None:
+    from app.services.ai_runtime_sync import sync_ai_runtime
+
+    key = f"{REDIS_KEY_PREFIX}scheduler:ai_runtime_sync"
+    if await get_redis_client().set(key, datetime.now(TIMEZONE).isoformat(), nx=True, ex=AI_RUNTIME_SYNC_SECONDS):
+        _spawn(sync_ai_runtime())
+
+
 # Bài booking đang theo dõi (app/services/tracked_posts.py): cào lại mỗi ngày một lần, từ TRACKED_POSTS_HOUR giờ sáng.
 TRACKED_POSTS_HOUR = 6
 
@@ -681,6 +694,10 @@ async def _loop() -> None:
             logger.error("scheduler_tracked_posts_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_tracked_posts_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_ai_runtime_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_ai_runtime_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 

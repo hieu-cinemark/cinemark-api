@@ -291,7 +291,13 @@ class AiSettingsOut(BaseModel):
     # ingest; tạo report là hành động do người vận hành/lịch kích hoạt, cùng nhóm với
     # import trong Settings).
     active_report_provider: str
+    # Nhà cung cấp đang dùng cho mọi lời gọi AI ("beeknoee" = Bee, "kira" = Kira) - 2026-10-22.
+    active_provider: str = "beeknoee"
     updated_at: datetime | None = None
+
+
+class AiActiveProviderUpdate(BaseModel):
+    provider: str = Field(min_length=1, max_length=40, pattern="^[a-z0-9_-]+$")
 
 
 class AiSettingsUpdate(BaseModel):
@@ -308,6 +314,11 @@ class AiProviderOut(BaseModel):
     # Có lưu secret hay chưa - không bao giờ trả về api_key thô.
     api_key_set: bool
     model: str
+    chat_path: str = "/chat/completions"
+    image_model: str = ""
+    decisions_path: str = ""
+    comment_model: str = ""
+    post_model: str = ""
     updated_at: datetime | None = None
 
 
@@ -317,6 +328,12 @@ class AiProviderUpdate(BaseModel):
     # gửi lại key mỗi lần.
     api_key: str | None = Field(default=None, max_length=500)
     model: str = Field(min_length=1, max_length=120)
+    # Đường gọi chat nối sau base_url; model đọc ảnh; model quyết định (rỗng = không có, phân loại dùng chat). None = giữ.
+    chat_path: str | None = Field(default=None, max_length=200)
+    image_model: str | None = Field(default=None, max_length=120)
+    decisions_path: str | None = Field(default=None, max_length=200)
+    comment_model: str | None = Field(default=None, max_length=120)
+    post_model: str | None = Field(default=None, max_length=120)
 
 
 class CronJob(BaseModel):

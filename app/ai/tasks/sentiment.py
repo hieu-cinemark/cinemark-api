@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo
 
 from app.ai import visobert
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
-from app.ai.decisions import decisions_supported, post_model
+from app.ai.decisions import POST, decisions_supported
 from app.ai.jev import classify_comments_jev, use_jev
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
@@ -192,7 +192,7 @@ async def classify_comments(
         jev_labels = await classify_comments_jev(
             [m for _, m in rest],
             [films[i] if films else None for i, _ in rest],
-            model=post_model() if kind == "post" else None,
+            **({"kind": POST} if kind == "post" else {}),
         )
         for (i, _), label in zip(rest, jev_labels, strict=True):
             if label is not None and (parsed := _label(label)) is not None:

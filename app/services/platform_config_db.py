@@ -622,7 +622,7 @@ async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled
     return row  # type: ignore[return-value]
 
 
-AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, updated_at"
+AI_SETTINGS_COLUMNS = "id, enabled, model, prompts, active_report_provider, active_provider, updated_at"
 
 _ai_settings_ready = False
 
@@ -653,6 +653,9 @@ async def _ensure_ai_settings_table() -> None:
         await cur.execute(
             "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider text NOT NULL DEFAULT 'kira'"
         )
+        # Nhà cung cấp đang dùng cho MỌI lời gọi AI (2026-10-22): "bee" hoặc "kira" - chọn ở tab AI của dashboard
+        # spider-hub; cinemark-api, spider-hub và Worker cinemark (qua bảng ai_runtime của D1) đều theo.
+        await cur.execute("ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_provider text NOT NULL DEFAULT 'bee'")
         await cur.execute(
             """
             INSERT INTO ai_settings (id, enabled, model, prompts)
@@ -676,8 +679,16 @@ async def get_ai_settings() -> dict[str, Any]:
         "model": "",
         "prompts": {},
         "active_report_provider": "bee",
+        "active_provider": "bee",
         "updated_at": None,
     }
+
+
+async def set_active_ai_provider(key: str) -> None:
+    await _ensure_ai_settings_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute("UPDATE ai_settings SET active_provider = %s, updated_at = now() WHERE id = 1", (key,))
+        await conn.commit()
 
 
 async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_report_provider: str) -> dict[str, Any]:
@@ -715,7 +726,16 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_r
 # scripts/migrate_ai_provider_credentials.py) để xoay key hoặc thêm provider mới được
 # từ dashboard mà không cần deploy lại.
 
-AI_PROVIDER_COLUMNS = "key, base_url, api_key, model, updated_at"
+AI_PROVIDER_COLUMNS = (
+    "key, base_url, api_key, model, chat_path, image_model, decisions_path, comment_model, post_model, updated_at"
+)
+# Cột cấu hình theo nhà cung cấp (2026-10-22), sửa ở tab AI của dashboard spider-hub:
+#   chat_path       đường gọi chat nối sau base_url (mặc định /chat/completions)
+#   model           model chat - lọc, tóm tắt, viết report... (Kira: qwen3.8-flash)
+#   image_model     model đọc ảnh (Box Office AI) - Kira: agnes-image-2.1-flash, Bee: gemini-3.5-flash
+#   decisions_path  đường model quyết định (Bee: /decisions); rỗng = không có, phân loại ca khó dùng chat
+#   comment_model / post_model  model quyết định cho bình luận / bài viết (Bee: typesafe/jev-1.14 / openai/gpt-6-luna-decisions)
+AI_PROVIDER_EXTRA_FIELDS = ("chat_path", "image_model", "decisions_path", "comment_model", "post_model")
 
 _ai_providers_ready = False
 
@@ -736,6 +756,11 @@ async def _ensure_ai_providers_table() -> None:
             )
             """
         )
+        await cur.execute(
+            "ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS chat_path text NOT NULL DEFAULT '/chat/completions'"
+        )
+        for column in ("image_model", "decisions_path", "comment_model", "post_model"):
+            await cur.execute(f"ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS {column} text NOT NULL DEFAULT ''")
         await conn.commit()
     _ai_providers_ready = True
 
@@ -754,38 +779,30 @@ async def get_ai_provider(key: str) -> dict[str, Any] | None:
         return await cur.fetchone()
 
 
-async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, model: str) -> dict[str, Any]:
-    """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà
-    không phải gửi lại secret mỗi lần."""
+async def upsert_ai_provider(
+    key: str, *, base_url: str, api_key: str | None, model: str, **extra: str | None
+) -> dict[str, Any]:
+    """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà không phải gửi lại secret mỗi lần.
+    `extra`: các cột AI_PROVIDER_EXTRA_FIELDS; trường None / không truyền thì giữ nguyên."""
     await _ensure_ai_providers_table()
+    fields = {"base_url": base_url, "model": model}
+    if api_key is not None:
+        fields["api_key"] = api_key
+    for name in AI_PROVIDER_EXTRA_FIELDS:
+        if extra.get(name) is not None:
+            fields[name] = str(extra[name]).strip()
+    columns = ", ".join(fields)
+    placeholders = ", ".join(["%s"] * len(fields))
+    updates = ", ".join(f"{name} = EXCLUDED.{name}" for name in fields)
     async with _connect() as conn, conn.cursor() as cur:
-        if api_key is None:
-            await cur.execute(
-                f"""
-                INSERT INTO ai_providers (key, base_url, model)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (key) DO UPDATE SET
-                    base_url = EXCLUDED.base_url,
-                    model = EXCLUDED.model,
-                    updated_at = now()
-                RETURNING {AI_PROVIDER_COLUMNS}
-                """,
-                (key, base_url, model),
-            )
-        else:
-            await cur.execute(
-                f"""
-                INSERT INTO ai_providers (key, base_url, api_key, model)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (key) DO UPDATE SET
-                    base_url = EXCLUDED.base_url,
-                    api_key = EXCLUDED.api_key,
-                    model = EXCLUDED.model,
-                    updated_at = now()
-                RETURNING {AI_PROVIDER_COLUMNS}
-                """,
-                (key, base_url, api_key, model),
-            )
+        await cur.execute(
+            f"""
+            INSERT INTO ai_providers (key, {columns}) VALUES (%s, {placeholders})
+            ON CONFLICT (key) DO UPDATE SET {updates}, updated_at = now()
+            RETURNING {AI_PROVIDER_COLUMNS}
+            """,
+            (key, *fields.values()),
+        )
         row = await cur.fetchone()
         await conn.commit()
     return row  # type: ignore[return-value]

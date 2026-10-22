@@ -60,6 +60,46 @@ class ProviderConfig:
     base_url: str
     api_key: str
     model: str
+    chat_path: str = "/chat/completions"
+    image_model: str = ""
+    decisions_path: str = ""
+    comment_model: str = ""
+    post_model: str = ""
+
+    @property
+    def openai_base_url(self) -> str:
+        """base_url cho OpenAI SDK (SDK tự nối "/chat/completions"): đường gọi chat dạng "<tiền tố>/chat/completions" thì
+        tiền tố được nối vào base_url."""
+        path = (self.chat_path or "/chat/completions").strip()
+        prefix = path[: -len("/chat/completions")] if path.endswith("/chat/completions") else ""
+        return f"{self.base_url.rstrip('/')}{prefix.rstrip('/')}"
+
+
+# Khoá "bee" ở các chỗ gọi (call_bee, AI_PROVIDER của app/ai/runtime.py) nghĩa là "nhà cung cấp đang chọn" - Bee
+# (dòng beeknoee) hoặc Kira, chọn ở tab AI của dashboard spider-hub (ai_settings.active_provider, 2026-10-22).
+ACTIVE_PROVIDER_ALIAS = "bee"
+_ACTIVE_ALIASES = {"bee": "beeknoee"}
+_active_cache: tuple[float, str] | None = None
+
+
+async def active_provider_key() -> str:
+    """Dòng ai_providers đang dùng ("beeknoee" / "kira" / ...); cache như cấu hình provider."""
+    global _active_cache
+    now = time.monotonic()
+    if _active_cache is not None and now - _active_cache[0] < _PROVIDER_CACHE_TTL_SECONDS:
+        return _active_cache[1]
+    key = "beeknoee"
+    try:
+        from app.services.platform_config_db import get_ai_settings
+
+        value = str((await get_ai_settings()).get("active_provider") or "").strip().lower()
+        key = _ACTIVE_ALIASES.get(value, value) or key
+    except Exception as exc:  # noqa: BLE001 - không đọc được thì giữ lựa chọn cũ / Bee
+        logger.warning("ai_active_provider_load_failed", error=str(exc))
+        if _active_cache is not None:
+            return _active_cache[1]
+    _active_cache = (now, key)
+    return key
 
 
 @dataclass
@@ -114,6 +154,8 @@ def invalidate_provider_cache(key: str | None = None) -> None:
     """Xoá cấu hình provider đã cache để lần gọi sau đọc lại từ Supabase (và tạo lại
     OpenAI client nếu base_url/api_key đổi) - gọi ngay sau khi sửa ai_providers trên
     dashboard. key=None xoá cache của mọi provider."""
+    global _active_cache
+    _active_cache = None
     if key is None:
         _provider_cache.clear()
     else:
@@ -123,7 +165,9 @@ def invalidate_provider_cache(key: str | None = None) -> None:
 async def load_provider(key: str) -> ProviderConfig | None:
     """Đọc {key, base_url, api_key, model} từ ai_providers (Supabase), cache vài giây.
     Trả về None nếu dòng chưa tồn tại hoặc thiếu base_url/api_key - bên gọi coi như
-    "chưa cấu hình", cùng quy ước fail open như mọi chỗ khác trong app/ai."""
+    "chưa cấu hình", cùng quy ước fail open như mọi chỗ khác trong app/ai. key "bee" = nhà cung cấp đang chọn."""
+    if key == ACTIVE_PROVIDER_ALIAS:
+        key = await active_provider_key()
     now = time.monotonic()
     cached = _provider_cache.get(key)
     if cached is not None and now - cached[0] < _PROVIDER_CACHE_TTL_SECONDS:
@@ -140,6 +184,11 @@ async def load_provider(key: str) -> ProviderConfig | None:
                 base_url=row["base_url"],
                 api_key=row["api_key"],
                 model=(row.get("model") or "").strip(),
+                chat_path=(row.get("chat_path") or "/chat/completions").strip(),
+                image_model=(row.get("image_model") or "").strip(),
+                decisions_path=(row.get("decisions_path") or "").strip(),
+                comment_model=(row.get("comment_model") or "").strip(),
+                post_model=(row.get("post_model") or "").strip(),
             )
     except Exception as exc:
         logger.warning("ai_provider_load_failed", provider=key, error=str(exc))
@@ -152,10 +201,10 @@ async def is_provider_configured(key: str) -> bool:
 
 
 def _client_for(cfg: ProviderConfig) -> OpenAI:
-    cache_key = (cfg.base_url, cfg.api_key)
+    cache_key = (cfg.openai_base_url, cfg.api_key)
     client = _openai_clients.get(cache_key)
     if client is None:
-        client = OpenAI(base_url=cfg.base_url, api_key=cfg.api_key)
+        client = OpenAI(base_url=cfg.openai_base_url, api_key=cfg.api_key)
         _openai_clients[cache_key] = client
     return client
 

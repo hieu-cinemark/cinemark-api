@@ -41,34 +41,48 @@ def decisions_supported() -> bool:
 
 
 def comment_model() -> str:
+    """Model mặc định cho bình luận khi dòng nhà cung cấp không ghi comment_model."""
     return (settings.bee_comment_model or "").strip() or COMMENT_MODEL_DEFAULT
 
 
 def post_model() -> str:
+    """Model mặc định cho bài viết khi dòng nhà cung cấp không ghi post_model."""
     return (settings.bee_post_model or "").strip() or POST_MODEL_DEFAULT
 
 
-async def bee_endpoint() -> tuple[str, dict[str, str]]:
-    """(url /decisions, headers) của Bee; raise khi Bee chưa cấu hình (bên gọi fail open)."""
+COMMENT = "comment"
+POST = "post"
+
+
+async def bee_endpoint() -> tuple[str, dict[str, str], dict[str, str]]:
+    """(url /decisions, headers, {comment, post: model}) của nhà cung cấp đang chọn. Không có decisions_path (vd. Kira)
+    -> DecisionsUnsupportedError (bên gọi dùng chat); chưa cấu hình -> RuntimeError (fail open)."""
+    global _unsupported_until
     provider = await load_provider("bee")
     if provider is None:
-        raise RuntimeError("bee_not_configured")
-    return f"{provider.base_url.rstrip('/')}/decisions", {"Authorization": f"Bearer {provider.api_key}"}
+        raise RuntimeError("ai_provider_not_configured")
+    if not provider.decisions_path:
+        _unsupported_until = time.monotonic() + _UNSUPPORTED_SECONDS
+        raise DecisionsUnsupportedError(f"decisions_unsupported provider={provider.key}")
+    models = {COMMENT: provider.comment_model or comment_model(), POST: provider.post_model or post_model()}
+    url = f"{provider.base_url.rstrip('/')}/{provider.decisions_path.lstrip('/')}"
+    return url, {"Authorization": f"Bearer {provider.api_key}"}, models
 
 
 async def decide(
-    model: str,
+    kind: str,
     state: str,
     questions: dict[str, dict[str, Any]],
     *,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Một request: `answers` theo tên câu hỏi. Thử lại 3 lần với 429/5xx/lỗi mạng rồi raise. 404 (nhà cung cấp không có
+    """Một request tới model quyết định của loại `kind` (COMMENT / POST): `answers` theo tên câu hỏi. Thử lại 3 lần với 429/5xx/lỗi mạng rồi raise. 404 (nhà cung cấp không có
     /decisions) -> DecisionsUnsupportedError và decisions_supported() = False một lúc."""
     global _unsupported_until
     if not decisions_supported():
         raise DecisionsUnsupportedError("decisions_unsupported")
-    url, headers = await bee_endpoint()
+    url, headers, models = await bee_endpoint()
+    model = models.get(kind) or kind
     own = client is None
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(30.0))
     body = {"model": model, "state": state, "questions": questions}

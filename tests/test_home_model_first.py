@@ -21,8 +21,8 @@ def wired(monkeypatch):
     async def fake_predict(texts):
         return [("positive", 0.95) if "hay" in t else ("neutral", 0.4) for t in texts]
 
-    async def fake_jev(messages, films, *, model=None):
-        calls.append((messages, model))
+    async def fake_jev(messages, films, *, kind="comment"):
+        calls.append((messages, None if kind == "comment" else kind))
         return [{"sentiment": "neutral", "aspects": [], "stage": "hong"} for _ in messages]
 
     async def no_cache(messages):
@@ -49,7 +49,7 @@ async def test_confident_visobert_skips_bee(wired):
 @pytest.mark.asyncio
 async def test_posts_use_openai_model(wired):
     await sentiment.classify_comments(MESSAGES, kind="post")
-    assert wired[0][1] == POST_MODEL_DEFAULT
+    assert wired[0][1] == "post"
 
 
 @pytest.mark.asyncio
