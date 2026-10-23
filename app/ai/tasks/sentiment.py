@@ -176,15 +176,24 @@ async def classify_comments(
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
     # 3. Model nhà trồng (ViSoBERT, app/ai/visobert.py): câu đủ chắc lấy luôn - chỉ cảm xúc, không khía cạnh/giai đoạn.
-    #    Lượt chỉ bổ sung khía cạnh/giai đoạn (home_model=False) bỏ qua bước này.
+    #    Lượt chỉ bổ sung khía cạnh/giai đoạn (home_model=False) bỏ qua bước này. Bình luận khi tắt AI
+    #    (settings.comment_ai_enabled=False): ViSoBERT quyết mọi câu, không ngưỡng, và dừng ở đây.
+    home_only = kind == "comment" and not settings.comment_ai_enabled
     if rest and home_model:
         predictions = await visobert.predict([m for _, m in rest])
         if predictions is not None:
+            min_confidence = 0.0 if home_only else settings.visobert_min_confidence
             for (i, _), (sentiment, confidence) in zip(rest, predictions, strict=True):
-                if confidence >= settings.visobert_min_confidence:
+                if confidence >= min_confidence:
                     labels[i] = {"sentiment": sentiment, "aspects": [], "stage": "khac", "source": "visobert"}
                     routed["visobert"] += 1
             rest = [(i, m) for i, m in rest if labels[i] is None]
+    if home_only:
+        if rest:
+            routed["unlabelled_no_ai"] = len(rest)  # model không dùng được (thiếu torch/thư mục) - để lượt sau
+        if routed:
+            logger.info("sentiment_routed", **routed)
+        return labels
 
     # 4. Ca khó -> model quyết định của Bee (settings.classifier = "jev"): bình luận jev-1.14, nội dung bài OpenAI.
     jev_mode = use_jev()

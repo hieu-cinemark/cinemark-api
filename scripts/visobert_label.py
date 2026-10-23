@@ -2,7 +2,8 @@
 quota Jev/Kira, vài trăm câu mỗi giây trên GPU (MPS của Mac M1 / CUDA) hoặc CPU.
 
 Chỉ ghi cột sentiment (+ sentiment_source='visobert', sentiment_confidence) cho dòng sentiment IS NULL và chỉ khi
-model đủ chắc (--min-confidence). Câu model không chắc giữ NULL để Jev/Kira gán như cũ. Khía cạnh/giai đoạn
+model đủ chắc (--min-confidence; mặc định 0 = mọi câu khi bình luận không dùng AI - settings.comment_ai_enabled).
+Câu model không chắc (khi có ngưỡng) giữ NULL để AI gán. Khía cạnh/giai đoạn
 (aspects, audience_stage) không đụng tới: insights_classified_at vẫn NULL nên lượt bổ sung insights của Kira
 (classify_pending(insights_only=True)) vẫn lấy được các dòng này sau. D1 là remote nên nhãn có hiệu lực ngay.
 
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH, RELEVANT_POST_SQL, ensure_post_voice_columns
 from app.services.d1 import d1_query
@@ -278,10 +280,19 @@ if __name__ == "__main__":
     parser.add_argument("--eval", type=int, metavar="N", help="so N dòng đã có nhãn với ViSoBERT, không ghi gì")
     # 0.7 từ 19/10/2026 (model fine-tune lại trên 94k nhãn): trên 3.000 nhãn Jev/Kira model chưa thấy, 0.7 phủ 94.9% khớp
     # 96.6% - ngang model cũ ở 0.85 (phủ 84.5%, khớp 97.0%).
-    parser.add_argument("--min-confidence", type=float, default=0.7, help="chỉ ghi khi model chắc từ mức này (mặc định 0.7)")
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=None,
+        help="chỉ ghi khi model chắc từ mức này (mặc định 0 khi bình luận không dùng AI - settings.comment_ai_enabled; "
+        "không thì 0.7)",
+    )
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--days", type=float, help="chỉ dòng thu thập trong N ngày gần nhất")
     parser.add_argument("--platform", help="chỉ một nền tảng (facebook/threads/tiktok)")
     parser.add_argument("--limit", type=int, help="tối đa ngần này dòng lượt này")
     parser.add_argument("--dry-run", action="store_true", help="gán nhãn một trang và in ra, không ghi")
-    asyncio.run(run(parser.parse_args()))
+    args = parser.parse_args()
+    if args.min_confidence is None:
+        args.min_confidence = settings.visobert_min_confidence if settings.comment_ai_enabled else 0.0
+    asyncio.run(run(args))

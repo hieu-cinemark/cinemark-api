@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     visobert_min_confidence: float = 0.7
     visobert_model_dir: str = "models/visobert-cinemark"
     visobert_batch_size: int = 32
+    # Bình luận KHÔNG gọi AI (23/10/2026, yêu cầu người dùng): luật -> cache -> ViSoBERT gắn nhãn MỌI câu (bỏ ngưỡng
+    # visobert_min_confidence), không Jev/Bee/Kira, không lượt AI bổ sung khía cạnh/giai đoạn. Cảm xúc nội dung bài
+    # (kind="post") vẫn như cũ. Bật lại = True.
+    comment_ai_enabled: bool = False
     # Model độ liên quan của bài (app/ai/visobert_relevance.py) chạy trước AI: lấy luôn khi đủ chắc theo ngưỡng từng nhãn.
     visobert_relevance_enabled: bool = True
     visobert_relevance_model_dir: str = "models/visobert-relevance-relabel"

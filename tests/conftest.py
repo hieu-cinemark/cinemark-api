@@ -21,6 +21,8 @@ def _no_visobert(monkeypatch):
     """Không nạp model ViSoBERT thật (374MB, có thể có sẵn ở máy dev) trong test - test riêng tự mock app.ai.visobert."""
     monkeypatch.setattr(settings, "visobert_enabled", False)
     monkeypatch.setattr(settings, "visobert_relevance_enabled", False)
+    # Test sẵn có kiểm tra đường AI của bình luận; chế độ không-AI có test riêng (test_comment_home_only.py).
+    monkeypatch.setattr(settings, "comment_ai_enabled", True)
 
 
 @pytest.fixture(autouse=True)
