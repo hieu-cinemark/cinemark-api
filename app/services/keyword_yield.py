@@ -148,6 +148,7 @@ async def plan_crawl(
 
     keep: list[dict[str, Any]] = []
     pages: dict[str, int] = {}
+    rank: dict[str, int] = {}
     skipped_zero = 0
     redis = get_redis_client()
     for keyword in keywords:
@@ -158,8 +159,10 @@ async def plan_crawl(
         except ValueError:
             old_enough = True
         if not old_enough:
+            rank[str(keyword["id"])] = -1  # từ khoá mới: chưa đo được, cho chạy sớm để có số liệu
             keep.append(keyword)
             continue
+        rank[str(keyword["id"])] = -int((stats or {}).get("relevant") or 0)
         stored = stats["stored"] if stats else 0
         if stored == 0 and not _zero_yield_turn(str(keyword["id"]), now):
             skipped_zero += 1
@@ -183,6 +186,9 @@ async def plan_crawl(
         elif stats["ratio"] < LOW_BELOW:
             pages[str(keyword["id"])] = LOW_PAGES
         keep.append(keyword)
+    # 24/10/2026: tài khoản FB có hạn mức request/ngày - từ khoá ra nhiều bài liên quan nhất (WINDOW_DAYS) xếp hàng trước
+    # để phần hạn mức đầu ngày dồn vào đó; từ khoá yếu ở cuối, hết hạn mức thì đợi lượt sau.
+    keep.sort(key=lambda keyword: rank.get(str(keyword["id"]), 0))
     logger.info(
         "keyword_crawl_planned",
         platform=platform,

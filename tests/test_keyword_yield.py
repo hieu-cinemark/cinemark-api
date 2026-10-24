@@ -85,3 +85,12 @@ def test_zero_yield_keywords_only_crawled_on_their_turn(monkeypatch):
     for kid in ids:
         turns = sum(ky._zero_yield_turn(kid, now + timedelta(days=d)) for d in range(ky.ZERO_EVERY_DAYS))
         assert turns == 1
+
+
+def test_high_yield_keywords_queued_first(monkeypatch):
+    yields = {
+        "few": {"sample": 300, "ratio": 0.9, "stored": 200, "relevant": 180},
+        "many": {"sample": 900, "ratio": 0.9, "stored": 800, "relevant": 720},
+    }
+    keep, _, _, _ = _run(monkeypatch, yields, [_kw("few"), _kw("many")])
+    assert [k["id"] for k in keep] == ["many", "few"]

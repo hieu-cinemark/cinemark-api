@@ -243,9 +243,15 @@ async def queue_enabled_sources() -> int:
     )
     now = datetime.now(tz=UTC)
     queued = 0
+    due = []
     for row in rows or []:
         await _update_quiet_runs(row)
-        if _due(row, now) and await queue_source(row):
+        if _due(row, now):
+            due.append(row)
+    # 24/10/2026: hạn mức request FB/ngày - trang hay có bài mới (quiet_runs thấp) và trang của phim xếp trước.
+    due.sort(key=lambda row: (int(row.get("quiet_runs") or 0), 0 if row.get("movie_id") else 1))
+    for row in due:
+        if await queue_source(row):
             queued += 1
     logger.info("source_pages_queued", queued=queued, total=len(rows or []))
     return queued
