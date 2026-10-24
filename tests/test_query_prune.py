@@ -67,3 +67,32 @@ def test_no_prune_before_release(monkeypatch):
     ]
     pruned, disabled, _ = _run(monkeypatch, rows, {})
     assert disabled == ["old"] and pruned == 1
+
+
+def test_threads_backfill_copies_facebook_template_queries(monkeypatch):
+    inserted: list[str] = []
+
+    async def fake_d1(sql, params=None, **_):
+        if sql.startswith("INSERT INTO keywords"):
+            inserted.append(params[2])
+        return []
+
+    async def fake_record(*_args):
+        pass
+
+    monkeypatch.setattr(qd, "d1_query", fake_d1)
+    monkeypatch.setattr(qd, "_record", fake_record)
+    now = datetime.now(tz=UTC)
+    movies = [{"id": "m1", "title": "Huyết Thống", "released_at": now.date().isoformat()}]
+    keywords = [
+        {"movie_id": "m1", "platform": "threads", "keyword": "Huyết Thống", "enabled": 1},
+        {"movie_id": "m1", "platform": "facebook", "keyword": "phim Huyết Thống", "enabled": 1},
+        {"movie_id": "m1", "platform": "facebook", "keyword": "đi xem Huyết Thống", "enabled": 0},
+    ]
+    decisions = [
+        {"movie_id": "m1", "tag": "facebook:huyetthongtrailer", "display": "Huyết Thống trailer", "verdict": "film"},
+        {"movie_id": "m1", "tag": "facebook:reviewhuyetthong", "display": "review Huyết Thống", "verdict": "other"},
+    ]
+    added = asyncio.run(qd._backfill_threads_templates(movies, keywords, decisions, now, dry_run=False))
+    # câu FB đang bật + câu Kira đã chấm "film"; bỏ câu FB đã tắt và câu bị chấm khác
+    assert added == 2 and sorted(inserted) == ["Huyết Thống trailer", "phim Huyết Thống"]

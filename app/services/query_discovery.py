@@ -58,6 +58,11 @@ MAX_ADDS_PER_RUN = 30
 # 45 (trước 20/10/2026: 30) - phim sắp chiếu cần câu tìm từ sớm để bắt giai đoạn hóng.
 ACTIVE_BEFORE_DAYS = 45
 ACTIVE_AFTER_DAYS = 45
+# Tăng nhẹ Threads (24/10/2026): quyết định duyệt câu lưu theo (phim, câu) không theo nền tảng, nên câu theo mẫu đã duyệt
+# cho Facebook trước khi Threads được nhận câu lại (20/10) không bao giờ tới Threads. Mỗi lượt thêm bù tối đa chừng này câu
+# (~20% số từ khoá Threads đang bật), ưu tiên phim gần ngày chiếu; câu kém vẫn bị _prune tắt như thường.
+THREADS_BACKFILL_PER_RUN = int(os.getenv("QUERY_THREADS_BACKFILL_PER_RUN", "14"))
+THREADS_BACKFILL_PER_MOVIE = 2
 PRUNE_AFTER_DAYS = 3
 # Câu chạy được chừng này ngày (đã qua vài lượt crawl) mà chưa lưu bài nào và spider chưa thấy bài nào khớp -> tắt luôn.
 EARLY_PRUNE_DAYS = 1
@@ -272,6 +277,75 @@ async def _revive_upcoming(dry_run: bool) -> int:
     return revived
 
 
+async def _backfill_threads_templates(
+    movies: list[dict[str, Any]],
+    keywords: list[dict[str, Any]],
+    decisions: list[dict[str, Any]],
+    now: datetime,
+    dry_run: bool,
+) -> int:
+    """Thêm cho Threads các câu theo mẫu (QUERY_TEMPLATES, không gồm câu diễn viên) đã dùng cho Facebook của cùng phim - Kira
+    đã chấm "film", hoặc là từ khoá Facebook đang bật (thường "phim <tên>" người vận hành thêm, không qua quyết định nào -
+    chính mẫu ra nhiều bài nhất trên Threads) - khi phim đang theo dõi Threads mà chưa có câu đó."""
+    if "threads" not in ADD_PLATFORMS or THREADS_BACKFILL_PER_RUN <= 0:
+        return 0
+    approved = {
+        (d["movie_id"], d["tag"].split(":", 1)[-1]): d
+        for d in decisions
+        if d["tag"].startswith("facebook:") and d.get("verdict") == "film"
+    }
+    threads_tags = {(d["movie_id"], d["tag"]) for d in decisions if d["tag"].startswith("threads:")}
+    added = 0
+
+    def days_from_release(movie: dict[str, Any]) -> float:
+        try:
+            day = datetime.fromisoformat(str(movie.get("released_at") or "")[:10]).replace(tzinfo=UTC)
+        except ValueError:
+            return float("inf")
+        return abs((day - now).total_seconds())
+
+    for movie in sorted((m for m in movies if _active(m, now)), key=days_from_release):
+        if added >= THREADS_BACKFILL_PER_RUN:
+            break
+        own = {_key(k["keyword"]) for k in keywords if k["movie_id"] == movie["id"] and k["platform"] == "threads"}
+        if not own:
+            continue  # phim không theo dõi Threads
+        facebook = {
+            _key(k["keyword"]): k["keyword"]
+            for k in keywords
+            if k["movie_id"] == movie["id"] and k["platform"] == "facebook" and k.get("enabled", 1)
+        }
+        title = _search_title(str(movie.get("title") or ""))
+        here = 0
+        for query in (template.format(title=title) for template in QUERY_TEMPLATES) if title else ():
+            key = _key(query)
+            decision = approved.get((movie["id"], key))
+            if decision is None and key in facebook:
+                decision = {"display": facebook[key], "confidence": None}
+            if decision is None or key in own or (movie["id"], f"threads:{key}") in threads_tags:
+                continue
+            if here >= THREADS_BACKFILL_PER_MOVIE or added >= THREADS_BACKFILL_PER_RUN:
+                break
+            here += 1
+            added += 1
+            logger.info("query_threads_backfill", movie=movie["title"], query=decision["display"], dry_run=dry_run)
+            if dry_run:
+                continue
+            keyword_id = f"kw_{uuid.uuid4()}"
+            await d1_query(
+                "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at, related_keywords) VALUES (?, ?, 'threads', ?, 1, ?, '[]')",
+                [keyword_id, movie["id"], decision["display"], now.isoformat()],
+            )
+            cand = {"tag": f"threads:{key}", "display": decision["display"], "source": "query", "seen": 0}
+            verdict = {
+                "verdict": "film",
+                "confidence": decision.get("confidence"),
+                "reason": "thêm bù cho Threads (đã duyệt cho Facebook)",
+            }
+            await _record(movie["id"], cand, verdict, "added", keyword_id)
+    return added
+
+
 async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = None) -> dict[str, Any]:
     await _ensure_table()
     pruned = await _prune(dry_run)
@@ -284,10 +358,12 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
         )
         or []
     )
-    keywords = await d1_query("SELECT id, movie_id, platform, keyword FROM keywords", quiet=True) or []
+    keywords = await d1_query("SELECT id, movie_id, platform, keyword, enabled FROM keywords", quiet=True) or []
     decisions = (
         await d1_query(
-            "SELECT movie_id, tag, status, decided_at FROM hashtag_ai_decisions WHERE source = 'query'", quiet=True
+            "SELECT movie_id, tag, display, status, verdict, confidence, decided_at FROM hashtag_ai_decisions "
+            "WHERE source = 'query'",
+            quiet=True,
         )
         or []
     )
@@ -297,6 +373,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
         for d in decisions
         if d["status"] != "rejected" or str(d["decided_at"]) >= recheck_before
     }
+    backfilled = 0 if movie_id else await _backfill_threads_templates(movies, keywords, decisions, now, dry_run)
     titles = [m["title"] for m in movies if m.get("title")]
 
     stats = {
@@ -307,6 +384,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
         "rejected": 0,
         "pruned": pruned,
         "revived": revived,
+        "threads_backfilled": backfilled,
         "failed": 0,
     }
 
@@ -330,7 +408,9 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
             continue
         stats["movies"] += 1
         # Đã là từ khoá của phim (mọi trạng thái - người vận hành đã tắt/xoá thì không thêm lại) hoặc đã quyết trước đó.
-        existing = {_key(k["keyword"]) for k in own}
+        # Chỉ từ khoá tìm kiếm FB/Threads: hashtag TikTok "#phimbosuabay" chuẩn hoá trùng "phim Bò Sữa Bay" và trước 24/10/2026
+        # chặn câu "phim <tên>" - mẫu ra nhiều bài nhất trên Threads - không bao giờ được xét.
+        existing = {_key(k["keyword"]) for k in own if k["platform"] in PLATFORMS}
         generated: list[str] = []
         if movie["id"] in generate_for:
             try:
