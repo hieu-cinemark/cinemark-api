@@ -140,7 +140,7 @@ _SYSTEM_PROMPTS: dict[ImportTarget, str] = {
 
 
 def default_import_system_prompts() -> dict[str, str]:
-    return dict(_SYSTEM_PROMPTS)
+    return {target: prompt for target, prompt in _SYSTEM_PROMPTS.items()}
 
 
 _FIELDS: dict[ImportTarget, tuple[str, ...]] = {

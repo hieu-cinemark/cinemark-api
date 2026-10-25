@@ -78,7 +78,7 @@ def _row(con: duckdb.DuckDBPyConnection, movie_id: str, day: str) -> dict:
         "SELECT * EXCLUDE (movie_id, platform, day) FROM movie_daily WHERE movie_id = ? AND day = ?",
         [movie_id, date.fromisoformat(day)],
     )
-    return dict(zip([c[0] for c in cur.description], cur.fetchone(), strict=True))
+    return dict(zip([c[0] for c in cur.description], cur.fetchone() or (), strict=True))
 
 
 def test_build_movie_daily_end_to_end(silver: Path, tmp_path: Path) -> None:

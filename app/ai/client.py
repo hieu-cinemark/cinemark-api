@@ -363,6 +363,7 @@ async def call_ai(
                     error=str(exc),
                 )
                 raise
+    raise AssertionError("unreachable: retry loop always returns or raises")
 
 
 def parse_json_response(response: str) -> dict | list:

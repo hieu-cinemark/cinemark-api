@@ -10,7 +10,7 @@ from app.ai.decisions import COMMENT_MODEL_DEFAULT, POST_MODEL_DEFAULT
 from app.ai.tasks import sentiment
 from app.core.config import settings
 
-MESSAGES = ["Phim hay quá trời luôn mọi người ơi", "Không biết nữa, để xem đã rồi tính"]
+MESSAGES: list[str | None] = ["Phim hay quá trời luôn mọi người ơi", "Không biết nữa, để xem đã rồi tính"]
 
 
 @pytest.fixture

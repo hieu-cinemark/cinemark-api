@@ -31,6 +31,8 @@ from app.services import omar_yield
 from app.services.d1 import d1_query, get_enabled_keywords
 
 if TYPE_CHECKING:
+    from redis.typing import EncodableT, FieldT
+
     from app.services.omar_tiktok import Budget, _Pacer
 
 logger = get_logger(__name__)
@@ -156,7 +158,9 @@ async def _ensure_options_table() -> None:
     global _OPTIONS_TABLE_READY
     if _OPTIONS_TABLE_READY:
         return
-    await d1_query("CREATE TABLE IF NOT EXISTS omar_comment_options (key TEXT PRIMARY KEY, value TEXT NOT NULL)", quiet=True)
+    await d1_query(
+        "CREATE TABLE IF NOT EXISTS omar_comment_options (key TEXT PRIMARY KEY, value TEXT NOT NULL)", quiet=True
+    )
     _OPTIONS_TABLE_READY = True
 
 
@@ -255,7 +259,7 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
     existing = set(await redis.hkeys(JOBS_KEY) or [])
     existing = {key.decode() if isinstance(key, bytes) else key for key in existing}
     added, per_hashtag = 0, {}
-    jobs: dict[str, str] = {}
+    jobs: dict[FieldT, EncodableT] = {}
     keyword_ids = [str(kw["id"]) for kw in keywords]
     top = await _top_videos(keyword_ids, since, settings.omar_comments_top_per_hashtag)
     all_videos = bool(await selected_keyword_ids()) and await all_videos_enabled()
@@ -323,7 +327,7 @@ async def enqueue_videos(videos: list[dict[str, Any]], *, reason: str, hashtag: 
     lịch tuần không đổi. Trả số video thêm mới."""
     redis = get_redis_client()
     existing = {key.decode() if isinstance(key, bytes) else key for key in await redis.hkeys(JOBS_KEY) or []}
-    jobs: dict[str, str] = {}
+    jobs: dict[FieldT, EncodableT] = {}
     for rank, video in enumerate(videos):
         video_id = str(video.get("video_id") or "")
         if not video_id or video_id in existing or video_id in jobs or not video.get("post_id"):

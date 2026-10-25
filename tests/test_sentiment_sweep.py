@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.ai.tasks.sentiment import CommentLabel
 from app.workers.ingest_consumer import sentiment_sweep
 
 
@@ -93,7 +94,7 @@ async def test_insights_only_keeps_existing_sentiment(monkeypatch, d1) -> None:
 
 
 async def test_rule_labels_marked_with_rule_source(monkeypatch, d1) -> None:
-    labels = {
+    labels: dict[str, CommentLabel] = {
         "c0": {"sentiment": "positive", "aspects": [], "stage": "khac", "source": "rule"},
         "c1": {"sentiment": "negative", "aspects": ["dien_xuat:-"], "stage": "da_xem"},
     }
@@ -104,6 +105,6 @@ async def test_rule_labels_marked_with_rule_source(monkeypatch, d1) -> None:
 
 
 async def test_no_rule_update_without_rule_labels(monkeypatch, d1) -> None:
-    labels = {"c1": {"sentiment": "negative", "aspects": [], "stage": "da_xem"}}
+    labels: dict[str, CommentLabel] = {"c1": {"sentiment": "negative", "aspects": [], "stage": "da_xem"}}
     await sentiment_sweep._save(labels)
     assert len(d1) == 1

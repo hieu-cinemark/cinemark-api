@@ -18,7 +18,7 @@ import duckdb
 
 from app.core.logging import get_logger
 from app.lake.constants import GOLD, SILVER
-from app.lake.silver import _write
+from app.lake.silver import _row, _write
 
 logger = get_logger(__name__)
 
@@ -123,24 +123,25 @@ def build_movie_daily(con: duckdb.DuckDBPyConnection, *, silver: str = SILVER, o
 
     # 6. ghi.
     _write(con, "movie_daily", f"{out}/movie_daily", partition_by="platform")
-    return con.sql("SELECT count(*) FROM movie_daily").fetchone()[0]
+    return _row(con, "SELECT count(*) FROM movie_daily")[0]
 
 
 def _check_movie_daily(con: duckdb.DuckDBPyConnection) -> None:
     problems = []
-    dupes = con.sql(
-        "SELECT count(*) FROM (SELECT movie_id, platform, day FROM movie_daily GROUP BY ALL HAVING count(*) > 1)"
-    ).fetchone()[0]
+    dupes = _row(
+        con, "SELECT count(*) FROM (SELECT movie_id, platform, day FROM movie_daily GROUP BY ALL HAVING count(*) > 1)"
+    )[0]
     if dupes:
         problems.append(f"{dupes} duplicate (movie, platform, day) rows")
     # +1: ngày giờ VN có thể đi trước ngày UTC của máy chạy.
-    future = con.sql("SELECT count(*) FROM movie_daily WHERE day > current_date + 1").fetchone()[0]
+    future = _row(con, "SELECT count(*) FROM movie_daily WHERE day > current_date + 1")[0]
     if future:
         problems.append(f"{future} rows dated in the future")
-    expected, got = con.sql(
+    expected, got = _row(
+        con,
         """SELECT (SELECT count(*) FROM post_movie WHERE posted_day IS NOT NULL),
-                  (SELECT coalesce(sum(new_posts), 0) FROM movie_daily)"""
-    ).fetchone()
+                  (SELECT coalesce(sum(new_posts), 0) FROM movie_daily)""",
+    )
     if expected != got:
         # Join làm nhân hoặc mất dòng.
         problems.append(f"new_posts total {got} != {expected} kept posts")
@@ -148,14 +149,16 @@ def _check_movie_daily(con: duckdb.DuckDBPyConnection) -> None:
         raise ValueError("gold movie_daily check failed: " + "; ".join(problems))
 
     # Chỉ log: tỉ lệ cao là dấu hiệu đọc sai cột, nhưng không phải lý do để dừng build.
-    posts, unmapped = con.sql(
+    posts, unmapped = _row(
+        con,
         """SELECT count(*), count(*) FILTER (WHERE keyword_id IS NULL OR keyword_id NOT IN (SELECT keyword_id FROM s_dim))
-           FROM s_posts"""
-    ).fetchone()
-    comments, unjoined = con.sql(
+           FROM s_posts""",
+    )
+    comments, unjoined = _row(
+        con,
         """SELECT count(*), count(*) FILTER (WHERE m.post_id IS NULL)
-           FROM s_comments c LEFT JOIN post_movie m USING (platform, post_id)"""
-    ).fetchone()
+           FROM s_comments c LEFT JOIN post_movie m USING (platform, post_id)""",
+    )
     logger.info(
         "gold_movie_daily_coverage",
         posts=posts,

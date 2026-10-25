@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from app.clients.d1 import _configured, d1_query
@@ -138,8 +138,9 @@ class CommentRepository:
             """,
             [post_id, MAX_COMMENTS_PER_POST],
         )
+        rows = rows or []
         print(f"list_comments({post_id}): {len(rows)} rows")
-        return rows or []
+        return rows
 
     async def list_all_comments(
         self,
@@ -290,7 +291,7 @@ class CommentRepository:
         if not external_id:
             return False
 
-        scraped_at = datetime.now(tz=timezone.utc).isoformat()
+        scraped_at = datetime.now(tz=UTC).isoformat()
         raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
         sentiment_classified_at = scraped_at if sentiment is not None else None
 

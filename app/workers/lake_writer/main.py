@@ -39,7 +39,7 @@ SCHEMA_VERSION = 1
 def _envelope(record: ConsumerRecord) -> tuple[str, str, str]:
     """(platform, dt, dòng ndjson) cho một bản ghi Kafka."""
     try:
-        payload: Any = json.loads(record.value)
+        payload: Any = json.loads(record.value or b"")
     except TypeError, ValueError:
         payload = {"_unparsed": record.value.decode("utf-8", "replace") if record.value else None}
     platform = (payload.get("platform") if isinstance(payload, dict) else None) or "unknown"

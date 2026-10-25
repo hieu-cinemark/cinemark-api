@@ -4,6 +4,8 @@ dùng tải lên."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import aioboto3
 
 from app.core.config import settings
@@ -17,7 +19,8 @@ def lake_configured() -> bool:
     )
 
 
-def _client():
+def _client() -> Any:
+    # Any: stub của aioboto3 khai báo sai client là context manager đồng bộ.
     return _session.client(
         "s3",
         endpoint_url=settings.r2_endpoint,

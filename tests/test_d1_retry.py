@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.clients import d1 as d1_client  # noqa: E402
+from app.clients import d1 as d1_client
 
 
 class _FakeResp:
@@ -69,7 +69,8 @@ def _make_client_mock(responses: list[_FakeResp]) -> AsyncMock:
             raise AssertionError("d1_query made more HTTP calls than the test supplied responses for")
 
     mock.post = _post
-    mock.call_count = call_count  # type: ignore[attr-defined]
+    # Không dùng tên call_count: trùng thuộc tính int có sẵn của Mock.
+    mock.http_calls = call_count
     # d1_query đi vào _remote_sem; patch nó thành no-op để test không thực sự chạy
     # semaphore (vốn ở cấp module và dùng chung giữa các test).
     return mock
@@ -108,7 +109,7 @@ async def test_healthy_response_no_retry() -> None:
     mock = _make_client_mock([_FakeResp(200, {"success": True, "result": rows})])
     out = await _run_with_client(mock)
     assert out == [{"n": 1}], f"expected rows, got {out}"
-    assert mock.call_count["n"] == 1
+    assert mock.http_calls["n"] == 1
     print("OK test_healthy_response_no_retry")
 
 
@@ -125,7 +126,7 @@ async def test_7429_then_success() -> None:
     with patch("asyncio.sleep", new=AsyncMock()) as fake_sleep:
         out = await _run_with_client(mock)
     assert out == [{"n": 7}], f"expected rows after retry, got {out}"
-    assert mock.call_count["n"] == 2, f"expected 2 calls, got {mock.call_count['n']}"
+    assert mock.http_calls["n"] == 2, f"expected 2 calls, got {mock.http_calls['n']}"
     fake_sleep.assert_awaited_once()
     print("OK test_7429_then_success")
 
@@ -144,7 +145,7 @@ async def test_7429_persistent_exhausts_retries() -> None:
     with patch("asyncio.sleep", new=AsyncMock(side_effect=_record_sleep)):
         out = await _run_with_client(mock)
     assert out is None, f"expected None after retries exhausted, got {out}"
-    assert mock.call_count["n"] == 5, f"expected 5 attempts, got {mock.call_count['n']}"
+    assert mock.http_calls["n"] == 5, f"expected 5 attempts, got {mock.http_calls['n']}"
     assert sleeps == [2.0, 4.0, 8.0, 16.0], f"unexpected backoff schedule: {sleeps}"
     print("OK test_7429_persistent_exhausts_retries")
 
@@ -157,7 +158,7 @@ async def test_non_7429_429_returns_immediately() -> None:
     with patch("asyncio.sleep", new=AsyncMock()) as fake_sleep:
         out = await _run_with_client(mock)
     assert out is None, f"expected None, got {out}"
-    assert mock.call_count["n"] == 1, f"expected 1 attempt (no retry), got {mock.call_count['n']}"
+    assert mock.http_calls["n"] == 1, f"expected 1 attempt (no retry), got {mock.http_calls['n']}"
     fake_sleep.assert_not_awaited()
     print("OK test_non_7429_429_returns_immediately")
 

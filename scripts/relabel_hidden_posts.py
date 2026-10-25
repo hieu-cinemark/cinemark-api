@@ -81,7 +81,9 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
         lift: list[str] = []
         for row in rows:
             movie = movies.get(row["movie_id"])
-            reason = lift_reason(row["content"], movie, row["posted_at"]) if movie else None
+            if movie is None:
+                continue
+            reason = lift_reason(row["content"], movie, row["posted_at"])
             if not reason or reason not in allowed:
                 continue
             lift.append(row["id"])

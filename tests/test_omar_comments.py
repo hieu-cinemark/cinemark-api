@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
@@ -77,7 +78,7 @@ class _FakeRedis:
     async def hkeys(self, key):
         return list(self.hashes.get(key, {}))
 
-    async def hset(self, key, field=None, value=None, mapping=None):
+    async def hset(self, key, field: Any = None, value: Any = None, mapping: dict[str, str] | None = None):
         self.hashes.setdefault(key, {}).update(mapping or {field: value})
 
     async def set(self, key, value, **_):

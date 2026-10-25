@@ -248,6 +248,7 @@ async def run_refresh_tracked() -> dict[str, Any]:
         return {"skipped": "running"}
     _running = True
     try:
+        stats: dict[str, Any]
         try:
             stats = await refresh_top_videos()
         except OmarStop as exc:

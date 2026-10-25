@@ -351,6 +351,7 @@ async def main() -> None:
     if not args.dry_run and not lake_configured():
         raise SystemExit("Thiếu R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY")
     await ensure_table()
+    files: dict[str, Path] = {}
     if args.from_dir:
         files = {f.stem: f for f in Path(args.from_dir).expanduser().glob("*.jpg")}
         rows = (await rows_for_ids(sorted(files)))[: args.limit]

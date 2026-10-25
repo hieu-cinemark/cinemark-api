@@ -45,7 +45,7 @@ def connect() -> duckdb.DuckDBPyConnection:
         raise RuntimeError("R2 is not configured (R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY)")
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    account_id = urlsplit(settings.r2_endpoint).hostname.split(".")[0]
+    account_id = (urlsplit(settings.r2_endpoint).hostname or "").split(".")[0]
     con.execute(
         f"CREATE SECRET r2 (TYPE r2, KEY_ID '{settings.r2_access_key_id}', "
         f"SECRET '{settings.r2_secret_access_key}', ACCOUNT_ID '{account_id}')"
@@ -122,17 +122,15 @@ def build_posts(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out: st
     # 7. ghi.
     _write(con, "snapshots", f"{out}/posts_snapshots", partition_by="platform, dt")
     _write(con, "posts", f"{out}/posts", partition_by="platform")
-    return {table: con.sql(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("snapshots", "posts")}
+    return {table: _row(con, f"SELECT count(*) FROM {table}")[0] for table in ("snapshots", "posts")}
 
 
 def _check(con: duckdb.DuckDBPyConnection) -> None:
     problems = []
-    dupes = con.sql(
-        "SELECT count(*) FROM (SELECT platform, post_id FROM posts GROUP BY ALL HAVING count(*) > 1)"
-    ).fetchone()[0]
+    dupes = _row(con, "SELECT count(*) FROM (SELECT platform, post_id FROM posts GROUP BY ALL HAVING count(*) > 1)")[0]
     if dupes:
         problems.append(f"{dupes} duplicate posts")
-    no_id = con.sql("SELECT count(*) FROM snapshots WHERE post_id IS NULL").fetchone()[0]
+    no_id = _row(con, "SELECT count(*) FROM snapshots WHERE post_id IS NULL")[0]
     if no_id:
         problems.append(f"{no_id} snapshot rows without post_id")
     for platform, rows, null_share in con.sql(
@@ -142,11 +140,19 @@ def _check(con: duckdb.DuckDBPyConnection) -> None:
     ).fetchall():
         if null_share > MAX_NULL_SHARE:
             problems.append(f"{platform}: {null_share:.0%} of {rows} rows have no content/posted_at")
-    snapshots, posts = (con.sql(f"SELECT count(*) FROM {t}").fetchone()[0] for t in ("snapshots", "posts"))
+    snapshots, posts = (_row(con, f"SELECT count(*) FROM {t}")[0] for t in ("snapshots", "posts"))
     if posts > snapshots:
         problems.append(f"posts ({posts}) > snapshots ({snapshots})")
     if problems:
         raise ValueError("silver posts check failed: " + "; ".join(problems))
+
+
+def _row(con: duckdb.DuckDBPyConnection, query: str) -> tuple:
+    """Dòng đầu tiên của `query` - các query ở đây luôn trả về đúng một dòng (count, sum...)."""
+    row = con.sql(query).fetchone()
+    if row is None:
+        raise ValueError(f"query returned no rows: {query}")
+    return row
 
 
 def _write(con: duckdb.DuckDBPyConnection, table: str, dest: str, *, partition_by: str | None = None) -> None:
@@ -202,7 +208,7 @@ def build_comments(con: duckdb.DuckDBPyConnection, *, bronze: str = BRONZE, out:
 
     # 6. ghi.
     _write(con, "comments", f"{out}/comments", partition_by="platform")
-    return {"comments": con.sql("SELECT count(*) FROM comments").fetchone()[0], "orphans": orphans}
+    return {"comments": _row(con, "SELECT count(*) FROM comments")[0], "orphans": orphans}
 
 
 def _check_comments(con: duckdb.DuckDBPyConnection, *, posts: str) -> int:
@@ -210,12 +216,12 @@ def _check_comments(con: duckdb.DuckDBPyConnection, *, posts: str) -> int:
     trong silver/posts) - chỉ log, vì comment có thể được crawl cho bài có từ
     trước khi có lake."""
     problems = []
-    no_id = con.sql("SELECT count(*) FROM comment_snapshots WHERE comment_id IS NULL OR post_id IS NULL").fetchone()[0]
+    no_id = _row(con, "SELECT count(*) FROM comment_snapshots WHERE comment_id IS NULL OR post_id IS NULL")[0]
     if no_id:
         problems.append(f"{no_id} comment rows without comment_id/post_id")
-    dupes = con.sql(
-        "SELECT count(*) FROM (SELECT platform, comment_id FROM comments GROUP BY ALL HAVING count(*) > 1)"
-    ).fetchone()[0]
+    dupes = _row(
+        con, "SELECT count(*) FROM (SELECT platform, comment_id FROM comments GROUP BY ALL HAVING count(*) > 1)"
+    )[0]
     if dupes:
         problems.append(f"{dupes} duplicate comments")
     for platform, rows, null_share in con.sql(

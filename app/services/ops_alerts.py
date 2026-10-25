@@ -121,7 +121,7 @@ def omar_quota_alerts(usage: dict[str, Any] | None, now: datetime) -> list[Alert
             tier = f"{settings.ops_omar_expiry_alert_days}d"
             text = f"⚠️ Gói Omar ({usage.get('plan') or '?'}) hết hạn sau {int(days_left)} ngày ({when})."
         else:
-            tier = None
+            tier, text = None, ""
         if tier:
             alerts.append(Alert(f"omar_expiry:{tier}:{today}", _DAY_TTL_SECONDS, text))
     return alerts

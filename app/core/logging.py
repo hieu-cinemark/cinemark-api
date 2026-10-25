@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import threading
+from typing import TextIO, cast
 
 import structlog
 
@@ -146,7 +147,7 @@ def _configure_once() -> None:
         wrapper_class=structlog.make_filtering_bound_logger(
             logging.getLevelNamesMapping().get(settings.log_level.upper(), logging.INFO)
         ),
-        logger_factory=structlog.PrintLoggerFactory(file=_tee),
+        logger_factory=structlog.PrintLoggerFactory(file=cast(TextIO, _tee)),
         cache_logger_on_first_use=True,
     )
 

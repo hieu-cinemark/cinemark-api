@@ -87,7 +87,7 @@ async def remove_pending(platform: str, run_id: str) -> bool:
         except json.JSONDecodeError:
             continue
         if item.get("id") == run_id:
-            removed = await client.lrem(_pending_key(platform), 1, raw)
+            removed = await client.lrem(_pending_key(platform), 1, str(raw))
             return removed > 0
     return False
 

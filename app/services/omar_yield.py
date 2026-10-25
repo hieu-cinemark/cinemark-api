@@ -71,7 +71,7 @@ async def daily(days: int = 7) -> list[dict[str, Any]]:
 
 def totals(days: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Cộng các ngày, kèm số mới trên 100 request."""
-    out = {source: _empty() for source in SOURCES}
+    out: dict[str, dict[str, Any]] = {source: _empty() for source in SOURCES}
     for day in days:
         for source, values in day["sources"].items():
             for metric, value in values.items():

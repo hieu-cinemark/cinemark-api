@@ -12,9 +12,9 @@ query."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, LiteralString, cast
 
 import psycopg
 from psycopg.rows import dict_row
@@ -100,11 +100,11 @@ _PROXY_CREATE_COLUMNS = ("platform", "proxy_url", "username", "password", "login
 _POOL_MIN_SIZE = 1
 _POOL_MAX_SIZE = 6
 _POOL_ACQUIRE_TIMEOUT_SECONDS = 10.0
-_pool: AsyncConnectionPool | None = None
+_pool: AsyncConnectionPool[Any] | None = None
 _pool_lock = asyncio.Lock()
 
 
-async def _get_pool() -> AsyncConnectionPool:
+async def _get_pool() -> AsyncConnectionPool[Any]:
     global _pool
     if _pool is not None:
         return _pool
@@ -112,7 +112,7 @@ async def _get_pool() -> AsyncConnectionPool:
         raise UpstreamError("DATABASE_URL is not configured on cinemark-api")
     async with _pool_lock:
         if _pool is None:
-            pool = AsyncConnectionPool(
+            pool: AsyncConnectionPool[Any] = AsyncConnectionPool(
                 settings.database_url,
                 min_size=_POOL_MIN_SIZE,
                 max_size=_POOL_MAX_SIZE,
@@ -143,6 +143,12 @@ async def _get_pool() -> AsyncConnectionPool:
             await pool.open(wait=False)
             _pool = pool
     return _pool
+
+
+def _trusted_sql(query: str) -> LiteralString:
+    """Query ghép động chỉ từ tên cột trong whitelist (_*_CREATE_COLUMNS, AI_PROVIDER_EXTRA_FIELDS...) - giá trị
+    luôn đi qua placeholder %s - nên an toàn dù type checker không chứng minh được là LiteralString."""
+    return cast(LiteralString, query)
 
 
 async def close_pool() -> None:
@@ -214,8 +220,10 @@ async def create_account(fields: dict[str, Any]) -> dict[str, Any]:
     try:
         async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
-                f"INSERT INTO platform_accounts ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
-                f"RETURNING {ACCOUNT_COLUMNS}",
+                _trusted_sql(
+                    f"INSERT INTO platform_accounts ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+                    f"RETURNING {ACCOUNT_COLUMNS}"
+                ),
                 values,
             )
             row = await cur.fetchone()
@@ -236,7 +244,9 @@ async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, A
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"UPDATE platform_accounts SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
+            _trusted_sql(
+                f"UPDATE platform_accounts SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {ACCOUNT_COLUMNS}"
+            ),
             values,
         )
         row = await cur.fetchone()
@@ -350,8 +360,10 @@ async def create_proxy(fields: dict[str, Any]) -> dict[str, Any]:
     try:
         async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
-                f"INSERT INTO platform_proxies ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
-                f"RETURNING {PROXY_COLUMNS}",
+                _trusted_sql(
+                    f"INSERT INTO platform_proxies ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+                    f"RETURNING {PROXY_COLUMNS}"
+                ),
                 values,
             )
             row = await cur.fetchone()
@@ -370,7 +382,9 @@ async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"UPDATE platform_proxies SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {PROXY_COLUMNS}",
+            _trusted_sql(
+                f"UPDATE platform_proxies SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {PROXY_COLUMNS}"
+            ),
             values,
         )
         row = await cur.fetchone()
@@ -417,8 +431,10 @@ async def create_filter_keyword(fields: dict[str, Any]) -> dict[str, Any]:
     try:
         async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
-                f"INSERT INTO filter_keywords ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
-                f"RETURNING {FILTER_KEYWORD_COLUMNS}",
+                _trusted_sql(
+                    f"INSERT INTO filter_keywords ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))}) "
+                    f"RETURNING {FILTER_KEYWORD_COLUMNS}"
+                ),
                 values,
             )
             row = await cur.fetchone()
@@ -437,8 +453,10 @@ async def update_filter_keyword(keyword_id: int, fields: dict[str, Any]) -> dict
     try:
         async with _connect() as conn, conn.cursor() as cur:
             await cur.execute(
-                f"UPDATE filter_keywords SET {set_clause}, updated_at = now() WHERE id = %s "
-                f"RETURNING {FILTER_KEYWORD_COLUMNS}",
+                _trusted_sql(
+                    f"UPDATE filter_keywords SET {set_clause}, updated_at = now() WHERE id = %s "
+                    f"RETURNING {FILTER_KEYWORD_COLUMNS}"
+                ),
                 values,
             )
             row = await cur.fetchone()
@@ -655,7 +673,9 @@ async def _ensure_ai_settings_table() -> None:
         )
         # Nhà cung cấp đang dùng cho MỌI lời gọi AI (2026-10-22): "bee" hoặc "kira" - chọn ở tab AI của dashboard
         # spider-hub; cinemark-api, spider-hub và Worker cinemark (qua bảng ai_runtime của D1) đều theo.
-        await cur.execute("ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_provider text NOT NULL DEFAULT 'bee'")
+        await cur.execute(
+            "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_provider text NOT NULL DEFAULT 'bee'"
+        )
         await cur.execute(
             """
             INSERT INTO ai_settings (id, enabled, model, prompts)
@@ -796,11 +816,11 @@ async def upsert_ai_provider(
     updates = ", ".join(f"{name} = EXCLUDED.{name}" for name in fields)
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"""
+            _trusted_sql(f"""
             INSERT INTO ai_providers (key, {columns}) VALUES (%s, {placeholders})
             ON CONFLICT (key) DO UPDATE SET {updates}, updated_at = now()
             RETURNING {AI_PROVIDER_COLUMNS}
-            """,
+            """),
             (key, *fields.values()),
         )
         row = await cur.fetchone()
@@ -1192,7 +1212,7 @@ async def record_auto_login_run_start(
     triggered_by: str,
     dry_run: bool,
     interval_seconds: int,
-    platforms: list[str],
+    platforms: Sequence[str],
 ) -> int:
     await _ensure_auto_login_tables()
     async with _connect() as conn, conn.cursor() as cur:
@@ -1213,7 +1233,7 @@ async def record_auto_login_run_start(
 async def record_auto_login_run_finish(
     run_id: int,
     *,
-    per_platform: dict[str, dict[str, int]],
+    per_platform: dict[str, dict[str, Any]],
     kafka_published: int,
     kafka_publish_failed: int,
     error: str | None = None,

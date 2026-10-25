@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 from app.services import omar_search as os_
 from app.services import omar_tiktok as ot
@@ -67,7 +68,8 @@ def test_search_retries_empty_mid_page_same_cursor(monkeypatch):
     delays = []
 
     async def run():
-        while (delay := await search.step(None, None, "key", lambda: True, {})) is not None:
+        unused: Any = None  # client/pacer: step() trong test không gọi HTTP thật
+        while (delay := await search.step(unused, unused, "key", lambda: True, {})) is not None:
             delays.append(delay)
 
     asyncio.run(run())

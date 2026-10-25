@@ -68,7 +68,7 @@ async def resolve_cleanup_settings() -> dict[str, Any]:
     những key nó có, còn lại lấy giá trị dự phòng từ env trong app/core/config.py. Luôn
     cùng một dạng, nên chỗ gọi không cần rẽ nhánh."""
     row = await db.get_cleanup_settings()
-    stored = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    stored = value if isinstance(value := row.get("settings"), dict) else {}
     grace = stored.get("grace_hours")
     return {
         "run_time": str(stored.get("run_time") or settings.irrelevant_post_purge_time),

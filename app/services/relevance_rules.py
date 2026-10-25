@@ -263,7 +263,7 @@ def mentions_other_film(
 # là bài về phim chiếu rạp. Cố ý KHÔNG có "phim" đứng một mình - bài review phim khác ("PHIM:
 # LAN HƯƠNG NHƯ CỐ") hay tóm tắt phim truyền hình cũng có chữ đó, và đã lọt như vậy ngày
 # 2026-10-05. Cũng không có "rap": bỏ dấu thì "rạp" trùng "rap" (nhạc).
-_STRONG_FILM_PHRASES = (
+_STRONG_FILM_PHRASES: tuple[str, ...] = (
     "dien anh",
     "man anh",
     "ra rap",
@@ -638,7 +638,9 @@ def short_title_names(title: str | None) -> list[str]:
         return []
     names: list[str] = []
     for piece in pieces:
-        words = [word for word in normalize_title(re.sub(r"[(（][^)）]*[)）]", "", piece)).split() if not word.isdigit()]
+        words = [
+            word for word in normalize_title(re.sub(r"[(（][^)）]*[)）]", "", piece)).split() if not word.isdigit()
+        ]
         name = " ".join(words)
         long_enough = (len(words) >= 2 and len(_squash(name)) >= 8) or (
             len(words) == 1 and len(name) >= SHORT_TITLE_MIN_SINGLE_WORD
@@ -655,7 +657,11 @@ def mentions_short_title(content: str | None, movie: dict | None, posted_at: obj
     released, posted = _to_date(movie.get("released_at")), _to_date(posted_at)
     if not released or not posted:
         return False
-    if not released - timedelta(days=SHORT_TITLE_BEFORE_DAYS) <= posted <= released + timedelta(days=SHORT_TITLE_AFTER_DAYS):
+    if (
+        not released - timedelta(days=SHORT_TITLE_BEFORE_DAYS)
+        <= posted
+        <= released + timedelta(days=SHORT_TITLE_AFTER_DAYS)
+    ):
         return False
     text = normalize_title(content)
     if not text:

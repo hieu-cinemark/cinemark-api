@@ -52,10 +52,10 @@ def cluster_scenes(embeddings: np.ndarray, authors: list[str]) -> list[SceneClus
         if not np.isfinite(dist[a, b]) or dist[a, b] > SCENE_DISTANCE:
             break
         # Lance-Williams cho liên kết trung bình: d(a+b, k) = (|a| d(a,k) + |b| d(b,k)) / (|a| + |b|)
-        merged = (sizes[a] * dist[a] + sizes[b] * dist[b]) / (sizes[a] + sizes[b])
-        merged[a] = np.inf
-        dist[a] = merged
-        dist[:, a] = merged
+        combined = (sizes[a] * dist[a] + sizes[b] * dist[b]) / (sizes[a] + sizes[b])
+        combined[a] = np.inf
+        dist[a] = combined
+        dist[:, a] = combined
         dist[b] = np.inf
         dist[:, b] = np.inf
         sizes[a] += sizes[b]

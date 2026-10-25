@@ -7,7 +7,7 @@ import duckdb
 
 from app.clients.d1 import d1_query
 from app.lake.constants import SILVER
-from app.lake.silver import _write
+from app.lake.silver import _row, _write
 
 
 async def fetch_keywords() -> list[dict]:
@@ -35,10 +35,8 @@ def build_dim_keywords(con: duckdb.DuckDBPyConnection, rows: list[dict], *, out:
             for r in rows
         ],
     )
-    dupes = con.sql(
-        "SELECT count(*) FROM (SELECT keyword_id FROM dim_keywords GROUP BY 1 HAVING count(*) > 1)"
-    ).fetchone()[0]
+    dupes = _row(con, "SELECT count(*) FROM (SELECT keyword_id FROM dim_keywords GROUP BY 1 HAVING count(*) > 1)")[0]
     if dupes:
         raise ValueError(f"dim_keywords: {dupes} duplicate keyword_id")
     _write(con, "dim_keywords", f"{out}/dim_keywords")  # không partition
-    return con.sql("SELECT count(*) FROM dim_keywords").fetchone()[0]
+    return _row(con, "SELECT count(*) FROM dim_keywords")[0]

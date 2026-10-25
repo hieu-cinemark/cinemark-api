@@ -61,7 +61,7 @@ async def get_token_status(platform: str) -> tuple[str | None, int | None]:
 
     client = get_redis_client()
     account = await client.get(f"{REDIS_KEY_PREFIX}{platform}:active_account")
-    account = account.strip('"') if account else _DEFAULT_ACCOUNT_KEY
+    account = str(account).strip('"') if account else _DEFAULT_ACCOUNT_KEY
 
     cache_key = f"{REDIS_KEY_PREFIX}{platform}:session_cache:{account.strip().lower()}"
     ttl = await client.ttl(cache_key)

@@ -76,7 +76,7 @@ def _films_block(films: list[dict[str, Any] | None]) -> tuple[list[str], str]:
             continue
         if title not in index:
             index[title] = len(index) + 1
-            blocks.append(f"F{index[title]}:\n{movie_context_block(film, logline_chars=200, max_cast=8)}")
+            blocks.append(f"F{index[title]}:\n{movie_context_block(film or {}, logline_chars=200, max_cast=8)}")
         tags.append(f"[F{index[title]}] ")
     return tags, "\n\n".join(blocks) or "(unknown)"
 

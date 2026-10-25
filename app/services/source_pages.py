@@ -162,7 +162,10 @@ async def add_source(
         ],
     )
     logger.info("source_page_added", url=page_url, movie_id=movie_id)
-    return (await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id]))[0]
+    rows = await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id])
+    if not rows:
+        raise NotFoundError(f"Source page {source_id} not found after insert")
+    return rows[0]
 
 
 async def set_enabled(source_id: str, enabled: bool) -> None:

@@ -10,3 +10,14 @@ asyncio_mode = "auto"
 # Bare `pytest` doesn't put the repo root on sys.path - tests that import
 # scripts/ (test_check_account_health.py, ...) need it.
 pythonpath = ["."]
+
+[tool.pyright]
+include = ["app", "scripts", "tests"]
+pythonVersion = "3.14"
+venvPath = "."
+venv = ".venv"
+executionEnvironments = [
+    # Test subscript thẳng kết quả Optional (result["x"]) - None thì test tự fail, không cần thu hẹp kiểu.
+    { root = "tests", extraPaths = ["."], reportOptionalSubscript = false, reportOptionalMemberAccess = false, reportOptionalIterable = false, reportOptionalCall = false, reportTypedDictNotRequiredAccess = false },
+    { root = "." },
+]

@@ -132,7 +132,7 @@ async def delete_account(account_id: int) -> dict[str, bool]:
         client = get_redis_client()
         await client.delete(*(f"{REDIS_KEY_PREFIX}{platform}:{name}:{key}" for name in _ACCOUNT_REDIS_KEYS))
         active_key = f"{REDIS_KEY_PREFIX}{platform}:active_account"
-        if ((await client.get(active_key)) or "").strip('"').strip().lower() == key:
+        if str((await client.get(active_key)) or "").strip('"').strip().lower() == key:
             await client.delete(active_key)
         logger.info("account_deleted_sessions_purged", platform=platform, account=key)
     return {"ok": True}
@@ -269,7 +269,7 @@ async def delete_proxy(proxy_id: int) -> dict[str, bool]:
 def _proxy_settings_out(row: dict) -> ProxySettingsOut:
     # Key lạ/cũ bị bỏ qua; giá trị đã lưu mà không còn qua được kiểm tra (ví dụ giới hạn
     # bị siết lại sau này) thì quay về mặc định thay vì làm cả trang Settings lỗi 500.
-    stored = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    stored = value if isinstance(value := row.get("settings"), dict) else {}
     merged = ProxySettings().model_dump()
     for key, value in stored.items():
         if key not in merged:
@@ -407,7 +407,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
     active = await active_provider_key()
     provider = await db.get_ai_provider(active)
     defaults = default_system_prompts()
-    stored = row.get("prompts") if isinstance(row.get("prompts"), dict) else {}
+    stored = value if isinstance(value := row.get("prompts"), dict) else {}
     prompts = []
     for task in AI_PROMPT_TASKS:
         default = defaults.get(task, "")
@@ -584,7 +584,7 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
 
 
 def _cleanup_settings_out(row: dict, *, last_run: dict | None) -> CleanupSettingsOut:
-    stored = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    stored = value if isinstance(value := row.get("settings"), dict) else {}
     defaults = CleanupSettings()
     merged: dict = defaults.model_dump()
     for key, value in stored.items():

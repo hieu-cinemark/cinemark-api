@@ -269,7 +269,7 @@ async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = F
 
     run_id = -1
     error: str | None = None
-    per_platform: dict[str, dict[str, int]] = {}
+    per_platform: dict[str, dict[str, Any]] = {}
     kafka_published_total = 0
     kafka_publish_failed_total = 0
     try:

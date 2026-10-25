@@ -173,7 +173,7 @@ def bronze(tmp_path: Path) -> Path:
 def _post(con: duckdb.DuckDBPyConnection, post_id: str) -> dict:
     # Cột TIMESTAMPTZ cần pytz mới chuyển thành datetime Python được - ở đây không cần.
     cur = con.execute("SELECT * EXCLUDE (posted_at, scraped_at) FROM posts WHERE post_id = ?", [post_id])
-    return dict(zip([c[0] for c in cur.description], cur.fetchone(), strict=True))
+    return dict(zip([c[0] for c in cur.description], cur.fetchone() or (), strict=True))
 
 
 def test_build_posts_end_to_end(bronze: Path, tmp_path: Path) -> None:
@@ -286,7 +286,7 @@ def bronze_with_comments(bronze: Path) -> Path:
 
 def _comment(con: duckdb.DuckDBPyConnection, comment_id: str) -> dict:
     cur = con.execute("SELECT * EXCLUDE (posted_at, scraped_at) FROM comments WHERE comment_id = ?", [comment_id])
-    return dict(zip([c[0] for c in cur.description], cur.fetchone(), strict=True))
+    return dict(zip([c[0] for c in cur.description], cur.fetchone() or (), strict=True))
 
 
 def test_comment_mapping_matches_columns() -> None:

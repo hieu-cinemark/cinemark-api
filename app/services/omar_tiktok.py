@@ -115,7 +115,8 @@ def map_web_item(item: dict[str, Any]) -> dict[str, Any] | None:
 
     def num(key: str) -> int | None:
         try:
-            return int(stats.get(key)) if stats.get(key) is not None else None
+            value = stats.get(key)
+            return int(value) if value is not None else None
         except TypeError, ValueError:
             return None
 
@@ -221,6 +222,7 @@ async def omar_get(
     (hashtag_videos, hashtag_info, comments, comment_replies): giữ nhịp theo pacer, 429 chờ Retry-After, 424 (TikTok phía
     Omar lỗi tạm thời, đo 2026-10-12 ~15% trang) chờ lâu dần rồi thử lại, 401/403/hết hạn mức ngày -> OmarStop. Hết lượt
     thử thì raise chứ không trả "rỗng" - bên gọi giữ nguyên con trỏ, lượt sau thử lại đúng trang đó."""
+    resp: httpx.Response | None = None
     for attempt in range(retries_424 + 1):
         await pacer.wait()
         resp = await client.get(
@@ -244,7 +246,7 @@ async def omar_get(
             return None
         resp.raise_for_status()
         return (resp.json() or {}).get("data") or {}
-    raise RuntimeError(f"omar_retries_exhausted path={path} status={resp.status_code}")
+    raise RuntimeError(f"omar_retries_exhausted path={path} status={resp.status_code if resp else None}")
 
 
 def next_cursor(data: dict[str, Any]) -> str | None:

@@ -18,6 +18,7 @@ import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from PIL import Image
@@ -63,7 +64,9 @@ class CinemaFrameClassifier:
         self._coef = np.asarray(probe["coef"], dtype=np.float32)
         self._intercept = np.asarray(probe["intercept"], dtype=np.float32)
         self._processor = AutoImageProcessor.from_pretrained(probe["embedding_model"])
-        self._model = SiglipVisionModel.from_pretrained(probe["embedding_model"]).to(self.device).eval()
+        # cast: stub của transformers khiến .to() của model bị suy ra sai kiểu.
+        model = cast(torch.nn.Module, SiglipVisionModel.from_pretrained(probe["embedding_model"]))
+        self._model = model.to(self.device).eval()
 
     def embed(self, images: list[Image.Image]) -> np.ndarray:
         torch = self._torch
