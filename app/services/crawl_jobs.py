@@ -31,9 +31,24 @@ async def get_running_job(platform: str) -> dict[str, Any] | None:
     """None nếu hiện không có job nào đang chạy cho nền tảng này - xem _run_spider trong
     crawl_request_consumer.py, nơi đặt/xoá key này quanh mỗi tiến trình crawl con được
     kích hoạt từ dashboard (có run_id)."""
+    jobs = await get_running_jobs(platform)
+    return jobs[0] if jobs else None
+
+
+async def get_running_jobs(platform: str) -> list[dict[str, Any]]:
+    """Mọi job đang chạy của nền tảng: crawl_job:<platform> cộng các key làn crawl_job:<platform>:lane<N> (25/10/2026,
+    Facebook chạy song song nhiều làn - mỗi làn một job, xem crawl_job_key của spider-hub)."""
     client = get_redis_client()
-    raw = await client.get(f"{REDIS_KEY_PREFIX}crawl_job:{platform}")
-    return json.loads(raw) if raw else None
+    base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
+    keys = [base, *sorted([key async for key in client.scan_iter(match=f"{base}:lane*")])]
+    jobs = []
+    for raw in await client.mget(keys):
+        if raw:
+            try:
+                jobs.append(json.loads(raw))
+            except json.JSONDecodeError:
+                continue
+    return jobs
 
 
 async def is_platform_draining(platform: str) -> bool:
@@ -67,13 +82,13 @@ async def request_stop(platform: str) -> bool:
     )
     await clear_pending(platform)
 
-    job = await get_running_job(platform)
-    if job is not None and job.get("run_id"):
-        await client.set(
-            f"{REDIS_KEY_PREFIX}crawl_job_cancel:{job['run_id']}",
-            "1",
-            ex=STOP_FLAG_TTL_SECONDS,
-        )
+    for job in await get_running_jobs(platform):
+        if job.get("run_id"):
+            await client.set(
+                f"{REDIS_KEY_PREFIX}crawl_job_cancel:{job['run_id']}",
+                "1",
+                ex=STOP_FLAG_TTL_SECONDS,
+            )
     return True
 
 
@@ -95,8 +110,7 @@ async def cancel_job(platform: str, run_id: str) -> bool:
         return False
 
     was_queued = await remove_pending(platform, run_id)
-    job = await get_running_job(platform)
-    was_running = job is not None and job.get("run_id") == run_id
+    was_running = any(job.get("run_id") == run_id for job in await get_running_jobs(platform))
 
     if not was_queued and not was_running:
         return False

@@ -49,7 +49,7 @@ def _load_averages() -> tuple[float, float, float]:
 
 
 async def _queue_counts() -> tuple[int, int]:
-    from app.services.crawl_jobs import get_running_job, is_platform_draining
+    from app.services.crawl_jobs import get_running_jobs, is_platform_draining
 
     running = 0
     queued = 0
@@ -57,8 +57,7 @@ async def _queue_counts() -> tuple[int, int]:
         # Cùng quy tắc với task_queue.snapshot: job đang chạy luôn được tính, và trong lúc
         # drain thì chỉ các mục bypass_drain mới thực sự còn trong hàng đợi.
         draining = await is_platform_draining(platform)
-        if await get_running_job(platform):
-            running += 1
+        running += len(await get_running_jobs(platform))
         queued += sum(1 for item in await list_pending(platform) if not draining or item.get("bypass_drain"))
     return running, queued
 

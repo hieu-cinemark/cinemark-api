@@ -117,16 +117,16 @@ async def list_history(limit: int = 100) -> list[dict[str, Any]]:
 
 
 async def snapshot() -> dict[str, list[dict[str, Any]]]:
-    from app.services.crawl_jobs import get_running_job, is_platform_draining
+    from app.services.crawl_jobs import get_running_jobs, is_platform_draining
 
     running: list[dict[str, Any]] = []
     queued: list[dict[str, Any]] = []
     for platform in PLATFORMS:
         # Job đang chạy vẫn được hiển thị kể cả khi nền tảng đang drain sau khi bấm Dừng: các
-        # lần kích hoạt có chủ đích (nurture, comments) vẫn chạy tiếp qua đó.
+        # lần kích hoạt có chủ đích (nurture, comments) vẫn chạy tiếp qua đó. Facebook có thể
+        # có nhiều job cùng lúc (mỗi làn một job).
         draining = await is_platform_draining(platform)
-        job = await get_running_job(platform)
-        if job:
+        for job in await get_running_jobs(platform):
             running.append(
                 {
                     "id": job.get("run_id") or "",
