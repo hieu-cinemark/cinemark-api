@@ -256,6 +256,10 @@ class Settings(BaseSettings):
     omar_trending_rising_comments_per_hour: float = 20
     omar_trending_rising_limit: int = 20
     omar_trending_comments_recrawl_hours: float = 24
+    # Bài booking Facebook đang theo dõi (app/services/tracked_posts.py): bài đã có trong D1 được cập nhật số bằng job
+    # post_metrics của spider-hub (đọc trang bài không đăng nhập, không tốn tài khoản) thay vì page_feed cả page. Tắt
+    # thì quay về page_feed như trước 25/10/2026.
+    tracked_facebook_logged_out: bool = True
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
     # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ

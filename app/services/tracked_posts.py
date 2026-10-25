@@ -3,10 +3,14 @@ nhập từ link Google Sheet, xem cinemark api/lib/trackedPosts.ts), ở làn �
 
 - TikTok: Omar video_info từng video (số liệu hiện tại), gửi thẳng lên raw_posts với source="tracked" - không qua tập
   seen chống trùng của Omar (bài đã có vẫn phải cập nhật số).
-- Facebook: chưa có cách lấy số liệu từng bài theo link, nên gom theo PAGE và đẩy job page_feed (lùi tới bài cũ nhất
-  đang theo dõi của page, không chống trùng) vào làn ưu tiên của spider-hub (Redis crawl_priority:facebook - spider-hub
-  xả làn này trước mọi message Kafka). Page lấy từ link bài (facebook.com/<page>/posts/...), link bài đã khớp, hoặc dòng
-  khác cùng tên page.
+- Facebook: bài đã có trong D1 (đã khớp external_id) -> MỘT job post_metrics vào hàng đợi rảnh của spider-hub (Redis
+  crawl_idle:facebook - chạy khi spider-hub không có việc khác hoặc trong giờ yên lặng Meta, vì job này không dùng tài
+  khoản): đọc từng trang bài KHÔNG đăng nhập, chỉ cập nhật like/comment/share (25/10/2026, tắt bằng
+  TRACKED_FACEBOOK_LOGGED_OUT=false). Job mang sẵn job page_feed dự phòng của từng page - bài nào spider-hub không lấy
+  được số (IP bị chặn...) thì nó đẩy page_feed của page đó vào làn ưu tiên. Bài chưa có trong D1 (cần tạo mới, mà trang
+  không đăng nhập chỉ có số) đi thẳng page_feed vào làn ưu tiên (Redis crawl_priority:facebook - spider-hub xả làn này
+  trước mọi message Kafka) như trước: gom theo PAGE, lùi tới bài cũ nhất đang theo dõi của page, không chống trùng. Page
+  lấy từ link bài (facebook.com/<page>/posts/...), link bài đã khớp, hoặc dòng khác cùng tên page.
 - Threads / group / trang cá nhân / YouTube: chưa cào (nhập số tay trên trang).
 
 Ingest ép gán bài khớp danh sách theo dõi vào phim (tracked_keyword_for) - bỏ cổng tên phim/liên quan, vì người dùng đã
@@ -40,6 +44,7 @@ logger = get_logger(__name__)
 
 TRACK_DAYS_AFTER_RELEASE = 30
 PRIORITY_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_priority:facebook"
+IDLE_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_idle:facebook"
 # Page đăng dày chỉ ~13 bài/ngày (3 bài/trang bảng tin) - trần để một page không ngốn cả tài khoản mỗi ngày.
 FB_MAX_PAGES = 150
 FB_POSTS_PER_DAY_GUESS = 4
@@ -144,8 +149,28 @@ async def _refresh_tiktok(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
             stats["tiktok_sent"] = stats.get("tiktok_sent", 0) + int(ok)
 
 
+def _page_feed_request(slug: str, oldest_day: str) -> dict[str, Any]:
+    try:
+        since_days = max(3, (_today() - date.fromisoformat(oldest_day)).days + 2)
+    except ValueError:
+        since_days = 30
+    return {
+        "platform": "facebook",
+        "type": "page_feed",
+        "page_url": f"https://www.facebook.com/{slug}",
+        "since_days": since_days,
+        "max_pages": min(FB_MAX_PAGES, max(20, math.ceil(since_days * FB_POSTS_PER_DAY_GUESS))),
+        "dedupe": "false",
+        "run_id": str(uuid.uuid4()),
+        "bypass_drain": True,
+        "published_at": time.time(),
+        "priority": "tracked",
+    }
+
+
 async def _queue_facebook(rows: list[dict[str, Any]], stats: dict[str, Any]) -> None:
-    """Gom theo page -> một job page_feed ưu tiên mỗi page, lùi tới bài cũ nhất đang theo dõi của page đó."""
+    """Bài đã có trong D1 -> một job post_metrics (không đăng nhập, kèm page_feed dự phòng theo page); bài chưa có ->
+    một job page_feed ưu tiên mỗi page, lùi tới bài cũ nhất đang theo dõi của page đó."""
     matched_urls: dict[str, str] = {}
     ids = [row["external_id"] for row in rows if row.get("external_id")]
     for start in range(0, len(ids), 80):
@@ -164,32 +189,50 @@ async def _queue_facebook(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
         if slug and row.get("page"):
             slug_by_name.setdefault(row["page"].strip().lower(), slug)
     oldest: dict[str, str] = {}
+    metrics_posts: list[dict[str, Any]] = []
+    page_feed_slugs: set[str] = set()  # page có bài chưa có trong D1 -> page_feed ngay
     for row, slug in zip(rows, slugs, strict=True):
         slug = slug or slug_by_name.get((row.get("page") or "").strip().lower())
+        external_id = row.get("external_id") or ""
+        known_url = matched_urls.get(external_id)
+        if settings.tracked_facebook_logged_out and known_url:
+            # Link đã lưu trong D1 (dạng chuẩn spider-hub tạo ra), không dùng link sheet (share/..., m.facebook...).
+            metrics_posts.append(
+                {
+                    "external_id": external_id,
+                    "url": known_url,
+                    "page_url": f"https://www.facebook.com/{slug}" if slug else None,
+                }
+            )
+        elif slug:
+            page_feed_slugs.add(slug)
         if not slug:
-            stats["facebook_no_page"] = stats.get("facebook_no_page", 0) + 1
+            if not known_url or not settings.tracked_facebook_logged_out:
+                stats["facebook_no_page"] = stats.get("facebook_no_page", 0) + 1
             continue
         day = row.get("posted_date") or str(row.get("released_at") or "")[:10] or _today().isoformat()
         oldest[slug] = min(oldest.get(slug, day), day)
     redis = get_redis_client()
-    for slug, day in oldest.items():
-        try:
-            since_days = max(3, (_today() - date.fromisoformat(day)).days + 2)
-        except ValueError:
-            since_days = 30
+    if metrics_posts:
+        # Page đã có page_feed ở trên thì không cần dự phòng (lượt đó cập nhật luôn bài của page).
+        fallback_slugs = {slug for slug in oldest if slug not in page_feed_slugs}
         request = {
             "platform": "facebook",
-            "type": "page_feed",
-            "page_url": f"https://www.facebook.com/{slug}",
-            "since_days": since_days,
-            "max_pages": min(FB_MAX_PAGES, max(20, math.ceil(since_days * FB_POSTS_PER_DAY_GUESS))),
-            "dedupe": "false",
+            "type": "post_metrics",
+            "posts": metrics_posts,
+            "fallback_page_feeds": {
+                f"https://www.facebook.com/{slug}": _page_feed_request(slug, oldest[slug])
+                for slug in sorted(fallback_slugs)
+            },
             "run_id": str(uuid.uuid4()),
             "bypass_drain": True,
             "published_at": time.time(),
             "priority": "tracked",
         }
-        await redis.lpush(PRIORITY_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
+        await redis.lpush(IDLE_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
+        stats["facebook_metrics_posts"] = len(metrics_posts)
+    for slug in sorted(page_feed_slugs):
+        await redis.lpush(PRIORITY_QUEUE_KEY, json.dumps(_page_feed_request(slug, oldest[slug]), ensure_ascii=False))
         stats["facebook_pages_queued"] = stats.get("facebook_pages_queued", 0) + 1
 
 

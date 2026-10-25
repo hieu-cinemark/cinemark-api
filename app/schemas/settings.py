@@ -377,6 +377,9 @@ class ProxySettings(BaseModel):
     tiktok_synthetic_provider: str = Field(default="proxiestrust_tiktok_us", min_length=1, max_length=64)
     tiktok_hashtag_max_attempts: int = Field(default=8, ge=1, le=50)
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
+    # Cập nhật số bài booking Facebook bằng trang không đăng nhập (consumer/jobs/post_metrics.py của spider-hub). Tắt thì
+    # spider-hub đẩy các bài đó sang page_feed có đăng nhập như trước.
+    fb_logged_out_metrics_enabled: bool = True
 
 
 class ProxySettingsOut(BaseModel):

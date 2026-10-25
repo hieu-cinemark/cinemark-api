@@ -694,6 +694,59 @@ class PostRepository:
         )
         return result is not None
 
+    async def update_post_engagement(
+        self,
+        platform: str,
+        external_id: str,
+        *,
+        like_count: int | None,
+        reply_count: int | None = None,
+        repost_count: int | None = None,
+    ) -> bool:
+        """Chỉ cập nhật số tương tác của một bài đã có (message kind="metrics" của job post_metrics bên spider-hub - đọc
+        trang bài không đăng nhập). Số None = trang không có (reel không có share) -> giữ số cũ. Ghi snapshot khi số đổi,
+        như persist_post. Bài chưa có thì không làm gì. False khi bài không có hoặc câu lệnh lỗi."""
+        await _ensure_post_indexes()
+        rows = await d1_query(
+            f"SELECT id, keyword_id, {', '.join(ENGAGEMENT_FIELDS)} FROM posts WHERE platform = ? AND external_id = ?",
+            [platform, external_id],
+            quiet=True,
+        )
+        if not rows:
+            return False
+        existing = rows[0]
+        engagement = {field: existing.get(field) or 0 for field in ENGAGEMENT_FIELDS}
+        for field, value in (("like_count", like_count), ("reply_count", reply_count), ("repost_count", repost_count)):
+            if value is not None:
+                engagement[field] = int(value)
+        changed = any((existing.get(field) or 0) != engagement[field] for field in ENGAGEMENT_FIELDS)
+        scraped_at = datetime.now(tz=timezone.utc).isoformat()
+        updated = await d1_query(
+            "UPDATE posts SET like_count = ?, reply_count = ?, repost_count = ?, scraped_at = ? WHERE id = ?",
+            [
+                engagement["like_count"],
+                engagement["reply_count"],
+                engagement["repost_count"],
+                scraped_at,
+                existing["id"],
+            ],
+            quiet=True,
+        )
+        if updated is None:
+            logger.warning("d1_post_engagement_update_failed", platform=platform, external_id=external_id)
+            return False
+        if changed:
+            await d1_query(
+                "INSERT INTO post_engagement_snapshots "
+                "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [f"eng_{uuid.uuid4()}", existing["id"], scraped_at, *engagement.values()],
+            )
+        from app.services.stats_summary import record_post
+
+        await record_post(platform=platform, keyword_id=existing.get("keyword_id"), scraped_at=scraped_at, is_new=False)
+        return True
+
     async def get_post_by_external_id(self, platform: str, external_id: str) -> dict[str, Any] | None:
         """Một bài theo (platform, external_id) - id mà payload comment của spider-hub mang theo
         (xem handle_comment trong app/workers/ingest_consumer/main.py), khác với id nội bộ D1
@@ -922,6 +975,10 @@ async def get_post_by_external_id(platform: str, external_id: str) -> dict[str, 
 
 async def update_post_views(platform: str, external_id: str, view_count: int) -> bool:
     return await post_repo.update_post_views(platform, external_id, view_count)
+
+
+async def update_post_engagement(platform: str, external_id: str, **counts: int | None) -> bool:
+    return await post_repo.update_post_engagement(platform, external_id, **counts)
 
 
 async def get_post(post_id: str) -> dict[str, Any] | None:

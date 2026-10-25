@@ -46,6 +46,7 @@ from app.services.d1 import (
     get_post_by_external_id,
     persist_comment,
     persist_post,
+    update_post_engagement,
     update_post_views,
 )
 from app.services.platforms import get_comment_mapper, get_post_mapper
@@ -224,17 +225,26 @@ async def _drop(*, platform: str | None, post_id: Any, reason: str, keyword_id: 
 
 
 async def handle_post(payload: dict[str, Any]) -> None:
-    platform = payload.get("platform")
+    platform: str = payload.get("platform") or ""
     # Payload TikTok mang id ở trường video_id - không có phương án dự phòng này thì mọi
     # quyết định ingest của TikTok đều gửi đi với post_id=None và không bao giờ join lại
     # được với bài của nó trong lake (app/lake/silver.py).
     post_id = payload.get("post_id") or payload.get("video_id")
 
     if payload.get("kind") == "metrics":
-        # Chỉ số liệu của bài đã có (lượt xem reel Facebook từ tab Reels của trang, spider-hub page_feed) - không qua
-        # các cổng liên quan, không tạo bài mới.
+        # Chỉ số liệu của bài đã có - không qua các cổng liên quan, không tạo bài mới. Hai nguồn của spider-hub: lượt
+        # xem reel Facebook từ tab Reels của trang (page_feed), và like/comment/share đọc trang bài không đăng nhập
+        # (job post_metrics - cào lại bài booking đang theo dõi).
         if post_id and payload.get("view_count"):
             await update_post_views(str(platform), str(post_id), int(payload["view_count"]))
+        if post_id and payload.get("reactions_count") is not None:
+            await update_post_engagement(
+                str(platform),
+                str(post_id),
+                like_count=payload["reactions_count"],
+                reply_count=payload.get("comments_count"),
+                repost_count=payload.get("shares_count"),
+            )
         return
 
     if payload.get("source") != "tracked":
@@ -325,7 +335,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # Bài phải chứa đầy đủ từ khoá (hoặc dạng hashtag của nó) hoặc đầy đủ tên phim - kết quả
     # tìm kiếm của nền tảng có cả bài không hề nhắc tới phim, và Kira từng gán "related" cho
     # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi Kira.
-    movie = (await _tracked_movies()).get(keyword.get("movie_id")) or {"title": keyword.get("movie_title")}
+    movie = (await _tracked_movies()).get(keyword.get("movie_id") or "") or {"title": keyword.get("movie_title")}
     movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
     mentions = mentions_film_manual if settings.relevance_rules_only else mentions_keyword_or_title
     if not mentions(draft.get("content"), movie_keywords, keyword.get("movie_title")) and not mentions_short_title(
@@ -384,13 +394,15 @@ async def handle_post(payload: dict[str, Any]) -> None:
             other_titles=await _tracked_titles(),
         )
         # Jev (~0,4 giây/bài) đủ nhanh để phân loại ngay ở ingest; Kira chậm nên chỉ khi bật KIRA_INGEST_RELEVANCE.
-        if (settings.kira_ingest_relevance or use_jev()) and not settings.relevance_rules_only and rule_relevant is not True
+        if (settings.kira_ingest_relevance or use_jev())
+        and not settings.relevance_rules_only
+        and rule_relevant is not True
         else None
     )
     if verdict is not None:
         relevance_label = verdict["label"]
         relevance_confidence = verdict["confidence"]
-    if relevance_label == "not_related":
+    if verdict is not None and relevance_label == "not_related":
         # Từ 17/10/2026 LƯU nhưng ẩn (nhãn not_related) thay vì bỏ: bộ phân loại loại nhầm khá nhiều bài thật (vd. "Xem QUỶ
         # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/relabel_hidden_posts.py); job
         # dọn bài not_related (app/services/cleanup.py) đã tắt trong Settings để không xoá chúng.
@@ -486,7 +498,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
 
 
 async def handle_comment(payload: dict[str, Any]) -> None:
-    platform = payload.get("platform")
+    platform: str = payload.get("platform") or ""
     external_post_id = payload.get("post_id")
 
     mapper = get_comment_mapper(platform)
