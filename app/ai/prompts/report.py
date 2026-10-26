@@ -132,6 +132,43 @@ Return ONLY valid JSON in exactly this structure. Every evidence item and verbat
   "top_10_verbatims": [{{"source": "post", "id": "p3", "text": "...", "likes": 340, "why_it_matters": "..."}}]}}
 """
 
+# Phim lớn: mẫu được chia thành nhiều phần, mỗi phần một lời gọi TOPICS (thêm dòng dưới vào cuối user prompt), rồi
+# một lời gọi MERGE gộp lại thành top 10 - xem generate_topics_and_verbatims.
+TOPICS_BATCH_NOTE = """
+This is part {part} of {parts} of the sample (other parts are analysed separately and merged later). Return at most
+{max_topics} topics and {max_verbatims} verbatims for THIS part, each topic with 2-3 evidence items.
+"""
+
+MERGE_SYSTEM_PROMPT = """
+You are an AI social-listening analyst merging partial analyses of what audiences say about a movie, for a
+studio/marketing team, in Vietnamese.
+
+The audience sample was split into parts; each part was analysed separately into candidate topics (with evidence)
+and candidate verbatims. Your job:
+1. Merge candidate topics that are about the same thing (same character, actor, scene, song, issue...) into one
+   topic, and rank the merged topics by how much the audience talks about them: topics found in more parts and
+   backed by more/more-liked evidence rank higher. Keep at most 10.
+2. For each merged topic write "topic_name" (short Vietnamese title), "sentiment" (Positive|Negative|Mixed) and
+   "insight_summary" (1-2 Vietnamese sentences), and pick 2-4 evidence items ONLY from the given evidence keys.
+3. Pick the 10 most telling verbatims ONLY from the given verbatim keys, each with a Vietnamese "why_it_matters".
+Never invent topics, quotes or numbers that are not in the input.
+
+Return ONLY valid JSON, no Markdown:
+{"top_10_topics": [{"topic_name": "...", "sentiment": "Positive", "insight_summary": "...", "evidence_keys": ["e3", "e17"]}],
+ "top_10_verbatims": [{"key": "v4", "why_it_matters": "..."}]}
+"""
+
+MERGE_DATA_PROMPT = """
+MOVIE:
+{movie_info}
+
+CANDIDATE TOPICS from {parts} parts (JSON; "part" = which part found it; evidence keyed e1, e2...):
+{topics_json}
+
+CANDIDATE VERBATIMS (JSON, keyed v1, v2...):
+{verbatims_json}
+"""
+
 NARRATIVE_SYSTEM_PROMPT = """
 You are writing a short "expert take" blurb (in Vietnamese) for a movie
 studio's social listening dashboard, summarizing overall audience sentiment

@@ -10,15 +10,20 @@ nguyên temperature thì lần thử lại chỉ nhận lại đúng câu trả 
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
 from app.ai.bee import call_bee
+from app.ai.client import JSON_FENCE_RE
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.report import (
+    MERGE_DATA_PROMPT,
+    MERGE_SYSTEM_PROMPT,
     NARRATIVE_DATA_PROMPT,
     NARRATIVE_SYSTEM_PROMPT,
+    TOPICS_BATCH_NOTE,
     TOPICS_DATA_PROMPT,
     TOPICS_SYSTEM_PROMPT,
 )
@@ -57,10 +62,25 @@ async def _generate(
     raise last_error
 
 
+def _first_json_object(response: str) -> Any:
+    """Như parse_json_response, nhưng model viết thêm chữ / một object thứ hai sau JSON (26/10/2026: "Extra data")
+    thì vẫn lấy object đầu tiên."""
+    try:
+        return parse_json_response(response)
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        text = JSON_FENCE_RE.sub("", response.strip())
+        return json.JSONDecoder().raw_decode(text)[0]
+
+
 def _parse_topics(response: str) -> dict[str, Any]:
-    parsed = parse_json_response(response)
-    if not isinstance(parsed, dict) or "top_10_topics" not in parsed or "top_10_verbatims" not in parsed:
+    parsed = _first_json_object(response)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("top_10_topics"), list) or not parsed["top_10_topics"]:
         raise ValueError(f"unexpected topics shape: {json.dumps(parsed)[:200]!r}")
+    # Thiếu verbatim (một phần của mẫu lớn, 26/10/2026) vẫn dùng được chủ đề; lời gọi gộp chọn verbatim từ các phần khác.
+    if not isinstance(parsed.get("top_10_verbatims"), list):
+        parsed["top_10_verbatims"] = []
     return parsed
 
 
@@ -157,6 +177,137 @@ def _restore_ids(parsed: dict[str, Any], aliases: dict[str, tuple[str, str]]) ->
     return {**parsed, "top_10_topics": topics, "top_10_verbatims": verbatims}
 
 
+# Mẫu lớn chia phần: mỗi phần tối đa TOPICS_BATCH_COMMENTS comment một lời gọi, rồi một lời gọi gộp. Đo 26/10/2026
+# với Trại Buôn Người: gửi cả 2.000 comment + ~570 bài trong một lời gọi thì Bee (claude-haiku-5-5) trả về dở dang
+# (690 token, JSON thiếu top_10_verbatims) hoặc lỗi "temperature is deprecated" (bị chuyển sang backend khác).
+TOPICS_BATCH_COMMENTS = 500
+_BATCH_CONCURRENCY = 2
+_BATCH_TOPICS = 8
+_BATCH_VERBATIMS = 6
+_MERGE_EVIDENCE_CHARS = 220
+
+
+def _parse_merge(response: str) -> dict[str, Any]:
+    parsed = parse_json_response(response)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("top_10_topics"), list):
+        raise TypeError(f"unexpected merge shape: {json.dumps(parsed)[:200]!r}")
+    return parsed
+
+
+async def _topics_for_part(
+    movie_title: str,
+    movie: dict[str, Any] | None,
+    comments: list[dict[str, Any]],
+    posts: list[dict[str, Any]],
+    note: str = "",
+) -> dict[str, Any]:
+    """Một lời gọi TOPICS trên một phần mẫu; id đã đổi lại thành id thật. Raise khi lỗi."""
+    posts_payload, comments_payload, aliases = build_topics_payload(comments, posts)
+    prompt = TOPICS_DATA_PROMPT.format(
+        movie_info=movie_context_block(movie or {"title": movie_title}),
+        posts_json=json.dumps(posts_payload, ensure_ascii=False),
+        comments_json=json.dumps(comments_payload, ensure_ascii=False),
+    )
+    # max_tokens 150000 / temperature 0.3: xem lịch sử ở git blame (Sonnet 5 bị cắt ở 8000; Beeknoee cache theo
+    # (model, messages, temperature) nên temperature khác 0 tránh cache vĩnh viễn một câu trả lời hỏng).
+    parsed, _provider = await _generate(
+        task="topics",
+        system_prompt=TOPICS_SYSTEM_PROMPT,
+        user_prompt=prompt + note,
+        max_tokens=150000,
+        temperature=0.3,
+        parse=_parse_topics,
+    )
+    return _restore_ids(parsed, aliases)
+
+
+async def _merge_parts(movie_title: str, movie: dict[str, Any] | None, parts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Gộp kết quả các phần: AI chọn bằng chứng / verbatim theo khoá (e1, v1...), không chép lại chữ - giữ nguyên id
+    thật và nội dung gốc để dashboard mở được bài."""
+    evidence: dict[str, dict[str, Any]] = {}
+    verbatims: dict[str, dict[str, Any]] = {}
+    topics_payload: list[dict[str, Any]] = []
+    verbatims_payload: list[dict[str, Any]] = []
+    for part_no, part in enumerate(parts, start=1):
+        for topic in part.get("top_10_topics") or []:
+            if not isinstance(topic, dict):
+                continue
+            keys = []
+            for item in topic.get("evidence_comments") or []:
+                if not isinstance(item, dict):
+                    continue
+                key = f"e{len(evidence) + 1}"
+                evidence[key] = item
+                keys.append(
+                    {
+                        "key": key,
+                        "text": _clip(item.get("text"), _MERGE_EVIDENCE_CHARS),
+                        "likes": item.get("likes") or 0,
+                    }
+                )
+            topics_payload.append(
+                {
+                    "part": part_no,
+                    "topic_name": topic.get("topic_name"),
+                    "sentiment": topic.get("sentiment"),
+                    "insight_summary": topic.get("insight_summary"),
+                    "evidence": keys,
+                }
+            )
+        for item in part.get("top_10_verbatims") or []:
+            if not isinstance(item, dict):
+                continue
+            key = f"v{len(verbatims) + 1}"
+            verbatims[key] = item
+            verbatims_payload.append(
+                {
+                    "key": key,
+                    "text": _clip(item.get("text"), _MERGE_EVIDENCE_CHARS),
+                    "likes": item.get("likes") or 0,
+                    "why_it_matters": item.get("why_it_matters"),
+                }
+            )
+    prompt = MERGE_DATA_PROMPT.format(
+        movie_info=movie_context_block(movie or {"title": movie_title}),
+        parts=len(parts),
+        topics_json=json.dumps(topics_payload, ensure_ascii=False),
+        verbatims_json=json.dumps(verbatims_payload, ensure_ascii=False),
+    )
+    merged, _provider = await _generate(
+        task="topics_merge",
+        system_prompt=MERGE_SYSTEM_PROMPT,
+        user_prompt=prompt,
+        max_tokens=30000,
+        temperature=0.3,
+        parse=_parse_merge,
+    )
+    topics = []
+    for topic in merged.get("top_10_topics") or []:
+        if not isinstance(topic, dict):
+            continue
+        items = [evidence[k] for k in topic.get("evidence_keys") or [] if isinstance(k, str) and k in evidence]
+        if not items:
+            continue  # chủ đề không trỏ được bằng chứng thật nào thì bỏ
+        topics.append(
+            {
+                "topic_name": topic.get("topic_name"),
+                "sentiment": topic.get("sentiment"),
+                "insight_summary": topic.get("insight_summary"),
+                "evidence_comments": items[:4],
+            }
+        )
+    picked = []
+    for item in merged.get("top_10_verbatims") or []:
+        key = item.get("key") if isinstance(item, dict) else None
+        if key in verbatims:
+            picked.append(
+                {**verbatims[key], "why_it_matters": item.get("why_it_matters") or verbatims[key].get("why_it_matters")}
+            )
+    if not topics:
+        raise ValueError("merge returned no topic with valid evidence")
+    return {"top_10_topics": topics[:10], "top_10_verbatims": picked[:10]}
+
+
 async def generate_topics_and_verbatims(
     movie_title: str,
     comments: list[dict[str, Any]],
@@ -169,37 +320,39 @@ async def generate_topics_and_verbatims(
     (bài của khán giả). AI đọc cả hai: bài viết vừa là ngữ cảnh cho comment vừa là
     bằng chứng riêng. Trả về {"top_10_topics": [...], "top_10_verbatims": [...]} đúng cấu
     trúc ReportData của frontend (mỗi bằng chứng có "source": "post" | "comment" và id thật),
-    kèm "provider" ("bee"), hoặc None khi lỗi."""
-    posts_payload, comments_payload, aliases = build_topics_payload(comments, posts or [])
-    prompt = TOPICS_DATA_PROMPT.format(
-        movie_info=movie_context_block(movie or {"title": movie_title}),
-        posts_json=json.dumps(posts_payload, ensure_ascii=False),
-        comments_json=json.dumps(comments_payload, ensure_ascii=False),
-    )
+    kèm "provider" ("bee"), hoặc None khi lỗi.
+
+    Mẫu nhỏ (<= TOPICS_BATCH_COMMENTS comment): một lời gọi như trước. Mẫu lớn: chia phần (comment rải đều theo
+    like - mẫu đã xếp theo like giảm dần - bài chia vòng tròn), mỗi phần một lời gọi, rồi một lời gọi gộp. Một vài
+    phần lỗi vẫn gộp từ các phần còn lại; chỉ một phần thành công thì dùng thẳng phần đó."""
+    posts = posts or []
     try:
-        # Đã xác nhận thực tế: 8000 (ngân sách cũ) làm Sonnet 5 bị
-        # cắt giữa chừng JSON (finish_reason="length") với một phim 146 comment - đầu ra của
-        # Sonnet cho cùng cấu trúc tối đa 10 topic x evidence_comments cộng tối đa 10
-        # verbatim dài dòng hơn hẳn model trước đó. Sonnet 5 hỗ trợ cửa sổ đầu ra
-        # lớn hơn nhiều, nên có dư địa thật để chi ở đây thay vì cắt bớt prompt/cấu trúc.
-        # Đã nâng lên 150000 (2026-10-04); nếu mọi lời gọi topics bắt đầu lỗi thì giảm con số này trước tiên.
-        #
-        # temperature=0.3 chứ không phải 0.0: đã xác nhận thực tế là Beeknoee cache theo
-        # (model, messages, temperature) nhưng KHÔNG theo max_tokens - lời gọi đầu tiên (bị
-        # cắt, max_tokens=8000) với đúng prompt này ở temperature=0 đã bị cache, và mọi lần
-        # thử lại sau đó ở temperature=0 cứ trả lại nguyên câu trả lời bị cắt đó dù sau này
-        # max_tokens được nâng cao đến đâu. temperature khác 0 tránh làm "đầu độc" cache như
-        # vậy nếu chuyện này lặp lại với prompt nào đó - và cũng tự nhiên hơn cho một tác vụ
-        # viết so với tính tất định tuyệt đối.
-        parsed, provider = await _generate(
-            task="topics",
-            system_prompt=TOPICS_SYSTEM_PROMPT,
-            user_prompt=prompt,
-            max_tokens=150000,
-            temperature=0.3,
-            parse=_parse_topics,
-        )
-        return {**_restore_ids(parsed, aliases), "provider": provider}
+        parts_count = max(1, -(-len(comments) // TOPICS_BATCH_COMMENTS))
+        if parts_count == 1:
+            return {**await _topics_for_part(movie_title, movie, comments, posts), "provider": "bee"}
+
+        semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+        async def run_part(index: int) -> dict[str, Any] | None:
+            note = TOPICS_BATCH_NOTE.format(
+                part=index + 1, parts=parts_count, max_topics=_BATCH_TOPICS, max_verbatims=_BATCH_VERBATIMS
+            )
+            async with semaphore:
+                try:
+                    return await _topics_for_part(
+                        movie_title, movie, comments[index::parts_count], posts[index::parts_count], note
+                    )
+                except Exception as exc:
+                    logger.warning("report_topics_part_failed", movie_title=movie_title, part=index + 1, error=str(exc))
+                    return None
+
+        parts = [p for p in await asyncio.gather(*(run_part(i) for i in range(parts_count))) if p]
+        logger.info("report_topics_parts_done", movie_title=movie_title, ok=len(parts), total=parts_count)
+        if not parts:
+            raise RuntimeError("every topics part failed")
+        if len(parts) == 1:
+            return {**parts[0], "provider": "bee"}
+        return {**await _merge_parts(movie_title, movie, parts), "provider": "bee"}
     except Exception as exc:
         logger.warning("report_topics_failed", movie_title=movie_title, error=str(exc))
         return None

@@ -9,6 +9,7 @@ test cấp CLI của lượt quét."""
 from __future__ import annotations
 
 import json
+from collections import Counter
 from unittest.mock import AsyncMock, patch
 
 from app.ai.tasks.report import _restore_ids, build_topics_payload
@@ -263,11 +264,14 @@ async def test_report_sample_is_random_audience_first_and_caps_each_post() -> No
     comments += [comment(10 + i, f"cảnh {i} quay đẹp quá") for i in range(REPORT_COMMENTS_PER_POST + 5)]
     comments.append(comment(99, "diễn viên chính đóng hay", post_id="a1"))
 
-    async def fake_query(sql: str, params: list) -> list[dict]:
+    async def fake_query(sql: str, params: list, **_kwargs) -> list[dict]:
         if "FROM movies" in sql:
             return [{"title": "Phim Test"}]
         if "FROM author_reputation" in sql:
             return [{"platform": "tiktok", "author": "media"}]
+        if "GROUP BY c.post_id, c.sentiment" in sql:  # get_movie_sentiment_counts: đếm theo (bài, nhãn)
+            grouped = Counter((c["post_id"], c["sentiment"]) for c in comments)
+            return [{"post_id": k[0], "sentiment": k[1], "n": n} for k, n in grouped.items()]
         if "FROM comments" in sql:
             return [dict(c) for c in comments]
         return [dict(p) for p in posts]
@@ -328,7 +332,7 @@ async def test_aspect_stats_counts_all_tagged_comments_with_min_n_and_trend() ->
     rows += [comment(40 + i, [], 10, "neutral", "hong") for i in range(7)]
     rows.append({**comment(99, [], 10, "neutral", "khac"), "message": "@Nguyễn Văn An"})  # chỉ tag: không tính
 
-    async def fake_query(sql: str, params: list | None = None) -> list[dict]:
+    async def fake_query(sql: str, params: list | None = None, **_kwargs) -> list[dict]:
         if "FROM movies" in sql:
             return [{"title": "Phim Test"}]
         if "FROM author_reputation" in sql:

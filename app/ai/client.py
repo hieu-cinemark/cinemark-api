@@ -236,7 +236,16 @@ def _invoke(
     content: list[str] = []
     finish_reason = None
     usage = None
-    for chunk in client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True}):
+    try:
+        stream = client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True})
+    except openai.BadRequestError as exc:
+        # Vài model không nhận temperature (Bee claude-haiku-5-5, 26/10/2026: "`temperature` is deprecated for this
+        # model", không phải lần nào cũng bị) - gọi lại một lần không kèm temperature.
+        if "temperature" not in str(exc).lower():
+            raise
+        params.pop("temperature", None)
+        stream = client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True})
+    for chunk in stream:
         if getattr(chunk, "usage", None) is not None:
             usage = chunk.usage
         if not chunk.choices:

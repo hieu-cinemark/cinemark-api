@@ -40,6 +40,7 @@ _http_client: httpx.AsyncClient | None = None
 _http_client_lock = asyncio.Lock()
 # 8 cho service API (giữ dashboard không treo); service ingest đặt D1_MAX_CONCURRENCY cao hơn để xử lý kịp hàng tồn Kafka.
 _remote_sem = asyncio.Semaphore(settings.d1_max_concurrency)
+_READ_TIMEOUT_RETRIES = 2
 
 
 def _get_local_conn() -> sqlite3.Connection:
@@ -187,6 +188,15 @@ async def d1_query(
                     timeout=timeout,
                 )
         except httpx.HTTPError as exc:
+            # D1 chạy tuần tự từng câu: một câu nặng của tiến trình khác (ingest, Worker) làm câu SELECT nhỏ ở đây
+            # quá giờ (26/10/2026: tra một phim theo id hết 10 giây). Câu chỉ đọc thì thử lại an toàn - tối đa 2 lần,
+            # chờ lâu dần; câu ghi không thử lại (có thể đã chạy xong ở D1, ghi lại sẽ thành hai lần).
+            read_only = sql.lstrip().upper().startswith(("SELECT", "WITH"))
+            if read_only and isinstance(exc, httpx.TimeoutException) and attempt < _READ_TIMEOUT_RETRIES:
+                attempt += 1
+                logger.info("d1_read_timeout_retry", attempt=attempt, timeout=timeout)
+                await asyncio.sleep(attempt)
+                continue
             if not quiet:
                 logger.warning(
                     "d1_request_failed",

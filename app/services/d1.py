@@ -26,7 +26,9 @@ duy nhất mà service này có."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import random
 import re
 import unicodedata
@@ -476,6 +478,38 @@ async def _channel_authors() -> set[tuple[str, str]]:
     return {(r["platform"], r["author"]) for r in rows or []}
 
 
+# Phim lớn (Trại Buôn Người 26/10: 512 nghìn comment, 10 nghìn bài) không kéo nguyên khối về một lần được - D1 trả
+# quá chậm, d1_query hết giờ và trả None, report tưởng phim "0 comment". Mọi câu đọc comment của report đi qua các
+# hàm dưới: theo trang / theo nhóm bài, hết giờ lâu hơn, và lỗi thì raise (không lặng lẽ thành 0).
+_POST_PAGE = 2000
+_POST_BATCH = 80  # D1 cho tối đa 100 tham số một câu
+_BATCH_CONCURRENCY = 4
+_REPORT_QUERY_TIMEOUT = 120.0
+# Mẫu comment cho lời gọi gom topic: rút trước trong SQL khoảng ngần này ứng viên (cố định theo rowid), rồi Python
+# lọc trùng / giới hạn mỗi bài / chia theo cảm xúc như cũ để ra REPORT_COMMENT_SAMPLE_SIZE.
+REPORT_SAMPLE_CANDIDATES = 40_000
+
+
+async def _d1_rows(sql: str, params: list[Any]) -> list[dict[str, Any]]:
+    rows = await d1_query(sql, params, timeout=_REPORT_QUERY_TIMEOUT)
+    if rows is None:
+        raise RuntimeError("D1 query failed while building the report")
+    return rows
+
+
+async def _comments_of_posts(post_ids: list[str], columns: str, where: str) -> list[dict[str, Any]]:
+    """Comment (alias c) của các bài đã qua cổng, theo nhóm _POST_BATCH bài, tối đa _BATCH_CONCURRENCY câu song song."""
+    semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+    async def one(batch: list[str]) -> list[dict[str, Any]]:
+        async with semaphore:
+            marks = ",".join("?" * len(batch))
+            return await _d1_rows(f"SELECT {columns} FROM comments c WHERE c.post_id IN ({marks}) AND {where}", batch)
+
+    batches = [post_ids[i : i + _POST_BATCH] for i in range(0, len(post_ids), _POST_BATCH)]
+    return [row for rows in await asyncio.gather(*(one(b) for b in batches)) for row in rows]
+
+
 async def _report_posts(movie_id: str) -> dict[str, dict[str, Any]]:
     """Mọi bài của phim qua cổng relevance_label + movie_hashtag_present (xem docstring của
     get_report_sample_for_movie), theo id, mỗi bài có thêm "is_channel": True khi tác giả là một kênh
@@ -483,21 +517,29 @@ async def _report_posts(movie_id: str) -> dict[str, dict[str, Any]]:
     - bài của kênh chỉ làm ngữ cảnh, không được coi là ý kiến khán giả."""
     movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
     movie_title = movie_rows[0]["title"] if movie_rows else None
-    rows = await d1_query(
-        f"""
-        SELECT p.id, p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform,
-               p.like_count AS post_likes, p.reply_count AS post_comments,
-               (p.repost_count + p.quote_count + p.reshare_count) AS post_shares,
-               k.keyword AS post_keyword
-        FROM posts p
-        LEFT JOIN keywords k ON k.id = p.keyword_id
-        WHERE p.movie_id = ? AND {RELEVANT_POST_SQL}
-        """,
-        [movie_id],
-    )
+    rows: list[dict[str, Any]] = []
+    last = ""
+    while True:  # theo trang - phim lớn có hàng chục nghìn bài kèm nội dung
+        page = await _d1_rows(
+            f"""
+            SELECT p.id, p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform,
+                   p.like_count AS post_likes, p.reply_count AS post_comments,
+                   (p.repost_count + p.quote_count + p.reshare_count) AS post_shares,
+                   k.keyword AS post_keyword
+            FROM posts p
+            LEFT JOIN keywords k ON k.id = p.keyword_id
+            WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND p.id > ?
+            ORDER BY p.id LIMIT {_POST_PAGE}
+            """,
+            [movie_id, last],
+        )
+        rows += page
+        if len(page) < _POST_PAGE:
+            break
+        last = page[-1]["id"]
     reputable = await reputable_authors()
     posts: dict[str, dict[str, Any]] = {}
-    for row in rows or []:
+    for row in rows:
         is_reputable = (row.get("platform"), row.get("post_author")) in reputable
         if movie_hashtag_present(
             row.get("post_content"), movie_title, row.pop("post_keyword", None), is_reputable_author=is_reputable
@@ -541,20 +583,20 @@ async def get_report_sample_for_movie(
     posts = await _report_posts(movie_id)
     rng = _sample_rng(movie_id)
 
-    rows = await d1_query(
-        f"""
-        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage
-        FROM comments c
-        JOIN posts p ON p.id = c.post_id
-        WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL}
-          AND c.sentiment IS NOT NULL AND c.message IS NOT NULL
-        ORDER BY c.reactions_count DESC
-        """,
-        [movie_id],
+    # Rút trước ~REPORT_SAMPLE_CANDIDATES comment trong SQL (băm rowid - cố định, rải đều), không kéo cả trăm nghìn
+    # comment về; comment chỉ có emoji/tag (sentiment_source='rule') bỏ luôn trong SQL.
+    total = sum((await get_movie_sentiment_counts(movie_id, posts)).values())
+    per_mille = min(1000, math.ceil(REPORT_SAMPLE_CANDIDATES * 1000 / max(total, 1)))
+    rows = await _comments_of_posts(
+        list(posts),
+        "c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage",
+        f"{_COMMENT_ABOUT_MOVIE_SQL} AND c.sentiment IS NOT NULL AND c.message IS NOT NULL"
+        f" AND COALESCE(c.sentiment_source, '') != 'rule' AND (abs(c.rowid * 2654435761) % 1000) < {per_mille}",
     )
+    rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trùng text: giữ bản nhiều like nhất
     seen_texts: set[str] = set()
     candidates: list[dict[str, Any]] = []
-    for row in rows or []:
+    for row in rows:
         post = posts.get(row["post_id"])
         if post is None or row.get("sentiment") not in _SENTIMENT_BUCKETS:
             continue
@@ -665,20 +707,14 @@ async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
     - quotes: tối đa ASPECT_QUOTES_PER_SIDE câu khen và chê nhiều like nhất mỗi khía cạnh, mỗi bài một câu."""
     await ensure_comment_insight_columns()
     posts = await _report_posts(movie_id)
-    rows = await d1_query(
-        f"""
-        SELECT c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage,
-               c.posted_at
-        FROM comments c
-        JOIN posts p ON p.id = c.post_id
-        WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL}
-          AND c.insights_classified_at IS NOT NULL AND c.message IS NOT NULL
-        ORDER BY c.reactions_count DESC
-        """,
-        [movie_id],
+    rows = await _comments_of_posts(
+        list(posts),
+        "c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage, c.posted_at",
+        f"{_COMMENT_ABOUT_MOVIE_SQL} AND c.insights_classified_at IS NOT NULL AND c.message IS NOT NULL",
     )
+    rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trích dẫn: nhiều like trước
     tagged: list[dict[str, Any]] = []
-    for row in rows or []:
+    for row in rows:
         if row["post_id"] not in posts or rule_sentiment(row.get("message") or "") is not None:
             continue
         try:
@@ -757,7 +793,7 @@ async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
     }
 
 
-async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
+async def get_movie_sentiment_counts(movie_id: str, posts: dict[str, dict[str, Any]] | None = None) -> dict[str, int]:
     """Số lượng mọi comment đã phân loại của phim này, nhóm theo nhãn cảm xúc - sự thật gốc
     cho tỉ lệ overall_sentiment của report (chỗ gọi tính bằng phép chia đơn giản, không
     để LLM ước lượng), trên TOÀN BỘ tập comment, không chỉ mẫu có giới hạn đưa vào lời
@@ -774,29 +810,24 @@ async def get_movie_sentiment_counts(movie_id: str) -> dict[str, int]:
     một mẫu có giới hạn, khác với get_report_sample_for_movie) vì cần đếm đúng toàn bộ,
     không phải mẫu đại diện - sau đó movie_hashtag_present vẫn chạy bằng Python trên từng
     dòng."""
-    movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
-    movie_title = movie_rows[0]["title"] if movie_rows else None
-
-    rows = await d1_query(
+    # Đếm trong SQL theo (bài, nhãn) - vài chục nghìn dòng nhỏ thay vì từng comment kèm nội dung bài (512 nghìn dòng
+    # với Trại Buôn Người, 26/10) - rồi chỉ cộng các bài qua cổng của _report_posts (cùng movie_hashtag_present).
+    if posts is None:
+        posts = await _report_posts(movie_id)
+    rows = await _d1_rows(
         f"""
-        SELECT c.sentiment, p.content AS post_content, p.author AS post_author, p.platform,
-               k.keyword AS post_keyword
+        SELECT c.post_id, c.sentiment, COUNT(*) AS n
         FROM comments c
         JOIN posts p ON p.id = c.post_id
-        LEFT JOIN keywords k ON k.id = p.keyword_id
         WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL} AND c.sentiment IS NOT NULL
+        GROUP BY c.post_id, c.sentiment
         """,
         [movie_id],
     )
-    reputable = await reputable_authors()
     counts: dict[str, int] = {}
-    for row in rows or []:
-        is_reputable = (row.get("platform"), row.get("post_author")) in reputable
-        if not movie_hashtag_present(
-            row.get("post_content"), movie_title, row.get("post_keyword"), is_reputable_author=is_reputable
-        ):
-            continue
-        counts[row["sentiment"]] = counts.get(row["sentiment"], 0) + 1
+    for row in rows:
+        if row["post_id"] in posts:
+            counts[row["sentiment"]] = counts.get(row["sentiment"], 0) + int(row["n"])
     return counts
 
 
