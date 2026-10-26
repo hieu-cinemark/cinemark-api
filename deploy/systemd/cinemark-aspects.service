@@ -1,0 +1,20 @@
+[Unit]
+Description=cinemark-api aspect labelling for Review Angles (fine-tuned ViSoBERT multi-label, comments of the last few hours)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cinemark-api
+EnvironmentFile=/opt/cinemark-api/.env
+# CPU-only VPS: cap torch threads and CPU share so crawling/ingest keep their cores.
+Environment=OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TOKENIZERS_PARALLELISM=false
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.aspect_label --days 0.25 --batch-size 32
+User=app
+Group=app
+Nice=10
+CPUQuota=200%
+MemoryMax=3G
+TimeoutStartSec=2h
+StandardOutput=journal
+StandardError=journal
