@@ -231,29 +231,34 @@ def _invoke(
     }
     if max_tokens is not None:
         params["max_tokens"] = max_tokens
+
     # Stream rồi ghép lại: gateway của Kira (nginx) cắt request im lặng quá 60 giây (504) - một lô sentiment với qwen
     # mất khoảng 120 giây nên không-stream thì lô nào cũng 504. Stream thì token về liên tục, gateway không cắt.
-    content: list[str] = []
-    finish_reason = None
-    usage = None
+    def consume(params: dict[str, Any]) -> tuple[list[str], Any, Any]:
+        content: list[str] = []
+        finish_reason = None
+        usage = None
+        for chunk in client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True}):
+            if getattr(chunk, "usage", None) is not None:
+                usage = chunk.usage
+            if not chunk.choices:
+                continue
+            choice = chunk.choices[0]
+            if choice.delta and choice.delta.content:
+                content.append(choice.delta.content)
+            finish_reason = choice.finish_reason or finish_reason
+        return content, finish_reason, usage
+
     try:
-        stream = client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True})
-    except openai.BadRequestError as exc:
-        # Vài model không nhận temperature (Bee claude-haiku-5-5, 26/10/2026: "`temperature` is deprecated for this
-        # model", không phải lần nào cũng bị) - gọi lại một lần không kèm temperature.
-        if "temperature" not in str(exc).lower():
+        content, finish_reason, usage = consume(params)
+    except Exception as exc:  # noqa: BLE001 - lớp lỗi tuỳ cổng (SSE error event), chỉ xử lý lỗi nói về temperature
+        # Vài model không nhận temperature (Bee claude-haiku-5-5, 26/10/2026: "[400]: `temperature` is deprecated for
+        # this model", không phải lần nào cũng bị; lỗi tới trong stream chứ không phải lúc mở request) - gọi lại từ
+        # đầu một lần, không kèm temperature.
+        if "temperature" not in str(exc).lower() or "temperature" not in params:
             raise
-        params.pop("temperature", None)
-        stream = client.chat.completions.create(**params, stream=True, stream_options={"include_usage": True})
-    for chunk in stream:
-        if getattr(chunk, "usage", None) is not None:
-            usage = chunk.usage
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        if choice.delta and choice.delta.content:
-            content.append(choice.delta.content)
-        finish_reason = choice.finish_reason or finish_reason
+        params = {k: v for k, v in params.items() if k != "temperature"}
+        content, finish_reason, usage = consume(params)
     message = SimpleNamespace(content="".join(content))
     return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)], usage=usage)
 
