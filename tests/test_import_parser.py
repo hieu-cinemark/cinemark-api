@@ -21,3 +21,18 @@ def test_pipe_format_one_line_per_account():
 
 def test_prose_format_falls_through_to_kira():
     assert parse_delimited("accounts", "each line is email then password", "a@x.com secret") is None
+
+
+def test_line_with_more_fields_than_format_is_rejected_not_merged_into_last_column():
+    """26/10/2026: FORMAT 5 cột, dữ liệu 10 trường -> ô MAIL từng nhận "token|email|mật khẩu mail|||tên"."""
+    import pytest
+
+    hint = "UID|PASS|2FA|COOKIE|MAIL"
+    content = "6159|pw|C2KX|c_user=1; xs=2|EAAD123|a@gmail.com|mailpw|||Tên\n"
+    with pytest.raises(ValueError, match="Dòng 1 có 10 trường nhưng FORMAT chỉ có 5 cột"):
+        parse_delimited("accounts", hint, content)
+
+
+def test_trailing_empty_fields_are_fine():
+    rows = parse_delimited("accounts", "UID|PASS|MAIL", "u1|p1|a@x.com||\n")
+    assert rows is not None and rows[0]["email"] == "a@x.com"

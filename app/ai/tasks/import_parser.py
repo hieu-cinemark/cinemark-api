@@ -197,13 +197,21 @@ def parse_delimited(target: ImportTarget, format_hint: str, content: str) -> lis
     sep = _line_separator(format_hint)
     rows: list[dict[str, Any]] = []
     width = len(columns)
-    for raw_line in content.splitlines():
+    for line_no, raw_line in enumerate(content.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
-        cells = line.split(sep, width - 1)
+        cells = line.split(sep)
         if len(cells) < 2:
             continue
+        # Dòng có nhiều trường hơn FORMAT: trước 26/10/2026 cột cuối nuốt hết phần thừa (2 tài khoản FB bị ghi
+        # "token|email|mật khẩu mail|||tên" vào ô email). Báo cho người nhập thêm tên cột thay vì đoán.
+        extra = [cell for cell in cells[width:] if cell.strip()]
+        if extra:
+            raise ValueError(
+                f"Dòng {line_no} có {len(cells)} trường nhưng FORMAT chỉ có {width} cột ({format_hint.strip()}). "
+                f"Thêm tên cho các cột còn lại vào FORMAT (cột không cần thì đặt tên bất kỳ, vd. BO_QUA)."
+            )
         row: dict[str, Any] = {f: "" for f in fields}
         if target == "proxies":
             row["login_use_proxy"] = False
