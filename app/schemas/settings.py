@@ -85,6 +85,10 @@ class AccountSetProxy(BaseModel):
     proxy_id: int
 
 
+class AccountSetEnabled(BaseModel):
+    enabled: bool
+
+
 class AccountUpdate(BaseModel):
     account_id: str | None = None
     password: str | None = None

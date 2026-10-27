@@ -40,7 +40,15 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.schemas.settings import parse_run_times
-from app.services import channel_profiles, omar_comments, omar_trending, ops_alerts, priority_channels, tracked_posts
+from app.services import (
+    channel_profiles,
+    crawl_lanes,
+    omar_comments,
+    omar_trending,
+    ops_alerts,
+    priority_channels,
+    tracked_posts,
+)
 from app.services import platform_config_db as db
 from app.services.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.cleanup import resolve_cleanup_settings, run_purge
@@ -103,7 +111,12 @@ RECENT_LATER_SLOT_PLATFORMS = {"facebook", "threads"}
 
 
 async def _trigger_platform(
-    platform: str, *, nurture_before: bool = False, nurture_after: bool = False, recent: bool = False
+    platform: str,
+    *,
+    nurture_before: bool = False,
+    nurture_after: bool = False,
+    recent: bool = False,
+    slot_index: int = 0,
 ) -> None:
     # Cùng topic Kafka và consumer theo nền tảng với crawl, nên nurture publish trước thì
     # thực sự chạy xong rồi mới tới các lượt crawl từ khoá phía sau; publish sau cùng thì
@@ -114,7 +127,13 @@ async def _trigger_platform(
     elif nurture_before:
         logger.info("scheduled_nurture_skipped_platform", platform=platform, when="before")
 
-    keywords = await get_enabled_keywords(platform=platform)
+    # Facebook theo hai phần hạn mức (app/services/crawl_lanes.py): mỗi giờ chạy là một lượt bài mới nông; bài cũ do
+    # nhịp đào mỗi giờ (crawl_lanes.run_deep_tick) lo.
+    fresh_lane = platform == "facebook" and settings.facebook_crawl_lanes
+    if fresh_lane:
+        keywords = await crawl_lanes.fresh_keywords(slot_index, datetime.now(TIMEZONE).date())
+    else:
+        keywords = await get_enabled_keywords(platform=platform)
     if not keywords:
         logger.info("scheduled_crawl_no_keywords", platform=platform)
     else:
@@ -122,16 +141,28 @@ async def _trigger_platform(
         # Facebook/Threads: tắt từ khoá toàn ra rác, giảm trang từ khoá kém (app/services/keyword_yield.py).
         keywords, low_pages = await plan_keyword_crawl(platform, keywords)
         for keyword in keywords:
-            ok = await publish_crawl_request(
-                platform=platform,
-                keyword=keyword["keyword"],
-                keyword_id=keyword["id"],
-                max_pages=low_pages.get(keyword["id"]),
-                recent_post=recent,
-            )
+            if fresh_lane:
+                ok = await publish_crawl_request(
+                    platform=platform,
+                    keyword=keyword["keyword"],
+                    keyword_id=keyword["id"],
+                    max_pages=crawl_lanes.fresh_pages(low_pages.get(keyword["id"])),
+                    recent_post=True,
+                    lane="fresh",
+                )
+            else:
+                ok = await publish_crawl_request(
+                    platform=platform,
+                    keyword=keyword["keyword"],
+                    keyword_id=keyword["id"],
+                    max_pages=low_pages.get(keyword["id"]),
+                    recent_post=recent,
+                )
             if ok:
                 published += 1
-        if platform == "facebook":
+        # Trang nguồn: mỗi ngày một lượt (lượt đầu) khi chạy theo phần - 6 lượt bài mới mà lượt nào cũng xếp lại bảng
+        # tin mọi trang nguồn là gấp 6 lần request page_feed.
+        if platform == "facebook" and (not fresh_lane or slot_index == 0):
             # Cào theo nguồn: bảng tin các trang nguồn đang bật (app/services/source_pages.py).
             try:
                 await queue_source_pages()
@@ -143,6 +174,8 @@ async def _trigger_platform(
             requested=len(keywords),
             published=published,
             recent=recent,
+            lane="fresh" if fresh_lane else None,
+            slot_index=slot_index,
             telegram=True,
         )
 
@@ -201,6 +234,7 @@ async def _tick() -> None:
                 nurture_before=bool(sched.get("nurture_before")),
                 nurture_after=bool(sched.get("nurture_after")),
                 recent=platform in RECENT_LATER_SLOT_PLATFORMS and len(slots) > 1 and due[0] != slots[0],
+                slot_index=slots.index(due[0]) if due[0] in slots else 0,
             )
         )
 
@@ -729,6 +763,12 @@ async def _loop() -> None:
             await asyncio.wait_for(_report_schedule_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_report_schedule_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(crawl_lanes.run_deep_tick(datetime.now(TIMEZONE)), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_deep_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_deep_tick_failed", error=str(exc))
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
 
 

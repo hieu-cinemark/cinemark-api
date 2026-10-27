@@ -24,6 +24,7 @@ from app.schemas.settings import (
     AccountCreate,
     AccountCredentialsOut,
     AccountOut,
+    AccountSetEnabled,
     AccountSetProxy,
     AccountUpdate,
     AiActiveProviderUpdate,
@@ -205,6 +206,14 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
     totp = TOTP(secret)
     expires_in = totp.interval - (int(time.time()) % totp.interval)
     return TotpCodeResponse(code=totp.now(), expires_in_seconds=expires_in)
+
+
+@router.post("/accounts/{account_id}/enabled", response_model=AccountOut)
+async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> AccountOut:
+    """Nút bật/tắt tài khoản trên dashboard - bật lại cũng gỡ checkpoint/cooldown (xem
+    app/services/platform_config_db.set_account_enabled)."""
+    row = await db.set_account_enabled(account_id, payload.enabled)
+    return AccountOut.masked(row)
 
 
 @router.post("/accounts/{account_id}/reset-proxy", response_model=AccountOut)

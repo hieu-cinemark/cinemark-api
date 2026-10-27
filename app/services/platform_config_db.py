@@ -275,6 +275,27 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
     return row
 
 
+async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
+    """Bật/tắt tay một tài khoản từ dashboard (27/10/2026). Tắt: chỉ enabled = false. Bật: như reactivate_account của
+    spider-hub (db/accounts.py) - gỡ cả status 'checkpoint', cooldown và chuỗi lỗi, vì pool (get_accounts) bỏ qua tài
+    khoản checkpoint/cooldown dù enabled = true; chỉ bật enabled thì tài khoản vẫn nằm ngoài pool."""
+    await _ensure_pool_columns()
+    reset = ", status = 'active', consecutive_failures = 0, cooldown_until = NULL" if enabled else ""
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            _trusted_sql(
+                f"UPDATE platform_accounts SET enabled = %s{reset}, updated_at = now() "
+                f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}"
+            ),
+            (enabled, account_id),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        raise NotFoundError(f"Account {account_id} not found")
+    return row
+
+
 async def reset_account_proxy(account_id: int) -> dict[str, Any]:
     """Xoá ghim proxy cố định của một tài khoản (assigned_proxy_id -> NULL) - xem
     services/pool.acquire_proxy_for_account của spider-hub. Ở lượt crawl/bootstrap kế

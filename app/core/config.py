@@ -144,6 +144,15 @@ class Settings(BaseSettings):
     hashtag_only_filter: bool = False
     relevance_rules_only: bool = False
 
+    # Lịch crawl Facebook theo hai phần hạn mức (app/services/crawl_lanes.py, 27/10/2026): mỗi giờ chạy của lịch là một
+    # lượt "bài mới" nông (facebook_fresh_pages trang "Bài viết gần đây"), và mỗi giờ một nhịp "đào bài cũ" xếp
+    # facebook_deep_jobs_per_hour job trong khung facebook_deep_hours. Tắt -> lịch cũ (lượt đầu quét 4/60 ngày, lượt sau
+    # "gần đây" sâu tới max_pages).
+    facebook_crawl_lanes: bool = True
+    facebook_fresh_pages: int = 2
+    facebook_deep_jobs_per_hour: int = 6
+    facebook_deep_hours: str = "06-22"
+
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/hashtag_discovery.py) -
     # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.
     hashtag_discovery_time: str = "05:30"

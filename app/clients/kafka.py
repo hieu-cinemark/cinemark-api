@@ -110,6 +110,8 @@ async def publish_crawl_request(
     end_date: date | None = None,
     recent_post: bool = False,
     bfs_depth: int | None = None,
+    lane: str | None = None,
+    released_at: str | None = None,
 ) -> bool:
     """Trả về request có thực sự được publish hay không - chỗ gọi tự quyết định báo gì cho
     người dùng nếu Kafka sập (ví dụ vẫn trả 202 vì nhiệm vụ của endpoint kích hoạt chỉ
@@ -144,6 +146,12 @@ async def publish_crawl_request(
             value["end_date"] = end_date.isoformat()
         if recent_post:
             value["recent_post"] = True
+        # Lane theo lịch (app/services/crawl_lanes.py): spider-hub tính request vào phần hạn mức tương ứng và, với "deep",
+        # tự chọn khoảng ngày theo con trỏ đào của từ khoá (mốc sàn tính từ released_at).
+        if lane:
+            value["lane"] = lane
+        if released_at:
+            value["released_at"] = released_at
     elif platform == "threads" and recent_post:
         value["recent_post"] = True  # spider-hub: tab "Gần đây" của Threads
     if platform != "facebook" and (start_date is not None or end_date is not None):
