@@ -54,7 +54,17 @@ def _patch(monkeypatch, redis):
     monkeypatch.setattr(crawl_lanes, "get_redis_client", lambda: redis)
     monkeypatch.setattr(settings, "facebook_crawl_lanes", True)
     monkeypatch.setattr(settings, "facebook_deep_hours", "06-22")
+    monkeypatch.setattr(settings, "facebook_deep_jobs_per_account_hour", 1.0)
+    monkeypatch.setattr(settings, "facebook_deep_jobs_max_per_hour", 60)
+    _accounts(monkeypatch, 10)
     return published
+
+
+def _accounts(monkeypatch, n):
+    async def fake_count(platform):
+        return n
+
+    monkeypatch.setattr(crawl_lanes.platform_config_db, "count_crawl_ready_accounts", fake_count)
 
 
 def test_stage_of():
@@ -82,7 +92,7 @@ def test_fresh_pages_never_exceed_the_setting(monkeypatch):
 def test_deep_tick_queues_by_stage_once_per_hour(monkeypatch):
     redis = _FakeRedis()
     published = _patch(monkeypatch, redis)
-    monkeypatch.setattr(settings, "facebook_deep_jobs_per_hour", 2)
+    _accounts(monkeypatch, 2)
     now = datetime(2026, 10, 27, 10, 25, tzinfo=VN)
     assert asyncio.run(crawl_lanes.run_deep_tick(now)) == 2
     assert [p["keyword_id"] for p in published] == ["showing", "upcoming"]
@@ -104,7 +114,6 @@ def test_deep_tick_skips_exhausted_and_recently_queued(monkeypatch):
         last_queued={"upcoming": str(time.time() - 600)},
     )
     published = _patch(monkeypatch, redis)
-    monkeypatch.setattr(settings, "facebook_deep_jobs_per_hour", 10)
     asyncio.run(crawl_lanes.run_deep_tick(datetime(2026, 10, 27, 10, 25, tzinfo=VN)))
     # showing: đào xong, vừa quét lại hôm qua; upcoming: vừa xếp 10 phút trước; older: đào xong nhưng tới hạn quét lại.
     assert [p["keyword_id"] for p in published] == ["older", "unknown"]
@@ -114,3 +123,11 @@ def test_deep_tick_disabled(monkeypatch):
     _patch(monkeypatch, _FakeRedis())
     monkeypatch.setattr(settings, "facebook_crawl_lanes", False)
     assert asyncio.run(crawl_lanes.run_deep_tick(datetime(2026, 10, 27, 10, 25, tzinfo=VN))) == 0
+
+
+def test_deep_jobs_scale_with_accounts(monkeypatch):
+    monkeypatch.setattr(settings, "facebook_deep_jobs_per_account_hour", 2.0)
+    monkeypatch.setattr(settings, "facebook_deep_jobs_max_per_hour", 60)
+    for accounts, jobs in ((0, 2), (3, 6), (20, 40), (100, 60)):
+        _accounts(monkeypatch, accounts)
+        assert asyncio.run(crawl_lanes.deep_jobs_this_hour()) == jobs

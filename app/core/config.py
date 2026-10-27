@@ -146,11 +146,15 @@ class Settings(BaseSettings):
 
     # Lịch crawl Facebook theo hai phần hạn mức (app/services/crawl_lanes.py, 27/10/2026): mỗi giờ chạy của lịch là một
     # lượt "bài mới" nông (facebook_fresh_pages trang "Bài viết gần đây"), và mỗi giờ một nhịp "đào bài cũ" xếp
-    # facebook_deep_jobs_per_hour job trong khung facebook_deep_hours. Tắt -> lịch cũ (lượt đầu quét 4/60 ngày, lượt sau
+    # job (theo số tài khoản, xem bên dưới) trong khung facebook_deep_hours. Tắt -> lịch cũ (lượt đầu quét 4/60 ngày, lượt sau
     # "gần đây" sâu tới max_pages).
     facebook_crawl_lanes: bool = True
     facebook_fresh_pages: int = 2
-    facebook_deep_jobs_per_hour: int = 6
+    # Số job đào mỗi giờ = ceil(số tài khoản FB dùng được x facebook_deep_jobs_per_account_hour), trong
+    # [1, facebook_deep_jobs_max_per_hour]. Phần "deep" 300 request/tài khoản/ngày, ~10 request/job, khung 17 giờ
+    # -> ~1,8 job/tài khoản/giờ. 0 = tắt nhịp đào.
+    facebook_deep_jobs_per_account_hour: float = 2.0
+    facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"
 
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/hashtag_discovery.py) -

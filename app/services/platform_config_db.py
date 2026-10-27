@@ -195,6 +195,22 @@ for _col in _ACCOUNT_SECRET_COLUMNS:
     )
 
 
+async def count_crawl_ready_accounts(platform: str) -> int:
+    """Số tài khoản pool có thể giao cho crawler lúc này (giống get_accounts của spider-hub: bật, không checkpoint, không
+    cooldown, không "chỉ nuôi") - nhịp đào bài cũ (crawl_lanes) xếp số job theo con số này. Chưa trừ tài khoản đang trong
+    giai đoạn nuôi (đếm trong Redis của spider-hub) - xếp dư thì job thừa chỉ bị bỏ qua."""
+    await _ensure_pool_columns()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT count(*) AS n FROM platform_accounts WHERE platform = %s AND enabled = true "
+            "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
+            "AND NOT coalesce(nurture_only, false)",
+            (platform,),
+        )
+        row = await cur.fetchone()
+    return int(row["n"]) if row else 0
+
+
 async def list_accounts(platform: str | None = None, *, with_secrets: bool = True) -> list[dict[str, Any]]:
     await _ensure_pool_columns()
     columns = ACCOUNT_COLUMNS if with_secrets else _ACCOUNT_LIST_COLUMNS

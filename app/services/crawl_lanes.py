@@ -6,7 +6,7 @@ services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài 
 
 - "fresh" (bài mới): mỗi giờ chạy của lịch Facebook (crawl_schedules) là một lượt "Bài viết gần đây" nông
   (settings.facebook_fresh_pages trang) - chỉ phim đang chiếu (mọi lượt) và sắp chiếu (lượt chẵn). Phim cũ không cần.
-- "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp settings.facebook_deep_jobs_per_hour job; spider-hub
+- "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp số job theo số tài khoản dùng được (deep_jobs_this_hour); spider-hub
   (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Ưu tiên phim đang chiếu, rồi
   sắp chiếu, rồi phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
 Trần request mỗi giờ của tài khoản (spider-hub FACEBOOK_HOURLY_REQUEST_CAP) rải cả hai phần ra cả ngày.
@@ -15,6 +15,7 @@ Trần request mỗi giờ của tài khoản (spider-hub FACEBOOK_HOURLY_REQUES
 from __future__ import annotations
 
 import json
+import math
 import time
 import zlib
 from datetime import date, datetime
@@ -24,6 +25,7 @@ from app.clients.kafka import publish_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import platform_config_db
 from app.services.d1 import d1_query
 
 logger = get_logger(__name__)
@@ -92,7 +94,7 @@ def _in_deep_hours(now: datetime) -> bool:
 
 async def run_deep_tick(now: datetime) -> int:
     """Xếp job đào bài cũ của giờ này (mỗi giờ một lần); trả số job đã xếp."""
-    if not settings.facebook_crawl_lanes or settings.facebook_deep_jobs_per_hour <= 0:
+    if not settings.facebook_crawl_lanes or settings.facebook_deep_jobs_per_account_hour <= 0:
         return 0
     if now.minute < DEEP_TICK_MINUTE or not _in_deep_hours(now):
         return 0
@@ -125,8 +127,9 @@ async def run_deep_tick(now: datetime) -> int:
         candidates.append((STAGE_ORDER[stage], queued_at, keyword))
     candidates.sort(key=lambda item: (item[0], item[1]))
 
+    jobs = await deep_jobs_this_hour()
     queued = 0
-    for _, _, keyword in candidates[: settings.facebook_deep_jobs_per_hour]:
+    for _, _, keyword in candidates[:jobs]:
         ok = await publish_crawl_request(
             platform="facebook",
             keyword=keyword["keyword"],
@@ -137,11 +140,21 @@ async def run_deep_tick(now: datetime) -> int:
         if ok:
             queued += 1
             await redis.hset(DEEP_LAST_QUEUED_KEY, str(keyword["id"]), str(time.time()))
-    logger.info("deep_crawl_queued", queued=queued, candidates=len(candidates), keywords=len(keywords))
+    logger.info("deep_crawl_queued", queued=queued, jobs=jobs, candidates=len(candidates), keywords=len(keywords))
     return queued
+
+
+async def deep_jobs_this_hour() -> int:
+    """Số job đào của giờ này theo số tài khoản FB dùng được - thêm tài khoản là đào nhanh hơn, không cần sửa cấu hình."""
+    try:
+        accounts = await platform_config_db.count_crawl_ready_accounts("facebook")
+    except Exception as exc:  # noqa: BLE001 - không đếm được (DB chập chờn) thì vẫn xếp mức tối thiểu
+        logger.warning("deep_account_count_failed", error=str(exc)[:200])
+        accounts = 1
+    jobs = math.ceil(max(accounts, 1) * settings.facebook_deep_jobs_per_account_hour)
+    return max(1, min(jobs, settings.facebook_deep_jobs_max_per_hour))
 
 
 def fresh_pages(planned: int | None) -> int:
     """Số trang của lượt bài mới: settings.facebook_fresh_pages, nhỏ hơn nếu keyword_yield đã giảm trang từ khoá kém."""
     return min(planned or settings.facebook_fresh_pages, settings.facebook_fresh_pages)
-
