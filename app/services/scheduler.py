@@ -131,8 +131,9 @@ async def _trigger_platform(
     # Facebook theo hai phần hạn mức (app/services/crawl_lanes.py): mỗi giờ chạy là một lượt bài mới nông; bài cũ do
     # nhịp đào mỗi giờ (crawl_lanes.run_deep_tick) lo.
     fresh_lane = platform == "facebook" and settings.facebook_crawl_lanes
+    today = datetime.now(TIMEZONE).date()
     if fresh_lane:
-        keywords = await crawl_lanes.fresh_keywords(slot_index, datetime.now(TIMEZONE).date())
+        keywords = await crawl_lanes.fresh_keywords(slot_index, today)
     else:
         keywords = await get_enabled_keywords(platform=platform)
     if not keywords:
@@ -151,6 +152,7 @@ async def _trigger_platform(
                     platform=platform,
                     keyword=keyword["keyword"],
                     keyword_id=keyword["id"],
+                    max_pages=crawl_lanes.facebook_max_pages(keyword.get("released_at"), today),
                     recent_post=True,
                     lane="fresh",
                 )

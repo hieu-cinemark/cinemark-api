@@ -124,3 +124,18 @@ def test_deep_jobs_scale_with_accounts(monkeypatch):
     for accounts, jobs in ((0, 2), (3, 6), (20, 40), (100, 60)):
         _accounts(monkeypatch, accounts)
         assert asyncio.run(crawl_lanes.deep_jobs_this_hour()) == jobs
+
+
+def test_facebook_max_pages_by_release_stage():
+    assert crawl_lanes.facebook_max_pages("2026-11-27", TODAY) == 50  # chưa chiếu
+    assert crawl_lanes.facebook_max_pages("2026-10-23", TODAY) == 100  # đang chiếu
+    assert crawl_lanes.facebook_max_pages("2026-08-01", TODAY) == 100  # chiếu lâu rồi
+    assert crawl_lanes.facebook_max_pages(None, TODAY) == 100  # chưa có ngày chiếu
+
+
+def test_deep_jobs_carry_max_pages(monkeypatch):
+    published = _patch(monkeypatch, _FakeRedis())
+    _accounts(monkeypatch, 2)
+    asyncio.run(crawl_lanes.run_deep_tick(datetime(2026, 10, 27, 10, 25, tzinfo=VN)))
+    pages = {p["keyword_id"]: p["max_pages"] for p in published}
+    assert pages == {"showing": 100, "upcoming": 50}

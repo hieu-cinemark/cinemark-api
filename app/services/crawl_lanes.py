@@ -45,6 +45,17 @@ _DEEP_FIRED_KEY = f"{REDIS_KEY_PREFIX}scheduler:deep_fired:{{hour}}"
 DEEP_TICK_MINUTE = 20
 
 
+# Số trang tối đa mỗi job Facebook theo giai đoạn phim (28/10/2026, người vận hành chọn): phim chưa chiếu ít bài hơn
+# hẳn nên 50 trang là đủ; đã chiếu (hoặc chưa có ngày chiếu) 100. Spider vẫn dừng sớm sau 10 trang liên tiếp không có bài
+# mới (spider-hub FACEBOOK_NO_NEW_PAGES).
+UPCOMING_MAX_PAGES = 50
+RELEASED_MAX_PAGES = 100
+
+
+def facebook_max_pages(released_at: str | None, today: date) -> int:
+    return UPCOMING_MAX_PAGES if stage_of(released_at, today) == "upcoming" else RELEASED_MAX_PAGES
+
+
 def stage_of(released_at: str | None, today: date) -> str:
     try:
         released = date.fromisoformat(str(released_at or "")[:10])
@@ -135,6 +146,7 @@ async def run_deep_tick(now: datetime) -> int:
             platform="facebook",
             keyword=keyword["keyword"],
             keyword_id=keyword["id"],
+            max_pages=facebook_max_pages(keyword.get("released_at"), today),
             lane="deep",
             released_at=str(keyword.get("released_at") or "")[:10] or None,
         )
