@@ -13,6 +13,7 @@ Cách dùng:
     python -m scripts.relabel_post_relevance --dry-run --limit 20
     python -m scripts.relabel_post_relevance --since 2026-10-06
     python -m scripts.relabel_post_relevance --since 2026-10-06 --follow   # chạy nền mãi, bắt cả bài mới vào
+    python -m scripts.relabel_post_relevance --follow --no-sentiment       # chỉ gán độ liên quan, không nạp model cảm xúc
 """
 
 from __future__ import annotations
@@ -171,7 +172,9 @@ async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
     logger.info("relabel_rules_finished", **totals, dry_run=dry_run)
 
 
-async def run(since: str, movie_id: str | None, limit: int | None, dry_run: bool, follow: bool) -> None:
+async def run(
+    since: str, movie_id: str | None, limit: int | None, dry_run: bool, follow: bool, sentiment_pass: bool = True
+) -> None:
     logger.info("relabel_started", since=since, movie_id=movie_id, limit=limit, dry_run=dry_run, follow=follow)
     if settings.relevance_rules_only:
         # Chế độ lọc thủ công: không gọi Kira cho độ liên quan. Chạy dạng service (--follow) thì đứng chờ thay vì thoát,
@@ -210,7 +213,9 @@ async def run(since: str, movie_id: str | None, limit: int | None, dry_run: bool
             await asyncio.sleep(delay)
             continue
         # Hết bài cần gán relevance: gắn cảm xúc cho nội dung bài liên quan còn thiếu trong cùng khoảng ngày.
-        if not dry_run:
+        # --no-sentiment (28/10/2026): bỏ bước này - lượt quét 48h của ingest đã gắn cảm xúc bài mới, còn model cảm xúc
+        # nạp ở đây là một bản thứ hai (~1 GB RAM trên VPS) cạnh bản của ingest.
+        if not dry_run and sentiment_pass:
             sentiment = await classify_pending_posts(limit=PAGE_SIZE, since=datetime.fromisoformat(since))
             sentiment.pop("failed_ids")
             if sentiment["selected"]:
@@ -231,8 +236,11 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Classify one page and log it, write nothing")
     parser.add_argument("--follow", action="store_true", help="Keep running, picking up new posts as they arrive")
     parser.add_argument("--rules", action="store_true", help="Apply the manual (no-AI) rules to pending posts instead")
+    parser.add_argument(
+        "--no-sentiment", action="store_true", help="Skip the post sentiment pass (ingest labels new posts; saves the model's RAM)"
+    )
     args = parser.parse_args()
     if args.rules:
         asyncio.run(apply_rules(args.since, args.movie_id, args.dry_run))
     else:
-        asyncio.run(run(args.since, args.movie_id, args.limit, args.dry_run, args.follow))
+        asyncio.run(run(args.since, args.movie_id, args.limit, args.dry_run, args.follow, not args.no_sentiment))

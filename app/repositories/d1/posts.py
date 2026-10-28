@@ -83,6 +83,9 @@ POST_VOICE_COLUMNS = (
     ("comments_crawl_reason", "TEXT"),
     # Lần đầu bài vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - số đo Social Topic tách phần về trễ. Thêm 2026-10-28.
     ("first_seen_at", "TEXT"),
+    # sentiment_sweep._save ghi cột này cho cả comments lẫn posts; posts thiếu nó nên mọi lần lưu cảm xúc bài đều lỗi
+    # "no such column" (relabel + lượt quét 48h lặp lại cùng bài và gọi lại Bee mãi). Thêm 2026-10-28.
+    ("sentiment_classified_at", "TEXT"),
 )
 _post_voice_columns_ready = False
 _post_voice_columns_lock = asyncio.Lock()
