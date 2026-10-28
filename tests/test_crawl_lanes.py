@@ -82,13 +82,6 @@ def test_fresh_lane_takes_showing_every_slot_and_upcoming_every_other(monkeypatc
     assert [k["id"] for k in odd] == ["showing"]
 
 
-def test_fresh_pages_never_exceed_the_setting(monkeypatch):
-    monkeypatch.setattr(settings, "facebook_fresh_pages", 2)
-    assert crawl_lanes.fresh_pages(None) == 2
-    assert crawl_lanes.fresh_pages(5) == 2
-    assert crawl_lanes.fresh_pages(1) == 1
-
-
 def test_deep_tick_queues_by_stage_once_per_hour(monkeypatch):
     redis = _FakeRedis()
     published = _patch(monkeypatch, redis)

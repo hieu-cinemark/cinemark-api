@@ -141,13 +141,16 @@ async def _trigger_platform(
         published = 0
         # Facebook/Threads: tắt từ khoá toàn ra rác, giảm trang từ khoá kém (app/services/keyword_yield.py).
         keywords, low_pages = await plan_keyword_crawl(platform, keywords)
+        if platform == "facebook":
+            # 28/10/2026 (người vận hành chọn): mọi job Facebook tới FACEBOOK max_pages của spider (100) và chỉ dừng sớm khi
+            # FACEBOOK_NO_NEW_PAGES (10) trang liên tiếp không có bài mới - không giảm trang cho từ khoá kém nữa.
+            low_pages = {}
         for keyword in keywords:
             if fresh_lane:
                 ok = await publish_crawl_request(
                     platform=platform,
                     keyword=keyword["keyword"],
                     keyword_id=keyword["id"],
-                    max_pages=crawl_lanes.fresh_pages(low_pages.get(keyword["id"])),
                     recent_post=True,
                     lane="fresh",
                 )

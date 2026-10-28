@@ -5,7 +5,8 @@ services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài 
 12:30 không còn request nào. Giờ hạn mức mỗi tài khoản chia hai phần cố định (spider-hub FACEBOOK_FRESH_SHARE):
 
 - "fresh" (bài mới): mỗi giờ chạy của lịch Facebook (crawl_schedules) là một lượt "Bài viết gần đây" nông
-  (settings.facebook_fresh_pages trang) - chỉ phim đang chiếu (mọi lượt) và sắp chiếu (lượt chẵn). Phim cũ không cần.
+  (tới 100 trang, dừng sau 10 trang liên tiếp không có bài mới - 28/10/2026) - chỉ phim đang chiếu (mọi lượt) và sắp
+  chiếu (lượt chẵn). Phim cũ không cần.
 - "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp số job theo số tài khoản dùng được (deep_jobs_this_hour); spider-hub
   (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Ưu tiên phim đang chiếu, rồi
   sắp chiếu, rồi phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
@@ -155,6 +156,3 @@ async def deep_jobs_this_hour() -> int:
     return max(1, min(jobs, settings.facebook_deep_jobs_max_per_hour))
 
 
-def fresh_pages(planned: int | None) -> int:
-    """Số trang của lượt bài mới: settings.facebook_fresh_pages, nhỏ hơn nếu keyword_yield đã giảm trang từ khoá kém."""
-    return min(planned or settings.facebook_fresh_pages, settings.facebook_fresh_pages)
