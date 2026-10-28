@@ -153,7 +153,6 @@ async def _trigger_platform(
                     keyword=keyword["keyword"],
                     keyword_id=keyword["id"],
                     max_pages=crawl_lanes.facebook_max_pages(keyword.get("released_at"), today),
-                    recent_post=True,
                     lane="fresh",
                 )
             else:

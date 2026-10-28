@@ -4,7 +4,7 @@
 services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài mới nhưng chỉ 3 bài dưới 6 giờ tuổi; lượt "gần đây"
 12:30 không còn request nào. Giờ hạn mức mỗi tài khoản chia hai phần cố định (spider-hub FACEBOOK_FRESH_SHARE):
 
-- "fresh" (bài mới): mỗi giờ chạy của lịch Facebook (crawl_schedules) là một lượt "Bài viết gần đây" nông
+- "fresh": mỗi giờ chạy của lịch Facebook (crawl_schedules) là một lượt tìm kiếm thường (không lọc "gần đây", 28/10/2026)
   (tới 100 trang, dừng sau 10 trang liên tiếp không có bài mới - 28/10/2026) - chỉ phim đang chiếu (mọi lượt) và sắp
   chiếu (lượt chẵn). Phim cũ không cần.
 - "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp số job theo số tài khoản dùng được (deep_jobs_this_hour); spider-hub
