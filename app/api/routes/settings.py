@@ -44,6 +44,8 @@ from app.schemas.settings import (
     CommentScheduleUpdate,
     CrawlScheduleOut,
     CrawlScheduleUpdate,
+    DiscoverySettings,
+    DiscoverySettingsUpdate,
     FilterKeywordCreate,
     FilterKeywordOut,
     FilterKeywordUpdate,
@@ -739,6 +741,17 @@ async def auto_login_history_route(limit: int = 20) -> list[AutoLoginRunHistoryE
 
 # --- Omar API settings (dev.omar-thing.site) --------------------------------
 # Toggle dùng Omar API thay vì spider-hub cho crawl video/hashtag TikTok.
+
+
+@router.get("/discovery", response_model=DiscoverySettings)
+async def get_discovery_settings() -> DiscoverySettings:
+    """AI có đang tự thêm hashtag / câu tìm kiếm / trang nguồn mới không (scheduler._discovery_enabled)."""
+    return DiscoverySettings(**await db.get_discovery_settings())
+
+
+@router.put("/discovery", response_model=DiscoverySettings)
+async def set_discovery_settings(payload: DiscoverySettingsUpdate) -> DiscoverySettings:
+    return DiscoverySettings(**await db.set_discovery_enabled(payload.enabled))
 
 
 @router.get("/omar-api", response_model=OmarApiSettingsOut)

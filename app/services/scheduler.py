@@ -431,6 +431,17 @@ async def _cookie_check_tick() -> None:
 _HASHTAG_DISCOVERY_KEY = f"{REDIS_KEY_PREFIX}scheduler:hashtag_discovery:last_run"
 
 
+async def _discovery_enabled() -> bool:
+    """Công tắc "AI tự thêm nguồn cào" trên dashboard (bảng discovery_settings). Tắt -> không chạy hashtag_discovery,
+    query_discovery, duyệt trang nguồn gợi ý, kể cả bước BFS sau lượt Omar: chỉ cào từ khoá / trang đang có. Đọc lỗi thì
+    coi như bật (hành vi trước khi có công tắc)."""
+    try:
+        return bool((await db.get_discovery_settings()).get("enabled", True))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("discovery_settings_read_failed", error=str(exc)[:200])
+        return True
+
+
 async def _run_hashtag_discovery() -> None:
     # Hashtag TikTok rồi câu tìm kiếm Facebook/Threads (app/services/query_discovery.py); lỗi phần này không chặn phần kia.
     # Rồi AI duyệt trang nguồn Facebook gợi ý (app/services/source_pages.py) - tự thêm trang của phim / trang chung.
@@ -455,6 +466,9 @@ async def _hashtag_tick() -> None:
     if await redis.get(_HASHTAG_DISCOVERY_KEY) == today:
         return
     await redis.set(_HASHTAG_DISCOVERY_KEY, today, ex=3 * 24 * 3600)
+    if not await _discovery_enabled():
+        logger.info("hashtag_discovery_skipped_disabled", run_time=run_time)
+        return
     logger.info("hashtag_discovery_firing", run_time=run_time)
     _spawn(_run_hashtag_discovery())
 
@@ -475,7 +489,7 @@ async def _run_omar_round(trigger: str) -> None:
     try:
         redis = get_redis_client()
         last = float(await redis.get(_BFS_DISCOVERY_KEY) or 0)
-        if time.time() - last >= settings.hashtag_discovery_after_omar_hours * 3600:
+        if time.time() - last >= settings.hashtag_discovery_after_omar_hours * 3600 and await _discovery_enabled():
             await redis.set(_BFS_DISCOVERY_KEY, str(time.time()), ex=7 * 24 * 3600)
             logger.info("hashtag_discovery_after_omar")
             await run_discovery()

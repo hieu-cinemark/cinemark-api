@@ -1394,6 +1394,52 @@ async def get_latest_accuracy_run() -> dict[str, Any] | None:
 # OMAR_API_BASE_URL env var (app/core/config.py).
 
 
+_discovery_settings_ready = False
+
+
+async def _ensure_discovery_settings_table() -> None:
+    global _discovery_settings_ready
+    if _discovery_settings_ready:
+        return
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discovery_settings (
+                id integer PRIMARY KEY CHECK (id = 1),
+                enabled boolean NOT NULL DEFAULT true,
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
+        await conn.commit()
+    _discovery_settings_ready = True
+
+
+async def get_discovery_settings() -> dict[str, Any]:
+    """{"enabled": bool, "updated_at": ...} - chưa có dòng nào thì bật (hành vi trước khi có công tắc)."""
+    await _ensure_discovery_settings_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT enabled, updated_at FROM discovery_settings WHERE id = 1")
+        row = await cur.fetchone()
+    return row or {"enabled": True, "updated_at": None}
+
+
+async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
+    await _ensure_discovery_settings_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO discovery_settings (id, enabled) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = now()
+            RETURNING enabled, updated_at
+            """,
+            (enabled,),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    return row  # type: ignore[return-value]
+
+
 async def get_omar_api_settings() -> dict[str, Any] | None:
     """Trả về {"api_key": "...", "updated_at": ...} hoặc None nếu chưa có."""
     await _ensure_omar_api_settings_table()

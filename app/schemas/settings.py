@@ -551,6 +551,18 @@ class AutoLoginRunHistoryEntry(BaseModel):
 # API key được đọc từ Supabase (bảng omar_api_settings), không từ env.
 
 
+class DiscoverySettings(BaseModel):
+    """Công tắc AI tự thêm nguồn cào (hashtag TikTok, câu tìm kiếm FB/Threads, trang nguồn FB) - xem
+    app/services/scheduler._discovery_enabled. Tắt: chỉ cào các từ khoá / trang đang có."""
+
+    enabled: bool
+    updated_at: datetime | None = None
+
+
+class DiscoverySettingsUpdate(BaseModel):
+    enabled: bool
+
+
 class OmarApiSettingsOut(BaseModel):
     # Có api_key hay chưa - không bao giờ trả về key thô.
     api_key_set: bool
