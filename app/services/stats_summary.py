@@ -543,3 +543,69 @@ async def rebuild_from_source() -> dict[str, int]:
         "platform_days": _as_int((platform_rows or [{}])[0].get("n")),
         "keyword_days": _as_int((keyword_rows or [{}])[0].get("n")),
     }
+
+
+async def reconcile_recent_days(days: int = 2) -> bool:
+    """Tính lại hai bảng tổng hợp cho `days` ngày gần nhất (UTC, giống cột day) từ posts/comments - bản nhẹ của
+    rebuild_from_source để chạy mỗi giờ (27/10/2026: D1 quá tải "7429 overloaded" làm các lần cộng dồn của ingest thất
+    bại -> bảng tổng hợp đếm thiếu, dashboard hiện số sai). Chỉ quét các ngày đó qua index scraped_at, không đụng ngày cũ.
+    Không DELETE: mọi upsert GHI ĐÈ giá trị bằng số đếm từ bảng gốc, nên một bước lỗi giữa chừng (đúng lúc D1 quá tải)
+    chỉ để lại số cũ, không xoá trắng số liệu hôm nay."""
+    await ensure_stats_tables()
+    since = (datetime.now(tz=UTC).date() - timedelta(days=max(days, 1) - 1)).isoformat()
+    slow = 60.0
+    statements = (
+        (
+            """
+            INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
+            SELECT substr(scraped_at, 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
+            FROM posts WHERE scraped_at >= ?
+            GROUP BY substr(scraped_at, 1, 10), platform
+            ON CONFLICT(day, platform) DO UPDATE SET
+                posts = excluded.posts, last_scraped_at = excluded.last_scraped_at
+            """,
+            "platform posts",
+        ),
+        (
+            """
+            INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
+            SELECT substr(scraped_at, 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
+            FROM comments WHERE scraped_at >= ?
+            GROUP BY substr(scraped_at, 1, 10), platform
+            ON CONFLICT(day, platform) DO UPDATE SET
+                comments = excluded.comments,
+                last_scraped_at = MAX(COALESCE(stats_platform_daily.last_scraped_at, ''), excluded.last_scraped_at)
+            """,
+            "platform comments",
+        ),
+        (
+            """
+            INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
+            SELECT substr(scraped_at, 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
+            FROM posts WHERE keyword_id IS NOT NULL AND scraped_at >= ?
+            GROUP BY substr(scraped_at, 1, 10), keyword_id, platform
+            ON CONFLICT(day, keyword_id) DO UPDATE SET
+                posts = excluded.posts, last_scraped_at = excluded.last_scraped_at
+            """,
+            "keyword posts",
+        ),
+        (
+            """
+            INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
+            SELECT substr(c.scraped_at, 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
+            FROM comments c INNER JOIN posts p ON p.id = c.post_id
+            WHERE p.keyword_id IS NOT NULL AND c.scraped_at >= ?
+            GROUP BY substr(c.scraped_at, 1, 10), p.keyword_id, c.platform
+            ON CONFLICT(day, keyword_id) DO UPDATE SET
+                comments = excluded.comments,
+                last_scraped_at = MAX(COALESCE(stats_keyword_daily.last_scraped_at, ''), excluded.last_scraped_at)
+            """,
+            "keyword comments",
+        ),
+    )
+    for sql, label in statements:
+        if await _q(sql, [since], timeout=slow) is None:
+            logger.warning("stats_reconcile_failed", step=label, since=since)
+            return False
+    logger.info("stats_reconciled", since=since)
+    return True

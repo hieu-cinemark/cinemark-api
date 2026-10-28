@@ -66,6 +66,7 @@ from app.services.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.query_discovery import run_query_discovery
 from app.services.source_pages import queue_enabled_sources as queue_source_pages
 from app.services.source_pages import review_suggestions as review_source_pages
+from app.services.stats_summary import reconcile_recent_days
 
 logger = get_logger(__name__)
 
@@ -684,6 +685,24 @@ async def _channel_profiles_tick() -> None:
     _spawn(channel_profiles.refresh_followers())
 
 
+# Đối soát bảng tổng hợp số liệu (stats_summary.reconcile_recent_days) mỗi giờ ở phút này - lệch khỏi lượt crawl đầu giờ
+# và nhịp đào :20. Ingest cộng dồn từng bài vào bảng tổng hợp; khi D1 quá tải các lần cộng đó thất bại và số liệu đếm
+# thiếu (28/10/2026) - lượt này đếm lại hôm nay + hôm qua từ bảng gốc.
+_STATS_RECONCILE_MINUTE = 45
+_STATS_RECONCILE_KEY = f"{REDIS_KEY_PREFIX}scheduler:stats_reconcile:{{hour}}"
+
+
+async def _stats_reconcile_tick() -> None:
+    now = datetime.now(TIMEZONE)
+    if now.minute < _STATS_RECONCILE_MINUTE:
+        return
+    key = _STATS_RECONCILE_KEY.format(hour=now.strftime("%Y-%m-%dT%H"))
+    if not await get_redis_client().set(key, "1", nx=True, ex=2 * 3600):
+        return
+    # Mỗi câu tổng hợp có thể tới vài chục giây khi D1 bận - chạy nền, không giữ vòng lặp lịch.
+    _spawn(reconcile_recent_days())
+
+
 async def _loop() -> None:
     while True:
         try:
@@ -763,6 +782,10 @@ async def _loop() -> None:
             await asyncio.wait_for(_report_schedule_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_report_schedule_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_stats_reconcile_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_stats_reconcile_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(crawl_lanes.run_deep_tick(datetime.now(TIMEZONE)), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:

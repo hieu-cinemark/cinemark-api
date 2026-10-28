@@ -6,8 +6,16 @@ vì GROUP BY trên toàn bảng `posts` / `comments` của D1."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from fastapi import APIRouter, Query
 
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.logging import get_logger
 from app.repositories.d1 import comment_repo, post_repo
 from app.schemas.stats import (
     Comment,
@@ -31,17 +39,55 @@ from app.services.d1 import (
 from app.services.stats_summary import get_hourly_counts, get_ingest_funnel
 
 router = APIRouter(prefix="/stats", tags=["stats"])
+logger = get_logger(__name__)
+
+# Số liệu tổng hợp cho trang Tổng quan (28/10/2026): D1 quá tải ("7429 overloaded") làm truy vấn mất 15-20 giây kèm thử
+# lại, dashboard hết chờ và hiện 0. Giờ: kết quả còn mới (< _FRESH_SECONDS) trả thẳng từ Redis - nhiều tab/người cùng
+# mở không nhân số truy vấn D1 lên; truy vấn D1 quá _QUERY_TIMEOUT_SECONDS hoặc lỗi/rỗng thì trả số gần nhất đã có
+# (giữ tới _STALE_SECONDS) thay vì 0.
+_FRESH_SECONDS = 60
+_STALE_SECONDS = 2 * 86400
+_QUERY_TIMEOUT_SECONDS = 8.0
+_CACHE_KEY = f"{REDIS_KEY_PREFIX}stats_cache:{{name}}"
+
+
+async def _cached_rows(name: str, compute: Callable[[], Awaitable[list[dict[str, Any]]]]) -> list[dict[str, Any]]:
+    redis = get_redis_client()
+    key = _CACHE_KEY.format(name=name)
+    cached: dict[str, Any] | None = None
+    try:
+        raw = await redis.get(key)
+        cached = json.loads(raw) if raw else None
+    except Exception as exc:  # noqa: BLE001 - Redis trục trặc: vẫn đọc D1 như cũ
+        logger.warning("stats_cache_read_failed", name=name, error=str(exc)[:200])
+    if cached and time.time() - float(cached.get("at") or 0) < _FRESH_SECONDS:
+        return cached["rows"]
+    try:
+        rows = await asyncio.wait_for(compute(), timeout=_QUERY_TIMEOUT_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - timeout / D1 lỗi: rơi về số gần nhất
+        logger.warning("stats_query_failed", name=name, error=str(exc)[:200] or type(exc).__name__)
+        rows = None
+    if rows:
+        try:
+            await redis.set(key, json.dumps({"at": time.time(), "rows": rows}, default=str), ex=_STALE_SECONDS)
+        except Exception:  # noqa: BLE001 - không lưu được cache thì vẫn trả kết quả vừa đọc
+            pass
+        return rows
+    if cached:
+        logger.info("stats_served_stale", name=name, age_seconds=round(time.time() - float(cached.get("at") or 0)))
+        return cached["rows"]
+    return rows or []
 
 
 @router.get("/platforms", response_model=list[PlatformStat])
 async def platform_stats() -> list[PlatformStat]:
-    rows = await get_post_counts_by_platform()
+    rows = await _cached_rows("platforms", get_post_counts_by_platform)
     return [PlatformStat(**row) for row in rows]
 
 
 @router.get("/timeseries", response_model=list[TimeseriesPoint])
 async def timeseries_stats(days: int = Query(default=14, ge=1, le=90)) -> list[TimeseriesPoint]:
-    rows = await get_post_timeseries(days)
+    rows = await _cached_rows(f"timeseries:{days}", lambda: get_post_timeseries(days))
     return [TimeseriesPoint(**row) for row in rows]
 
 
@@ -60,19 +106,19 @@ async def ingest_funnel(hours: int = Query(default=24, ge=1, le=72)) -> list[Ing
 
 @router.get("/comment-counts", response_model=list[PlatformStat])
 async def comment_count_stats() -> list[PlatformStat]:
-    rows = await get_comment_counts_by_platform()
+    rows = await _cached_rows("comment_counts", get_comment_counts_by_platform)
     return [PlatformStat(**row) for row in rows]
 
 
 @router.get("/comment-timeseries", response_model=list[TimeseriesPoint])
 async def comment_timeseries_stats(days: int = Query(default=14, ge=1, le=90)) -> list[TimeseriesPoint]:
-    rows = await get_comment_timeseries(days)
+    rows = await _cached_rows(f"comment_timeseries:{days}", lambda: get_comment_timeseries(days))
     return [TimeseriesPoint(**row) for row in rows]
 
 
 @router.get("/keywords", response_model=list[KeywordVolume])
 async def keyword_volume_stats(platform: str | None = Query(default=None)) -> list[KeywordVolume]:
-    rows = await get_keyword_volume(platform)
+    rows = await _cached_rows(f"keywords:{platform or 'all'}", lambda: get_keyword_volume(platform))
     return [KeywordVolume(**row) for row in rows]
 
 

@@ -80,14 +80,11 @@ CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
 # (auto_offset_reset="latest" bên dưới) và bỏ qua những gì group cũ chưa xử lý.
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
-# Mỗi bài đang xử lý chủ yếu chờ phán quyết của Kira, vốn được gom lô
-# (app/ai/tasks/post_relevance.py: tối đa BATCH_SIZE bài mỗi lời gọi, 3 lời gọi chạy
-# cùng lúc) - đủ số bài chạy song song để lấp đầy các lô đó.
-_POST_MESSAGE_CONCURRENCY = 24
-# Comment không gọi AI tại chỗ (cảm xúc là việc của sentiment_sweep.py) - mỗi comment
-# chỉ là một lần gọi mapper + một lần ghi D1, đủ rẻ để mức song song cao hơn thực sự
-# được dùng tới.
-_COMMENT_MESSAGE_CONCURRENCY = 24
+# Số message xử lý song song mỗi topic. 24 đặt hồi mỗi bài chủ yếu chờ Kira (gom lô); Kira đã bỏ, nên cả 24 luồng
+# đều ghi thẳng D1 (~5-7 lệnh mỗi bài) - 28/10/2026 đợt TikTok ~10k bài/giờ làm D1 trả "7429 overloaded" liên tục,
+# dashboard không đọc được số liệu. Giảm xuống 8: Kafka giữ phần dư và ghi dần, không mất bài. Chỉnh qua env.
+_POST_MESSAGE_CONCURRENCY = settings.ingest_post_concurrency
+_COMMENT_MESSAGE_CONCURRENCY = settings.ingest_comment_concurrency
 
 # Một loạt bài bị loại âm thầm (chưa đăng ký mapper nền tảng, producer gửi payload sai
 # định dạng, một từ khoá bị tắt/xoá giữa chừng) trước đây chỉ hiện thành một dòng log

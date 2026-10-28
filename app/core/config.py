@@ -148,6 +148,10 @@ class Settings(BaseSettings):
     # lượt "bài mới" nông (facebook_fresh_pages trang "Bài viết gần đây"), và mỗi giờ một nhịp "đào bài cũ" xếp
     # job (theo số tài khoản, xem bên dưới) trong khung facebook_deep_hours. Tắt -> lịch cũ (lượt đầu quét 4/60 ngày, lượt sau
     # "gần đây" sâu tới max_pages).
+    # Số message ingest xử lý song song mỗi topic (app/workers/ingest_consumer/main.py) - xem comment ở đó.
+    ingest_post_concurrency: int = 8
+    ingest_comment_concurrency: int = 8
+
     facebook_crawl_lanes: bool = True
     facebook_fresh_pages: int = 2
     # Số job đào mỗi giờ = ceil(số tài khoản FB dùng được x facebook_deep_jobs_per_account_hour), trong
@@ -174,7 +178,9 @@ class Settings(BaseSettings):
     # Phim có tên là cụm từ thông dụng ("cộng, trừ, nhân, chia", "người mẹ xấu xa"): bài "uncertain" KHÔNG được nâng thành
     # liên quan chỉ vì có đủ tên phim (resolve_relevance, quy tắc full_title - 2026-10-16). Khác strict: không đụng bài
     # bộ phân loại đã gán "related".
-    ambiguous_title_movie_slugs: str = "nguoi-duoc-chon,cong-tru-nhan-chia,nguoi-me-xau,hoang-hau-cuoi-cung,bo-sua-bay,yeu-sai-yeu-lai"
+    ambiguous_title_movie_slugs: str = (
+        "nguoi-duoc-chon,cong-tru-nhan-chia,nguoi-me-xau,hoang-hau-cuoi-cung,bo-sua-bay,yeu-sai-yeu-lai"
+    )
 
     # Omar TikTok API (dev.omar-thing.site) - dùng cho crawl video/hashtag thay vì
     # spider-hub. API key được đọc từ bảng omar_api_settings trên Supabase (xem
