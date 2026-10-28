@@ -80,7 +80,7 @@ COMMENT_COMMON = {
 }
 
 # Tên cột đầu ra giống nhau ở mọi nền tảng; chỉ biểu thức bên phải khác theo payload
-# của từng spider (xem các mapper comment trong app/services/platforms.py).
+# của từng spider (xem các mapper comment trong app/services/crawl/platforms.py).
 COMMENT_COLUMNS = {
     "comment_id",
     "parent_comment_id",

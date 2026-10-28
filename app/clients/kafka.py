@@ -25,8 +25,8 @@ from aiokafka.errors import KafkaError
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.crawl_jobs import clear_drain
-from app.services.task_queue import enqueue_published
+from app.services.crawl.crawl_jobs import clear_drain
+from app.services.crawl.task_queue import enqueue_published
 
 logger = get_logger(__name__)
 
@@ -37,7 +37,7 @@ CRAWL_REQUESTS_TOPIC = "crawl_requests"
 # nhập lại bằng Playwright, không phải một tiến trình "scrapy crawl") và thuộc một
 # consumer group riêng với cấu hình đồng thời riêng. Dùng lại crawl_requests sẽ bắt
 # auto_login/consumer.py phải lọc bỏ luồng crawl ồn ào hơn nhiều chỉ để theo kịp. Xem
-# app/services/auto_login.py:publish_auto_login_request cho phía producer.
+# app/services/accounts/auto_login.py:publish_auto_login_request cho phía producer.
 AUTO_LOGIN_REQUESTS_TOPIC = "auto_login_requests"
 
 _producer: AIOKafkaProducer | None = None
@@ -117,7 +117,7 @@ async def publish_crawl_request(
     người dùng nếu Kafka sập (ví dụ vẫn trả 202 vì nhiệm vụ của endpoint kích hoạt chỉ
     là yêu cầu, không bảo đảm giao tới nơi, hoặc hiện một cảnh báo - xem
     app/api/routes/platform_scraper.py). keyword_id là keywords.id của D1 (xem
-    app/services/d1.py) - truyền qua nguyên vẹn để message raw_posts mà lượt crawl này
+    app/repositories/d1/store.py) - truyền qua nguyên vẹn để message raw_posts mà lượt crawl này
     sinh ra mang một id mà ingest consumer có thể tra ngược thẳng về D1."""
     if platform == "threads" and keyword.strip().startswith("#"):
         # Threads không cào hashtag (2026-10-15, ~1% liên quan - xem app/api/routes/keywords.py) - kể cả từ khoá cũ còn bật.
@@ -132,7 +132,7 @@ async def publish_crawl_request(
     await clear_drain(platform)
     # Cho crawl_request_consumer.py của spider-hub theo dõi đúng tiến trình con này
     # (crawl_job:<platform> trong Redis) để nút Dừng trên dashboard (xem
-    # app/services/crawl_jobs.py) có cái để huỷ - xem docstring của module đó để biết đầy
+    # app/services/crawl/crawl_jobs.py) có cái để huỷ - xem docstring của module đó để biết đầy
     # đủ cơ chế.
     run_id = str(uuid.uuid4())
     value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": keyword_id, "run_id": run_id}
@@ -146,7 +146,7 @@ async def publish_crawl_request(
             value["end_date"] = end_date.isoformat()
         if recent_post:
             value["recent_post"] = True
-        # Lane theo lịch (app/services/crawl_lanes.py): spider-hub tính request vào phần hạn mức tương ứng và, với "deep",
+        # Lane theo lịch (app/services/crawl/crawl_lanes.py): spider-hub tính request vào phần hạn mức tương ứng và, với "deep",
         # tự chọn khoảng ngày theo con trỏ đào của từ khoá (mốc sàn tính từ released_at).
         if lane:
             value["lane"] = lane
@@ -184,7 +184,7 @@ async def publish_crawl_request(
 
 async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
     """Tên phim của từ khoá (và phần trước dấu ":" nếu tên có phụ đề, vd. "Thám Tử Kiên") - cho bộ lọc lạc đề của spider."""
-    from app.services.d1 import d1_query
+    from app.repositories.d1.store import d1_query
 
     try:
         rows = await d1_query(
@@ -207,7 +207,7 @@ async def _movie_context_for_keyword(keyword_id: str) -> str | None:
     """Khối thông tin phim (app/ai/movie_context.py) của phim sở hữu từ khoá này, hoặc None khi không tra được -
     thiếu nó thì spider vẫn chạy, chỉ là Kira chấm hashtag kém hơn."""
     from app.ai.movie_context import movie_context_block
-    from app.services.d1 import d1_query
+    from app.repositories.d1.store import d1_query
 
     try:
         rows = await d1_query(
@@ -251,7 +251,7 @@ async def publish_comments_crawl_request(
     comment cho đúng bài này" - để một lần bấm Dừng không liên quan trước đó ở chỗ khác
     không âm thầm nuốt mất nó (xem docstring của publish_action_request). Những chỗ gọi
     cố ý publish RẤT NHIỀU request loại này cùng lúc - lịch quét comment hằng ngày
-    (_trigger_comments_platform trong app/services/scheduler.py) và backfill hàng loạt
+    (_trigger_comments_platform trong app/services/crawl/scheduler.py) và backfill hàng loạt
     bằng tay - thì truyền
     bypass_drain=False, để chính hàng tồn đó là thứ nút Dừng của nền tảng huỷ được. Đã
     xác nhận thực tế 2026-09-24: khi mọi request comment đều bị gán cứng
@@ -381,7 +381,7 @@ async def publish_nurture_request(
 
 async def publish_threads_profiles_request(max_profiles: int) -> bool:
     """Xếp hàng type=profiles (Threads) để crawl_request_consumer của spider-hub chạy worker hồ sơ kênh
-    (spiders/threads/features/profiles/) trên hàng đợi handle đã SADD vào Redis - xem app/services/channel_profiles.py.
+    (spiders/threads/features/profiles/) trên hàng đợi handle đã SADD vào Redis - xem app/services/crawl/channel_profiles.py.
     bypass_drain=False: nút Dừng của Threads bỏ được lượt này; handle vẫn nằm trong hàng đợi cho lượt sau."""
     return await publish_action_request(
         "threads", "profiles", {"max": max_profiles, "run_id": str(uuid.uuid4())}, bypass_drain=False
@@ -508,7 +508,7 @@ RAW_POSTS_TOPIC = "raw_posts"
 
 async def publish_raw_post(*, key: str, value: dict[str, Any]) -> bool:
     """Gửi một bài lên raw_posts như spider-hub làm (key "<platform>:<id>", value {"platform", "keyword_id", ...}) -
-    cho nguồn bài không đi qua spider-hub (app/services/omar_tiktok.py), để ingest consumer xử lý y như bài của spider."""
+    cho nguồn bài không đi qua spider-hub (app/services/omar/omar_tiktok.py), để ingest consumer xử lý y như bài của spider."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", key=key)
         return False
@@ -525,7 +525,7 @@ RAW_COMMENTS_TOPIC = "raw_comments"
 
 async def publish_raw_comment(*, key: str, value: dict[str, Any]) -> bool:
     """Gửi một bình luận lên raw_comments như spider-hub làm (key "<platform>:<comment_id>", value {"platform",
-    "post_id", ...}) - cho bình luận không đi qua spider-hub (app/services/omar_comments.py)."""
+    "post_id", ...}) - cho bình luận không đi qua spider-hub (app/services/omar/omar_comments.py)."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", key=key)
         return False

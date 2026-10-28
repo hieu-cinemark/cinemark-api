@@ -9,7 +9,7 @@ Lời gọi Kira chạy từng lô một, nên lượt quét không bao giờ ch
 giới hạn song song của Kira (app/ai/client.py) so với phân loại độ liên quan của bài
 lúc ingest. Một khoá Redis ngăn hai consumer đang chạy cùng phân loại một dòng.
 
-scripts/backfill_comment_sentiment.py dùng lại classify_pending() cho hàng tồn cũ
+scripts/jobs/backfill_comment_sentiment.py dùng lại classify_pending() cho hàng tồn cũ
 hơn, nằm ngoài cửa sổ thời gian gần đây của lượt quét.
 
 Từ 2026-10-08 lượt quét gắn nhãn cả NỘI DUNG BÀI liên quan tới phim (classify_pending_posts) - trên Threads cảm
@@ -29,7 +29,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.comments import ensure_comment_insight_columns
 from app.repositories.d1.posts import RELEVANT_POST_SQL, ensure_post_voice_columns
-from app.services.d1 import MIN_CONTENT_LENGTH, d1_query
+from app.repositories.d1.store import MIN_CONTENT_LENGTH, d1_query
 
 logger = get_logger(__name__)
 

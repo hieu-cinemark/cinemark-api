@@ -1,4 +1,4 @@
-# Hai cặp prompt dùng bởi scripts/generate_social_topic_reports.py, tách thành hai
+# Hai cặp prompt dùng bởi scripts/jobs/generate_social_topic_reports.py, tách thành hai
 # lời gọi Kira riêng cho mỗi phim mỗi lần chạy thay vì gộp một lời gọi - xem
 # docstring module của script đó để biết lý do (đầu ra có cấu trúc lớn dễ bị cắt trên
 # model có reasoning; tách riêng lời gọi narrative nhỏ giúp narrative lỗi không làm

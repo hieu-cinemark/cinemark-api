@@ -4,7 +4,7 @@ import asyncio
 import json
 
 from app.clients.redis import REDIS_KEY_PREFIX
-from app.services import crawl_jobs
+from app.services.crawl import crawl_jobs
 
 
 class _FakeRedis:

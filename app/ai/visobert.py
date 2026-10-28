@@ -1,4 +1,4 @@
-"""Model nhà trồng: ViSoBERT fine-tune bằng nhãn bình luận phim (scripts/visobert_finetune.py) - cảm xúc khen/chê/trung lập,
+"""Model nhà trồng: ViSoBERT fine-tune bằng nhãn bình luận phim (scripts/ml/visobert_finetune.py) - cảm xúc khen/chê/trung lập,
 chạy ngay trong tiến trình (CPU trên VPS, MPS/CUDA nếu có), không tốn tiền. Chạy TRƯỚC Bee: câu đủ chắc
 (settings.visobert_min_confidence) lấy luôn, chỉ phần còn lại mới gọi model quyết định của Bee (app/ai/decisions.py).
 

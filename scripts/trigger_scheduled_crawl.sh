@@ -2,7 +2,7 @@
 # Scheduled entry point (every 6h, on the hour) for the internal
 # analytics/health jobs below - account health, volume-anomaly detection,
 # AI topic reports. Does NOT trigger any crawls itself anymore: that moved
-# to app/services/scheduler.py, an in-process daily scheduler driven by the
+# to app/services/crawl/scheduler.py, an in-process daily scheduler driven by the
 # dashboard's "Crawl schedule" card (crawl_schedules table) - editable
 # without touching a crontab, unlike the old fixed "every 6h, for every
 # platform, no way to change it" loop this script used to run here. See
@@ -24,7 +24,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # so it runs on every cycle - the more often it runs, the sooner a
 # newly-degraded account gets caught.
 log "=== Checking account health ==="
-if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.check_account_health); then
+if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.jobs.check_account_health); then
     log "Account health check OK"
 else
     log "Account health check FAILED"
@@ -44,7 +44,7 @@ fi
 current_hour="$(date -u +%H)"
 if [ "$current_hour" = "18" ]; then
     log "=== Checking for volume anomalies (last cycle of the day) ==="
-    if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.check_volume_anomaly); then
+    if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.jobs.check_volume_anomaly); then
         log "Volume check OK"
     else
         log "Volume check FAILED"
@@ -61,7 +61,7 @@ fi
 # Kira-consuming batch jobs never stack on the same cron tick.
 if [ "$current_hour" = "20" ]; then
     log "=== Regenerating social topic reports (once/day) ==="
-    if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.generate_social_topic_reports); then
+    if (cd "$REPO_DIR" && source .venv/bin/activate && python -m scripts.jobs.generate_social_topic_reports); then
         log "Social topic report generation OK"
     else
         log "Social topic report generation FAILED"

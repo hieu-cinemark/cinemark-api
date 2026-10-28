@@ -1,14 +1,14 @@
 """Tầng truyền tải Cloudflare D1 - nơi duy nhất biết "database D1" nghĩa là HTTP query
 API của Cloudflare hay một bản SQLite sao chép ở local (xem DB_MODE trong
 app/core/config.py). Mọi repository (app/repositories/d1/*) và các hàm còn lại của
-app/services/d1.py đều gọi d1_query() ở đây thay vì đụng thẳng vào sqlite3/httpx,
+app/repositories/d1/store.py đều gọi d1_query() ở đây thay vì đụng thẳng vào sqlite3/httpx,
 nên sau này có đổi (sang hẳn một kiểu lưu trữ khác, hoặc chỉ là API của D1 thay
 đổi) thì chỉ có đúng một chỗ phải sửa.
 
-Tách ra khỏi app/services/d1.py để các repository theo từng bảng có thể phụ thuộc
+Tách ra khỏi app/repositories/d1/store.py để các repository theo từng bảng có thể phụ thuộc
 vào tầng truyền tải này mà không phụ thuộc vào chính d1.py (ngược lại, d1.py
 re-export các hàm của repository cho những chỗ gọi vẫn dùng
-`from app.services.d1 import persist_post` v.v.) - import d1.py từ một repository sẽ
+`from app.repositories.d1.store import persist_post` v.v.) - import d1.py từ một repository sẽ
 thành import vòng."""
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ def _get_local_conn() -> sqlite3.Connection:
     if _local_conn is None:
         # timeout=30: mặc định của stdlib (5s) chính là cái đã hết hạn thành lỗi "database
         # is locked" (đã xác nhận thực tế 2026-09-17 - cứ khoảng 5s lại có một loạt lỗi này
-        # trong lúc scripts/pull_local_db.py đang dựng lại chính file này song song) - 30s dư
+        # trong lúc scripts/tools/pull_local_db.py đang dựng lại chính file này song song) - 30s dư
         # sức chờ hết thời gian giữ khoá của một lệnh INSERT/UPDATE, không chỉ riêng lần dựng
         # lại vài phút thỉnh thoảng của script đó.
         #

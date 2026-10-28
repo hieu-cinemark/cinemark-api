@@ -1,6 +1,6 @@
 """System prompt mặc định trong code cho từng task (tên model chỉ nằm trong các dòng
 ai_providers trên Supabase). Settings có thể ghi đè các prompt này (xem dòng
-ai_settings trong app/services/platform_config_db.py); prompt lưu mà rỗng thì quay
+ai_settings trong app/services/accounts/platform_config_db.py); prompt lưu mà rỗng thì quay
 về giá trị ở đây, để một ô textarea bị xoá trắng không bao giờ gửi đi system
 message rỗng."""
 

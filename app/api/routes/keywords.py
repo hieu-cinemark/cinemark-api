@@ -11,10 +11,10 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
+from app.repositories.d1.store import d1_query, get_or_create_keyword, list_keywords, set_keyword_enabled
 from app.schemas.scraper import KeywordEnabledUpdate, KeywordOut
-from app.services.d1 import d1_query, get_or_create_keyword, list_keywords, set_keyword_enabled
-from app.services.keyword_yield import PLATFORMS as YIELD_PLATFORMS
-from app.services.keyword_yield import keyword_yields, paused_keywords
+from app.services.crawl.keyword_yield import PLATFORMS as YIELD_PLATFORMS
+from app.services.crawl.keyword_yield import keyword_yields, paused_keywords
 
 
 class KeywordCreateRequest(BaseModel):
@@ -53,7 +53,7 @@ def build_keyword_routes(router: APIRouter, platform: str) -> None:
 
     @router.get("/keywords/yield")
     async def keyword_yield() -> dict:
-        """Hiệu quả từng từ khoá 14 ngày qua (app/services/keyword_yield.py) + từ khoá bị tự tắt vì toàn ra rác."""
+        """Hiệu quả từng từ khoá 14 ngày qua (app/services/crawl/keyword_yield.py) + từ khoá bị tự tắt vì toàn ra rác."""
         yields = await keyword_yields(platform)
         rows = await d1_query(
             "SELECT k.id, k.keyword, k.enabled, m.title AS movie_title FROM keywords k JOIN movies m ON m.id = k.movie_id "

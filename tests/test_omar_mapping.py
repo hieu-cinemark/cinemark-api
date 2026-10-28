@@ -1,4 +1,4 @@
-from app.services.omar_tiktok import map_aweme, map_web_item
+from app.services.omar.omar_tiktok import map_aweme, map_web_item
 
 WEB = {
     "id": "7692425793506528530",
@@ -34,7 +34,7 @@ def test_map_aweme_photo_url():
 
 
 def test_channel_match_movie():
-    from app.services.omar_channels import match_movie
+    from app.services.omar.omar_channels import match_movie
 
     movies = [
         {"keyword_id": "kw_tbn", "title_key": "traibuonnguoi", "tags": {"traibuonnguoi", "phimtraibuonnguoi"}},

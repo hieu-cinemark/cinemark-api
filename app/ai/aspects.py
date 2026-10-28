@@ -1,12 +1,12 @@
 """Bộ khía cạnh và giai đoạn khán giả cố định mà Kira gán cho từng comment, cùng lời gọi với nhãn cảm xúc
 (app/ai/tasks/sentiment.py) - dùng chung cho bộ phân loại, phần tổng hợp của report
-(app.services.d1.get_movie_aspect_stats) và scripts/accuracy_sample.py.
+(app.repositories.d1.store.get_movie_aspect_stats) và scripts/ml/accuracy_sample.py.
 
 Cố định thay vì để AI tự đặt tên topic (2026-10-07): topic tự do mỗi lần chạy mỗi khác nên không so được giữa các
 phim hay theo thời gian; một bộ khía cạnh cố định cho ra được % khen/chê, tỉ trọng nhắc tới và xu hướng theo tuần
 cho từng khía cạnh. Đổi key là đổi dữ liệu đã lưu - chỉ thêm key mới, không đổi tên key cũ.
 
-Không import gì trong app - để cả app.services.d1 lẫn app.ai.tasks.sentiment import được mà không vòng."""
+Không import gì trong app - để cả app.repositories.d1.store lẫn app.ai.tasks.sentiment import được mà không vòng."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """Mọi thứ đọc/ghi bảng `comments` của D1 - xem docstring module của
 app/repositories/d1/posts.py để biết vì sao bảng này được tách riêng và vì sao
-app/services/d1.py vẫn re-export mọi tên bên dưới cho các chỗ gọi hiện có."""
+app/repositories/d1/store.py vẫn re-export mọi tên bên dưới cho các chỗ gọi hiện có."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.clients.d1 import _configured, d1_query
-from app.services.platforms import CommentDraft
+from app.services.crawl.platforms import CommentDraft
 
 # Quá số dòng này thì list_comments không trả thêm - đây là danh sách để admin xem
 # lại, không phải feed phân trang như list_posts; một bài hiếm khi có quá vài trăm
@@ -333,7 +333,7 @@ class CommentRepository:
             parent = await d1_query("SELECT keyword_id FROM posts WHERE id = ?", [post_id])
             if parent:
                 keyword_id = parent[0].get("keyword_id")
-            from app.services.stats_summary import record_comment
+            from app.services.reports.stats_summary import record_comment
 
             await record_comment(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
             return True
@@ -373,7 +373,7 @@ class CommentRepository:
         parent = await d1_query("SELECT keyword_id FROM posts WHERE id = ?", [post_id])
         if parent:
             keyword_id = parent[0].get("keyword_id")
-        from app.services.stats_summary import record_comment
+        from app.services.reports.stats_summary import record_comment
 
         await record_comment(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
         return True

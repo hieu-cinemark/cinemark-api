@@ -5,7 +5,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
-from app.services import crawl_lanes
+from app.services.crawl import crawl_lanes
 
 VN = ZoneInfo("Asia/Ho_Chi_Minh")
 TODAY = date(2026, 10, 27)

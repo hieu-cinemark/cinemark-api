@@ -1,6 +1,6 @@
 """Client LLM tương thích OpenAI dùng chung cho mọi provider (hiện chỉ bee). Thông
 tin của provider (base_url/api_key/model) là các dòng trong bảng ai_providers trên
-Supabase (xem app/services/platform_config_db.py) - được nạp và cache ở đây thay vì
+Supabase (xem app/services/accounts/platform_config_db.py) - được nạp và cache ở đây thay vì
 dùng biến môi trường, nên có thể đổi key hay thêm provider mới từ dashboard mà
 không cần deploy lại.
 
@@ -26,7 +26,7 @@ from openai import OpenAI
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.ops_alerts import note_ai_wallet_error
+from app.services.ops.ops_alerts import note_ai_wallet_error
 
 logger = get_logger(__name__)
 
@@ -90,7 +90,7 @@ async def active_provider_key() -> str:
         return _active_cache[1]
     key = "beeknoee"
     try:
-        from app.services.platform_config_db import get_ai_settings
+        from app.services.accounts.platform_config_db import get_ai_settings
 
         value = str((await get_ai_settings()).get("active_provider") or "").strip().lower()
         key = _ACTIVE_ALIASES.get(value, value) or key
@@ -175,7 +175,7 @@ async def load_provider(key: str) -> ProviderConfig | None:
 
     cfg: ProviderConfig | None = None
     try:
-        from app.services.platform_config_db import get_ai_provider
+        from app.services.accounts.platform_config_db import get_ai_provider
 
         row = await get_ai_provider(key)
         if row and row.get("base_url") and row.get("api_key"):
@@ -366,7 +366,7 @@ async def call_ai(
                 )
                 await asyncio.sleep(delay)
             except Exception as exc:
-                # Ví hết tiền (402 vnd_balance_exhausted): ghi mốc cho cảnh báo Telegram (app/services/ops_alerts.py).
+                # Ví hết tiền (402 vnd_balance_exhausted): ghi mốc cho cảnh báo Telegram (app/services/ops/ops_alerts.py).
                 await note_ai_wallet_error(provider, exc)
                 logger.error(
                     "ai_call_failed",

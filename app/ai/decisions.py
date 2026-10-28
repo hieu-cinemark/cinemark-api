@@ -18,7 +18,7 @@ import httpx
 
 from app.ai.client import load_provider
 from app.core.config import settings
-from app.services import ops_alerts
+from app.services.ops import ops_alerts
 
 COMMENT_MODEL_DEFAULT = "typesafe/jev-1.14"
 POST_MODEL_DEFAULT = "openai/gpt-6-luna-decisions"

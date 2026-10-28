@@ -1,7 +1,7 @@
 """Thống kê chỉ đọc cho dashboard spider-hub: số bài và comment đã thu thập theo nền
 tảng, và xu hướng theo ngày. Bản thân bài/comment đi qua repository riêng
 (app/repositories/d1/{posts,comments}.py); mọi thứ khác ở đây chỉ chuyển tiếp sang
-stats_summary.py (xem app/services/d1.py), vốn đọc các bảng tổng hợp theo ngày thay
+stats_summary.py (xem app/repositories/d1/store.py), vốn đọc các bảng tổng hợp theo ngày thay
 vì GROUP BY trên toàn bảng `posts` / `comments` của D1."""
 
 from __future__ import annotations
@@ -17,6 +17,13 @@ from fastapi import APIRouter, Query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1 import comment_repo, post_repo
+from app.repositories.d1.store import (
+    get_comment_counts_by_platform,
+    get_comment_timeseries,
+    get_keyword_volume,
+    get_post_counts_by_platform,
+    get_post_timeseries,
+)
 from app.schemas.stats import (
     Comment,
     CommentPage,
@@ -29,14 +36,7 @@ from app.schemas.stats import (
     PostPage,
     TimeseriesPoint,
 )
-from app.services.d1 import (
-    get_comment_counts_by_platform,
-    get_comment_timeseries,
-    get_keyword_volume,
-    get_post_counts_by_platform,
-    get_post_timeseries,
-)
-from app.services.stats_summary import get_hourly_counts, get_ingest_funnel
+from app.services.reports.stats_summary import get_hourly_counts, get_ingest_funnel
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 logger = get_logger(__name__)

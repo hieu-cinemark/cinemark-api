@@ -1,5 +1,5 @@
 """Chấm độ chính xác của máy (nhãn cảm xúc + khía cạnh + giai đoạn khán giả, xem app/ai/aspects.py) so với nhãn
-người làm - phần tính toán thuần của scripts/accuracy_sample.py, tách riêng để test được.
+người làm - phần tính toán thuần của scripts/ml/accuracy_sample.py, tách riêng để test được.
 
 Nhãn người được nhập tay trong file CSV nên chấp nhận vài cách viết: cảm xúc "positive"/"tich_cuc"/"khen"/"+",
 khía cạnh "dien_xuat:+, kich_ban:-", về phim "co"/"khong"."""

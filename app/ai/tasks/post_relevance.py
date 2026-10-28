@@ -1,5 +1,5 @@
 """Kira là bộ phân loại độ liên quan của bài viết ở bước ingest. Ingest consumer hỏi
-Kira về mọi bài đã qua được các luật cố định (app/services/relevance_rules.py);
+Kira về mọi bài đã qua được các luật cố định (app/services/relevance/relevance_rules.py);
 việc kiểm tra từ khoá theo chuỗi con chỉ là dự phòng khi Kira không đưa ra kết
 luận (đang tắt, vượt giới hạn ngày, lỗi). Kira được biết thông tin của phim đích
 (đạo diễn/diễn viên/nhà phát hành/ngày ra rạp) cùng tên các phim khác đang theo

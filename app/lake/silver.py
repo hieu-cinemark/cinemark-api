@@ -8,7 +8,7 @@
 Mỗi bước là một view/table DuckDB có tên (raw -> deduped -> snapshots -> posts),
 được kiểm tra trước khi ghi bất cứ thứ gì. Mỗi lần chạy là dựng lại toàn bộ: cùng
 một bronze luôn cho ra cùng một silver, nên chạy lại bao nhiêu lần cũng an toàn.
-Chạy bằng scripts/build_silver.py."""
+Chạy bằng scripts/jobs/build_silver.py."""
 
 from __future__ import annotations
 

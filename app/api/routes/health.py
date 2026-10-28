@@ -10,7 +10,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.errors import NotFoundError
-from app.services.ops_metrics import record_and_list_samples
+from app.services.ops.ops_metrics import record_and_list_samples
 
 router = APIRouter(tags=["health"])
 

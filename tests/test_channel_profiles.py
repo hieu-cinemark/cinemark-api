@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import Any
 
-from app.services import channel_profiles as cp
+from app.services.crawl import channel_profiles as cp
 
 
 class FakeRedis:

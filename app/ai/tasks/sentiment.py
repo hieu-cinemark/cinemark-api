@@ -11,7 +11,7 @@ Kira và prompt ghi đè trên dashboard đều có hiệu lực.
 
 Được gọi từ vòng sweep chạy nền của ingest consumer
 (app/workers/ingest_consumer/sentiment_sweep.py) và
-scripts/backfill_comment_sentiment.py - không bao giờ gọi trực tiếp cho từng
+scripts/jobs/backfill_comment_sentiment.py - không bao giờ gọi trực tiếp cho từng
 comment.
 (Độ liên quan của bài là việc của Kira - app/ai/tasks/post_relevance.py.)
 
@@ -36,7 +36,7 @@ from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
 from app.ai.tasks.sentiment_rules import cached_comment_labels, remember_comment_labels, rule_sentiment
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import MIN_CONTENT_LENGTH
+from app.repositories.d1.store import MIN_CONTENT_LENGTH
 
 logger = get_logger(__name__)
 

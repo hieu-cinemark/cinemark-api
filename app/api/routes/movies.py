@@ -11,9 +11,9 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
-from app.services.d1 import MIN_COMMENTS_FOR_REPORT, create_movie, disable_movie, list_movies, update_movie
-from app.services.report_queue import enqueue_report_job, get_report_job
-from app.services.social_topic import get_movie_for_report
+from app.repositories.d1.store import MIN_COMMENTS_FOR_REPORT, create_movie, disable_movie, list_movies, update_movie
+from app.services.reports.report_queue import enqueue_report_job, get_report_job
+from app.services.reports.social_topic import get_movie_for_report
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 
@@ -103,8 +103,8 @@ async def delete(movie_id: str) -> dict[str, bool]:
 async def generate_report(movie_id: str) -> dict[str, str]:
     """Nút "Tạo report" bấm tay (xem MoviesTable của spider-hub-dashboard) - chạy đúng
     logic theo từng phim như lượt quét hằng ngày của
-    scripts/generate_social_topic_reports.py, cho một phim, khi cần. Đưa vào hàng đợi và
-    trả về ngay (xem app.services.report_queue) thay vì chạy hai lời gọi Bee/Kira tuần
+    scripts/jobs/generate_social_topic_reports.py, cho một phim, khi cần. Đưa vào hàng đợi và
+    trả về ngay (xem app.services.reports.report_queue) thay vì chạy hai lời gọi Bee/Kira tuần
     tự ngay trong request handler - đã xác nhận thực tế riêng lời gọi gom topic có thể
     mất hơn 2 phút, và trong lúc đó dashboard từng khoá luôn nút "Tạo report" của MỌI
     phim khác. GET .../generate-report là cách dashboard hỏi định kỳ kết quả

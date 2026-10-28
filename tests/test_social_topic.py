@@ -1,8 +1,8 @@
-"""Kiểm tra generate_report_for_movie của app/services/social_topic.py với bản giả cho
+"""Kiểm tra generate_report_for_movie của app/services/reports/social_topic.py với bản giả cho
 mọi lời gọi D1/AI (không dùng D1 hay AI thật). Những điều đáng kiểm chứng: phim dưới
 MIN_COMMENTS_FOR_REPORT bị bỏ qua mà không tốn lời gọi AI nào, upsert theo movie_id
 với tỉ lệ thật do SQL tính (không phải con số LLM có thể đoán), và --dry-run không bao
-giờ ghi. Dùng chung cho lượt quét của scripts/generate_social_topic_reports.py và nút
+giờ ghi. Dùng chung cho lượt quét của scripts/jobs/generate_social_topic_reports.py và nút
 "Tạo report" bấm tay trên dashboard - xem test_generate_social_topic_reports.py cho
 test cấp CLI của lượt quét."""
 
@@ -13,14 +13,14 @@ from collections import Counter
 from unittest.mock import AsyncMock, patch
 
 from app.ai.tasks.report import _restore_ids, build_topics_payload
-from app.services.d1 import (
+from app.repositories.d1.store import (
     CHANNEL_MIN_POSTS,
     MIN_COMMENTS_FOR_REPORT,
     REPORT_COMMENTS_PER_POST,
     get_movie_aspect_stats,
     get_report_sample_for_movie,
 )
-from app.services.social_topic import generate_report_for_movie, hydrate_report_comments
+from app.services.reports.social_topic import generate_report_for_movie, hydrate_report_comments
 
 MOVIE = {"id": "movie_1", "title": "Phim Test"}
 
@@ -91,10 +91,10 @@ async def test_movie_below_threshold_is_skipped_without_any_bee_call() -> None:
     counts = {"positive": MIN_COMMENTS_FOR_REPORT - 1}
 
     with (
-        patch("app.services.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
-        patch("app.services.social_topic.get_report_sample_for_movie", AsyncMock()) as mock_sample,
-        patch("app.services.social_topic.generate_topics_and_verbatims", AsyncMock()) as mock_topics,
-        patch("app.services.social_topic.upsert_social_topic_report", AsyncMock()) as mock_upsert,
+        patch("app.services.reports.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
+        patch("app.services.reports.social_topic.get_report_sample_for_movie", AsyncMock()) as mock_sample,
+        patch("app.services.reports.social_topic.generate_topics_and_verbatims", AsyncMock()) as mock_topics,
+        patch("app.services.reports.social_topic.upsert_social_topic_report", AsyncMock()) as mock_upsert,
     ):
         result = await generate_report_for_movie(MOVIE, dry_run=False)
 
@@ -108,13 +108,13 @@ async def test_happy_path_upserts_with_sql_computed_percentages_not_llm_guessed(
     counts = {"positive": 30, "negative": 10}  # 75% / 25%, tổng 40
 
     with (
-        patch("app.services.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
-        patch("app.services.social_topic.get_report_sample_for_movie", AsyncMock(return_value=SAMPLE)),
-        patch("app.services.social_topic.get_movie_aspect_stats", AsyncMock(return_value=ASPECT_STATS)),
-        patch("app.services.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
-        patch("app.services.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=TOPICS_RESULT)),
-        patch("app.services.social_topic.generate_narrative", AsyncMock(return_value="Nhìn chung tích cực.")),
-        patch("app.services.social_topic.upsert_social_topic_report", AsyncMock(return_value=True)) as mock_upsert,
+        patch("app.services.reports.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
+        patch("app.services.reports.social_topic.get_report_sample_for_movie", AsyncMock(return_value=SAMPLE)),
+        patch("app.services.reports.social_topic.get_movie_aspect_stats", AsyncMock(return_value=ASPECT_STATS)),
+        patch("app.services.reports.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
+        patch("app.services.reports.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=TOPICS_RESULT)),
+        patch("app.services.reports.social_topic.generate_narrative", AsyncMock(return_value="Nhìn chung tích cực.")),
+        patch("app.services.reports.social_topic.upsert_social_topic_report", AsyncMock(return_value=True)) as mock_upsert,
     ):
         result = await generate_report_for_movie(MOVIE, dry_run=False)
 
@@ -143,12 +143,12 @@ async def test_topics_call_failure_skips_the_upsert() -> None:
     counts = {"positive": 20}
 
     with (
-        patch("app.services.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
-        patch("app.services.social_topic.get_report_sample_for_movie", AsyncMock(return_value=SAMPLE)),
-        patch("app.services.social_topic.get_movie_aspect_stats", AsyncMock(return_value=ASPECT_STATS)),
-        patch("app.services.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
-        patch("app.services.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=None)),
-        patch("app.services.social_topic.upsert_social_topic_report", AsyncMock()) as mock_upsert,
+        patch("app.services.reports.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
+        patch("app.services.reports.social_topic.get_report_sample_for_movie", AsyncMock(return_value=SAMPLE)),
+        patch("app.services.reports.social_topic.get_movie_aspect_stats", AsyncMock(return_value=ASPECT_STATS)),
+        patch("app.services.reports.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
+        patch("app.services.reports.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=None)),
+        patch("app.services.reports.social_topic.upsert_social_topic_report", AsyncMock()) as mock_upsert,
     ):
         result = await generate_report_for_movie(MOVIE, dry_run=False)
 
@@ -160,13 +160,13 @@ async def test_dry_run_never_writes() -> None:
     counts = {"positive": 20}
 
     with (
-        patch("app.services.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
-        patch("app.services.social_topic.get_report_sample_for_movie", AsyncMock(return_value=SAMPLE)),
-        patch("app.services.social_topic.get_movie_aspect_stats", AsyncMock(return_value=ASPECT_STATS)),
-        patch("app.services.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
-        patch("app.services.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=TOPICS_RESULT)),
-        patch("app.services.social_topic.generate_narrative", AsyncMock(return_value="...")),
-        patch("app.services.social_topic.upsert_social_topic_report", AsyncMock()) as mock_upsert,
+        patch("app.services.reports.social_topic.get_movie_sentiment_counts", AsyncMock(return_value=counts)),
+        patch("app.services.reports.social_topic.get_report_sample_for_movie", AsyncMock(return_value=SAMPLE)),
+        patch("app.services.reports.social_topic.get_movie_aspect_stats", AsyncMock(return_value=ASPECT_STATS)),
+        patch("app.services.reports.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
+        patch("app.services.reports.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=TOPICS_RESULT)),
+        patch("app.services.reports.social_topic.generate_narrative", AsyncMock(return_value="...")),
+        patch("app.services.reports.social_topic.upsert_social_topic_report", AsyncMock()) as mock_upsert,
     ):
         result = await generate_report_for_movie(MOVIE, dry_run=True)
 
@@ -277,9 +277,9 @@ async def test_report_sample_is_random_audience_first_and_caps_each_post() -> No
         return [dict(p) for p in posts]
 
     with (
-        patch("app.services.d1.d1_query", fake_query),
-        patch("app.services.d1.reputable_authors", AsyncMock(return_value=set())),
-        patch("app.services.d1.ensure_author_reputation_table", AsyncMock()),
+        patch("app.repositories.d1.store.d1_query", fake_query),
+        patch("app.repositories.d1.store.reputable_authors", AsyncMock(return_value=set())),
+        patch("app.repositories.d1.store.ensure_author_reputation_table", AsyncMock()),
     ):
         sample = await get_report_sample_for_movie("movie_1")
         again = await get_report_sample_for_movie("movie_1")
@@ -342,10 +342,10 @@ async def test_aspect_stats_counts_all_tagged_comments_with_min_n_and_trend() ->
         return [dict(post)]
 
     with (
-        patch("app.services.d1.d1_query", fake_query),
-        patch("app.services.d1.reputable_authors", AsyncMock(return_value=set())),
-        patch("app.services.d1.ensure_author_reputation_table", AsyncMock()),
-        patch("app.services.d1.ensure_comment_insight_columns", AsyncMock()),
+        patch("app.repositories.d1.store.d1_query", fake_query),
+        patch("app.repositories.d1.store.reputable_authors", AsyncMock(return_value=set())),
+        patch("app.repositories.d1.store.ensure_author_reputation_table", AsyncMock()),
+        patch("app.repositories.d1.store.ensure_comment_insight_columns", AsyncMock()),
     ):
         stats = await get_movie_aspect_stats("movie_1")
 

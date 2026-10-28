@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from app.services.platforms import get_post_mapper
+from app.services.crawl.platforms import get_post_mapper
 from app.workers.ingest_consumer import main as ingest
 
 

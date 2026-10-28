@@ -1,10 +1,10 @@
-"""Các bài thật gặp trên production (2026-09-28) cho app/services/relevance_rules.py."""
+"""Các bài thật gặp trên production (2026-09-28) cho app/services/relevance/relevance_rules.py."""
 
 from __future__ import annotations
 
 import pytest
 
-from app.services.relevance_rules import (
+from app.services.relevance.relevance_rules import (
     film_context_reason,
     foreign_language_reason,
     has_film_context,
@@ -270,7 +270,7 @@ def test_keyword_hashtag_off_for_strict_movies() -> None:
 
 
 def test_full_title_lifts_uncertain_for_long_titles():
-    from app.services.relevance_rules import mentions_full_title, resolve_relevance
+    from app.services.relevance.relevance_rules import mentions_full_title, resolve_relevance
 
     movie = {"title": "Bóng Ma Nhà Hát", "slug": "bong-ma-nha-hat"}
     text = "ai đang lăn tăn tối nay coi gì thì Bóng Ma Nhà Hát chiếu rồi đó, t vừa coi suất chiều"
@@ -297,7 +297,7 @@ def test_full_title_lifts_uncertain_for_long_titles():
 
 
 def test_full_title_accepts_numbered_head_before_colon():
-    from app.services.relevance_rules import mentions_full_title
+    from app.services.relevance.relevance_rules import mentions_full_title
 
     title = "QUỶ ĂN TẠNG 4: HỔ TINH (Tee Yod)"
     assert mentions_full_title("Xem QUỶ ĂN TẠNG 4 chỉ từ 40.000Đ/vé tại App CGV", title)
@@ -307,21 +307,21 @@ def test_full_title_accepts_numbered_head_before_colon():
 
 
 def test_full_title_ignores_unnumbered_series_head():
-    from app.services.relevance_rules import mentions_full_title
+    from app.services.relevance.relevance_rules import mentions_full_title
 
     assert not mentions_full_title("#thamtukien cinetour Cần Thơ", "Thám Tử Kiên: Lời Nguyền Hoàng Kim")
     assert not mentions_full_title("Shaun the Sheep hay quá", "Shaun the Sheep: “Quái Lạ” Ghé Nhà")
 
 
 def test_director_split_on_va():
-    from app.services.relevance_rules import film_context_reason
+    from app.services.relevance.relevance_rules import film_context_reason
 
     movie = {"title": "Lên Hương", "director": "Khương Ngọc và Tấn Hoàng Thông", "cast": '["Thu Trang"]'}
     assert film_context_reason("Coi hài mà cũng buồn nữa #LenHuong #KhuongNgoc", movie) == "director"
 
 
 def test_release_window_lifts_series_name_with_cinema_words_near_release():
-    from app.services.relevance_rules import franchise_names, in_release_window
+    from app.services.relevance.relevance_rules import franchise_names, in_release_window
 
     shaun = {"title": "Shaun the Sheep: “Quái Lạ” Ghé Nhà", "released_at": "2026-10-16"}
     text = "SHAUN THE SHEEP hôm nay có buổi ra mắt cực vui tại Vạn Hạnh Mall. Phim có suất sớm cuối tuần này"

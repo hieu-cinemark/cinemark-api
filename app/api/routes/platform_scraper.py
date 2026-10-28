@@ -17,6 +17,7 @@ from fastapi import APIRouter, Query
 from app.clients.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 from app.core.errors import NotFoundError, UpstreamError
 from app.core.logging import get_logger
+from app.repositories.d1.store import get_enabled_keywords, get_keyword, get_post
 from app.schemas.scraper import (
     JobStatus,
     RunCommentsResponse,
@@ -24,8 +25,7 @@ from app.schemas.scraper import (
     RunScraperResponse,
     StopScraperResponse,
 )
-from app.services.crawl_jobs import cancel_job, get_running_job, request_stop
-from app.services.d1 import get_enabled_keywords, get_keyword, get_post
+from app.services.crawl.crawl_jobs import cancel_job, get_running_job, request_stop
 
 logger = get_logger(__name__)
 
@@ -130,7 +130,7 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
         if not post.get("url"):
             raise UpstreamError(f"Post {post_id} has no stored url - can't bootstrap a comments crawl without one")
         # Trước đây bỏ qua lời gọi này khi reply_count đang lưu bằng 0 - đã bỏ vì mọi mapper
-        # nền tảng (app/services/platforms.py) đều quy số đếm bị thiếu/không lấy được về 0
+        # nền tảng (app/services/crawl/platforms.py) đều quy số đếm bị thiếu/không lấy được về 0
         # giống như số 0 thật (`payload.get(...) or 0`), nên số 0 ở đây không đáng tin là
         # "bài này thực sự không có comment" thay vì "lúc crawl chỉ là không lấy được số
         # đếm". Bỏ qua theo nó có nguy cơ mãi mãi không lấy comment của những bài thật ra có

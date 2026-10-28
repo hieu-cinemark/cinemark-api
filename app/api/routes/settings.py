@@ -1,5 +1,5 @@
 """Trang Settings của dashboard: CRUD trên các bảng platform_accounts /
-platform_proxies ở Supabase (xem app/services/platform_config_db.py) - chính là các
+platform_proxies ở Supabase (xem app/services/accounts/platform_config_db.py) - chính là các
 bảng mà spider-hub đọc để lấy thông tin đăng nhập và cấu hình proxy. Chỗ khác chỉ
 đọc; đây là nơi duy nhất ghi vào các bảng đó."""
 
@@ -67,11 +67,11 @@ from app.schemas.settings import (
     TotpCodeResponse,
     parse_run_times,
 )
-from app.services import auto_login as auto_login_svc
-from app.services import platform_config_db as db
-from app.services.account_health import evaluate_account_health
-from app.services.platform_token import account_key as _account_key
-from app.services.scheduler import purge_in_progress, run_purge_now
+from app.services.accounts import auto_login as auto_login_svc
+from app.services.accounts import platform_config_db as db
+from app.services.accounts.account_health import evaluate_account_health
+from app.services.accounts.platform_token import account_key as _account_key
+from app.services.crawl.scheduler import purge_in_progress, run_purge_now
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -184,7 +184,7 @@ async def nurture_accounts(payload: NurtureRequest) -> NurtureResponse:
 async def check_account(account_id: int) -> AccountOut:
     """Kiểm tra sức khoẻ thụ động - đọc các tín hiệu spider-hub vốn đã duy trì (bộ đếm bị
     chặn trong Redis, cache session) thay vì gửi request mới tới nền tảng. Xem
-    app/services/account_health.py."""
+    app/services/accounts/account_health.py."""
     account = await db.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
@@ -383,7 +383,7 @@ def _crawl_schedule_out(row: dict[str, Any]) -> CrawlScheduleOut:
 @router.put("/crawl-schedule/{platform}", response_model=CrawlScheduleOut)
 async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> CrawlScheduleOut:
     """Upsert - một nền tảng chưa có dòng nào cho tới khi lịch của nó được lưu lần đầu (xem
-    app/services/scheduler.py, chỗ đó chỉ bỏ qua nền tảng chưa có dòng chứ không coi đó
+    app/services/crawl/scheduler.py, chỗ đó chỉ bỏ qua nền tảng chưa có dòng chứ không coi đó
     là "mỗi nửa đêm" hay một mặc định ngầm nào khác)."""
     row = await db.upsert_crawl_schedule(
         platform,
@@ -453,7 +453,7 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
     from app.ai.client import active_provider_key, invalidate_provider_cache
     from app.ai.defaults import AI_PROMPT_TASKS
     from app.ai.runtime import invalidate_ai_runtime_cache
-    from app.services.ai_runtime_sync import sync_ai_runtime
+    from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
@@ -500,7 +500,7 @@ async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsO
     (qua ai_runtime của D1) đều theo trong vòng một phút."""
     from app.ai.client import invalidate_provider_cache
     from app.ai.runtime import invalidate_ai_runtime_cache
-    from app.services.ai_runtime_sync import sync_ai_runtime
+    from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     row = await db.get_ai_provider(payload.provider)
     if not row or not row.get("base_url") or not row.get("api_key"):
@@ -526,7 +526,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     """Upsert - `key` không cần có sẵn, nên có thể thêm provider mới từ đây mà không phải
     sửa code/schema. Bỏ trống hoặc không gửi api_key thì giữ nguyên secret đã lưu."""
     from app.ai.client import invalidate_provider_cache
-    from app.services.ai_runtime_sync import sync_ai_runtime
+    from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
     row = await db.upsert_ai_provider(
@@ -588,7 +588,7 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
     return ImportCommitResponse(created=created, failed=failed)
 
 
-# --- Dọn bài không liên quan (app/services/cleanup.py) ---
+# --- Dọn bài không liên quan (app/services/relevance/cleanup.py) ---
 # Cùng dạng với /settings/proxy: giá trị đã lưu được trộn lên trên mặc định của
 # schema, nên một dòng có từ trước khi thêm trường mới (hoặc thiếu key) chỉ nhận giá
 # trị mặc định cho key đó thay vì làm trang lỗi 500.
@@ -657,7 +657,7 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
     return [CleanupRunHistoryEntry(**row) for row in rows]
 
 
-# --- Bộ lập lịch auto-login (app/services/auto_login.py) ---
+# --- Bộ lập lịch auto-login (app/services/accounts/auto_login.py) ---
 # Cùng dạng với /cleanup: GET trả về cấu hình đang có hiệu lực trên nền mặc định + cờ
 # đang chạy + last_run_at; PUT là cập nhật một phần (giao diện bật/tắt trên dashboard
 # chỉ gửi `{enabled: true}`); POST /run chạy một lượt riêng và trả về có thực sự bắt

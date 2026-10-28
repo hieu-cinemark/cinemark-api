@@ -1,4 +1,4 @@
-from app.services.omar_trending import mark_hot, velocity
+from app.services.omar.omar_trending import mark_hot, velocity
 
 
 def _snap(at: str, views: int, comments: int = 0, likes: int = 0, shares: int = 0) -> dict:

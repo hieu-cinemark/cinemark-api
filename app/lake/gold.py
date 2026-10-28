@@ -10,7 +10,7 @@ Các bước (mỗi bước là một view/table DuckDB có tên, kiểm tra xon
     post_delta   tương tác tăng thêm so với bản chụp ngày trước
     movie_daily  gom theo phim × nền tảng × ngày
 
-Chạy bằng scripts/build_silver.py (sau silver)."""
+Chạy bằng scripts/jobs/build_silver.py (sau silver)."""
 
 from __future__ import annotations
 

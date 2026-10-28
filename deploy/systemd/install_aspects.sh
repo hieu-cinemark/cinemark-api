@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs the aspect labelling timer (Review Angles) on the VPS. Prerequisites:
-#   - models/visobert-aspects/ copied to /opt/cinemark-api/models/ (not in git - trained by scripts/aspect_finetune.py)
+#   - models/visobert-aspects/ copied to /opt/cinemark-api/models/ (not in git - trained by scripts/ml/aspect_finetune.py)
 #   - torch (CPU) + transformers installed in /opt/cinemark-api/.venv (requirements-ml.txt)
 set -euo pipefail
 

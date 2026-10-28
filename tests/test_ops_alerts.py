@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.core.config import settings
-from app.services import ops_alerts
+from app.services.ops import ops_alerts
 
 NOW = datetime(2026, 10, 13, 5, 0, tzinfo=UTC)  # 12:00 giờ VN
 
@@ -119,7 +119,7 @@ async def test_fire_dedupes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_checks_drought_with_mocked_d1(monkeypatch):
-    from app.services import d1
+    from app.repositories.d1 import store as d1
 
     stale = (datetime.now(tz=UTC) - timedelta(hours=8)).isoformat()
     monkeypatch.setattr(d1, "d1_query", AsyncMock(return_value=[{"last": stale}]))

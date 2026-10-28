@@ -14,5 +14,5 @@ Jev (TypeSafe, app/ai/jev.py) chấm sentiment comment:
                và report (report social topic)
 
 Bộ phân loại cảm xúc dự phòng không dùng AI (theo từ điển) nằm ở
-app/services/sentiment_lexicon.py.
+app/services/sentiment/sentiment_lexicon.py.
 """

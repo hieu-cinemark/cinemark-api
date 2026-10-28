@@ -1,7 +1,7 @@
 import pytest
 
 from app.core.errors import ValidationError
-from app.services.source_pages import normalize_page_url
+from app.services.crawl.source_pages import normalize_page_url
 
 
 def test_normalize_page_url():

@@ -3,7 +3,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
-from app.services import omar_tiktok as ot
+from app.services.omar import omar_tiktok as ot
 
 
 class _FakeRedis:

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.core.config import settings
 from app.repositories.d1 import posts as posts_repo
-from app.services import tracked_posts
+from app.services.crawl import tracked_posts
 from app.workers.ingest_consumer import main as ingest
 
 
@@ -65,7 +65,7 @@ async def _update(fake: _FakeD1, **counts) -> bool:
     with (
         patch.object(posts_repo, "d1_query", fake),
         patch.object(posts_repo, "_ensure_post_indexes", AsyncMock()),
-        patch("app.services.stats_summary.record_post", AsyncMock()),
+        patch("app.services.reports.stats_summary.record_post", AsyncMock()),
     ):
         return await posts_repo.update_post_engagement("facebook", "e1", **counts)
 

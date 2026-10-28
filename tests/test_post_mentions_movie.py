@@ -1,4 +1,4 @@
-from app.services.d1 import post_mentions_movie
+from app.repositories.d1.store import post_mentions_movie
 
 
 def test_full_title_in_post():

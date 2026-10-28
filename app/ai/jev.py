@@ -199,7 +199,7 @@ async def classify_post_relevance_jev(
     return {"label": label, "confidence": confidence, "reason": f"jev {answer.get('choice')} {confidence:.2f}"}
 
 
-# --- Giá trị comment của bài (thay Kira ở app/services/comment_value.py) -------------------------------------------
+# --- Giá trị comment của bài (thay Kira ở app/services/sentiment/comment_value.py) -------------------------------------------
 # Loại bài -> điểm 0-100 "có đáng cào comment không"; điểm = trung bình theo xác suất từng loại.
 COMMENT_VALUE_KINDS: dict[str, tuple[int, str]] = {
     "review": (90, "Review, cảm nhận về phim - người xem sẽ vào bàn luận khen chê"),

@@ -47,18 +47,18 @@ class Settings(BaseSettings):
 
     # Cloudflare D1 - cho ingest consumer đọc/ghi database D1 của cinemark-scraper qua
     # HTTP query API của Cloudflare (binding D1 chỉ có bên trong Worker; đây là cách duy
-    # nhất để vào từ một tiến trình VPS thường). Xem app/services/d1.py. Tất cả đều không
+    # nhất để vào từ một tiến trình VPS thường). Xem app/repositories/d1/store.py. Tất cả đều không
     # bắt buộc - thiếu thì các lời gọi D1 bị bỏ qua (không phải lỗi).
     cloudflare_account_id: str | None = None
     cloudflare_api_token: str | None = None
     cloudflare_d1_database_id: str | None = None
 
-    # "local" trỏ d1_query() của app.services.d1 vào một file SQLite local thay vì HTTP
+    # "local" trỏ d1_query() của app.repositories.d1.store vào một file SQLite local thay vì HTTP
     # query API của Cloudflare - không tốn quota đọc dòng hằng ngày của D1 khi dev/test ở
     # local. Trước đây mặc định trỏ tới bản sao do repo anh em cinemark-be duy trì
     # (scripts/pull-local-db.js) - repo đó không còn trong workspace này, nên bản sao giờ
-    # nằm ở đây (xem scripts/pull_local_db.py, bản thay thế của repo này). Làm mới bằng
-    # `python -m scripts.pull_local_db` khi dữ liệu local đã cũ (sao chép toàn bộ - mọi
+    # nằm ở đây (xem scripts/tools/pull_local_db.py, bản thay thế của repo này). Làm mới bằng
+    # `python -m scripts.tools.pull_local_db` khi dữ liệu local đã cũ (sao chép toàn bộ - mọi
     # bảng, mọi dòng - mới từ D1 thật mỗi lần chạy; chạy lại lúc nào cũng an toàn, nhưng
     # mỗi lần đều tốn quota đọc D1 thật).
     db_mode: str = "remote"  # "remote" | "local" — remote là Cloudflare D1
@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     # trường này chỉ cung cấp giá trị enabled ban đầu khi dòng đó được tạo lần đầu. Thông
     # tin đăng nhập (base_url/api_key) và model, của Kira và mọi provider khác (ví dụ
     # Beeknoee), nằm trong bảng ai_providers trên Supabase - xem app/ai/client.py và
-    # app/services/platform_config_db.py. Công dụng chính hiện nay: phân loại liên quan,
+    # app/services/accounts/platform_config_db.py. Công dụng chính hiện nay: phân loại liên quan,
     # cảm xúc comment và report topic/narrative (Beeknoee chỉ là tuỳ chọn cho report).
     kira_enabled: bool = False
     # Việc PHÂN LOẠI - gán nhãn comment (cảm xúc, khía cạnh, giai đoạn), độ liên quan của bài, giá trị comment của bài:
@@ -132,19 +132,19 @@ class Settings(BaseSettings):
     kira_post_relevance_daily_cap: int = 30000
 
     # False: ingest consumer KHÔNG hỏi Kira độ liên quan mà lưu bài ngay theo tín hiệu phim/từ khoá (như khi Kira không
-    # kết luận); scripts/relabel_post_relevance.py --follow gán lại nhãn Kira ở nền. Dùng khi model Kira chậm (qwen có
+    # kết luận); scripts/jobs/relabel_post_relevance.py --follow gán lại nhãn Kira ở nền. Dùng khi model Kira chậm (qwen có
     # lúc 60-180 giây một lô) - chờ Kira ngay trong ingest từng làm Kafka tồn hàng chục nghìn message.
     kira_ingest_relevance: bool = True
 
     # True: lọc bài liên quan hoàn toàn bằng luật, không AI (relevance_rules.mentions_film_manual/no_diacritics_reason):
     # khớp tên phim / viết tắt / từ khoá thì liên quan, phần chữ không có dấu tiếng Việt thì loại thẳng.
-    # scripts/relabel_post_relevance.py khi đó tạm dừng phần Kira; --rules áp luật cho bài đang chờ.
+    # scripts/jobs/relabel_post_relevance.py khi đó tạm dừng phần Kira; --rules áp luật cho bài đang chờ.
     # Bài chỉ nhắc phim qua hashtag nhét cuối caption (relevance_rules.hashtag_only_mention) -> lưu nhưng ẩn. Tắt mặc định
     # tới khi độ chính xác đủ (dry-run 13/10/2026: ~50%).
     hashtag_only_filter: bool = False
     relevance_rules_only: bool = False
 
-    # Lịch crawl Facebook theo hai phần hạn mức (app/services/crawl_lanes.py, 27/10/2026): mỗi giờ chạy của lịch là một
+    # Lịch crawl Facebook theo hai phần hạn mức (app/services/crawl/crawl_lanes.py, 27/10/2026): mỗi giờ chạy của lịch là một
     # lượt "bài mới" ("Bài viết gần đây", tới 100 trang - spider dừng sau 10 trang liên tiếp không có bài mới), và mỗi giờ
     # một nhịp "đào bài cũ" xếp job (theo số tài khoản, xem bên dưới) trong khung facebook_deep_hours. Tắt -> lịch cũ
     # (lượt đầu quét 4/60 ngày, lượt sau "gần đây" sâu tới max_pages).
@@ -161,7 +161,7 @@ class Settings(BaseSettings):
     facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"
 
-    # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/hashtag_discovery.py) -
+    # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/discovery/hashtag_discovery.py) -
     # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.
     hashtag_discovery_time: str = "05:30"
     # Kira thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và Omar BFS).
@@ -184,10 +184,10 @@ class Settings(BaseSettings):
 
     # Omar TikTok API (dev.omar-thing.site) - dùng cho crawl video/hashtag thay vì
     # spider-hub. API key được đọc từ bảng omar_api_settings trên Supabase (xem
-    # app/services/platform_config_db.py). Base URL có thể ghi đè trong .env khi dev
+    # app/services/accounts/platform_config_db.py). Base URL có thể ghi đè trong .env khi dev
     # local cần trỏ vào instance khác.
     omar_api_base_url: str = "https://dev.omar-thing.site/api/v1"
-    # Lượt cào hashtag TikTok qua Omar API mỗi giờ (app/services/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt
+    # Lượt cào hashtag TikTok qua Omar API mỗi giờ (app/services/omar/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt
     # comment ở phút 5). Mỗi hashtag cào tới hết, con trỏ lưu trong Redis. Ngân sách mỗi giờ = hạn mức ngày còn lại (trừ
     # omar_daily_reserve để chừa cho chạy tay) chia đều cho số giờ tới lúc reset, trần omar_requests_per_hour (một giờ ở
     # 10 request/phút làm tối đa ~550). Hashtag đã cào hết được cào lại từ đầu sau omar_recrawl_days ngày.
@@ -204,7 +204,7 @@ class Settings(BaseSettings):
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_tiktok._claim_unseen.
     omar_republish_hours: float = 48
     omar_recrawl_days: int = 7
-    # Bình luận TikTok qua Omar (app/services/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", từ 20/10/2026 khi
+    # Bình luận TikTok qua Omar (app/services/omar/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", từ 20/10/2026 khi
     # gói lên 50.000 request/ngày) hoặc mỗi tuần vào thứ omar_comments_weekday (0 = thứ Hai), lúc omar_comments_time giờ VN,
     # mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm
     # trả lời nếu omar_comments_replies). Hàng đợi chạy sau phần video mới của mỗi lượt Omar (ưu tiên video). Chạy mỗi ngày thì chỉ lấy video
@@ -221,7 +221,7 @@ class Settings(BaseSettings):
     omar_comments_budget_share: float = 0.5
     # Hashtag không có trên TikTok (trang 1 luôn lỗi 424) được kiểm tra lại sau chừng này giờ.
     omar_missing_recheck_hours: float = 24
-    # Tìm theo từ khoá qua Omar (app/services/omar_search.py): mỗi câu (tên phim có dấu / không dấu + câu tìm kiếm
+    # Tìm theo từ khoá qua Omar (app/services/omar/omar_search.py): mỗi câu (tên phim có dấu / không dấu + câu tìm kiếm
     # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa omar_search_pages trang, mỗi ngày một lần.
     omar_search_pages: int = 30
     omar_search_budget_share: float = 0.2
@@ -234,10 +234,10 @@ class Settings(BaseSettings):
     omar_search_suggest: bool = True
     omar_search_suggest_per_movie: int = 5
     omar_search_prune_days: int = 5
-    # Cào theo kênh (app/services/omar_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
+    # Cào theo kênh (app/services/omar/omar_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
     # omar_channels_max kênh, mỗi ngày lật /posts tới video cũ hơn omar_channels_days ngày (tối đa max_pages trang).
     omar_channels_budget_share: float = 0.2
-    # Chia ngân sách theo hiệu quả (app/services/omar_yield.py): phần của tìm kiếm / kênh = phần gốc x (bài mới trên mỗi
+    # Chia ngân sách theo hiệu quả (app/services/omar/omar_yield.py): phần của tìm kiếm / kênh = phần gốc x (bài mới trên mỗi
     # request của nguồn đó / của hashtag) trong omar_adaptive_days ngày, kẹp trong [min, max].
     omar_adaptive_budget: bool = True
     omar_adaptive_days: int = 3
@@ -260,12 +260,12 @@ class Settings(BaseSettings):
     d1_max_concurrency: int = 8
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
     omar_hashtag_info_days: int = 7
-    # "Video đang nổi" (app/services/omar_trending.py): mỗi omar_trending_interval_hours giờ đọc lại số liệu của
+    # "Video đang nổi" (app/services/omar/omar_trending.py): mỗi omar_trending_interval_hours giờ đọc lại số liệu của
     # omar_trending_per_movie video TikTok tương tác cao nhất mỗi phim (đăng trong omar_trending_days ngày) qua Omar
     # video_info (1 request/video, tối đa omar_trending_max_requests mỗi lượt) -> bảng D1 omar_video_stats. Video có
     # >= omar_trending_rising_comments_per_hour bình luận/giờ (tối đa omar_trending_rising_limit mỗi lượt, chưa cào bình
     # luận trong omar_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận Omar.
-    # Follower kênh TikTok cho trang "Xuất thông tin theo kênh" (app/services/channel_profiles.py) - mỗi chừng này giờ một lượt.
+    # Follower kênh TikTok cho trang "Xuất thông tin theo kênh" (app/services/crawl/channel_profiles.py) - mỗi chừng này giờ một lượt.
     channel_profiles_interval_hours: float = 6
     omar_trending_enabled: bool = True
     omar_trending_interval_hours: float = 3
@@ -275,13 +275,13 @@ class Settings(BaseSettings):
     omar_trending_rising_comments_per_hour: float = 20
     omar_trending_rising_limit: int = 20
     omar_trending_comments_recrawl_hours: float = 24
-    # Bài booking Facebook đang theo dõi (app/services/tracked_posts.py): bài đã có trong D1 được cập nhật số bằng job
+    # Bài booking Facebook đang theo dõi (app/services/crawl/tracked_posts.py): bài đã có trong D1 được cập nhật số bằng job
     # post_metrics của spider-hub (đọc trang bài không đăng nhập, không tốn tài khoản) thay vì page_feed cả page. Tắt
     # thì quay về page_feed như trước 25/10/2026.
     tracked_facebook_logged_out: bool = True
 
-    # Dọn dữ liệu bài không liên quan hằng ngày (app/services/cleanup.py), do
-    # app/services/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
+    # Dọn dữ liệu bài không liên quan hằng ngày (app/services/relevance/cleanup.py), do
+    # app/services/crawl/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
     # Asia/Ho_Chi_Minh). Bài gắn nhãn not_related được giữ qua thời gian ân hạn trước để
     # vẫn còn phát hiện được một lượt phân loại sai. Việc giữ các dòng dropped_posts lịch
     # sử đã bỏ - lake writer (app/workers/lake_writer/main.py) giờ lưu trữ mọi quyết định
@@ -298,7 +298,7 @@ class Settings(BaseSettings):
     r2_secret_access_key: str | None = None
     lake_bucket: str = "cinemark-lake"
 
-    # Cảnh báo vận hành qua Telegram (app/services/ops_alerts.py), scheduler kiểm tra mỗi ops_alerts_interval_minutes.
+    # Cảnh báo vận hành qua Telegram (app/services/ops/ops_alerts.py), scheduler kiểm tra mỗi ops_alerts_interval_minutes.
     # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói Omar / chi phí Jev mỗi ngày một lần.
     ops_alerts_enabled: bool = True
     ops_alerts_interval_minutes: int = 15

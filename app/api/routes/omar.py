@@ -1,5 +1,5 @@
 """Tab Omar trên spider-hub-dashboard: hạn mức của key, lượt đang chạy, tiến độ từng hashtag, nút Chạy ngay / Dừng
-(app/services/omar_tiktok.py). Key lưu/đổi qua GET/PUT /settings/omar-api (app/api/routes/settings.py)."""
+(app/services/omar/omar_tiktok.py). Key lưu/đổi qua GET/PUT /settings/omar-api (app/api/routes/settings.py)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.services import omar_channels, omar_comments, omar_search, omar_tiktok, omar_trending, omar_yield
-from app.services.d1 import get_or_create_keyword, set_keyword_enabled
-from app.services.platform_config_db import get_omar_api_settings
+from app.repositories.d1.store import get_or_create_keyword, set_keyword_enabled
+from app.services.accounts.platform_config_db import get_omar_api_settings
+from app.services.omar import omar_channels, omar_comments, omar_search, omar_tiktok, omar_trending, omar_yield
 
 logger = get_logger(__name__)
 
@@ -56,7 +56,7 @@ async def omar_status() -> dict[str, Any]:
 
 @router.post("/run")
 async def omar_run() -> dict[str, bool]:
-    from app.services.scheduler import trigger_omar_now
+    from app.services.crawl.scheduler import trigger_omar_now
 
     # Bấm "Chạy ngay" là bỏ trạng thái dừng (vd. vừa nâng gói / đổi key) - lượt tự kiểm tra lại hạn mức.
     await omar_tiktok.clear_pause()
@@ -76,7 +76,7 @@ async def omar_stop() -> dict[str, bool]:
 async def omar_comments_run() -> dict[str, Any]:
     """Xếp hàng bình luận tuần ngay (không đợi mốc tuần) rồi mở lượt Omar nếu đang rảnh - lượt đang chạy thì hàng đợi được
     xử lý ở lượt kế tiếp."""
-    from app.services.scheduler import trigger_omar_now
+    from app.services.crawl.scheduler import trigger_omar_now
 
     job = await omar_comments.enqueue_weekly_job(trigger="manual")
     started = trigger_omar_now()
@@ -194,7 +194,7 @@ async def omar_yield_summary(days: int = 7) -> dict[str, Any]:
 @router.get("/trending")
 async def omar_trending_videos(movie_id: str | None = None, hours: float = 24, limit: int = 30) -> dict[str, Any]:
     """Video đang nổi: tốc độ lượt xem/bình luận của top video TikTok mỗi phim, từ snapshot Omar
-    (app/services/omar_trending.py). hours = khoảng snapshot được xét (cần >= 1 giờ để có hai snapshot so sánh)."""
+    (app/services/omar/omar_trending.py). hours = khoảng snapshot được xét (cần >= 1 giờ để có hai snapshot so sánh)."""
     if not 1 <= hours <= 24 * 7:
         raise ValidationError("hours phải trong khoảng 1..168")
     return await omar_trending.trending(movie_id=movie_id or None, hours=hours, limit=max(1, min(limit, 100)))

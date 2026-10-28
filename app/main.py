@@ -28,8 +28,10 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import get_logger
 from app.core.middleware import RequestContextMiddleware
-from app.services import ops_metrics, platform_config_db, refresh_tracker, scheduler
-from app.services.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
+from app.services.accounts import platform_config_db
+from app.services.crawl import refresh_tracker, scheduler
+from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
+from app.services.ops import ops_metrics
 
 logger = get_logger(__name__)
 

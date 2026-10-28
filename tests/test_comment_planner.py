@@ -1,11 +1,11 @@
-"""Phần chọn bài thuần của app/services/comment_planner.py: độ nóng, hạn quét lại, loại nguồn, lấy mẫu phân tầng."""
+"""Phần chọn bài thuần của app/services/crawl/comment_planner.py: độ nóng, hạn quét lại, loại nguồn, lấy mẫu phân tầng."""
 
 from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
 
-from app.services import comment_planner as cp
+from app.services.crawl import comment_planner as cp
 
 NOW = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
 

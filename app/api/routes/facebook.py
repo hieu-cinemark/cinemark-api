@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from app.api.routes.keywords import build_keyword_routes
 from app.api.routes.platform_scraper import build_comments_run_route, build_run_route
 from app.api.routes.token_refresh import build_token_refresh_routes
-from app.services import source_pages
+from app.services.crawl import source_pages
 
 router = APIRouter(prefix="/facebook", tags=["facebook"])
 build_run_route(router, "facebook")
@@ -31,7 +31,7 @@ build_token_refresh_routes(router, "facebook")
 build_comments_run_route(router, "facebook")
 
 
-# --- Trang nguồn (cào theo nguồn, app/services/source_pages.py) ---------------------------------------------------
+# --- Trang nguồn (cào theo nguồn, app/services/crawl/source_pages.py) ---------------------------------------------------
 
 
 class SourcePageCreate(BaseModel):

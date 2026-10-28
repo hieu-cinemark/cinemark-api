@@ -19,7 +19,7 @@ def telegram_enabled() -> bool:
 
 async def send_telegram_message(text: str) -> None:
     """Async (httpx, giống mọi lời gọi ra ngoài khác trong service này - xem
-    app/services/d1.py) thay vì `requests` đồng bộ mà trước đây gọi kèm `await` -
+    app/repositories/d1/store.py) thay vì `requests` đồng bộ mà trước đây gọi kèm `await` -
     `requests` thậm chí không phải dependency của project (httpx==0.28.1 mới là - xem
     pyproject.toml), nên trước đây lỗi ModuleNotFoundError ngay lúc import, và kể cả có
     cài thì cũng lỗi TypeError ở chỗ await (hàm đồng bộ trả về None, không phải

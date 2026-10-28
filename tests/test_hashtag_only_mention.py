@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.relevance_rules import hashtag_only_mention, resolve_relevance
+from app.services.relevance.relevance_rules import hashtag_only_mention, resolve_relevance
 
 TRAI_BUON_NGUOI = {
     "title": "Trại Buôn Người",

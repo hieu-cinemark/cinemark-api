@@ -3,8 +3,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
-from app.services.omar_comments import iso_week, map_comment, weekly_due
-from app.services.omar_tiktok import Budget, next_cursor
+from app.services.omar.omar_comments import iso_week, map_comment, weekly_due
+from app.services.omar.omar_tiktok import Budget, next_cursor
 
 VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
@@ -89,7 +89,7 @@ def test_enqueue_all_videos_only_for_selected_keywords(monkeypatch):
     import asyncio
     import json
 
-    from app.services import omar_comments as oc
+    from app.services.omar import omar_comments as oc
 
     redis = _FakeRedis()
     keywords = [{"id": "k1", "keyword": "#phim"}]

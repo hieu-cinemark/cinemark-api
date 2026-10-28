@@ -6,7 +6,7 @@ từ đây - xem `source` của từng job để biết chỗ sửa.
 
 Lịch crawl theo nền tảng (Facebook/Threads/TikTok - trước đây lẫn lộn giữa crontab
 riêng của cinemark-api và Cloudflare Cron Triggers của cinemark-scraper, chỗ nào
-cũng phải deploy mới sửa được) đã chuyển sang app/services/scheduler.py, một bộ lập
+cũng phải deploy mới sửa được) đã chuyển sang app/services/crawl/scheduler.py, một bộ lập
 lịch hằng ngày chạy trong tiến trình, điều khiển bằng thẻ "Crawl schedule" trên
 dashboard (GET/PUT /settings/crawl-schedule) - đó là tài nguyên thật lưu trong DB và
 sửa được từ dashboard, không phải danh sách cố định như file này, nên không liệt kê
@@ -48,7 +48,7 @@ async def cron_jobs() -> list[CronJob]:
             name="Account health / volume anomaly / AI topic reports",
             schedule="every 6h (0 */6 * * *)",
             source="cinemark-api/scripts/trigger_scheduled_crawl.sh",
-            description="No longer triggers crawls (see app/services/scheduler.py) - just the account health "
+            description="No longer triggers crawls (see app/services/crawl/scheduler.py) - just the account health "
             "check (every cycle), volume-anomaly check (hour 18), and AI topic report regeneration (hour 20).",
         ),
     ]

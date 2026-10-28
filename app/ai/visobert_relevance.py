@@ -1,5 +1,5 @@
 """Model nhà trồng cho ĐỘ LIÊN QUAN của bài viết (2026-10-22): ViSoBERT fine-tune bằng nhãn AI, gồm 21k bài "uncertain" được
-Haiku gán lại (scripts/relevance_relabel_haiku.py + scripts/visobert_relevance_finetune.py --two-class --relabel). Đầu vào
+Haiku gán lại (scripts/ml/relevance_relabel_haiku.py + scripts/ml/visobert_relevance_finetune.py --two-class --relabel). Đầu vào
 là cặp ("tên phim | từ khoá", nội dung bài) giống lúc huấn luyện; ra related / not_related kèm độ tự tin.
 
 Chạy TRƯỚC AI trong classify_post_relevance_kira(): đủ chắc thì lấy luôn (nhanh ~20 ms/bài trên CPU, không tốn lời gọi),

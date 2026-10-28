@@ -8,7 +8,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.clients.kafka import get_consumer_lag
-from app.services.task_queue import snapshot
+from app.services.crawl.task_queue import snapshot
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 

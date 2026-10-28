@@ -1,6 +1,6 @@
 import asyncio
 
-from app.services import scheduler
+from app.services.crawl import scheduler
 
 
 def test_discovery_enabled_reads_the_toggle(monkeypatch):

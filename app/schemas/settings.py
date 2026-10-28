@@ -186,7 +186,7 @@ class CrawlScheduleOut(BaseModel):
 
 
 class CrawlScheduleUpdate(BaseModel):
-    # "HH:MM", 24 giờ, được app/services/scheduler.py hiểu theo giờ Asia/Ho_Chi_Minh - xem
+    # "HH:MM", 24 giờ, được app/services/crawl/scheduler.py hiểu theo giờ Asia/Ho_Chi_Minh - xem
     # module đó để biết vì sao một múi giờ cố định là đủ (một người vận hành, không cần múi
     # giờ riêng theo nền tảng).
     # Client cũ gửi một giờ ở run_time; mới gửi run_times (1-3 giờ). Validator gộp về run_times.
@@ -227,7 +227,7 @@ class CommentScheduleUpdate(BaseModel):
     run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
     # Từ 2026-10-08: số bài NÓNG mỗi phim được theo dõi comment mỗi giờ (3-30); run_time là giờ chạy lượt mẫu
-    # phân tầng (và 12 tiếng sau) - xem app/services/comment_planner.py.
+    # phân tầng (và 12 tiếng sau) - xem app/services/crawl/comment_planner.py.
     top_n: int = Field(default=15, ge=1, le=500)
 
 
@@ -411,7 +411,7 @@ class ProxyProviderUpdate(BaseModel):
     ip_allowlist: bool = False
 
 
-# --- Dọn bài không liên quan (app/services/cleanup.py) ---
+# --- Dọn bài không liên quan (app/services/relevance/cleanup.py) ---
 # Các tham số sửa được trên dashboard cho lượt dọn hằng ngày các bài gắn nhãn
 # not_related cùng comment/snapshot của chúng. Cùng kiểu dòng singleton với
 # ProxySettings (xem platform_config_db.get_cleanup_settings). Giá trị mặc định khớp
@@ -428,7 +428,7 @@ CLEANUP_REASONS_LABEL = "irrelevant_post_purge"
 
 
 class CleanupSettings(BaseModel):
-    # "HH:MM", 24 giờ, Asia/Ho_Chi_Minh (xem TIMEZONE trong app/services/scheduler.py).
+    # "HH:MM", 24 giờ, Asia/Ho_Chi_Minh (xem TIMEZONE trong app/services/crawl/scheduler.py).
     run_time: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
     # Bài được giữ chừng này thời gian sau khi bị gắn nhãn not_related rồi mới đủ điều kiện
@@ -465,7 +465,7 @@ class CleanupRunHistoryEntry(BaseModel):
     error: str | None = None
 
 
-# --- Bộ lập lịch auto-login (app/services/auto_login.py) ---
+# --- Bộ lập lịch auto-login (app/services/accounts/auto_login.py) ---
 # Các tham số sửa được trên dashboard cho bộ lập lịch auto-login chạy mỗi giờ. Một dòng
 # singleton trong auto_login_settings (cùng kiểu với ProxySettings / CleanupSettings -
 # xem platform_config_db.get_auto_login_settings cho phía lưu trữ). Giá trị mặc định

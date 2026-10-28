@@ -1,5 +1,5 @@
 from app.core.config import settings
-from app.services.omar_yield import share_for, totals
+from app.services.omar.omar_yield import share_for, totals
 
 
 def _m(requests, new):
@@ -33,7 +33,7 @@ def test_share_for_scales_and_clamps(monkeypatch):
 
 
 def test_keep_suggestion():
-    from app.services.omar_search import keep_suggestion
+    from app.services.omar.omar_search import keep_suggestion
 
     title = "trai buon nguoi"
     assert keep_suggestion("trai buon nguoi trailer", title)

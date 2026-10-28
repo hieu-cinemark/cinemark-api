@@ -1,4 +1,4 @@
-"""Các lời gọi LLM đứng sau scripts/generate_social_topic_reports.py - cùng cách tách
+"""Các lời gọi LLM đứng sau scripts/jobs/generate_social_topic_reports.py - cùng cách tách
 hai lời gọi và cùng prompt dù chạy trên provider nào (xem docstring module của
 app/ai/prompts/report.py để biết vì sao tách hai lời gọi). Cả hai đều fail open
 (trả về None khi có bất kỳ lỗi nào), cùng quy ước với mọi bộ phân loại trong
@@ -30,7 +30,7 @@ from app.ai.prompts.report import (
 from app.ai.runtime import parse_json_response
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.d1 import REPORT_POST_TEXT_CHARS
+from app.repositories.d1.store import REPORT_POST_TEXT_CHARS
 
 logger = get_logger(__name__)
 

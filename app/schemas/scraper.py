@@ -11,7 +11,7 @@ class RunScraperRequest(BaseModel):
     - có movie_id (không có keyword_id): kích hoạt mọi từ khoá đang bật của phim đó.
     - không có cái nào: kích hoạt mọi từ khoá đang bật của mọi phim (trường hợp của job hằng ngày).
 
-    keyword_id/movie_id là id của D1 (xem app/services/d1.py), không phải UUID.
+    keyword_id/movie_id là id của D1 (xem app/repositories/d1/store.py), không phải UUID.
 
     start_date/end_date chỉ có nghĩa với tìm kiếm Facebook (quét theo ngày đăng).
     Threads không có bộ lọc ngày; TikTok chỉ tìm theo hashtag. API bỏ qua các trường này

@@ -9,7 +9,7 @@ No database of its own - this service has no Postgres/SQL store. Every
 piece of state it needs (movies, keywords, posts) already lives in
 cinemark-scraper's Cloudflare D1 database; this service reads and writes it
 over [D1's HTTP query API](https://developers.cloudflare.com/d1/best-practices/query-d1/#d1-http-api)
-(`app/services/d1.py`) since D1 bindings only exist inside a Cloudflare
+(`app/repositories/d1/store.py`) since D1 bindings only exist inside a Cloudflare
 Worker, not a plain Python process.
 
 ## How this fits together
@@ -38,7 +38,7 @@ See spider-hub's own README for the other half of this picture.
 
 Everything platform-specific (how to map spider-hub's raw Kafka payload
 into cinemark-scraper's D1 schema) lives in one place:
-`app/services/platforms.py`. To add a platform spider-hub already knows how
+`app/services/crawl/platforms.py`. To add a platform spider-hub already knows how
 to crawl (its own `SPIDER_BY_PLATFORM`):
 
 1. Add a mapper function to `PLATFORM_POST_MAPPERS` in `platforms.py`.
@@ -50,7 +50,7 @@ to crawl (its own `SPIDER_BY_PLATFORM`):
 3. Register the new router in `app/main.py`.
 4. Add the platform to `PLATFORMS=()` in `scripts/trigger_scheduled_crawl.sh`.
 
-Nothing else - `app/services/d1.py`, `app/api/routes/platform_scraper.py`,
+Nothing else - `app/repositories/d1/store.py`, `app/api/routes/platform_scraper.py`,
 `app/workers/ingest_consumer/` - needs to change; they're all already
 platform-agnostic, driven by the registry.
 
@@ -138,3 +138,31 @@ frequency is a planned upgrade, not implemented yet.
 ## Testing
 
 `tests/` is currently an empty placeholder - no test suite yet.
+
+## Project structure
+
+```
+app/
+  main.py                FastAPI app
+  api/routes/            HTTP routes
+  core/                  config, auth, logging, middleware
+  clients/               thin clients: D1 transport, Kafka, Redis, R2 lake, Telegram
+  repositories/d1/       D1 SQL: store.py (movies/keywords/reports/stats), posts.py, comments.py
+  services/
+    crawl/               scheduler, crawl jobs/lanes, task queue, platform registry, tracked posts
+    discovery/           AI hashtag/query discovery
+    omar/                Omar API crawling (TikTok hashtags, channels, comments, trending)
+    accounts/            account health, auto-login, platform accounts/proxies (Supabase), tokens
+    relevance/           relevance rules, cleanup
+    sentiment/           lexicon fallback, comment value
+    reports/             social topic reports, report queue/schedule, stats summaries
+    ops/                 alerts, metrics, AI runtime sync
+  ai/                    LLM client + tasks (relevance, sentiment, report), ViSoBERT models
+  workers/               ingest_consumer, lake_writer (python -m app.workers.<name>.main)
+  lake/, vision/
+scripts/
+  jobs/                  run on a schedule (systemd timers / cron): python -m scripts.jobs.<name>
+  ml/                    model training + labelling datasets
+  tools/                 run by hand: probes, local DB pull, one-off cleanups
+  aspect_label.py, ...   old entry-point paths kept as shims for VPS units - remove later
+```

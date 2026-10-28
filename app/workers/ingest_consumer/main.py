@@ -1,5 +1,5 @@
 """Đọc bài và comment đã crawl từ Kafka (do các spider của spider-hub publish - xem
-social_crawler/clients/kafka.py bên đó) và ghi sang D1 (xem app/services/d1.py).
+social_crawler/clients/kafka.py bên đó) và ghi sang D1 (xem app/repositories/d1/store.py).
 Chạy như một tiến trình sống lâu riêng, tách khỏi app FastAPI:
 
     python -m app.workers.ingest_consumer.main
@@ -39,7 +39,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.telegram import send_telegram_message
 from app.core.config import settings
 from app.core.logging import enable_file_logging, get_logger
-from app.services.d1 import (
+from app.repositories.d1.store import (
     contains_keyword,
     d1_query,
     get_keyword,
@@ -49,8 +49,9 @@ from app.services.d1 import (
     update_post_engagement,
     update_post_views,
 )
-from app.services.platforms import get_comment_mapper, get_post_mapper
-from app.services.relevance_rules import (
+from app.services.crawl.platforms import get_comment_mapper, get_post_mapper
+from app.services.crawl.tracked_posts import tracked_keyword_for
+from app.services.relevance.relevance_rules import (
     foreign_language_reason,
     hashtag_only_mention,
     mentions_film_manual,
@@ -60,8 +61,7 @@ from app.services.relevance_rules import (
     no_diacritics_reason,
     resolve_relevance,
 )
-from app.services.stats_summary import bump_ingest_decision
-from app.services.tracked_posts import tracked_keyword_for
+from app.services.reports.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
@@ -100,10 +100,10 @@ DROP_ALERT_THRESHOLD = 10
 DROP_COUNTER_TTL_SECONDS = 3600
 
 _DROP_ALERT_TEXT = {
-    "mapper": "unregistered platform mapper (see app/services/platforms.py)",
+    "mapper": "unregistered platform mapper (see app/services/crawl/platforms.py)",
     "missing_keyword_id": "posts arriving with no keyword_id (producer bug?)",
     "unknown_keyword_id": "posts referencing an unknown/disabled keyword_id",
-    "d1_write_failed": "D1 write failed (see app/services/d1.py for details)",
+    "d1_write_failed": "D1 write failed (see app/repositories/d1/store.py for details)",
 }
 
 
@@ -245,7 +245,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     if payload.get("source") != "tracked":
-        # Bài booking đang theo dõi (app/services/tracked_posts.py): ép gán vào phim, lưu như bài trang nguồn của phim.
+        # Bài booking đang theo dõi (app/services/crawl/tracked_posts.py): ép gán vào phim, lưu như bài trang nguồn của phim.
         tracked_keyword = await tracked_keyword_for(str(platform), payload)
         if tracked_keyword:
             payload = {**payload, "keyword_id": tracked_keyword, "source": "tracked"}
@@ -283,7 +283,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     draft = mapper(payload)
 
     # Quy tắc chạy trước, trước khi lối tắt từ khoá bên dưới kịp nhận bài (xem
-    # app/services/relevance_rules.py cho các trường hợp đã đo). Mọi bài bị quy tắc loại
+    # app/services/relevance/relevance_rules.py cho các trường hợp đã đo). Mọi bài bị quy tắc loại
     # đều đi qua _drop() và nằm trong luồng bronze/entity=decisions/ của lake, nên một lần
     # quy tắc sai vẫn khôi phục được bằng cách phát lại file NDJSON ingest_decisions tương
     # ứng.
@@ -370,7 +370,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
 
     # settings.kira_ingest_relevance tắt: ingest không chờ Kira (qwen có lúc 60-180 giây một lô, đủ làm
     # Kafka tồn hàng chục nghìn message) - bài vào theo tín hiệu phim/từ khoá như lúc Kira không kết luận, rồi
-    # scripts/relabel_post_relevance.py gán lại nhãn Kira ở nền.
+    # scripts/jobs/relabel_post_relevance.py gán lại nhãn Kira ở nền.
     # Luật trước (model nhà trồng): bài có tín hiệu phim rõ (tên phim đủ / tên rút gọn quanh ngày chiếu / ngữ cảnh phim)
     # thì kết luận luôn, không gọi AI - chỉ CA KHÓ mới tới model quyết định của Bee (openai/gpt-6-luna-decisions).
     rule_relevant, _, _ = resolve_relevance(
@@ -401,8 +401,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         relevance_confidence = verdict["confidence"]
     if verdict is not None and relevance_label == "not_related":
         # Từ 17/10/2026 LƯU nhưng ẩn (nhãn not_related) thay vì bỏ: bộ phân loại loại nhầm khá nhiều bài thật (vd. "Xem QUỶ
-        # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/relabel_hidden_posts.py); job
-        # dọn bài not_related (app/services/cleanup.py) đã tắt trong Settings để không xoá chúng.
+        # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/tools/relabel_hidden_posts.py); job
+        # dọn bài not_related (app/services/relevance/cleanup.py) đã tắt trong Settings để không xoá chúng.
         logger.info(
             "post_hidden_irrelevant",
             platform=platform,

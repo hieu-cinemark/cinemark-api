@@ -1,8 +1,8 @@
 import asyncio
 from typing import Any
 
-from app.services import omar_search as os_
-from app.services import omar_tiktok as ot
+from app.services.omar import omar_search as os_
+from app.services.omar import omar_tiktok as ot
 
 
 def test_round_robin_interleaves_items():

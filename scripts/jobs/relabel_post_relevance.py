@@ -1,0 +1,246 @@
+"""Gán lại nhãn độ liên quan (luật trước, ca khó mới gọi model quyết định của Bee - openai/gpt-6-luna-decisions) cho các bài đã vào D1 mà Kira chưa kết luận (relevance_confidence IS NULL): lúc
+Kira tắt, lỗi/504, vượt hạn mức ngày, hoặc khi ingest chạy với KIRA_INGEST_RELEVANCE=false (ingest không chờ Kira).
+Cùng bộ gom lô (app/ai/tasks/post_relevance.py) và cùng logic chốt nhãn (relevance_rules.resolve_relevance) như
+ingest consumer - khác duy nhất: bài Kira gán "not_related" được ẨN (relevance_label='not_related', keyword_match=0)
+thay vì xoá, nên một nhãn sai vẫn sửa lại được.
+
+Sau mỗi vòng relevance, gắn luôn cảm xúc/khía cạnh cho NỘI DUNG bài liên quan còn thiếu trong cùng khoảng ngày
+(sentiment_sweep.classify_pending_posts) - lượt quét trong consumer chỉ xem 48 giờ gần nhất.
+
+Chỉ đụng tới dòng relevance_confidence IS NULL / sentiment IS NULL, nên chạy lại an toàn.
+
+Cách dùng:
+    python -m scripts.jobs.relabel_post_relevance --dry-run --limit 20
+    python -m scripts.jobs.relabel_post_relevance --since 2026-10-06
+    python -m scripts.jobs.relabel_post_relevance --since 2026-10-06 --follow   # chạy nền mãi, bắt cả bài mới vào
+    python -m scripts.jobs.relabel_post_relevance --follow --no-sentiment       # chỉ gán độ liên quan, không nạp model cảm xúc
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+from collections import Counter
+from datetime import UTC, datetime
+from typing import Any
+
+from app.ai.tasks.post_relevance import classify_post_relevance_kira
+from app.core.config import settings
+from app.core.logging import get_logger
+from app.repositories.d1.posts import MIN_CONTENT_LENGTH, contains_keyword
+from app.repositories.d1.store import d1_query
+from app.services.relevance.relevance_rules import (
+    foreign_language_reason,
+    mentions_film_manual,
+    no_diacritics_reason,
+    resolve_relevance,
+)
+from app.workers.ingest_consumer.main import _tracked_movies, _tracked_titles
+from app.workers.ingest_consumer.sentiment_sweep import MAX_ATTEMPTS, classify_pending_posts
+
+logger = get_logger(__name__)
+
+PAGE_SIZE = 60  # 6 lô Kira (BATCH_SIZE 10), bộ gom lô chạy tối đa 3 lô song song
+MAX_BACKOFF_SECONDS = 300.0
+IDLE_SECONDS = 120.0
+
+
+async def _select(since: str, movie_id: str | None, limit: int, exclude: set[str]) -> list[dict[str, Any]]:
+    sql = (
+        "SELECT p.id, p.movie_id, p.platform, p.content, p.posted_at, k.keyword "
+        "FROM posts p LEFT JOIN keywords k ON k.id = p.keyword_id "
+        f"WHERE p.relevance_confidence IS NULL AND p.scraped_at >= ? AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
+    )
+    params: list[str | int] = [since]
+    if movie_id:
+        sql += " AND p.movie_id = ?"
+        params.append(movie_id)
+    sql += " ORDER BY p.scraped_at DESC LIMIT ?"
+    params.append(limit + len(exclude))
+    rows = await d1_query(sql, params)
+    if rows is None:
+        raise RuntimeError("relabel_select_failed")
+    return [row for row in rows if row["id"] not in exclude][:limit]
+
+
+async def _relabel(
+    row: dict[str, Any], movies: dict[str, dict[str, Any]], titles: list[str], dry_run: bool
+) -> str | None:
+    """Nhãn cuối cùng đã ghi, hoặc None khi Kira không kết luận (để lại cho vòng sau)."""
+    movie = movies.get(row["movie_id"])
+    if movie is None:
+        return None
+    has_keyword = contains_keyword(row["content"], row["keyword"])
+    strict = movie.get("slug") in settings.strict_relevance_movies
+    full_title_rule = movie.get("slug") not in settings.ambiguous_title_movies
+    # Luật trước: tín hiệu phim rõ thì kết luận luôn (confidence 1.0 = luật), không gọi AI - chỉ ca khó tới Bee.
+    rule_relevant, _, context = resolve_relevance(
+        None,
+        row["content"],
+        movie,
+        has_keyword=has_keyword,
+        strict=strict,
+        full_title_rule=full_title_rule,
+        posted_at=row.get("posted_at"),
+    )
+    if rule_relevant is True:
+        if not dry_run:
+            await d1_query(
+                "UPDATE posts SET relevance_label = 'related', relevance_confidence = 1.0, relevance_labeled_at = ?, "
+                "keyword_match = 1 WHERE id = ? AND relevance_confidence IS NULL",
+                [datetime.now(tz=UTC).isoformat(), row["id"]],
+            )
+        return f"rule:{context}"
+    verdict = await classify_post_relevance_kira(
+        content=row["content"], movie=movie, keyword=row["keyword"], platform=row["platform"], other_titles=titles
+    )
+    if verdict is None:
+        return None
+    if verdict["label"] == "not_related":
+        ai_relevant: bool | None = False
+        label: str | None = "not_related"
+    else:
+        ai_relevant, label, _ = resolve_relevance(
+            verdict["label"],
+            row["content"],
+            movie,
+            has_keyword=has_keyword,
+            strict=strict,
+            full_title_rule=full_title_rule,
+            posted_at=row.get("posted_at"),
+        )
+    keyword_match = int(ai_relevant if ai_relevant is not None else has_keyword)
+    if not dry_run:
+        await d1_query(
+            "UPDATE posts SET relevance_label = ?, relevance_confidence = ?, relevance_labeled_at = ?, keyword_match = ? "
+            "WHERE id = ? AND relevance_confidence IS NULL",
+            [label, verdict["confidence"], datetime.now(tz=UTC).isoformat(), keyword_match, row["id"]],
+        )
+    else:
+        logger.info("relabel_dry_run", post_id=row["id"], label=label, kira=verdict["label"], reason=verdict["reason"])
+    return label or "none"
+
+
+async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
+    """--rules: áp luật lọc thủ công (settings.relevance_rules_only) cho mọi bài đang chờ Kira (relevance_confidence IS
+    NULL) từ `since` - khớp tên phim/viết tắt/từ khoá thì "related", không dấu/tiếng nước ngoài hoặc không khớp thì ẩn
+    ("not_related", keyword_match=0, không xoá). Lật trang theo con trỏ scraped_at nên chạy một lượt là xong."""
+    movies = await _tracked_movies()
+    totals: Counter[str] = Counter()
+    cursor = "9999"
+    while True:
+        sql = (
+            "SELECT p.id, p.movie_id, p.content, p.scraped_at, k.keyword FROM posts p "
+            "LEFT JOIN keywords k ON k.id = p.keyword_id "
+            "WHERE p.relevance_confidence IS NULL AND p.scraped_at >= ? AND p.scraped_at < ? "
+            f"AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
+        )
+        params: list[str | int] = [since, cursor]
+        if movie_id:
+            sql += " AND p.movie_id = ?"
+            params.append(movie_id)
+        rows = await d1_query(sql + " ORDER BY p.scraped_at DESC LIMIT 500", params)
+        if rows is None:
+            raise RuntimeError("relabel_rules_select_failed")
+        if not rows:
+            break
+        cursor = rows[-1]["scraped_at"]
+        now = datetime.now(tz=UTC).isoformat()
+        for row in rows:
+            movie = movies.get(row["movie_id"])
+            if movie is None:
+                totals["unknown_movie"] += 1
+                continue
+            content = row["content"]
+            if foreign_language_reason(content) or no_diacritics_reason(content):
+                label, rule = "not_related", "non_vietnamese"
+            elif mentions_film_manual(content, [row["keyword"], *movie.get("keywords", [])], movie.get("title")):
+                label, rule = "related", "match"
+            else:
+                label, rule = "not_related", "no_match"
+            totals[rule] += 1
+            if dry_run:
+                if totals[rule] <= 5:
+                    logger.info("relabel_rules_sample", rule=rule, post_id=row["id"], content=(content or "")[:160])
+                continue
+            await d1_query(
+                "UPDATE posts SET relevance_label = ?, relevance_labeled_at = ?, keyword_match = ? "
+                "WHERE id = ? AND relevance_confidence IS NULL",
+                [label, now, int(label == "related"), row["id"]],
+            )
+        logger.info("relabel_rules_page", rows=len(rows), totals=dict(totals))
+    logger.info("relabel_rules_finished", **totals, dry_run=dry_run)
+
+
+async def run(
+    since: str, movie_id: str | None, limit: int | None, dry_run: bool, follow: bool, sentiment_pass: bool = True
+) -> None:
+    logger.info("relabel_started", since=since, movie_id=movie_id, limit=limit, dry_run=dry_run, follow=follow)
+    if settings.relevance_rules_only:
+        # Chế độ lọc thủ công: không gọi Kira cho độ liên quan. Chạy dạng service (--follow) thì đứng chờ thay vì thoát,
+        # để Restart=always của systemd không khởi động lại liên tục.
+        logger.info("relabel_paused_rules_only_mode")
+        while follow:
+            await asyncio.sleep(3600)
+        return
+    totals: Counter[str] = Counter()
+    attempts: Counter[str] = Counter()
+    failed_pages = 0
+    while True:
+        exclude = {pid for pid, n in attempts.items() if n >= MAX_ATTEMPTS}
+        page = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - totals["selected"])
+        rows = await _select(since, movie_id, page, exclude) if page > 0 else []
+        if rows:
+            movies, titles = await _tracked_movies(), await _tracked_titles()
+            labels = await asyncio.gather(*(_relabel(row, movies, titles, dry_run) for row in rows))
+            done = [label for label in labels if label is not None]
+            totals.update(selected=len(rows), labeled=len(done))
+            totals.update(done)
+            logger.info("relabel_page", selected=len(rows), labeled=len(done), totals=dict(totals))
+            if dry_run:
+                break
+            if done:
+                # Kira đang trả lời: bài nào nó không kết luận được thì chỉ thử lại vài lần.
+                attempts.update(row["id"] for row, label in zip(rows, labels, strict=True) if label is None)
+                failed_pages = 0
+                continue
+            # Cả trang đều lỗi - Kira tắt/sập/hết tiền, không phải do các bài này: chờ lâu dần rồi thử lại.
+            failed_pages += 1
+            delay = min(10 * 2**failed_pages, MAX_BACKOFF_SECONDS)
+            logger.warning("relabel_kira_unavailable", failed_pages=failed_pages, retry_in=delay)
+            if not follow and failed_pages >= 5:
+                break
+            await asyncio.sleep(delay)
+            continue
+        # Hết bài cần gán relevance: gắn cảm xúc cho nội dung bài liên quan còn thiếu trong cùng khoảng ngày.
+        # --no-sentiment (28/10/2026): bỏ bước này - lượt quét 48h của ingest đã gắn cảm xúc bài mới, còn model cảm xúc
+        # nạp ở đây là một bản thứ hai (~1 GB RAM trên VPS) cạnh bản của ingest.
+        if not dry_run and sentiment_pass:
+            sentiment = await classify_pending_posts(limit=PAGE_SIZE, since=datetime.fromisoformat(since))
+            sentiment.pop("failed_ids")
+            if sentiment["selected"]:
+                logger.info("relabel_post_sentiment", **sentiment)
+            if sentiment["classified"]:
+                continue
+        if not follow or (limit is not None and totals["selected"] >= limit):
+            break
+        await asyncio.sleep(IDLE_SECONDS)
+    logger.info("relabel_finished", **totals, dry_run=dry_run)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--since", default="2026-10-06", help="Only posts scraped on/after this date (YYYY-MM-DD)")
+    parser.add_argument("--movie-id", help="Only this movie's posts")
+    parser.add_argument("--limit", type=int, help="Max posts to relabel this run")
+    parser.add_argument("--dry-run", action="store_true", help="Classify one page and log it, write nothing")
+    parser.add_argument("--follow", action="store_true", help="Keep running, picking up new posts as they arrive")
+    parser.add_argument("--rules", action="store_true", help="Apply the manual (no-AI) rules to pending posts instead")
+    parser.add_argument(
+        "--no-sentiment", action="store_true", help="Skip the post sentiment pass (ingest labels new posts; saves the model's RAM)"
+    )
+    args = parser.parse_args()
+    if args.rules:
+        asyncio.run(apply_rules(args.since, args.movie_id, args.dry_run))
+    else:
+        asyncio.run(run(args.since, args.movie_id, args.limit, args.dry_run, args.follow, not args.no_sentiment))

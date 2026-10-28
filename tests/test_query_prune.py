@@ -3,7 +3,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from app.services import query_discovery as qd
+from app.services.discovery import query_discovery as qd
 
 
 def _row(kid, days_old, found):

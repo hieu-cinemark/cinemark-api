@@ -3,8 +3,8 @@ chính các dòng mà Worker của cinemark-scraper sở hữu (xem api/schema/s
 đó). Tách ra từ khối d1.py lớn cũ trong app/services để các mẫu query, phân trang và
 index của bảng này nằm một chỗ thay vì trộn lẫn với movies/keywords/comments.
 
-app/services/d1.py vẫn re-export mọi tên bên dưới (persist_post, list_posts, ...)
-để các chỗ gọi `from app.services.d1 import persist_post` hiện có (ingest_consumer,
+app/repositories/d1/store.py vẫn re-export mọi tên bên dưới (persist_post, list_posts, ...)
+để các chỗ gọi `from app.repositories.d1.store import persist_post` hiện có (ingest_consumer,
 scripts, tests) không phải sửa - chỉ code mới mới cần dùng thẳng `post_repo`.
 
 Bảng `dropped_posts` cũ từng nằm trong repo này (xem lịch sử git) để lưu payload
@@ -28,7 +28,7 @@ from typing import Any
 
 from app.clients.d1 import _configured, d1_query
 from app.core.logging import get_logger
-from app.services.platforms import PostDraft, registered_platforms
+from app.services.crawl.platforms import PostDraft, registered_platforms
 
 logger = get_logger(__name__)
 
@@ -72,7 +72,7 @@ RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NUL
 # Thêm 2026-10-08. Nội dung bài cũng là tiếng nói khán giả (trên Threads phần lớn cảm nhận nằm ở chính bài, ít
 # comment), nên bài được gắn nhãn cảm xúc/khía cạnh/giai đoạn y như comment (sentiment_sweep.classify_pending_posts).
 # comments_crawled_at / comments_crawled_replies / comments_crawl_reason: lần cuối xếp hàng crawl comment cho bài,
-# reply_count lúc đó và lý do (hot/sample) - để app/services/comment_planner.py biết bài nào cần quét lại.
+# reply_count lúc đó và lý do (hot/sample) - để app/services/crawl/comment_planner.py biết bài nào cần quét lại.
 POST_VOICE_COLUMNS = (
     ("sentiment", "TEXT"),
     ("aspects", "TEXT"),
@@ -266,7 +266,7 @@ def _looks_vietnamese(text: str) -> bool:
 # Củng cố tín hiệu yếu nhất của movie_hashtag_present (chỉ khớp tên phim nguyên văn,
 # không có hashtag nào hỗ trợ) cho phim có tên cũng là từ vựng thông thường - xem
 # docstring của hàm đó về sự cố "Huyết Thống" mà phần này sinh ra để xử lý. Uy tín của
-# một tác giả được dựng bởi scripts/build_author_reputation.py bằng cách kiểm tra lại
+# một tác giả được dựng bởi scripts/jobs/build_author_reputation.py bằng cách kiểm tra lại
 # các bài relevance_label='related' trước đây của chính họ chỉ với các tín hiệu MẠNH
 # của movie_hashtag_present (is_reputable_author mặc định False - xem tham số đó) -
 # không bao giờ dùng chính tín hiệu yếu mà bảng này dùng để củng cố, nên không có vòng
@@ -747,7 +747,7 @@ class PostRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [f"eng_{uuid.uuid4()}", existing["id"], scraped_at, *engagement.values()],
             )
-        from app.services.stats_summary import record_post
+        from app.services.reports.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=existing.get("keyword_id"), scraped_at=scraped_at, is_new=False)
         return True
@@ -787,7 +787,7 @@ class PostRepository:
         của cinemark-scraper (+ một snapshot tương tác khi có thay đổi) - chuyển từ
         src/jobs/persist-post.ts bên đó để cả scraper riêng của Worker lẫn đường đi qua
         Kafka này ghi qua đúng cùng một logic. `draft` đã được mapper của nền tảng chuẩn hoá
-        (xem app/services/platforms.py) - hàm này không tự biết trường nào riêng của nền
+        (xem app/services/crawl/platforms.py) - hàm này không tự biết trường nào riêng của nền
         tảng nào.
 
         `ai_relevant`, khi có (xem app/ai/tasks/post_relevance.py), là phán quyết "related"
@@ -892,7 +892,7 @@ class PostRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
             )
-            from app.services.stats_summary import record_post
+            from app.services.reports.stats_summary import record_post
 
             await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
             return True
@@ -956,7 +956,7 @@ class PostRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
             )
-        from app.services.stats_summary import record_post
+        from app.services.reports.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
         return True

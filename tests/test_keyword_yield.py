@@ -1,6 +1,6 @@
 import asyncio
 
-from app.services import keyword_yield as ky
+from app.services.crawl import keyword_yield as ky
 
 
 class _FakeRedis:

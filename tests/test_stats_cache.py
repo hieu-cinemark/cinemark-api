@@ -3,7 +3,7 @@ import json
 import time
 
 from app.api.routes import stats as stats_routes
-from app.services import stats_summary
+from app.services.reports import stats_summary
 
 
 class _FakeRedis:
