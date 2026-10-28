@@ -110,7 +110,7 @@ async def cancel_job(platform: str, run_id: str) -> bool:
         return False
 
     was_queued = await remove_pending(platform, run_id)
-    was_running = any(job.get("run_id") == run_id for job in await get_running_jobs(platform))
+    was_running = await _remove_running_entry(platform, run_id)
 
     if not was_queued and not was_running:
         return False
@@ -118,6 +118,24 @@ async def cancel_job(platform: str, run_id: str) -> bool:
     client = get_redis_client()
     await client.set(f"{REDIS_KEY_PREFIX}crawl_job_cancel:{run_id}", "1", ex=STOP_FLAG_TTL_SECONDS)
     return True
+
+
+async def _remove_running_entry(platform: str, run_id: str) -> bool:
+    """Xoá dòng "đang chạy" của run_id. Job thật vẫn dừng nhờ cờ crawl_job_cancel; còn dòng mồ côi (spider-hub bị restart
+    giữa job, key không có TTL) thì trước 28/10/2026 bấm Dừng chỉ đặt cờ mà không ai xoá key - dòng hiện lại mãi."""
+    client = get_redis_client()
+    base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
+    found = False
+    for key in [base, *[key async for key in client.scan_iter(match=f"{base}:lane*")]]:
+        raw = await client.get(key)
+        try:
+            job = json.loads(raw) if raw else None
+        except json.JSONDecodeError:
+            continue
+        if job and job.get("run_id") == run_id:
+            await client.delete(key)
+            found = True
+    return found
 
 
 async def clear_drain(platform: str) -> None:
