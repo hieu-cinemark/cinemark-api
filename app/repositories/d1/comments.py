@@ -94,7 +94,8 @@ async def _ensure_comments_parent_column() -> None:
 _comment_insight_columns_ready = False
 _comment_insight_columns_lock = asyncio.Lock()
 # Khía cạnh khen/chê (JSON list "key:+"), giai đoạn khán giả và thời điểm gán - xem app/ai/aspects.py. Thêm 2026-10-07.
-COMMENT_INSIGHT_COLUMNS = ("aspects", "audience_stage", "insights_classified_at")
+# first_seen_at: lần đầu comment vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - thêm 2026-10-28.
+COMMENT_INSIGHT_COLUMNS = ("aspects", "audience_stage", "insights_classified_at", "first_seen_at")
 
 
 async def ensure_comment_insight_columns() -> None:
@@ -284,6 +285,7 @@ class CommentRepository:
         if not _configured():
             return False
 
+        await ensure_comment_insight_columns()
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
 
@@ -340,9 +342,9 @@ class CommentRepository:
             """
             INSERT INTO comments (
                 id, post_id, platform, external_id, message, author_name, author_id, author_url,
-                author_profile_picture, reactions_count, replies_count, parent_external_id, posted_at, scraped_at, raw_json,
+                author_profile_picture, reactions_count, replies_count, parent_external_id, posted_at, first_seen_at, scraped_at, raw_json,
                 sentiment, sentiment_classified_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 f"comment_{uuid.uuid4()}",
@@ -358,6 +360,7 @@ class CommentRepository:
                 draft.get("replies_count") or 0,
                 draft.get("parent_external_id"),
                 draft.get("posted_at"),
+                scraped_at,  # first_seen_at: chỉ ghi lúc INSERT, các UPDATE không đụng tới
                 scraped_at,
                 raw_json,
                 sentiment,

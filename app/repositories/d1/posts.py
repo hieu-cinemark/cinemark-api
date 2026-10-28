@@ -81,6 +81,8 @@ POST_VOICE_COLUMNS = (
     ("comments_crawled_at", "TEXT"),
     ("comments_crawled_replies", "INTEGER"),
     ("comments_crawl_reason", "TEXT"),
+    # Lần đầu bài vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - số đo Social Topic tách phần về trễ. Thêm 2026-10-28.
+    ("first_seen_at", "TEXT"),
 )
 _post_voice_columns_ready = False
 _post_voice_columns_lock = asyncio.Lock()
@@ -798,6 +800,7 @@ class PostRepository:
         if not _configured() or platform not in registered_platforms():
             return False
         await _ensure_post_indexes()
+        await ensure_post_voice_columns()
 
         external_id = draft.get("external_id")
         if not external_id:
@@ -844,9 +847,9 @@ class PostRepository:
                 INSERT INTO posts (
                     id, movie_id, keyword_id, platform, external_id, url, author, content, media_json,
                     like_count, reply_count, repost_count, quote_count, reshare_count, view_count,
-                    posted_at, scraped_at, raw_json, keyword_match,
+                    first_seen_at, posted_at, scraped_at, raw_json, keyword_match,
                     relevance_label, relevance_confidence, relevance_labeled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     post_id,
@@ -864,6 +867,7 @@ class PostRepository:
                     engagement["quote_count"],
                     engagement["reshare_count"],
                     engagement["view_count"],
+                    scraped_at,  # first_seen_at: chỉ ghi lúc INSERT, các UPDATE không đụng tới
                     draft.get("posted_at"),
                     scraped_at,
                     raw_json,
