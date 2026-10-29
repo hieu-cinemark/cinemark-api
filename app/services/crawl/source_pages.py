@@ -33,6 +33,7 @@ from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.repositories.d1.store import d1_query, get_or_create_keyword
+from app.services.crawl.task_queue import list_pending
 from app.services.relevance.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
@@ -43,6 +44,11 @@ SINCE_DAYS = 60
 FILM_INTERVAL_HOURS = 6
 SHARED_INTERVAL_HOURS = 24
 MAX_BACKOFF = 8
+# 29/10/2026: chỉ còn 2 tài khoản FB, mà tìm kiếm theo từ khoá phim vẫn phải đi trước - trang nguồn chỉ được lấp chỗ
+# trống: mỗi lượt xếp tối đa MAX_QUEUE_PER_ROUND trang (trang của phim / trang hay có bài trước), và bỏ hẳn lượt khi còn
+# từ MAX_PENDING_PAGE_FEED job page_feed của lượt trước chưa chạy (hàng đợi đang dồn).
+MAX_QUEUE_PER_ROUND = 40
+MAX_PENDING_PAGE_FEED = 10
 # AI duyệt trang gợi ý
 REVIEW_TASK = "source_page_review"
 REVIEW_BATCH = 10
@@ -194,7 +200,7 @@ async def queue_source(source: dict[str, Any], *, bypass_drain: bool = False) ->
         "page_feed",
         {
             "page_url": source["url"],
-            "page_id": source.get("page_id") or None,
+            "page_id": source.get("page_id") or _page_id_from_url(source["url"]),
             # None với trang chung - ingest tự tìm phim theo nội dung bài.
             "keyword_id": keyword_id,
             "max_pages": MAX_PAGES,
@@ -208,6 +214,12 @@ async def queue_source(source: dict[str, Any], *, bypass_drain: bool = False) ->
             "UPDATE source_pages SET last_queued_at = ? WHERE id = ?", [datetime.now(tz=UTC).isoformat(), source["id"]]
         )
     return ok
+
+
+def _page_id_from_url(url: str) -> str | None:
+    """Trang kiểu mới (facebook.com/profile.php?id=615...) mang sẵn id trong URL - không phải tốn một request dò id."""
+    match = re.search(r"[?&]id=(\d{6,})", url or "")
+    return match.group(1) if match else None
 
 
 def _due(source: dict[str, Any], now: datetime) -> bool:
@@ -230,6 +242,10 @@ async def _update_quiet_runs(source: dict[str, Any]) -> None:
     if not raw:
         return
     last = json.loads(raw)
+    if last.get("page_id") and not source.get("page_id"):
+        # Spider đã dò ra id của trang - lưu lại để các lượt sau không tốn request dò lại.
+        await d1_query("UPDATE source_pages SET page_id = ? WHERE id = ?", [str(last["page_id"]), source["id"]], quiet=True)
+        source["page_id"] = str(last["page_id"])
     quiet = 0 if int(last.get("new") or 0) > 0 else int(source.get("quiet_runs") or 0) + 1
     if quiet != int(source.get("quiet_runs") or 0):
         await d1_query("UPDATE source_pages SET quiet_runs = ? WHERE id = ?", [quiet, source["id"]], quiet=True)
@@ -253,7 +269,11 @@ async def queue_enabled_sources() -> int:
             due.append(row)
     # 24/10/2026: hạn mức request FB/ngày - trang hay có bài mới (quiet_runs thấp) và trang của phim xếp trước.
     due.sort(key=lambda row: (int(row.get("quiet_runs") or 0), 0 if row.get("movie_id") else 1))
-    for row in due:
+    pending = [item for item in await list_pending("facebook") if item.get("type") == "page_feed"]
+    if len(pending) >= MAX_PENDING_PAGE_FEED:
+        logger.info("source_pages_skipped_backlog", pending_page_feed=len(pending), due=len(due))
+        return 0
+    for row in due[:MAX_QUEUE_PER_ROUND]:
         if await queue_source(row):
             queued += 1
     logger.info("source_pages_queued", queued=queued, total=len(rows or []))
