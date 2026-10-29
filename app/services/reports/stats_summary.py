@@ -119,6 +119,8 @@ def _day_from_iso(scraped_at: str) -> str:
 
 
 HOURLY_RETENTION_HOURS = 72
+# Ngày đầu tiên mọi bài/comment mới đều có first_seen_at (cột thêm ngày 28/10/2026, deploy giữa ngày).
+FIRST_SEEN_COMPLETE_SINCE = "2026-10-29"
 _HOURLY_KEY_PREFIX = f"{REDIS_KEY_PREFIX}stats_hourly:"
 
 
@@ -456,7 +458,10 @@ async def rebuild_from_source() -> dict[str, int]:
     """Xoá sạch + điền lại cả hai bảng tổng hợp từ posts/comments. Chạy bằng tay
     (scripts/jobs/rebuild_stats_summaries.py) và sau mỗi lượt dọn bài không liên quan có xoá
     dòng (app/services/relevance/cleanup.py). Các lệnh INSERT cho posts dùng upsert vì ingest
-    consumer có thể tạo lại một dòng (day, platform) giữa lúc DELETE và lúc điền lại."""
+    consumer có thể tạo lại một dòng (day, platform) giữa lúc DELETE và lúc điền lại.
+
+    Ngày = first_seen_at (ngày thấy lần đầu). Dòng cũ hơn cột đó (trước 28/10/2026) không có first_seen_at nên rơi
+    về scraped_at - tức ngày cào lại gần nhất, không phải ngày thu thập thật; số các ngày đó chỉ là xấp xỉ."""
     await ensure_stats_tables()
     # Phép tổng hợp toàn bảng có thể vượt timeout HTTP mặc định 10s của D1.
     slow = 120.0
@@ -467,10 +472,10 @@ async def rebuild_from_source() -> dict[str, int]:
     ok = await _q(
         """
         INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-        SELECT substr(scraped_at, 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
+        SELECT substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
         FROM posts
         WHERE scraped_at IS NOT NULL AND length(scraped_at) >= 10
-        GROUP BY substr(scraped_at, 1, 10), platform
+        GROUP BY substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform
         ON CONFLICT(day, platform) DO UPDATE SET
             posts = excluded.posts,
             last_scraped_at = excluded.last_scraped_at
@@ -483,10 +488,10 @@ async def rebuild_from_source() -> dict[str, int]:
     ok = await _q(
         """
         INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-        SELECT substr(scraped_at, 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
+        SELECT substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
         FROM comments
         WHERE scraped_at IS NOT NULL AND length(scraped_at) >= 10
-        GROUP BY substr(scraped_at, 1, 10), platform
+        GROUP BY substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform
         ON CONFLICT(day, platform) DO UPDATE SET
             comments = stats_platform_daily.comments + excluded.comments,
             last_scraped_at = CASE
@@ -503,10 +508,10 @@ async def rebuild_from_source() -> dict[str, int]:
     ok = await _q(
         """
         INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-        SELECT substr(scraped_at, 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
+        SELECT substr(COALESCE(first_seen_at, scraped_at), 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
         FROM posts
         WHERE keyword_id IS NOT NULL AND scraped_at IS NOT NULL AND length(scraped_at) >= 10
-        GROUP BY substr(scraped_at, 1, 10), keyword_id, platform
+        GROUP BY substr(COALESCE(first_seen_at, scraped_at), 1, 10), keyword_id, platform
         ON CONFLICT(day, keyword_id) DO UPDATE SET
             posts = excluded.posts,
             last_scraped_at = excluded.last_scraped_at
@@ -519,11 +524,11 @@ async def rebuild_from_source() -> dict[str, int]:
     ok = await _q(
         """
         INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-        SELECT substr(c.scraped_at, 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
+        SELECT substr(COALESCE(c.first_seen_at, c.scraped_at), 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
         FROM comments c
         INNER JOIN posts p ON p.id = c.post_id
         WHERE p.keyword_id IS NOT NULL AND c.scraped_at IS NOT NULL AND length(c.scraped_at) >= 10
-        GROUP BY substr(c.scraped_at, 1, 10), p.keyword_id, c.platform
+        GROUP BY substr(COALESCE(c.first_seen_at, c.scraped_at), 1, 10), p.keyword_id, c.platform
         ON CONFLICT(day, keyword_id) DO UPDATE SET
             comments = stats_keyword_daily.comments + excluded.comments,
             last_scraped_at = CASE
@@ -550,28 +555,35 @@ async def reconcile_recent_days(days: int = 2) -> bool:
     rebuild_from_source để chạy mỗi giờ (27/10/2026: D1 quá tải "7429 overloaded" làm các lần cộng dồn của ingest thất
     bại -> bảng tổng hợp đếm thiếu, dashboard hiện số sai). Chỉ quét các ngày đó qua index scraped_at, không đụng ngày cũ.
     Không DELETE: mọi upsert GHI ĐÈ giá trị bằng số đếm từ bảng gốc, nên một bước lỗi giữa chừng (đúng lúc D1 quá tải)
-    chỉ để lại số cũ, không xoá trắng số liệu hôm nay."""
+    chỉ để lại số cũ, không xoá trắng số liệu hôm nay.
+
+    Đếm theo NGÀY THẤY LẦN ĐẦU (first_seen_at), giống record_post/record_comment chỉ cộng dòng mới. scraped_at bị
+    ghi lại mỗi lần cào lại bài/comment cũ, nên đếm theo nó (bản 28/10) biến cả chục nghìn lượt cập nhật TikTok thành
+    "bài mới trong ngày". Lọc thêm scraped_at >= since chỉ để dùng index (first_seen_at <= scraped_at luôn đúng)."""
     await ensure_stats_tables()
     since = (datetime.now(tz=UTC).date() - timedelta(days=max(days, 1) - 1)).isoformat()
+    # Trước ngày này first_seen_at chưa ghi đủ cho mọi dòng mới - đừng ghi đè các ngày đó bằng số đếm thiếu.
+    since = max(since, FIRST_SEEN_COMPLETE_SINCE)
     slow = 60.0
     statements = (
         (
             """
             INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-            SELECT substr(scraped_at, 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
-            FROM posts WHERE scraped_at >= ?
-            GROUP BY substr(scraped_at, 1, 10), platform
+            SELECT substr(first_seen_at, 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
+            FROM posts WHERE scraped_at >= ?1 AND first_seen_at >= ?1
+            GROUP BY substr(first_seen_at, 1, 10), platform
             ON CONFLICT(day, platform) DO UPDATE SET
-                posts = excluded.posts, last_scraped_at = excluded.last_scraped_at
+                posts = excluded.posts,
+                last_scraped_at = MAX(COALESCE(stats_platform_daily.last_scraped_at, ''), excluded.last_scraped_at)
             """,
             "platform posts",
         ),
         (
             """
             INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-            SELECT substr(scraped_at, 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
-            FROM comments WHERE scraped_at >= ?
-            GROUP BY substr(scraped_at, 1, 10), platform
+            SELECT substr(first_seen_at, 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
+            FROM comments WHERE scraped_at >= ?1 AND first_seen_at >= ?1
+            GROUP BY substr(first_seen_at, 1, 10), platform
             ON CONFLICT(day, platform) DO UPDATE SET
                 comments = excluded.comments,
                 last_scraped_at = MAX(COALESCE(stats_platform_daily.last_scraped_at, ''), excluded.last_scraped_at)
@@ -581,21 +593,22 @@ async def reconcile_recent_days(days: int = 2) -> bool:
         (
             """
             INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-            SELECT substr(scraped_at, 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
-            FROM posts WHERE keyword_id IS NOT NULL AND scraped_at >= ?
-            GROUP BY substr(scraped_at, 1, 10), keyword_id, platform
+            SELECT substr(first_seen_at, 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
+            FROM posts WHERE keyword_id IS NOT NULL AND scraped_at >= ?1 AND first_seen_at >= ?1
+            GROUP BY substr(first_seen_at, 1, 10), keyword_id, platform
             ON CONFLICT(day, keyword_id) DO UPDATE SET
-                posts = excluded.posts, last_scraped_at = excluded.last_scraped_at
+                posts = excluded.posts,
+                last_scraped_at = MAX(COALESCE(stats_keyword_daily.last_scraped_at, ''), excluded.last_scraped_at)
             """,
             "keyword posts",
         ),
         (
             """
             INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-            SELECT substr(c.scraped_at, 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
+            SELECT substr(c.first_seen_at, 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
             FROM comments c INNER JOIN posts p ON p.id = c.post_id
-            WHERE p.keyword_id IS NOT NULL AND c.scraped_at >= ?
-            GROUP BY substr(c.scraped_at, 1, 10), p.keyword_id, c.platform
+            WHERE p.keyword_id IS NOT NULL AND c.scraped_at >= ?1 AND c.first_seen_at >= ?1
+            GROUP BY substr(c.first_seen_at, 1, 10), p.keyword_id, c.platform
             ON CONFLICT(day, keyword_id) DO UPDATE SET
                 comments = excluded.comments,
                 last_scraped_at = MAX(COALESCE(stats_keyword_daily.last_scraped_at, ''), excluded.last_scraped_at)
