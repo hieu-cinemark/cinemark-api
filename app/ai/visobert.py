@@ -80,10 +80,6 @@ def _get() -> _Classifier | None:
     return _model
 
 
-def available() -> bool:
-    return _get() is not None
-
-
 async def predict(texts: list[str]) -> list[tuple[str, float]] | None:
     """(nhãn, độ tự tin) cho từng câu, cùng thứ tự; None khi model không dùng được."""
     model = await asyncio.to_thread(_get)

@@ -90,10 +90,6 @@ def is_running() -> bool:
     return _running
 
 
-def is_threads_running() -> bool:
-    return _threads_running
-
-
 async def _ensure_table_once() -> None:
     global _table_ready
     if not _table_ready:

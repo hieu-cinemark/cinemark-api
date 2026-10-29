@@ -109,9 +109,6 @@ class Settings(BaseSettings):
     visobert_relevance_not_related_min: float = 0.95
     # Comment Jev lỗi thì thử Kira (tắt mặc định: Kira chỉ còn duyệt BFS).
     jev_kira_fallback: bool = False
-    jev_api_key: str | None = None
-    jev_api_base_url: str = "https://api.typesafe.ai/v1"
-    jev_model: str = "jev-latest"
     jev_concurrency: int = 16
     # Số lời gọi song song tối đa tới MỖI nhà cung cấp AI (Kira, Bee...) trong một tiến trình - xem app/ai/client.py.
     # Service giữ 2; script backfill (scripts/kira_label_comments.py --concurrency) nâng lên trong tiến trình của nó.

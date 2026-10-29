@@ -30,7 +30,6 @@ def test_label_thresholds(monkeypatch):
 @pytest.mark.asyncio
 async def test_classify_uses_jev_then_falls_back(monkeypatch):
     monkeypatch.setattr(settings, "classifier", "jev")
-    monkeypatch.setattr(settings, "jev_api_key", "k")
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:

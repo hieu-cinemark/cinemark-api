@@ -12,7 +12,4 @@ Jev (TypeSafe, app/ai/jev.py) chấm sentiment comment:
   tasks/       các bộ phân loại/sinh nội dung xây trên đó: post_relevance (ingest),
                sentiment (sweep comment), import_parser (import hàng loạt ở Settings)
                và report (report social topic)
-
-Bộ phân loại cảm xúc dự phòng không dùng AI (theo từ điển) nằm ở
-app/services/sentiment/sentiment_lexicon.py.
 """
