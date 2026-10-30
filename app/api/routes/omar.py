@@ -27,18 +27,30 @@ EXISTS_CHECK_SECONDS = 8.0
 async def omar_status() -> dict[str, Any]:
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
-    progress = await omar_tiktok.hashtag_progress()
+
+    async def _usage() -> dict[str, Any] | None:
+        return await omar_tiktok.fetch_usage(api_key) if api_key else None
+
+    # Các nguồn độc lập (D1, Redis, API Omar) - gọi song song thay vì lần lượt.
+    progress, usage, round_status, paused, channels, comments = await asyncio.gather(
+        omar_tiktok.hashtag_progress(),
+        _usage(),
+        omar_tiktok.round_status_full(),
+        omar_tiktok.get_pause(),
+        omar_channels.channel_status(),
+        omar_comments.job_status(),
+    )
     return {
         "key_set": bool(api_key),
-        "usage": await omar_tiktok.fetch_usage(api_key) if api_key else None,
-        "round": await omar_tiktok.round_status_full(),
+        "usage": usage,
+        "round": round_status,
         # Đang dừng chờ hạn mức / key mới: {"reason": "quota"|"key", "until": iso, ...} hoặc None.
-        "paused": await omar_tiktok.get_pause(),
+        "paused": paused,
         "mode": "spread_daily" if settings.omar_spread_daily else "continuous",
         "hashtags": progress,
-        "channels": await omar_channels.channel_status(),
+        "channels": channels,
         "comments": {
-            **await omar_comments.job_status(),
+            **comments,
             "cadence": settings.omar_comments_cadence,
             "weekday": settings.omar_comments_weekday,
             "time": settings.omar_comments_time,
