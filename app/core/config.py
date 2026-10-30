@@ -171,7 +171,9 @@ class Settings(BaseSettings):
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
     # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.
     # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
-    strict_relevance_movie_slugs: str = "nguoi-duoc-chon"
+    # 30/10/2026: thêm cong-tru-nhan-chia - ViSoBERT gán "related" (độ tự tin ~1.0) cho mọi bài có cụm "cộng trừ nhân chia"
+    # (bảng cửu chương, sách toán, nhạc chế); 1.245 bài như vậy đã được ẩn tay (danh sách ở ~/cinemark-ml/relabel_ctnc).
+    strict_relevance_movie_slugs: str = "nguoi-duoc-chon,cong-tru-nhan-chia"
     # Phim có tên là cụm từ thông dụng ("cộng, trừ, nhân, chia", "người mẹ xấu xa"): bài "uncertain" KHÔNG được nâng thành
     # liên quan chỉ vì có đủ tên phim (resolve_relevance, quy tắc full_title - 2026-10-16). Khác strict: không đụng bài
     # bộ phân loại đã gán "related".

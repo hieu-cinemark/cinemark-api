@@ -20,15 +20,20 @@ tuổi nữa."""
 
 from __future__ import annotations
 
+import gzip
+import json
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
+from app.clients.lake import lake_configured, put_object
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.store import d1_query
 from app.services.accounts import platform_config_db as db
-from app.services.stats.stats_summary import rebuild_from_source
+from app.services.relevance.relevance_rules import film_context_reason
+from app.services.stats.stats_summary import subtract_deleted
 
 logger = get_logger(__name__)
 
@@ -43,9 +48,23 @@ _ELIGIBLE = (
     "AND COALESCE(relevance_labeled_at, scraped_at) < strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)"
 )
 
+# Cùng điều kiện, bảng posts có alias p (câu chọn ứng viên JOIN movies).
+_ELIGIBLE_P = (
+    "p.relevance_label = 'not_related' "
+    "AND COALESCE(p.relevance_labeled_at, p.scraped_at) < strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)"
+)
+
 # Dùng chung giữa scheduler của API và scripts/tools/purge_irrelevant_posts.py, để một lượt
 # chạy tay không chạy chồng lên lượt theo lịch ở tiến trình khác.
 _LOCK_KEY = "cinemark_api:cleanup:irrelevant_posts:lock"
+# Bài trước, rồi các bảng con (xoá theo thứ tự ngược lại: con trước bài).
+_BACKUP_TABLES = (
+    ("posts", "id"),
+    ("comments", "post_id"),
+    ("post_engagement_snapshots", "post_id"),
+    ("post_comment_value", "post_id"),
+    ("post_visuals", "post_id"),
+)
 _LOCK_TTL_SECONDS = 2 * 60 * 60
 
 
@@ -99,32 +118,46 @@ async def purge_irrelevant_posts(
         logger.info("irrelevant_purge_dry_run", **result)
         return result
 
-    ids = [
-        row["id"]
-        for row in await _run(
-            f"SELECT id FROM posts WHERE {_ELIGIBLE} ORDER BY id LIMIT ?", [grace, BATCH_SIZE * MAX_BATCHES]
-        )
-    ]
-    totals: dict[str, Any] = {"posts": 0, "comments": 0, "snapshots": 0, "batches": 0}
+    candidates = await _run(
+        f"SELECT p.id, substr(p.content, 1, 1500) AS content, m.title, m.director, m.`cast` AS `cast` FROM posts p LEFT JOIN movies m ON m.id = p.movie_id "
+        f"WHERE {_ELIGIBLE_P} "
+        "ORDER BY p.id LIMIT ?",
+        [grace, BATCH_SIZE * MAX_BATCHES],
+    )
+    # 30/10/2026: bài nhắc tên diễn viên/đạo diễn của chính phim đó thì KHÔNG xoá dù bộ phân loại nói không liên quan -
+    # chuyển về 'uncertain' (vẫn ẩn, gán lại được) để không bị chọn lại mỗi đêm.
+    named = [row["id"] for row in candidates if film_context_reason(row.get("content"), row, allow_title_hashtag=False) in ("cast", "director")]
+    if named:
+        await _run(f"UPDATE posts SET relevance_label = 'uncertain', keyword_match = 0 WHERE id IN ({_id_list(named)})", [])
+    ids = [row["id"] for row in candidates if row["id"] not in set(named)]
+    totals: dict[str, Any] = {"posts": 0, "comments": 0, "snapshots": 0, "batches": 0, "kept_named": len(named)}
+    if ids and not lake_configured():
+        # Không có chỗ sao lưu thì không xoá - dữ liệu xoá khỏi D1 là mất hẳn.
+        raise RuntimeError("purge needs the R2 lake configured for backups")
+    run_key = f"backups/purge/{datetime.now(UTC):%Y-%m-%d}/{uuid.uuid4().hex[:8]}"
     for start in range(0, len(ids), BATCH_SIZE):
         id_list = _id_list(ids[start : start + BATCH_SIZE])
-        totals["comments"] += len(await _run(f"DELETE FROM comments WHERE post_id IN ({id_list}) RETURNING id", []))
-        totals["snapshots"] += len(
-            await _run(f"DELETE FROM post_engagement_snapshots WHERE post_id IN ({id_list}) RETURNING id", [])
-        )
+        # Sao lưu lô lên R2 TRƯỚC khi xoá: bài + mọi bảng con, mỗi bảng một file jsonl.gz.
+        backup: dict[str, list[dict[str, Any]]] = {}
+        for table, column in _BACKUP_TABLES:
+            backup[table] = await _run(f"SELECT * FROM {table} WHERE {column} IN ({id_list})", [])
+            body = gzip.compress("\n".join(json.dumps(r, ensure_ascii=False) for r in backup[table]).encode())
+            await put_object(f"{run_key}/{totals['batches']:03d}-{table}.jsonl.gz", body)
+        for table, column in _BACKUP_TABLES[1:]:
+            deleted = len(await _run(f"DELETE FROM {table} WHERE {column} IN ({id_list}) RETURNING 1 AS x", []))
+            if table == "comments":
+                totals["comments"] += deleted
+            elif table == "post_engagement_snapshots":
+                totals["snapshots"] += deleted
         totals["posts"] += len(await _run(f"DELETE FROM posts WHERE id IN ({id_list}) RETURNING id", []))
         totals["batches"] += 1
-
-    if totals["posts"]:
-        # Tổng số trên trang Overview lấy từ các bảng tổng hợp stats_*_daily, vốn chỉ tăng khi
-        # insert - không có bước này thì chúng vẫn tính cả mọi bài/comment đã bị xoá. Các dòng
-        # đã bị xoá rồi, nên dựng lại thất bại chỉ được báo chứ không làm hỏng lượt dọn.
+        # Trừ đúng phần đã xoá khỏi bảng thống kê ngày (trước 30/10/2026 là dựng lại toàn bộ - quét 2 triệu bình luận).
         try:
-            await rebuild_from_source()
-            totals["stats_rebuilt"] = True
-        except Exception as exc:
-            totals["stats_rebuilt"] = False
-            logger.error("irrelevant_purge_stats_rebuild_failed", error=str(exc))
+            await subtract_deleted(backup["posts"], backup["comments"])
+        except Exception as exc:  # noqa: BLE001 - dữ liệu đã xoá; số thống kê lệch chỉ được báo
+            logger.error("irrelevant_purge_stats_subtract_failed", error=str(exc))
+    if ids:
+        totals["backup"] = run_key
 
     backlog = await _run(f"SELECT count(*) AS n FROM posts WHERE {_ELIGIBLE}", [grace])
     totals["remaining_posts"] = backlog[0]["n"]
