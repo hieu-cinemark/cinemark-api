@@ -305,7 +305,7 @@ async def publish_action_request(
 
 async def publish_auto_login_request(platform: str, account_id: str, *, dry_run: bool = False) -> bool:
     """Publish một yêu cầu auto-login lên AUTO_LOGIN_REQUESTS_TOPIC. auto_login/consumer.py
-    của spider-hub đọc nó và chạy luồng social_crawler.auto_login cho đúng account_id đó.
+    của spider-hub đọc nó và chạy luồng social_crawler.accounts.auto_login cho đúng account_id đó.
 
     Mỗi tài khoản một message (thay vì gom lô) để Kafka sập giữa lượt chỉ làm hỏng từng
     tài khoản lẻ thay vì cả một nền tảng - và vì mỗi tài khoản đằng nào cũng mở trình
@@ -363,7 +363,7 @@ async def publish_nurture_request(
     visits: int = 3,
 ) -> bool:
     """Xếp hàng type=nurture để crawl_request_consumer của spider-hub chạy
-    `python -m social_crawler.nurture_accounts` cho facebook, threads hoặc tiktok. Phần
+    `python -m social_crawler.accounts.nurture` cho facebook, threads hoặc tiktok. Phần
     làm ấm riêng của TikTok (vào các trang /tag/<hashtag>, không phải feed trang chủ -
     xem docstring module nurture_accounts.py của spider-hub) bỏ qua `comment` và coi
     `visits` là số trang hashtag cần vào; không có tham số riêng cho việc này nên một

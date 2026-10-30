@@ -1,9 +1,0 @@
-"""Đường dẫn cũ, chỉ giữ tạm để unit systemd trên VPS chưa sửa vẫn chạy - dùng `python -m scripts.jobs.visobert_label`.
-
-Xoá file này khi mọi unit đã chuyển sang đường dẫn mới.
-"""
-
-import runpy
-
-if __name__ == "__main__":
-    runpy.run_module("scripts.jobs.visobert_label", run_name="__main__", alter_sys=True)

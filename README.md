@@ -164,5 +164,4 @@ scripts/
   jobs/                  run on a schedule (systemd timers / cron): python -m scripts.jobs.<name>
   ml/                    model training + labelling datasets
   tools/                 run by hand: probes, local DB pull, one-off cleanups
-  aspect_label.py, ...   old entry-point paths kept as shims for VPS units - remove later
 ```
