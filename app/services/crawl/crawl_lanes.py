@@ -8,8 +8,8 @@ services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài 
   (tới 100 trang, dừng sau 10 trang liên tiếp không có bài mới - 28/10/2026) - chỉ phim đang chiếu (mọi lượt) và sắp
   chiếu (lượt chẵn). Phim cũ không cần.
 - "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp số job theo số tài khoản dùng được (deep_jobs_this_hour); spider-hub
-  (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Ưu tiên phim đang chiếu, rồi
-  sắp chiếu, rồi phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
+  (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Ưu tiên phim ra rạp tháng
+  này / tháng sau (30/10/2026), rồi đang chiếu, sắp chiếu, phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
 Trần request mỗi giờ của tài khoản (spider-hub FACEBOOK_HOURLY_REQUEST_CAP) rải cả hai phần ra cả ngày.
 """
 
@@ -52,6 +52,28 @@ UPCOMING_MAX_PAGES = 50
 RELEASED_MAX_PAGES = 100
 
 
+def focus_window(today: date) -> tuple[date, date]:
+    """[ngày 1 tháng này, ngày cuối tháng sau] - phim ra rạp trong khoảng này được ưu tiên (30/10/2026, người vận hành
+    chọn): lượt bài mới cào chúng ở MỌI lượt và xếp trước, lượt đào xếp chúng đầu hàng."""
+    start = today.replace(day=1)
+    after_next = date(start.year + (start.month + 1) // 12, (start.month + 1) % 12 + 1, 1)
+    return start, date.fromordinal(after_next.toordinal() - 1)
+
+
+def is_focus(released_at: str | None, today: date) -> bool:
+    try:
+        released = date.fromisoformat(str(released_at or "")[:10])
+    except ValueError:
+        return False
+    start, end = focus_window(today)
+    return start <= released <= end
+
+
+def priority_of(released_at: str | None, today: date) -> int:
+    """Thứ tự xếp hàng: phim tháng này / tháng sau trước, rồi đang chiếu, sắp chiếu xa hơn, phim cũ, chưa có ngày."""
+    return -1 if is_focus(released_at, today) else STAGE_ORDER[stage_of(released_at, today)]
+
+
 def facebook_max_pages(released_at: str | None, today: date) -> int:
     return UPCOMING_MAX_PAGES if stage_of(released_at, today) == "upcoming" else RELEASED_MAX_PAGES
 
@@ -79,13 +101,21 @@ async def _facebook_keywords() -> list[dict[str, Any]]:
 
 
 async def fresh_keywords(slot_index: int, today: date) -> list[dict[str, Any]]:
-    """Từ khoá cho lượt bài mới thứ `slot_index` trong ngày: phim đang chiếu mọi lượt, phim sắp chiếu lượt chẵn."""
+    """Từ khoá cho lượt bài mới thứ `slot_index` trong ngày: phim ra rạp tháng này / tháng sau (is_focus) mọi lượt, phim
+    đang chiếu khác và phim sắp chiếu xa hơn lượt chẵn (30/10/2026; trước đó phim đang chiếu mọi lượt). Phim tháng này /
+    tháng sau xếp đầu - chỗ gọi giữ thứ tự đó sau plan_crawl (sort_by_priority)."""
     out = []
     for keyword in await _facebook_keywords():
-        stage = stage_of(keyword.get("released_at"), today)
-        if stage == "showing" or (stage == "upcoming" and slot_index % 2 == 0):
+        released_at = keyword.get("released_at")
+        stage = stage_of(released_at, today)
+        if is_focus(released_at, today) or (stage in ("showing", "upcoming") and slot_index % 2 == 0):
             out.append(keyword)
-    return out
+    return sort_by_priority(out, today)
+
+
+def sort_by_priority(keywords: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
+    """Sắp xếp ổn định theo priority_of - trong cùng nhóm giữ nguyên thứ tự cũ (vd. theo hiệu quả từ khoá)."""
+    return sorted(keywords, key=lambda keyword: priority_of(keyword.get("released_at"), today))
 
 
 def _resweep_due(state: dict[str, Any], keyword_id: str, today: date) -> bool:
@@ -135,8 +165,7 @@ async def run_deep_tick(now: datetime) -> int:
             state = {}
         if state.get("done") and not _resweep_due(state, keyword_id, today):
             continue
-        stage = stage_of(keyword.get("released_at"), today)
-        candidates.append((STAGE_ORDER[stage], queued_at, keyword))
+        candidates.append((priority_of(keyword.get("released_at"), today), queued_at, keyword))
     candidates.sort(key=lambda item: (item[0], item[1]))
 
     jobs = await deep_jobs_this_hour()
@@ -166,5 +195,3 @@ async def deep_jobs_this_hour() -> int:
         accounts = 1
     jobs = math.ceil(max(accounts, 1) * settings.facebook_deep_jobs_per_account_hour)
     return max(1, min(jobs, settings.facebook_deep_jobs_max_per_hour))
-
-

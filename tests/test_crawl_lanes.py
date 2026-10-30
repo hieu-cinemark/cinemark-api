@@ -74,12 +74,30 @@ def test_stage_of():
     assert crawl_lanes.stage_of(None, TODAY) == "unknown"
 
 
-def test_fresh_lane_takes_showing_every_slot_and_upcoming_every_other(monkeypatch):
+def test_fresh_lane_takes_this_and_next_month_every_slot(monkeypatch):
+    """30/10/2026: phim ra rạp tháng này / tháng sau mọi lượt và xếp đầu; phim đang chiếu khác + sắp chiếu xa lượt chẵn."""
     _patch(monkeypatch, _FakeRedis())
+    extra = [
+        {"id": "showing_sept", "movie_id": "m5", "platform": "facebook", "keyword": "E", "released_at": "2026-09-20"},
+        {"id": "far", "movie_id": "m6", "platform": "facebook", "keyword": "F", "released_at": "2027-01-15"},
+    ]
+
+    async def fake_d1(sql, params=None, **_):
+        return [dict(k) for k in extra + KEYWORDS]
+
+    monkeypatch.setattr(crawl_lanes, "d1_query", fake_d1)
     even = asyncio.run(crawl_lanes.fresh_keywords(0, TODAY))
     odd = asyncio.run(crawl_lanes.fresh_keywords(1, TODAY))
-    assert [k["id"] for k in even] == ["showing", "upcoming"]
-    assert [k["id"] for k in odd] == ["showing"]
+    assert [k["id"] for k in even] == ["showing", "upcoming", "showing_sept", "far"]
+    assert [k["id"] for k in odd] == ["showing", "upcoming"]
+
+
+def test_focus_window():
+    assert crawl_lanes.focus_window(date(2026, 10, 30)) == (date(2026, 10, 1), date(2026, 11, 30))
+    assert crawl_lanes.focus_window(date(2026, 11, 5)) == (date(2026, 11, 1), date(2026, 12, 31))
+    assert crawl_lanes.focus_window(date(2026, 12, 5)) == (date(2026, 12, 1), date(2027, 1, 31))
+    assert crawl_lanes.is_focus("2026-10-01", TODAY) and not crawl_lanes.is_focus("2026-09-30", TODAY)
+    assert not crawl_lanes.is_focus(None, TODAY)
 
 
 def test_deep_tick_queues_by_stage_once_per_hour(monkeypatch):

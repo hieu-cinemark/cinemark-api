@@ -155,6 +155,13 @@ class Settings(BaseSettings):
     # [1, facebook_deep_jobs_max_per_hour]. Phần "deep" 300 request/tài khoản/ngày, ~10 request/job, khung 17 giờ
     # -> ~1,8 job/tài khoản/giờ. 0 = tắt nhịp đào.
     facebook_deep_jobs_per_account_hour: float = 2.0
+    # Lịch nuôi tài khoản Facebook RIÊNG, không phụ thuộc lịch cào (30/10/2026): trước đó chỉ chạy theo cờ nuôi trước/sau
+    # của lịch cào, nên tắt lịch cào FB là ngừng nuôi luôn. Một mốc trước 12h + một mốc sau = hai phiên/ngày cho tài khoản
+    # đang làm ấm (hạn mức nửa ngày sáng/chiều của spider-hub); tài khoản đã ấm một phiên/ngày. Giờ người VN lướt Facebook
+    # nhiều: sáng đi làm và tối sau 20h (giờ yên lặng Meta 23:30-05:30). Mỗi ngày lệch ngẫu nhiên thêm 0-facebook_nurture_
+    # jitter_minutes phút (ổn định trong ngày) để không lặp đúng một giờ. "" = tắt.
+    facebook_nurture_times: str = "08:00,20:00"
+    facebook_nurture_jitter_minutes: int = 50
     facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"
 

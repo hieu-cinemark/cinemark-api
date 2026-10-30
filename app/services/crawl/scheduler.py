@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import zlib
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -137,6 +138,9 @@ async def _trigger_platform(
         published = 0
         # Facebook/Threads: tắt từ khoá toàn ra rác, giảm trang từ khoá kém (app/services/crawl/keyword_yield.py).
         keywords, low_pages = await plan_keyword_crawl(platform, keywords)
+        if fresh_lane:
+            # plan_crawl xếp theo hiệu quả từ khoá - giữ phim tháng này / tháng sau lên đầu (sắp xếp ổn định).
+            keywords = crawl_lanes.sort_by_priority(keywords, today)
         if platform == "facebook":
             # 28/10/2026 (người vận hành chọn): mọi job Facebook tới FACEBOOK max_pages của spider (100) và chỉ dừng sớm khi
             # FACEBOOK_NO_NEW_PAGES (10) trang liên tiếp không có bài mới - không giảm trang cho từ khoá kém nữa.
@@ -270,6 +274,8 @@ async def _comments_tick() -> None:
         if not sched["enabled"] or platform not in COMMENT_CRAWL_PLATFORMS:
             continue
         if _comment_round_done.get(platform) == hour_key:
+            continue
+        if platform == "facebook" and not await _facebook_crawl_enabled():
             continue
         _comment_round_done[platform] = hour_key
         low, high = _HOT_PER_MOVIE_RANGE
@@ -424,6 +430,44 @@ async def _cookie_check_tick() -> None:
         interval_hours=cfg.cookie_check_interval_hours,
         stale_hours=stale_hours,
     )
+
+
+async def _facebook_crawl_enabled() -> bool:
+    """Công tắc lịch cào Facebook (crawl_schedules) - 30/10/2026: tắt nó là ngừng MỌI việc dùng tài khoản / proxy Facebook
+    do scheduler xếp (nhịp đào mỗi giờ, lượt bình luận, bài booking theo dõi), không chỉ các lượt cào theo giờ. Trước đó
+    người vận hành tắt lịch để cho tài khoản nghỉ nhưng nhịp đào + bình luận vẫn chạy. Nuôi tài khoản không bị ảnh hưởng."""
+    return any(sched["platform"] == "facebook" and sched["enabled"] for sched in await db.list_crawl_schedules())
+
+
+def _jittered(slot: str, day: str, jitter_minutes: int) -> str:
+    """ "HH:MM" cộng 0..jitter_minutes phút, cố định theo (ngày, mốc) - mọi tiến trình / lượt 30 giây ra cùng một giờ."""
+    if jitter_minutes <= 0:
+        return slot
+    hour, minute = (int(part) for part in slot.split(":", 1))
+    total = min(hour * 60 + minute + zlib.crc32(f"{day}:{slot}".encode()) % (jitter_minutes + 1), 23 * 60 + 59)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+_NURTURE_FIRED_KEY = f"{REDIS_KEY_PREFIX}scheduler:nurture:{{platform}}:{{day}}:{{slot}}"
+
+
+async def _nurture_tick() -> None:
+    """Xếp một lượt nuôi Facebook ở mỗi mốc settings.facebook_nurture_times, kể cả khi lịch cào đang tắt. Trùng với cờ
+    nuôi của lịch cào cũng không sao: spider-hub bỏ qua tài khoản đã nuôi trong ngày / nửa ngày."""
+    now = datetime.now(TIMEZONE)
+    day = now.date().isoformat()
+    due = [
+        slot
+        for slot in parse_run_times(settings.facebook_nurture_times or "")
+        if _is_due(_jittered(slot, day, settings.facebook_nurture_jitter_minutes), now)
+    ]
+    if not due:
+        return
+    key = _NURTURE_FIRED_KEY.format(platform="facebook", day=day, slot=due[0])
+    if not await get_redis_client().set(key, "1", nx=True, ex=2 * 86400):
+        return
+    ok = await publish_nurture_request("facebook")
+    logger.info("scheduled_nurture_queued", platform="facebook", when="nurture_schedule", slot=due[0], ok=ok)
 
 
 # AI tìm thêm hashtag TikTok mỗi ngày một lần ở settings.hashtag_discovery_time (xem app/services/discovery/hashtag_discovery.py).
@@ -644,7 +688,7 @@ TRACKED_POSTS_HOUR = 6
 
 async def _run_tracked_posts() -> None:
     try:
-        await tracked_posts.run_daily()
+        await tracked_posts.run_daily(include_facebook=await _facebook_crawl_enabled())
     except Exception as exc:  # noqa: BLE001 - lượt lỗi: hôm sau chạy lại (hoặc restart trong ngày chạy lại)
         logger.error("tracked_posts_failed", error=str(exc)[:300])
 
@@ -806,7 +850,12 @@ async def _loop() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_stats_reconcile_tick_failed", error=str(exc))
         try:
-            await asyncio.wait_for(crawl_lanes.run_deep_tick(datetime.now(TIMEZONE)), timeout=_TICK_TIMEOUT_SECONDS)
+            await asyncio.wait_for(_nurture_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_nurture_tick_failed", error=str(exc))
+        try:
+            if await _facebook_crawl_enabled():
+                await asyncio.wait_for(crawl_lanes.run_deep_tick(datetime.now(TIMEZONE)), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:
             logger.error("scheduler_deep_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001

@@ -236,8 +236,9 @@ async def _queue_facebook(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
         stats["facebook_pages_queued"] = stats.get("facebook_pages_queued", 0) + 1
 
 
-async def run_daily() -> dict[str, Any]:
-    """Một lượt cào lại mọi bài đang theo dõi (gọi mỗi ngày từ scheduler)."""
+async def run_daily(*, include_facebook: bool = True) -> dict[str, Any]:
+    """Một lượt cào lại mọi bài đang theo dõi (gọi mỗi ngày từ scheduler). include_facebook=False khi lịch cào Facebook
+    đang tắt (scheduler._facebook_crawl_enabled) - bài Facebook đợi lượt hôm sau."""
     global _running
     _running = True
     stats: dict[str, Any] = {}
@@ -247,7 +248,7 @@ async def run_daily() -> dict[str, Any]:
         for row in rows:
             by_platform[row["platform"]].append(row)
         stats["rows"] = {platform: len(items) for platform, items in by_platform.items()}
-        if by_platform.get("facebook"):
+        if by_platform.get("facebook") and include_facebook:
             await _queue_facebook(by_platform["facebook"], stats)
         if by_platform.get("tiktok"):
             await _refresh_tiktok(by_platform["tiktok"], stats)
