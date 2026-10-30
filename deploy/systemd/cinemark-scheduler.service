@@ -1,0 +1,21 @@
+[Unit]
+Description=cinemark-api scheduler (scheduled crawls, comment rounds, Omar, stats reconcile, cleanup, reports)
+# Chạy service này thì web phải có SCHEDULER_IN_WEB=false trong .env - không chạy hai bộ lập lịch cùng lúc.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cinemark-api
+ExecStart=/opt/cinemark-api/.venv/bin/python -m app.workers.scheduler.main
+EnvironmentFile=/opt/cinemark-api/.env
+Restart=on-failure
+RestartSec=5
+# Cùng user với các service cinemark-api khác trên VPS (chủ sở hữu /opt/cinemark-api).
+User=cinemark
+Group=cinemark
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

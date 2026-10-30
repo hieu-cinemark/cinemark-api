@@ -92,8 +92,9 @@ async def on_startup() -> None:
         )
     except Exception as exc:
         logger.warning("comment_crawl_schedule_seed_failed", error=str(exc))
-    scheduler.start()
-    ops_metrics.start_sampler()
+    if settings.scheduler_in_web:
+        scheduler.start()
+        ops_metrics.start_sampler()
     asyncio.create_task(_build_tab_filter_indexes())
     logger.info("app_started")
 

@@ -298,6 +298,10 @@ class Settings(BaseSettings):
     # Cảnh báo vận hành qua Telegram (app/services/ops/ops_alerts.py), scheduler kiểm tra mỗi ops_alerts_interval_minutes.
     # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói Omar / chi phí Jev mỗi ngày một lần.
     ops_alerts_enabled: bool = True
+    # Bộ lập lịch (app/services/crawl/scheduler.py) + bộ lấy mẫu ops chạy TRONG tiến trình web (mặc định, như trước) hay
+    # trong service riêng `python -m app.workers.scheduler.main` (30/10/2026: một tác vụ nặng của scheduler không còn làm
+    # chậm dashboard). Bật service riêng thì đặt SCHEDULER_IN_WEB=false - không bao giờ chạy cả hai cùng lúc.
+    scheduler_in_web: bool = True
     ops_alerts_interval_minutes: int = 15
     ops_alert_repeat_hours: float = 6
     # Omar: đã dùng >= chừng này % hạn mức ngày; gói hết hạn trong chừng này ngày (và lần nữa khi còn <= 1 ngày).

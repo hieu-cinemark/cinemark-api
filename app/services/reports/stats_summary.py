@@ -43,11 +43,15 @@ _ROLLUP_FAILURE_WINDOW_SECONDS = 3600
 
 async def _note_rollup_failure(table: str, **context: Any) -> None:
     logger.error("stats_rollup_write_failed", table=table, **context)
-    client = get_redis_client()
-    key = f"{REDIS_KEY_PREFIX}stats_rollup_failed:{table}"
-    count = await client.incr(key)
-    if count == 1:
-        await client.expire(key, _ROLLUP_FAILURE_WINDOW_SECONDS)
+    try:
+        client = get_redis_client()
+        key = f"{REDIS_KEY_PREFIX}stats_rollup_failed:{table}"
+        count = await client.incr(key)
+        if count == 1:
+            await client.expire(key, _ROLLUP_FAILURE_WINDOW_SECONDS)
+    except Exception as exc:  # noqa: BLE001 - chỉ là bộ đếm cảnh báo, không được làm hỏng lượt đối soát
+        logger.warning("stats_rollup_failure_count_failed", error=str(exc) or repr(exc))
+        return
     if count == _ROLLUP_FAILURE_ALERT_THRESHOLD:
         details = " | ".join(f"{k}={v}" for k, v in context.items())
         await send_telegram_message(

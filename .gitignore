@@ -21,3 +21,4 @@ scripts/_*.csv
 # ViSoBERT fine-tune: dữ liệu bình luận thật + trọng số model, chỉ ở máy local
 /data/visobert/
 /models/
+/data/topics.sqlite
