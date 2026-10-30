@@ -2,7 +2,7 @@
 cảm xúc / giai đoạn / khía cạnh của bình luận và giá trị bình luận dùng typesafe/jev-1.14 (decisions.comment_model), độ
 liên quan và cảm xúc NỘI DUNG BÀI dùng openai/gpt-6-luna-decisions (decisions.post_model).
 
-Chỉ là CA KHÓ: luật (sentiment_rules / relevance_rules) và ViSoBERT (app/ai/visobert.py) chạy trước. Model quyết định đọc
+Chỉ là CA KHÓ: luật (sentiment_rules / relevance_rules) và ViSoBERT (app/ai/local/visobert.py) chạy trước. Model quyết định đọc
 một đoạn văn bản (`state`) và trả lời các câu `choice` (kèm xác suất và độ tự tin); một request = một bình luận/bài, mọi câu
 hỏi cùng lúc. Câu trả lời dưới ngưỡng tự tin rơi về nhãn an toàn (neutral / khac / không gắn khía cạnh).
 """
@@ -199,7 +199,7 @@ async def classify_post_relevance_jev(
     return {"label": label, "confidence": confidence, "reason": f"jev {answer.get('choice')} {confidence:.2f}"}
 
 
-# --- Giá trị comment của bài (thay Kira ở app/services/sentiment/comment_value.py) -------------------------------------------
+# --- Giá trị comment của bài (thay Kira ở app/services/crawl/comment_value.py) -------------------------------------------
 # Loại bài -> điểm 0-100 "có đáng cào comment không"; điểm = trung bình theo xác suất từng loại.
 COMMENT_VALUE_KINDS: dict[str, tuple[int, str]] = {
     "review": (90, "Review, cảm nhận về phim - người xem sẽ vào bàn luận khen chê"),

@@ -61,7 +61,7 @@ from app.services.relevance.relevance_rules import (
     no_diacritics_reason,
     resolve_relevance,
 )
-from app.services.reports.stats_summary import bump_ingest_decision
+from app.services.stats.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
@@ -225,7 +225,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     platform: str = payload.get("platform") or ""
     # Payload TikTok mang id ở trường video_id - không có phương án dự phòng này thì mọi
     # quyết định ingest của TikTok đều gửi đi với post_id=None và không bao giờ join lại
-    # được với bài của nó trong lake (app/lake/silver.py).
+    # được với bài của nó trong bản lưu thô trên R2 (lake_writer, tầng bronze).
     post_id = payload.get("post_id") or payload.get("video_id")
 
     if payload.get("kind") == "metrics":

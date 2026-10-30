@@ -10,7 +10,7 @@ import argparse
 import asyncio
 import time
 
-from app.services.reports.comment_rollup import rebuild_days, vn_days
+from app.services.stats.comment_rollup import rebuild_days, vn_days
 
 
 async def main(days: int) -> None:

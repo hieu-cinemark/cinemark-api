@@ -747,7 +747,7 @@ class PostRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [f"eng_{uuid.uuid4()}", existing["id"], scraped_at, *engagement.values()],
             )
-        from app.services.reports.stats_summary import record_post
+        from app.services.stats.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=existing.get("keyword_id"), scraped_at=scraped_at, is_new=False)
         return True
@@ -892,7 +892,7 @@ class PostRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
             )
-            from app.services.reports.stats_summary import record_post
+            from app.services.stats.stats_summary import record_post
 
             await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
             return True
@@ -956,7 +956,7 @@ class PostRepository:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
             )
-        from app.services.reports.stats_summary import record_post
+        from app.services.stats.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
         return True

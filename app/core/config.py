@@ -92,7 +92,7 @@ class Settings(BaseSettings):
     classifier: str = "jev"
     bee_comment_model: str = "typesafe/jev-1.14"
     bee_post_model: str = "openai/gpt-6-luna-decisions"
-    # Model nhà trồng (ViSoBERT fine-tune, app/ai/visobert.py) chạy trước Bee cho cảm xúc bình luận và nội dung bài: đủ
+    # Model nhà trồng (ViSoBERT fine-tune, app/ai/local/visobert.py) chạy trước Bee cho cảm xúc bình luận và nội dung bài: đủ
     # chắc từ mức này thì lấy luôn, không gọi Bee. Thư mục model (gitignore, 374MB) - thiếu / thiếu torch thì bỏ qua bước này.
     visobert_enabled: bool = True
     visobert_min_confidence: float = 0.7
@@ -102,7 +102,7 @@ class Settings(BaseSettings):
     # visobert_min_confidence), không Jev/Bee/Kira, không lượt AI bổ sung khía cạnh/giai đoạn. Cảm xúc nội dung bài
     # (kind="post") vẫn như cũ. Bật lại = True.
     comment_ai_enabled: bool = False
-    # Model độ liên quan của bài (app/ai/visobert_relevance.py) chạy trước AI: lấy luôn khi đủ chắc theo ngưỡng từng nhãn.
+    # Model độ liên quan của bài (app/ai/local/visobert_relevance.py) chạy trước AI: lấy luôn khi đủ chắc theo ngưỡng từng nhãn.
     visobert_relevance_enabled: bool = True
     visobert_relevance_model_dir: str = "models/visobert-relevance-relabel"
     visobert_relevance_related_min: float = 0.9

@@ -10,7 +10,7 @@ chạy các câu của một database gần như lần lượt, nên request c�
 - stage = audience_stage ('' khi chưa gán), sentiment ('' khi chưa chấm), meaningful = sentiment_source khác 'rule'
   (MEANINGFUL_COMMENT_FILTER của cinemark); bảng khía cạnh chỉ đếm bình luận meaningful.
 
-Tính lại theo NGUYÊN NGÀY (app/services/reports/comment_rollup.py): upsert số mới của ngày rồi xoá các dòng của ngày đó
+Tính lại theo NGUYÊN NGÀY (app/services/stats/comment_rollup.py): upsert số mới của ngày rồi xoá các dòng của ngày đó
 không còn xuất hiện (đánh dấu bằng `run`) - không có lúc nào ngày đó trống. Đọc một ngày đi qua index comments(posted_at)
 nên chỉ chạm bình luận của đúng ngày đó.
 """

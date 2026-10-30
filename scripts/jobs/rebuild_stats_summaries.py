@@ -13,7 +13,7 @@ import time
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.reports.stats_summary import rebuild_from_source
+from app.services.stats.stats_summary import rebuild_from_source
 
 logger = get_logger(__name__)
 

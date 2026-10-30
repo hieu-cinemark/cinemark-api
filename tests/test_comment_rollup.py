@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.repositories.d1 import comment_rollup as cr
-from app.services.reports.comment_rollup import vn_days
+from app.services.stats.comment_rollup import vn_days
 
 
 @pytest.fixture

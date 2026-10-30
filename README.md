@@ -147,19 +147,22 @@ app/
   api/routes/            HTTP routes
   core/                  config, auth, logging, middleware
   clients/               thin clients: D1 transport, Kafka, Redis, R2 lake, Telegram
-  repositories/d1/       D1 SQL: store.py (movies/keywords/reports/stats), posts.py, comments.py
+  repositories/d1/       D1 SQL: store.py (movies/keywords/reports/stats), posts.py, comments.py, comment_rollup.py, topics.py
+  repositories/local/    SQLite on the job host (Social Topic assignment state)
   services/
-    crawl/               scheduler, crawl jobs/lanes, task queue, platform registry, tracked posts
+    crawl/               scheduler, crawl jobs/lanes, task queue, platform registry, tracked posts, comment value
     discovery/           AI hashtag/query discovery
     omar/                Omar API crawling (TikTok hashtags, channels, comments, trending)
     accounts/            account health, auto-login, platform accounts/proxies (Supabase), tokens
     relevance/           relevance rules, cleanup
-    sentiment/           lexicon fallback, comment value
-    reports/             social topic reports, report queue/schedule, stats summaries
+    reports/             social topic AI reports, report queue/schedule
+    stats/               daily stats rollup + comment rollup per movie x day (read by dashboard / cinemark)
+    topics/              Social Topic clustering (WIP)
     ops/                 alerts, metrics, AI runtime sync
-  ai/                    LLM client + tasks (relevance, sentiment, report), ViSoBERT models
-  workers/               ingest_consumer, lake_writer (python -m app.workers.<name>.main)
-  lake/, vision/
+  ai/                    LLM clients + tasks (relevance, sentiment, report)
+    local/               models run on this machine: ViSoBERT (sentiment, relevance), e5 embeddings
+  workers/               ingest_consumer, lake_writer (raw Kafka -> R2), scheduler (python -m app.workers.<name>.main)
+  vision/                cinema frame / scene classifiers
 scripts/
   jobs/                  run on a schedule (systemd timers / cron): python -m scripts.jobs.<name>
   ml/                    model training + labelling datasets

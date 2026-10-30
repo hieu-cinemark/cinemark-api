@@ -2,7 +2,7 @@
 (`choice` - kèm xác suất từng lựa chọn và độ tự tin). Thay cho việc gọi thẳng TypeSafe (api.typesafe.ai) từ 21/10/2026 -
 mọi lời gọi AI đi qua Bee (một khoá, một nơi trả phí).
 
-Chỉ dùng cho CA KHÓ: luật và model nhà trồng (ViSoBERT - app/ai/visobert.py) chạy trước, chỉ phần chúng không kết luận
+Chỉ dùng cho CA KHÓ: luật và model nhà trồng (ViSoBERT - app/ai/local/visobert.py) chạy trước, chỉ phần chúng không kết luận
 được mới tới đây.
   - Bình luận (cảm xúc / giai đoạn / khía cạnh, giá trị bình luận): COMMENT_MODEL - typesafe/jev-1.14.
   - Bài viết (độ liên quan, cảm xúc nội dung bài): POST_MODEL - openai/gpt-6-luna-decisions.

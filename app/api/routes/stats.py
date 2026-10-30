@@ -36,7 +36,7 @@ from app.schemas.stats import (
     PostPage,
     TimeseriesPoint,
 )
-from app.services.reports.stats_summary import get_hourly_counts, get_ingest_funnel
+from app.services.stats.stats_summary import get_hourly_counts, get_ingest_funnel
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 logger = get_logger(__name__)

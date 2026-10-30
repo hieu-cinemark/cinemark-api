@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.ai import jev, visobert
+from app.ai import jev
 from app.ai.decisions import COMMENT_MODEL_DEFAULT, POST_MODEL_DEFAULT
+from app.ai.local import visobert
 from app.ai.tasks import sentiment
 from app.core.config import settings
 

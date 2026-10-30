@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 _MAX_TOKENS = 128  # như lúc huấn luyện
 _CONTENT_CHARS = 600
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[3]
 
 _model: Any = None
 _failed = False

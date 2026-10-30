@@ -15,7 +15,7 @@ Giờ chia hai lớp, theo TỪNG PHIM đang theo dõi (không theo từ khoá):
    khung 6 giờ x loại nguồn (chính chủ / trang tin / cá nhân) và lấy ngẫu nhiên SAMPLE_PER_CELL bài chưa quét mỗi
    ô - để phần "khán giả nói gì" không bị bài quảng bá chi phối. Phía hiển thị cân lại theo tỷ trọng thật.
 
-3. AI chọn (mỗi giờ, từ 2026-10-10): Kira chấm nội dung các bài nhiều comment trong 7 ngày (app/services/sentiment/comment_value.py).
+3. AI chọn (mỗi giờ, từ 2026-10-10): Kira chấm nội dung các bài nhiều comment trong 7 ngày (app/services/crawl/comment_value.py).
    Bài điểm >= VALUE_PICK_SCORE (review, tranh luận, hỏi đáp về phim) chưa quét thì quét sâu (VALUE_PAGES trang), tối
    đa VALUE_PER_MOVIE bài mỗi phim mỗi giờ; bài điểm < VALUE_SKIP_SCORE (minigame tag bạn bè, quảng cáo đặt vé) bị bỏ khỏi
    cả lớp 1 và 2 để không tốn lượt quét vào comment rác. Kira tắt/lỗi thì bài không có điểm và mọi thứ chạy như cũ.
@@ -36,7 +36,7 @@ from app.clients.kafka import publish_comments_crawl_request
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL, ensure_post_voice_columns, reputable_authors
 from app.repositories.d1.store import d1_query
-from app.services.sentiment.comment_value import judge_new_posts, load_scores
+from app.services.crawl.comment_value import judge_new_posts, load_scores
 
 logger = get_logger(__name__)
 

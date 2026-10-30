@@ -160,9 +160,9 @@ async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, lis
 async def get_post_counts_by_platform() -> list[dict[str, Any]]:
     """Tổng số bài đã ingest theo nền tảng, cộng thời điểm crawl gần nhất và số ingest hôm
     nay so với hôm qua. Đọc bảng tổng hợp sẵn stats_platform_daily (xem
-    app/services/reports/stats_summary.py) - COUNT(*) toàn bộ posts qua D1 HTTP quá chậm cho
+    app/services/stats/stats_summary.py) - COUNT(*) toàn bộ posts qua D1 HTTP quá chậm cho
     trang Overview."""
-    from app.services.reports.stats_summary import get_post_counts_by_platform as _from_summary
+    from app.services.stats.stats_summary import get_post_counts_by_platform as _from_summary
 
     return await _from_summary()
 
@@ -170,7 +170,7 @@ async def get_post_counts_by_platform() -> list[dict[str, Any]]:
 async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
     """Số bài theo ngày của từng nền tảng trong `days` ngày gần nhất - từ bảng tổng hợp
     stats_platform_daily."""
-    from app.services.reports.stats_summary import get_post_timeseries as _from_summary
+    from app.services.stats.stats_summary import get_post_timeseries as _from_summary
 
     return await _from_summary(days)
 
@@ -178,14 +178,14 @@ async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
 async def get_comment_counts_by_platform() -> list[dict[str, Any]]:
     """Tổng số comment đã ingest theo nền tảng - cùng dạng với get_post_counts_by_platform,
     từ stats_platform_daily."""
-    from app.services.reports.stats_summary import get_comment_counts_by_platform as _from_summary
+    from app.services.stats.stats_summary import get_comment_counts_by_platform as _from_summary
 
     return await _from_summary()
 
 
 async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
     """Số comment theo ngày của từng nền tảng trong `days` ngày gần nhất."""
-    from app.services.reports.stats_summary import get_comment_timeseries as _from_summary
+    from app.services.stats.stats_summary import get_comment_timeseries as _from_summary
 
     return await _from_summary(days)
 
@@ -193,7 +193,7 @@ async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
 async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
     """Tổng số bài/comment theo từng từ khoá tìm kiếm cộng số ingest hôm nay so với hôm qua
     - từ bảng tổng hợp stats_keyword_daily."""
-    from app.services.reports.stats_summary import get_keyword_volume as _from_summary
+    from app.services.stats.stats_summary import get_keyword_volume as _from_summary
 
     return await _from_summary(platform)
 

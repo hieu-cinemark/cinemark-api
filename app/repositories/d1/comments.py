@@ -333,7 +333,7 @@ class CommentRepository:
             parent = await d1_query("SELECT keyword_id FROM posts WHERE id = ?", [post_id])
             if parent:
                 keyword_id = parent[0].get("keyword_id")
-            from app.services.reports.stats_summary import record_comment
+            from app.services.stats.stats_summary import record_comment
 
             await record_comment(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
             return True
@@ -373,7 +373,7 @@ class CommentRepository:
         parent = await d1_query("SELECT keyword_id FROM posts WHERE id = ?", [post_id])
         if parent:
             keyword_id = parent[0].get("keyword_id")
-        from app.services.reports.stats_summary import record_comment
+        from app.services.stats.stats_summary import record_comment
 
         await record_comment(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
         return True

@@ -1,5 +1,5 @@
 """Chạy ngay một lượt chọn bài + xếp crawl comment (app/services/crawl/comment_planner.py) thay vì chờ lượt mỗi giờ của
-scheduler - gồm lớp AI chọn bài đáng cào (app/services/sentiment/comment_value.py).
+scheduler - gồm lớp AI chọn bài đáng cào (app/services/crawl/comment_value.py).
 
 Cách dùng:
     python -m scripts.jobs.run_comment_round                     # mọi nền tảng có comment crawl

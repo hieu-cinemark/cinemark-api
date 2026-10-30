@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 
 _LABELS = {"NEG": "negative", "POS": "positive", "NEU": "neutral"}
 _MAX_TOKENS = 256
-_ROOT = Path(__file__).resolve().parents[2]
+_ROOT = Path(__file__).resolve().parents[3]
 
 _model: Any = None
 _failed = False

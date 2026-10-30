@@ -38,7 +38,6 @@ watchfiles==1.2.0
 websockets==17.0.1
 ruff==0.16.4
 aioboto3==13.4.0
-duckdb==1.2.1
 orjson==3.13.0
 emoji==2.16.0
 openai==3.8.0

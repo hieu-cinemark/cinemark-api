@@ -26,10 +26,10 @@ from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
-from app.ai import visobert
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
 from app.ai.decisions import POST, decisions_supported
 from app.ai.jev import classify_comments_jev, use_jev
+from app.ai.local import visobert
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
 from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
@@ -175,7 +175,7 @@ async def classify_comments(
                 routed["cache"] += 1
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
-    # 3. Model nhà trồng (ViSoBERT, app/ai/visobert.py): câu đủ chắc lấy luôn - chỉ cảm xúc, không khía cạnh/giai đoạn.
+    # 3. Model nhà trồng (ViSoBERT, app/ai/local/visobert.py): câu đủ chắc lấy luôn - chỉ cảm xúc, không khía cạnh/giai đoạn.
     #    Lượt chỉ bổ sung khía cạnh/giai đoạn (home_model=False) bỏ qua bước này. Bình luận khi tắt AI
     #    (settings.comment_ai_enabled=False): ViSoBERT quyết mọi câu, không ngưỡng, và dừng ở đây.
     home_only = kind == "comment" and not settings.comment_ai_enabled
