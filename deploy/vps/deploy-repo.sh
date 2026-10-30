@@ -38,9 +38,24 @@ if [ "$before" = "$after" ]; then
 fi
 echo "$repo: $before -> $after"
 
+# .venv có thể tạo bằng uv (không có pip bên trong) - thử pip, python -m pip, rồi uv.
+install_requirements() {
+  local req="$dir/requirements.txt" py="$dir/.venv/bin/python"
+  if [ -x "$dir/.venv/bin/pip" ]; then
+    as_owner "$dir/.venv/bin/pip" install -q -r "$req"
+  elif as_owner "$py" -m pip --version >/dev/null 2>&1; then
+    as_owner "$py" -m pip install -q -r "$req"
+  elif uv_bin=$(command -v uv || ls /root/.local/bin/uv /home/"$owner"/.local/bin/uv 2>/dev/null | head -1) && [ -n "$uv_bin" ]; then
+    as_owner "$uv_bin" pip install -q --python "$py" -r "$req"
+  else
+    echo "KHÔNG cài được thư viện: .venv không có pip và không tìm thấy uv" >&2
+    return 1
+  fi
+}
+
 if as_owner git -C "$dir" diff --name-only "$before" "$after" | grep -qx requirements.txt; then
   echo "requirements.txt đổi - cài lại thư viện"
-  as_owner "$dir/.venv/bin/pip" install -q -r "$dir/requirements.txt"
+  install_requirements
 fi
 
 for unit in $units; do
