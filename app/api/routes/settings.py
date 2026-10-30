@@ -71,6 +71,7 @@ from app.services.accounts import auto_login as auto_login_svc
 from app.services.accounts import platform_config_db as db
 from app.services.accounts.account_health import evaluate_account_health
 from app.services.accounts.platform_token import account_key as _account_key
+from app.services.accounts.user_agent import merge_user_agent, split_user_agent
 from app.services.crawl.scheduler import purge_in_progress, run_purge_now
 
 logger = get_logger(__name__)
@@ -89,8 +90,16 @@ async def list_accounts(platform: str | None = Query(default=None)) -> list[Acco
 
 @router.post("/accounts", response_model=AccountOut)
 async def create_account(payload: AccountCreate) -> AccountOut:
-    row = await db.create_account(payload.model_dump())
+    row = await db.create_account(_with_user_agent(payload.model_dump()))
     return AccountOut.masked(row)
+
+
+def _with_user_agent(fields: dict) -> dict:
+    """Ô User-Agent (form thêm tài khoản / import) -> ghép vào cookie dạng useragent=<base64> mà spider-hub đọc."""
+    user_agent = str(fields.pop("user_agent", "") or "").strip()
+    if user_agent:
+        fields["cookie"] = merge_user_agent(fields.get("cookie") or "", user_agent)
+    return fields
 
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
@@ -102,6 +111,19 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
     for name in ACCOUNT_SECRET_FIELDS:
         if changes.get(name) == "":
             changes.pop(name)
+    # Ô User-Agent: trống = giữ nguyên (như các ô bí mật); có giá trị thì ghép vào cookie mới gửi lên, hoặc cookie
+    # đang lưu. Form sửa nhận cookie đã tách UA (get_account_credentials), nên cookie mới gửi lên mà không kèm UA thì
+    # giữ UA đang lưu.
+    user_agent = (changes.pop("user_agent", None) or "").strip()
+    if user_agent or "cookie" in changes:
+        current = await db.get_account(account_id)
+        if current is None:
+            raise NotFoundError(f"Account {account_id} not found.")
+        stored_cookie = current.get("cookie") or ""
+        cookie = changes.get("cookie", stored_cookie)
+        user_agent = user_agent or split_user_agent(cookie)[1] or split_user_agent(stored_cookie)[1]
+        if user_agent:
+            changes["cookie"] = merge_user_agent(cookie, user_agent)
     if not changes:
         row = await db.get_account(account_id)
         if row is None:
@@ -117,7 +139,9 @@ async def get_account_credentials(account_id: int) -> AccountCredentialsOut:
     if row is None:
         raise NotFoundError(f"Account {account_id} not found.")
     logger.info("account_credentials_viewed", account_id=account_id)
-    return AccountCredentialsOut(id=row["id"], **{name: row.get(name) or "" for name in ACCOUNT_SECRET_FIELDS})
+    secrets = {name: row.get(name) or "" for name in ACCOUNT_SECRET_FIELDS}
+    secrets["cookie"], user_agent = split_user_agent(secrets["cookie"])
+    return AccountCredentialsOut(id=row["id"], user_agent=user_agent, **secrets)
 
 
 # Key Redis của spider-hub gắn theo từng tài khoản (constants/facebook.py, constants/threads.py) - xoá cùng tài khoản.
@@ -578,7 +602,7 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
         fields = {**row, "platform": payload.platform, "enabled": row.get("enabled", True)}
         try:
             if payload.target == "accounts":
-                await db.create_account(fields)
+                await db.create_account(_with_user_agent(fields))
             else:
                 await db.create_proxy(fields)
             created += 1

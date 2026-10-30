@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 
 ImportTarget = Literal["accounts", "proxies"]
 
-ACCOUNT_FIELDS = ("account_id", "password", "totp_secret", "email", "email_password", "cookie", "token")
+ACCOUNT_FIELDS = ("account_id", "password", "totp_secret", "email", "email_password", "cookie", "user_agent", "token")
 PROXY_FIELDS = ("proxy_url", "username", "password", "login_use_proxy")
 
 _ACCOUNT_ALIASES = {
@@ -61,6 +61,10 @@ _ACCOUNT_ALIASES = {
     "totp_secret": "totp_secret",
     "cookie": "cookie",
     "cookies": "cookie",
+    "ua": "user_agent",
+    "useragent": "user_agent",
+    "user_agent": "user_agent",
+    "user-agent": "user_agent",
     "token": "token",
     "refresh_token": "token",
     "refreshtoken": "token",
@@ -104,6 +108,7 @@ present):
   email          - recovery email, only if it's a genuinely separate field from account_id
   email_password - the recovery email's own password
   cookie         - a raw cookie header/string, if present
+  user_agent     - the browser User-Agent string ("Mozilla/5.0 ..."), if present as its own field
   token          - any other id/token field that doesn't fit the above (e.g. a device or odin id)
 
 Skip a row entirely if you cannot identify at least an account_id for it.

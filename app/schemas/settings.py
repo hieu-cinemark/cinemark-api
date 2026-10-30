@@ -64,9 +64,11 @@ class AccountCredentialsOut(BaseModel):
     id: int
     password: str = ""
     totp_secret: str = ""
+    # cookie không kèm mục useragent=...; UA đã giải mã nằm ở user_agent (app/services/accounts/user_agent.py).
     cookie: str = ""
     token: str = ""
     email_password: str = ""
+    user_agent: str = ""
 
 
 class AccountCreate(BaseModel):
@@ -79,6 +81,8 @@ class AccountCreate(BaseModel):
     email: str = ""
     email_password: str = ""
     enabled: bool = True
+    # UA trình duyệt đã tạo cookie (Facebook/Threads) - được ghép vào cookie dạng useragent=<base64>.
+    user_agent: str = ""
 
 
 class AccountSetProxy(BaseModel):
@@ -98,6 +102,7 @@ class AccountUpdate(BaseModel):
     email: str | None = None
     email_password: str | None = None
     enabled: bool | None = None
+    user_agent: str | None = None
 
 
 class ProxyOut(BaseModel):
