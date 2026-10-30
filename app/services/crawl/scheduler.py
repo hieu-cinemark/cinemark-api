@@ -697,22 +697,22 @@ async def _channel_profiles_tick() -> None:
     _spawn(channel_profiles.refresh_followers())
 
 
-# Đối soát bảng tổng hợp số liệu (stats_summary.reconcile_recent_days) mỗi giờ ở phút này - lệch khỏi lượt crawl đầu giờ
-# và nhịp đào :20. Ingest cộng dồn từng bài vào bảng tổng hợp; khi D1 quá tải các lần cộng đó thất bại và số liệu đếm
-# thiếu (28/10/2026) - lượt này đếm lại hôm nay + hôm qua từ bảng gốc.
-_STATS_RECONCILE_MINUTE = 45
-_STATS_RECONCILE_KEY = f"{REDIS_KEY_PREFIX}scheduler:stats_reconcile:{{hour}}"
+# Đối soát bảng tổng hợp số liệu (stats_summary.reconcile_recent_days) mỗi 10 phút: từ 30/10/2026 đây là nguồn DUY NHẤT
+# của bảng tổng hợp (ingest không cộng từng bài nữa - xem docstring stats_summary). Lượt thường chỉ tính hôm nay; lượt
+# _STATS_RECONCILE_FULL_SLOT mỗi giờ tính cả hôm qua (bài về trễ sau nửa đêm).
+_STATS_RECONCILE_EVERY_MINUTES = 10
+_STATS_RECONCILE_FULL_SLOT = 4  # phút :40-:49
+_STATS_RECONCILE_KEY = f"{REDIS_KEY_PREFIX}scheduler:stats_reconcile:{{slot}}"
 
 
 async def _stats_reconcile_tick() -> None:
     now = datetime.now(TIMEZONE)
-    if now.minute < _STATS_RECONCILE_MINUTE:
-        return
-    key = _STATS_RECONCILE_KEY.format(hour=now.strftime("%Y-%m-%dT%H"))
+    slot = now.minute // _STATS_RECONCILE_EVERY_MINUTES
+    key = _STATS_RECONCILE_KEY.format(slot=f"{now:%Y-%m-%dT%H}:{slot}")
     if not await get_redis_client().set(key, "1", nx=True, ex=2 * 3600):
         return
     # Mỗi câu tổng hợp có thể tới vài chục giây khi D1 bận - chạy nền, không giữ vòng lặp lịch.
-    _spawn(reconcile_recent_days())
+    _spawn(reconcile_recent_days(2 if slot == _STATS_RECONCILE_FULL_SLOT else 1))
 
 
 async def _loop() -> None:

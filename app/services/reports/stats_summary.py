@@ -2,8 +2,10 @@
 
 COUNT(*) toàn bảng posts/comments qua HTTP API của Cloudflare quá chậm cho trang
 Overview (vài giây mỗi endpoint). Hai bảng tổng hợp theo ngày này đủ nhỏ để đọc trong
-vài chục mili giây, và được cộng thêm mỗi lần insert bài/comment *mới* (update chỉ
-làm mới last_scraped_at).
+vài chục mili giây. Từ 30/10/2026 chúng KHÔNG còn được cộng theo từng bài/comment (mỗi lần
+lưu tốn thêm 2 lần ghi D1 - hơn 200k lần ghi phụ mỗi ngày, góp phần làm D1 quá tải 7429):
+reconcile_recent_days() đếm lại từ bảng gốc theo first_seen_at mỗi 10 phút (scheduler), nên
+số trong ngày trễ tối đa ~10 phút.
 
     stats_platform_daily  (day, platform) -> posts, comments, last_scraped_at
     stats_keyword_daily   (day, keyword_id) -> platform, posts, comments, last_scraped_at
@@ -33,13 +35,8 @@ logger = get_logger(__name__)
 _ready = False
 _ready_lock = asyncio.Lock()
 
-# Cùng kiểu với _note_drop trong app/workers/ingest_consumer/main.py. Ghi bảng tổng hợp
-# lỗi ở đây không làm mất chính bài/comment (persist_post/persist_comment đã commit dòng
-# đó rồi) nhưng âm thầm để số liệu trên trang Overview bị thiếu cho ngày/nền tảng đó mãi
-# mãi - đây là các bộ đếm cộng dồn, không có cách đối soát nào trừ khi có người nhận ra
-# và tự chạy `python -m scripts.jobs.rebuild_stats_summaries`. Cùng dạng cửa sổ trượt rồi
-# cảnh báo một lần như bộ đếm bài bị loại của ingest, để D1 sập kéo dài không spam kênh
-# sau khi đã báo một lần.
+# Lượt đối soát lỗi (D1 quá tải) để số liệu trên trang Overview đứng yên - báo Telegram một lần khi lỗi lặp lại trong cửa
+# sổ trượt, để D1 sập kéo dài không spam kênh sau khi đã báo một lần.
 _ROLLUP_FAILURE_ALERT_THRESHOLD = 5
 _ROLLUP_FAILURE_WINDOW_SECONDS = 3600
 
@@ -56,7 +53,7 @@ async def _note_rollup_failure(table: str, **context: Any) -> None:
         await send_telegram_message(
             f"🚨 Stats rollup write failing: {table}\n"
             f"{count} failures in the last {_ROLLUP_FAILURE_WINDOW_SECONDS // 60}m - dashboard counts are "
-            f"drifting.\nRun `python -m scripts.jobs.rebuild_stats_summaries` to reconcile.\n{details}"
+            f"drifting.\nNext reconcile retries in 10 minutes.\n{details}"
         )
 
 
@@ -218,39 +215,11 @@ async def record_post(
     scraped_at: str,
     is_new: bool,
 ) -> None:
-    """Cộng bảng tổng hợp ngày theo nền tảng (+ từ khoá) sau khi ghi một bài."""
-    day = _day_from_iso(scraped_at)
-    if not day or not platform:
+    """Đếm bài vào bộ đếm theo giờ (Redis) sau khi ghi - bảng tổng hợp ngày do reconcile_recent_days lo (xem docstring
+    module). keyword_id giữ trong chữ ký cho bên gọi, không dùng nữa."""
+    if not scraped_at or not platform:
         return
-    await ensure_stats_tables()
-    post_delta = 1 if is_new else 0
     await _bump_hourly(platform, scraped_at, "posts" if is_new else "updated")
-    ok = await _q(
-        """
-        INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-        VALUES (?, ?, ?, 0, ?)
-        ON CONFLICT(day, platform) DO UPDATE SET
-            posts = posts + excluded.posts,
-            last_scraped_at = excluded.last_scraped_at
-        """,
-        [day, platform, post_delta, scraped_at],
-    )
-    if ok is None:
-        await _note_rollup_failure("stats_platform_daily", day=day, platform=platform)
-    if keyword_id:
-        ok = await _q(
-            """
-            INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-            VALUES (?, ?, ?, ?, 0, ?)
-            ON CONFLICT(day, keyword_id) DO UPDATE SET
-                posts = posts + excluded.posts,
-                platform = excluded.platform,
-                last_scraped_at = excluded.last_scraped_at
-            """,
-            [day, keyword_id, platform, post_delta, scraped_at],
-        )
-        if ok is None:
-            await _note_rollup_failure("stats_keyword_daily", day=day, platform=platform, keyword_id=keyword_id)
 
 
 async def record_comment(
@@ -260,48 +229,10 @@ async def record_comment(
     scraped_at: str,
     is_new: bool,
 ) -> None:
-    """Cộng bảng tổng hợp ngày theo nền tảng (+ từ khoá) sau khi ghi một comment."""
-    day = _day_from_iso(scraped_at)
-    if not day or not platform:
+    """Đếm comment MỚI vào bộ đếm theo giờ (Redis) - xem record_post."""
+    if not scraped_at or not platform or not is_new:
         return
-    await ensure_stats_tables()
-    comment_delta = 1 if is_new else 0
-    if is_new:
-        await _bump_hourly(platform, scraped_at, "comments")
-    ok = await _q(
-        """
-        INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-        VALUES (?, ?, 0, ?, ?)
-        ON CONFLICT(day, platform) DO UPDATE SET
-            comments = comments + excluded.comments,
-            last_scraped_at = CASE
-                WHEN excluded.last_scraped_at > COALESCE(stats_platform_daily.last_scraped_at, '')
-                THEN excluded.last_scraped_at
-                ELSE stats_platform_daily.last_scraped_at
-            END
-        """,
-        [day, platform, comment_delta, scraped_at],
-    )
-    if ok is None:
-        await _note_rollup_failure("stats_platform_daily", day=day, platform=platform)
-    if keyword_id:
-        ok = await _q(
-            """
-            INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-            VALUES (?, ?, ?, 0, ?, ?)
-            ON CONFLICT(day, keyword_id) DO UPDATE SET
-                comments = comments + excluded.comments,
-                platform = excluded.platform,
-                last_scraped_at = CASE
-                    WHEN excluded.last_scraped_at > COALESCE(stats_keyword_daily.last_scraped_at, '')
-                    THEN excluded.last_scraped_at
-                    ELSE stats_keyword_daily.last_scraped_at
-                END
-            """,
-            [day, keyword_id, platform, comment_delta, scraped_at],
-        )
-        if ok is None:
-            await _note_rollup_failure("stats_keyword_daily", day=day, platform=platform, keyword_id=keyword_id)
+    await _bump_hourly(platform, scraped_at, "comments")
 
 
 async def get_post_counts_by_platform() -> list[dict[str, Any]]:
@@ -618,7 +549,7 @@ async def reconcile_recent_days(days: int = 2) -> bool:
     )
     for sql, label in statements:
         if await _q(sql, [since], timeout=slow) is None:
-            logger.warning("stats_reconcile_failed", step=label, since=since)
+            await _note_rollup_failure("stats_reconcile", step=label, since=since)
             return False
     logger.info("stats_reconciled", since=since)
     return True
