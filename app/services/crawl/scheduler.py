@@ -60,6 +60,7 @@ from app.services.omar.omar_tiktok import pause_over as omar_pause_over
 from app.services.omar.omar_tiktok import run_omar_round_tracked
 from app.services.ops import ops_alerts
 from app.services.relevance.cleanup import resolve_cleanup_settings, run_purge
+from app.services.reports import comment_rollup
 from app.services.reports.stats_summary import reconcile_recent_days
 
 logger = get_logger(__name__)
@@ -713,6 +714,12 @@ async def _stats_reconcile_tick() -> None:
         return
     # Mỗi câu tổng hợp có thể tới vài chục giây khi D1 bận - chạy nền, không giữ vòng lặp lịch.
     _spawn(reconcile_recent_days(2 if slot == _STATS_RECONCILE_FULL_SLOT else 1))
+    # Bảng tổng hợp bình luận theo phim x ngày (cinemark đọc cho Social Topic / Social Buzz) - cùng nhịp 10 phút; lượt đêm
+    # tính lại NIGHTLY_DAYS ngày (app/services/reports/comment_rollup.py).
+    if now.hour == comment_rollup.NIGHTLY_HOUR and slot == 3:
+        _spawn(comment_rollup.refresh_nightly())
+    else:
+        _spawn(comment_rollup.refresh_recent())
 
 
 async def _loop() -> None:
