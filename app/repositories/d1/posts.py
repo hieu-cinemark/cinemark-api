@@ -71,8 +71,10 @@ RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NUL
 # --- cột "tiếng nói" của bài + trạng thái quét comment -----------------------
 # Thêm 2026-10-08. Nội dung bài cũng là tiếng nói khán giả (trên Threads phần lớn cảm nhận nằm ở chính bài, ít
 # comment), nên bài được gắn nhãn cảm xúc/khía cạnh/giai đoạn y như comment (sentiment_sweep.classify_pending_posts).
-# comments_crawled_at / comments_crawled_replies / comments_crawl_reason: lần cuối xếp hàng crawl comment cho bài,
-# reply_count lúc đó và lý do (hot/sample) - để app/services/crawl/comment_planner.py biết bài nào cần quét lại.
+# comments_crawled_at / comments_crawled_replies / comments_crawl_reason: lần cuối crawl comment xong thật cho bài,
+# reply_count lúc xếp hàng và lý do (hot/sample) - để app/services/crawl/comment_planner.py biết bài nào cần quét lại.
+# comments_queued_at / comments_queued_replies / comments_queued_run_id (02/11/2026): lease đang xếp hàng, ghi TRƯỚC khi publish
+# và chỉ nhả bởi tín hiệu kết thúc của đúng run_id đó.
 POST_VOICE_COLUMNS = (
     ("sentiment", "TEXT"),
     ("aspects", "TEXT"),
@@ -81,6 +83,9 @@ POST_VOICE_COLUMNS = (
     ("comments_crawled_at", "TEXT"),
     ("comments_crawled_replies", "INTEGER"),
     ("comments_crawl_reason", "TEXT"),
+    ("comments_queued_at", "TEXT"),
+    ("comments_queued_replies", "INTEGER"),
+    ("comments_queued_run_id", "TEXT"),
     # Lần đầu bài vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - số đo Social Topic tách phần về trễ. Thêm 2026-10-28.
     ("first_seen_at", "TEXT"),
     # sentiment_sweep._save ghi cột này cho cả comments lẫn posts; posts thiếu nó nên mọi lần lưu cảm xúc bài đều lỗi

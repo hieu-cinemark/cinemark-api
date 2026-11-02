@@ -21,18 +21,25 @@ Giờ chia hai lớp, theo TỪNG PHIM đang theo dõi (không theo từ khoá):
    cả lớp 1 và 2 để không tốn lượt quét vào comment rác. Kira tắt/lỗi thì bài không có điểm và mọi thứ chạy như cũ.
 
 MAX_PUBLISH_PER_ROUND giới hạn số request mỗi nền tảng mỗi giờ để không vắt kiệt pool tài khoản/proxy.
+
+Trạng thái (02/11/2026): trước khi publish chỉ ghi lease comments_queued_at (kèm run_id) chống xếp trùng; comments_crawled_at được ghi khi spider-hub
+báo job xong (apply_comment_completions). Trước đó ghi ngay lúc publish, nên job bị Dừng/bỏ qua/lỗi phiên trông như đã quét:
+bài không tăng comment thì không được quét lại, lớp mẫu (chỉ lấy bài chưa có timestamp) không bao giờ thử lại.
 """
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.clients.kafka import publish_comments_crawl_request
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL, ensure_post_voice_columns, reputable_authors
 from app.repositories.d1.store import d1_query
@@ -69,6 +76,12 @@ VALUE_PAGES = 5
 # Nhân số trang theo nền tảng (2026-10-15): Facebook Comet ~10 comment/trang, Threads cũng ít - cùng số trang với TikTok
 # (20-50 comment/trang) thì bài FB/Threads chỉ được vài chục comment. Vừa phải vì tài khoản Facebook còn ít.
 PAGE_MULTIPLIER = {"facebook": 2, "threads": 2}
+# Lease xếp hàng: job thường báo kết thúc rồi nhả; chỉ khi mất luôn tín hiệu đó (consumer chết, message mất) mới phải chờ hết
+# hạn này. Rộng hơn hàng tồn comment Facebook lâu nhất.
+QUEUE_LEASE = timedelta(hours=24)
+# Giữ đúng tên key của spider-hub (runtime/task_queue.py); mỗi nhịp scheduler xử lý tối đa từng này tín hiệu.
+COMMENT_COMPLETIONS_KEY = f"{REDIS_KEY_PREFIX}comment_crawl_completions"
+COMPLETIONS_PER_TICK = 100
 
 SOURCE_OFFICIAL = "chinh_chu"
 SOURCE_MEDIA = "trang_tin"
@@ -116,6 +129,12 @@ def velocity(row: dict[str, Any], now: datetime) -> float:
     hours = max((now - posted).total_seconds() / 3600, 1.0)
     interactions = _num(row.get("like_count")) + 3 * _num(row.get("reply_count")) + _num(row.get("shares"))
     return interactions / hours
+
+
+def queued_recently(row: dict[str, Any], now: datetime) -> bool:
+    """Bài đã có job comment đang xếp hàng/đang chạy (lease còn hạn) - lượt này không xếp trùng."""
+    queued_at = _parse_time(row.get("comments_queued_at"))
+    return queued_at is not None and now - queued_at < QUEUE_LEASE
 
 
 def refresh_due(row: dict[str, Any], now: datetime) -> bool:
@@ -252,7 +271,7 @@ async def _candidates(platform: str, window: timedelta, now: datetime) -> list[d
         SELECT p.id, p.external_id, p.url, p.platform, p.movie_id, p.author, p.posted_at,
                p.like_count, p.reply_count,
                COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) + COALESCE(p.quote_count, 0) AS shares,
-               p.comments_crawled_at, p.comments_crawled_replies, m.title AS movie_title,
+               p.comments_crawled_at, p.comments_crawled_replies, p.comments_queued_at, m.title AS movie_title,
                substr(p.content, 1, 400) AS content
         FROM posts p JOIN movies m ON m.id = p.movie_id
         WHERE p.platform = ? AND m.enabled = 1 AND m.released_at BETWEEN ? AND ?
@@ -270,20 +289,84 @@ async def _candidates(platform: str, window: timedelta, now: datetime) -> list[d
     return rows
 
 
-async def _mark(picks: list[CrawlPick], now: datetime) -> None:
-    """Ghi lần quét + reply_count lúc đó, để lượt sau không xếp hàng lại cùng bài trước hạn."""
-    for pick in picks:
-        await d1_query(
-            "UPDATE posts SET comments_crawled_at = ?, comments_crawled_replies = ?, comments_crawl_reason = ? WHERE id = ?",
-            [now.isoformat(), pick.reply_count, pick.reason, pick.post_id],
-            quiet=True,
+async def _mark_queued(pick: CrawlPick, now: datetime, run_id: str) -> bool:
+    """Ghi lease TRƯỚC khi publish: job chạy nhanh có thể xong trước khi bước ghi này chạy, và ghi sau sẽ đè lên tín hiệu xong -
+    bài đã quét lại mang lease 24 giờ. False khi D1 lỗi (không publish: không có lease thì lượt sau xếp trùng)."""
+    result = await d1_query(
+        "UPDATE posts SET comments_queued_at = ?, comments_queued_replies = ?, comments_queued_run_id = ?, "
+        "comments_crawl_reason = ? WHERE id = ?",
+        [now.isoformat(), pick.reply_count, run_id, pick.reason, pick.post_id],
+        quiet=True,
+    )
+    return result is not None
+
+
+async def _release_queued(pick: CrawlPick, run_id: str) -> None:
+    await d1_query(
+        "UPDATE posts SET comments_queued_at = NULL, comments_queued_replies = NULL, comments_queued_run_id = NULL "
+        "WHERE id = ? AND comments_queued_run_id = ?",
+        [pick.post_id, run_id],
+        quiet=True,
+    )
+
+
+async def _apply_completion(item: dict[str, Any]) -> bool:
+    """Job xong thì luôn ghi lần quét; bị bỏ qua / lỗi thì không. Lease chỉ nhả khi đúng run_id: tín hiệu muộn của job cũ, hay của
+    một lần bấm tay trên dashboard, không được xoá lease của job khác còn đang xếp hàng. False khi D1 lỗi."""
+    run_id = item.get("run_id")
+    where = [item["platform"], item["post_id"]]
+    if item.get("status") == "done":
+        finished = datetime.fromtimestamp(float(item["finished_at"]), tz=UTC).isoformat()
+        sql = (
+            "UPDATE posts SET comments_crawled_at = ?, "
+            "comments_crawled_replies = CASE WHEN comments_queued_run_id = ? "
+            "THEN COALESCE(comments_queued_replies, reply_count) ELSE reply_count END, "
+            "comments_queued_at = CASE WHEN comments_queued_run_id = ? THEN NULL ELSE comments_queued_at END, "
+            "comments_queued_replies = CASE WHEN comments_queued_run_id = ? THEN NULL ELSE comments_queued_replies END, "
+            "comments_queued_run_id = CASE WHEN comments_queued_run_id = ? THEN NULL ELSE comments_queued_run_id END "
+            "WHERE platform = ? AND external_id = ?"
         )
+        params = [finished, run_id, run_id, run_id, run_id, *where]
+    else:
+        sql = (
+            "UPDATE posts SET comments_queued_at = NULL, comments_queued_replies = NULL, comments_queued_run_id = NULL "
+            "WHERE platform = ? AND external_id = ? AND comments_queued_run_id = ?"
+        )
+        params = [*where, run_id]
+    return await d1_query(sql, params, quiet=True) is not None
+
+
+async def apply_comment_completions() -> int:
+    """Áp tín hiệu kết thúc job comment từ spider-hub lên D1, cũ nhất trước. Chỉ gỡ khỏi hàng sau khi D1 ghi xong, nên D1 lỗi
+    thì tín hiệu còn nguyên cho nhịp sau. Ghi lại là vô hại."""
+    await ensure_post_voice_columns()
+    redis = get_redis_client()
+    applied = 0
+    for _ in range(COMPLETIONS_PER_TICK):
+        raw = await redis.lindex(COMMENT_COMPLETIONS_KEY, -1)
+        if raw is None:
+            break
+        try:
+            ok = await _apply_completion(json.loads(raw))
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning("comment_completion_malformed", error=str(exc)[:200])
+            ok = True
+        else:
+            if not ok:
+                logger.warning("comment_completion_d1_failed", applied=applied)
+                break
+            applied += 1
+        await redis.lrem(COMMENT_COMPLETIONS_KEY, -1, raw)
+    if applied:
+        logger.info("comment_completions_applied", applied=applied)
+    return applied
 
 
 async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: bool) -> dict[str, int]:
     """Một lượt mỗi giờ cho một nền tảng: lớp bài nóng, và lớp mẫu nếu `with_sample`. Trả về thống kê."""
     now = datetime.now(tz=UTC)
-    week_rows = await _candidates(platform, VALUE_WINDOW, now)
+    all_rows = await _candidates(platform, VALUE_WINDOW, now)
+    week_rows = [row for row in all_rows if not queued_recently(row, now)]
     scores: dict[str, int] = {}
     try:
         scores = await load_scores([row["id"] for row in week_rows if _num(row.get("reply_count")) > 0])
@@ -307,16 +390,22 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
     picks = picks[:MAX_PUBLISH_PER_ROUND]
     published: list[CrawlPick] = []
     for pick in picks:
+        run_id = str(uuid.uuid4())
+        if not await _mark_queued(pick, now, run_id):
+            logger.warning("comment_queue_lease_failed", platform=platform, post_id=pick.post_id)
+            continue
         ok = await publish_comments_crawl_request(
             platform=platform,
             post_external_id=pick.external_id,
             post_url=pick.url,
             max_pages=pick.max_pages * PAGE_MULTIPLIER.get(platform, 1),
             bypass_drain=False,
+            run_id=run_id,
         )
         if ok:
             published.append(pick)
-    await _mark(published, now)
+        else:
+            await _release_queued(pick, run_id)
     stats = {
         "candidates": len(hot_rows),
         "published": len(published),
@@ -325,6 +414,7 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
         "sample": sum(1 for p in published if p.reason == "sample"),
         "ai_value": sum(1 for p in published if p.reason == "ai_value"),
         "skipped_low_value": len(week_rows) - len(usable),
+        "skipped_queued": len(all_rows) - len(week_rows),
     }
     logger.info("comment_round_finished", platform=platform, with_sample=with_sample, **stats)
     return stats

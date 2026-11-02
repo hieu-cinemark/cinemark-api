@@ -90,6 +90,10 @@ def test_reconcile_stops_on_failed_step(monkeypatch):
     async def no_tables():
         return None
 
+    async def no_alert(*args, **kwargs):
+        return None
+
     monkeypatch.setattr(stats_summary, "_q", failing_q)
     monkeypatch.setattr(stats_summary, "ensure_stats_tables", no_tables)
+    monkeypatch.setattr(stats_summary, "_note_rollup_failure", no_alert)  # báo lỗi rollup ghi Redis - không chạm thật
     assert asyncio.run(stats_summary.reconcile_recent_days(2)) is False

@@ -174,3 +174,44 @@ async def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(_main()))
+
+
+def _strict_post(resp) -> AsyncMock:
+    client = MagicMock()
+    client.post = AsyncMock(side_effect=resp if isinstance(resp, Exception) else None, return_value=resp)
+    client.is_closed = False
+    return client
+
+
+def _query_with(resp, strict: bool):
+    async def run():
+        with (
+            patch.object(d1_client, "_configured", return_value=True),
+            patch.object(d1_client.settings, "db_mode", "remote"),
+            patch.object(d1_client, "_get_http_client", AsyncMock(return_value=_strict_post(resp))),
+        ):
+            if strict:
+                with d1_client.d1_strict():
+                    return await d1_client.d1_query("UPDATE posts SET a = 1", max_retries=0)
+            return await d1_client.d1_query("UPDATE posts SET a = 1", max_retries=0)
+
+    return asyncio.run(run())
+
+
+def test_strict_raises_on_outage_default_still_returns_none() -> None:
+    import httpx
+    import pytest
+
+    for resp in (
+        _FakeResp(503, "unavailable"),
+        _FakeResp(429, "rate limited"),
+        _FakeResp(400, '{"errors":[{"message":"D1 DB is overloaded"}]}'),
+        httpx.ConnectTimeout("slow"),
+    ):
+        assert _query_with(resp, strict=False) is None
+        with pytest.raises(d1_client.D1Unavailable):
+            _query_with(resp, strict=True)
+
+
+def test_strict_keeps_none_for_plain_sql_error() -> None:
+    assert _query_with(_FakeResp(400, "duplicate column name: x"), strict=True) is None

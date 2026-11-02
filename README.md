@@ -1,5 +1,33 @@
 # cinemark-api
 
+## Tin sau công chiếu (Google News Light + Bee)
+
+Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` và restart API. Timeout mặc định
+`SERPAPI_TIMEOUT_SECONDS=120`. Không cần SDK mới.
+
+- `POST /research/google-news`: tìm trực tiếp, body `{"q":"phim Út Lan 2 đánh giá","gl":"vn","hl":"vi"}`.
+  Dùng engine cố định `google_news_light`, trả JSON gồm `news_results` và metadata/phân trang.
+- `GET /research/movies/{movie_id}/news`: chỉ phim đang theo dõi, có ngày khởi chiếu không ở tương lai (giờ Việt Nam).
+  Tải cache hoặc tìm mới nếu chưa có/đã đủ 72 giờ. Cache Redis không hết hạn; lỗi cập nhật giữ bản cũ.
+- `POST /research/movies/{movie_id}/news/analyze`: Bee phân tích tiêu đề/trích đoạn của snapshot tin hiện tại.
+  Dùng provider `beeknoee` trong cấu hình AI, không phụ thuộc provider đang chọn cho task khác.
+  Phân tích được lưu và tái sử dụng cho tới khi tin được cập nhật. Không tự gọi AI theo lịch.
+
+Scheduler hiện có kiểm tra mỗi giờ và tìm lại từng phim đã chiếu sau 72 giờ kể từ
+lần thành công. Tác vụ tin chạy nền, không chặn lịch crawl. Cần chạy tiến trình
+scheduler (`cinemark-scheduler` trên VPS, hoặc `scheduler_in_web` theo cấu hình hiện có).
+Có khoá Redis chống gọi đồng thời; lỗi tìm tin giãn thử lại 1 giờ. Không tự phân trang
+hay thử lại request SerpApi để tránh tiêu quota ngoài dự kiến. Redis cần persistence
+nếu muốn giữ snapshot qua restart Redis.
+
+Cinemark Worker kết nối bằng `CINEMARK_API_BASE_URL` và secret `CINEMARK_API_AUTH_KEY`
+(khớp `API_AUTH_KEY` bên API nếu bật xác thực). Không gửi key SerpApi xuống trình duyệt.
+
+Thiếu key trả 503; provider lỗi/timeout trả 502. Chỉ dùng tin làm tư liệu bổ sung,
+không coi phân tích trích đoạn là khảo sát khán giả hay đánh giá toàn văn bài báo.
+
+Tài liệu provider: [Google News Light API](https://serpapi.com/google-news-light-api).
+
 Kafka⇄D1 bridge for spider-hub's social-media crawls. Triggers crawls
 (reads which movies/keywords to search for from cinemark-scraper's D1
 database, publishes them to Kafka) and ingests the results (consumes

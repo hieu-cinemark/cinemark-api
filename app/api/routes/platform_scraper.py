@@ -58,6 +58,7 @@ def build_run_route(router: APIRouter, platform: str) -> None:
                 end_date=payload.end_date,
                 recent_post=payload.recent_post,
                 bfs_depth=payload.bfs_depth if payload.keyword_id is not None else None,
+                clear_stop=True,
             )
             if ok:
                 published += 1

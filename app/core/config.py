@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # thì API không yêu cầu xác thực (hành vi cũ).
     api_auth_key: str | None = None
 
+    # Google News Light (SerpApi), tin sau công chiếu cập nhật mỗi 72 giờ.
+    serpapi_api_key: str | None = None
+    serpapi_timeout_seconds: float = 120.0
+
     # Cloudflare D1 - cho ingest consumer đọc/ghi database D1 của cinemark-scraper qua
     # HTTP query API của Cloudflare (binding D1 chỉ có bên trong Worker; đây là cách duy
     # nhất để vào từ một tiến trình VPS thường). Xem app/repositories/d1/store.py. Tất cả đều không
@@ -161,6 +165,9 @@ class Settings(BaseSettings):
     # nhiều: sáng đi làm và tối sau 20h (giờ yên lặng Meta 23:30-05:30). Mỗi ngày lệch ngẫu nhiên thêm 0-facebook_nurture_
     # jitter_minutes phút (ổn định trong ngày) để không lặp đúng một giờ. "" = tắt.
     facebook_nurture_times: str = "08:00,20:00"
+    # Cổng cứng cho auto-login, đứng trên công tắc của dashboard (02/11/2026, người vận hành chọn tắt): không lượt nào được
+    # publish, kể cả nút "Run now". Phía spider-hub còn có AUTO_LOGIN_KILL_SWITCH (mặc định bật).
+    auto_login_allowed: bool = False
     facebook_nurture_jitter_minutes: int = 50
     facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"

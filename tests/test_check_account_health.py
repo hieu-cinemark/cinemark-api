@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-from scripts.jobs.check_account_health import check
+from app.services.ops.health_checks import check_account_health as check
 
 
 def _account(**overrides: object) -> dict[str, object]:
@@ -19,10 +19,10 @@ def _account(**overrides: object) -> dict[str, object]:
 
 async def test_transition_into_warning_alerts_once() -> None:
     with (
-        patch("scripts.jobs.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status="ok")])),
-        patch("scripts.jobs.check_account_health.evaluate_account_health", AsyncMock(return_value="warning")),
-        patch("scripts.jobs.check_account_health.update_account_check_result", AsyncMock()) as mock_update,
-        patch("scripts.jobs.check_account_health.send_telegram_message", AsyncMock()) as mock_telegram,
+        patch("app.services.ops.health_checks.list_accounts", AsyncMock(return_value=[_account(last_check_status="ok")])),
+        patch("app.services.ops.health_checks.evaluate_account_health", AsyncMock(return_value="warning")),
+        patch("app.services.ops.health_checks.update_account_check_result", AsyncMock()) as mock_update,
+        patch("app.services.ops.health_checks.send_telegram_message", AsyncMock()) as mock_telegram,
     ):
         await check()
 
@@ -33,12 +33,12 @@ async def test_transition_into_warning_alerts_once() -> None:
 async def test_staying_in_warning_does_not_re_alert() -> None:
     with (
         patch(
-            "scripts.jobs.check_account_health.list_accounts",
+            "app.services.ops.health_checks.list_accounts",
             AsyncMock(return_value=[_account(last_check_status="warning")]),
         ),
-        patch("scripts.jobs.check_account_health.evaluate_account_health", AsyncMock(return_value="warning")),
-        patch("scripts.jobs.check_account_health.update_account_check_result", AsyncMock()),
-        patch("scripts.jobs.check_account_health.send_telegram_message", AsyncMock()) as mock_telegram,
+        patch("app.services.ops.health_checks.evaluate_account_health", AsyncMock(return_value="warning")),
+        patch("app.services.ops.health_checks.update_account_check_result", AsyncMock()),
+        patch("app.services.ops.health_checks.send_telegram_message", AsyncMock()) as mock_telegram,
     ):
         await check()
 
@@ -48,12 +48,12 @@ async def test_staying_in_warning_does_not_re_alert() -> None:
 async def test_recovering_to_ok_does_not_alert() -> None:
     with (
         patch(
-            "scripts.jobs.check_account_health.list_accounts",
+            "app.services.ops.health_checks.list_accounts",
             AsyncMock(return_value=[_account(last_check_status="warning")]),
         ),
-        patch("scripts.jobs.check_account_health.evaluate_account_health", AsyncMock(return_value="ok")),
-        patch("scripts.jobs.check_account_health.update_account_check_result", AsyncMock()),
-        patch("scripts.jobs.check_account_health.send_telegram_message", AsyncMock()) as mock_telegram,
+        patch("app.services.ops.health_checks.evaluate_account_health", AsyncMock(return_value="ok")),
+        patch("app.services.ops.health_checks.update_account_check_result", AsyncMock()),
+        patch("app.services.ops.health_checks.send_telegram_message", AsyncMock()) as mock_telegram,
     ):
         await check()
 
@@ -64,10 +64,10 @@ async def test_first_ever_check_landing_on_warning_still_alerts() -> None:
     """previous_status là None (chưa từng kiểm tra) - vẫn là chuyển sang trạng thái xấu đi,
     không phải thứ coi là "đã biết rồi"."""
     with (
-        patch("scripts.jobs.check_account_health.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])),
-        patch("scripts.jobs.check_account_health.evaluate_account_health", AsyncMock(return_value="disabled")),
-        patch("scripts.jobs.check_account_health.update_account_check_result", AsyncMock()),
-        patch("scripts.jobs.check_account_health.send_telegram_message", AsyncMock()) as mock_telegram,
+        patch("app.services.ops.health_checks.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])),
+        patch("app.services.ops.health_checks.evaluate_account_health", AsyncMock(return_value="disabled")),
+        patch("app.services.ops.health_checks.update_account_check_result", AsyncMock()),
+        patch("app.services.ops.health_checks.send_telegram_message", AsyncMock()) as mock_telegram,
     ):
         await check()
 

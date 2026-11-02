@@ -4,9 +4,11 @@ Chạy như một tiến trình sống lâu riêng, tách khỏi app FastAPI:
 
     python -m app.workers.ingest_consumer.main
 
-Mỗi message được xử lý độc lập, và một message lỗi (từ khoá không tra được, lỗi D1,
-payload sai định dạng) được log rồi bỏ qua thay vì giết cả consumer - một message
-"thuốc độc" không được làm sập việc ingest của mọi message phía sau nó.
+Mỗi message được xử lý độc lập, và một message lỗi không giết cả consumer - một message
+"thuốc độc" không được làm sập việc ingest của mọi message phía sau nó. Có ba kết cục:
+giữ, cố ý loại (từ khoá không có, ngoài chủ đề...), và lỗi có thể thử lại (D1, bài cha chưa
+vào). Loại thứ ba được thử lại có giới hạn rồi chuyển sang topic ingest_dead_letters; offset
+chỉ được commit sau khi message đã có một trong các kết cục đó (xem _process_message).
 
 Hai vòng lặp consumer độc lập, mỗi topic một vòng (xem _run_topic_consumer), không
 phải một consumer subscribe cả hai - tách ngày 2026-09-17 sau khi xác nhận thực tế
@@ -31,10 +33,12 @@ from typing import Any
 import orjson
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
+from redis.exceptions import RedisError
 
 from app.ai.jev import use_jev
 from app.ai.tasks.post_relevance import classify_post_relevance_kira
-from app.clients.kafka import publish_ingest_decision, start_kafka_producer, stop_kafka_producer
+from app.clients.d1 import D1Unavailable, d1_strict
+from app.clients.kafka import publish_dead_letter, publish_ingest_decision, start_kafka_producer, stop_kafka_producer
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.telegram import send_telegram_message
 from app.core.config import settings
@@ -103,8 +107,36 @@ _DROP_ALERT_TEXT = {
     "mapper": "unregistered platform mapper (see app/services/crawl/platforms.py)",
     "missing_keyword_id": "posts arriving with no keyword_id (producer bug?)",
     "unknown_keyword_id": "posts referencing an unknown/disabled keyword_id",
-    "d1_write_failed": "D1 write failed (see app/repositories/d1/store.py for details)",
+    "dead_letter": "messages moved to ingest_dead_letters after retries (scripts/tools/replay_ingest_dead_letters.py)",
 }
+
+# Lịch thử lại (giây nghỉ trước mỗi lần thử tiếp), hết thì chuyển sang ingest_dead_letters. Khoảng nghỉ không giữ chỗ semaphore,
+# nhưng message vẫn nằm trong `pending` có trần của _run_topic_consumer: D1 sập thì vòng đọc tự chậm lại và phần còn lại nằm chờ
+# trong Kafka, không đổ hết sang dead letter.
+_INFRA_RETRY_DELAYS = (5.0, 30.0, 120.0, 300.0)
+_PARENT_RETRY_DELAYS = (5.0, 15.0, 30.0)
+_UNEXPECTED_RETRY_DELAYS = (5.0,)
+_DEAD_LETTER_RETRY_SECONDS = 60.0
+# Bài cha đã chờ hết lịch mà vẫn không có: các comment khác của cùng bài trong khoảng này đi thẳng dead letter, không chờ lại -
+# một bài hàng trăm comment sẽ chiếm hết `pending` của topic comment.
+_MISSING_PARENT_MEMO_SECONDS = 600.0
+_missing_parents: dict[tuple[str, str], float] = {}
+
+
+class IngestRetryable(Exception):
+    """Chưa ghi được, không phải vì dữ liệu sai - message phải được thử lại, không được commit qua."""
+
+
+class IngestWriteFailed(IngestRetryable):
+    pass
+
+
+class CommentParentNotReady(IngestRetryable):
+    """raw_posts và raw_comments chạy độc lập nên comment có thể tới trước bài cha của nó."""
+
+    def __init__(self, platform: str, post_id: str) -> None:
+        super().__init__(f"{platform}:{post_id}")
+        self.parent = (platform, post_id)
 
 
 # Các phim đang theo dõi (tên phim cho relevance_rules.mentions_other_film, thông tin
@@ -119,26 +151,27 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
     now = time.monotonic()
     if _tracked_movies_cache is not None and now - _tracked_movies_cache[0] < _TRACKED_MOVIES_TTL_SECONDS:
         return _tracked_movies_cache[1]
+    # Chưa từng nạp được mà D1 lỗi thì để lỗi lan ra (message được thử lại): chạy tiếp với danh sách phim rỗng sẽ loại nhầm mọi
+    # bài trang nguồn là source_page_no_film. Trước đây còn cache luôn danh sách rỗng đó 5 phút.
     try:
-        rows = (
-            await d1_query(
-                'SELECT id, title, slug, director, "cast", distributor, released_at, description FROM movies',
-                quiet=True,
-            )
-            or []
+        rows = await d1_query(
+            'SELECT id, title, slug, director, "cast", distributor, released_at, description FROM movies',
+            quiet=True,
         )
-    except Exception as exc:  # noqa: BLE001 - quy tắc/Kira tạm đứng ngoài lượt này
+        keyword_rows = await d1_query("SELECT movie_id, keyword FROM keywords WHERE enabled = 1", quiet=True)
+    except D1Unavailable as exc:
         logger.warning("tracked_movies_load_failed", error=exc)
+        if _tracked_movies_cache:
+            return _tracked_movies_cache[1]
+        raise
+    if rows is None:
+        logger.warning("tracked_movies_load_failed", error="d1_query returned None")
         return _tracked_movies_cache[1] if _tracked_movies_cache else {}
     movies = {r["id"]: {**r, "keywords": []} for r in rows if r.get("title")}
-    # Mọi từ khoá đang bật của mỗi phim, cho cổng mentions_keyword_or_title. Lỗi thì chỉ còn từ
-    # khoá đã tìm ra bài + tên phim.
-    try:
-        for row in await d1_query("SELECT movie_id, keyword FROM keywords WHERE enabled = 1", quiet=True) or []:
-            if row["movie_id"] in movies and row.get("keyword"):
-                movies[row["movie_id"]]["keywords"].append(row["keyword"])
-    except Exception as exc:  # noqa: BLE001 - cổng vẫn chạy với từ khoá của bài
-        logger.warning("tracked_keywords_load_failed", error=exc)
+    # Mọi từ khoá đang bật của mỗi phim, cho cổng mentions_keyword_or_title.
+    for row in keyword_rows or []:
+        if row["movie_id"] in movies and row.get("keyword"):
+            movies[row["movie_id"]]["keywords"].append(row["keyword"])
     _tracked_movies_cache = (now, movies)
     return movies
 
@@ -281,6 +314,11 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     draft = mapper(payload)
+    if not draft.get("external_id"):
+        # Không có khoá để upsert - thử lại bao nhiêu lần cũng vậy.
+        logger.warning("post_missing_external_id", platform=platform, keyword_id=keyword_id)
+        await _drop(platform=platform, post_id=post_id, reason="missing_external_id", keyword_id=keyword_id)
+        return
 
     # Quy tắc chạy trước, trước khi lối tắt từ khoá bên dưới kịp nhận bài (xem
     # app/services/relevance/relevance_rules.py cho các trường hợp đã đo). Mọi bài bị quy tắc loại
@@ -314,9 +352,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             relevance_confidence=None,
         )
         if not ok:
-            await _note_drop(platform, "d1_write_failed", post_id=post_id)
-            await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
-            return
+            raise IngestWriteFailed(f"persist_post {platform}:{post_id}")
         logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"), source=payload.get("source"))
         await _decide(
             platform=platform,
@@ -423,9 +459,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             relevance_confidence=relevance_confidence,
         )
         if not ok:
-            await _note_drop(platform, "d1_write_failed", post_id=post_id)
-            await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
-            return
+            raise IngestWriteFailed(f"persist_post {platform}:{post_id}")
         await _decide(
             platform=platform,
             post_id=post_id,
@@ -471,9 +505,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         relevance_confidence=relevance_confidence,
     )
     if not ok:
-        await _note_drop(platform, "d1_write_failed", post_id=post_id)
-        await _drop(platform=platform, post_id=post_id, reason="d1_write_failed", keyword_id=keyword_id)
-        return
+        raise IngestWriteFailed(f"persist_post {platform}:{post_id}")
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
     # kira_related, context_<lý do> khi tín hiệu phim quyết định thay Kira, hoặc no_verdict khi Kira
     # đứng ngoài (tắt, vượt hạn mức ngày, lỗi) và chỉ mình kiểm tra từ khoá quyết định.
@@ -506,22 +538,25 @@ async def handle_comment(payload: dict[str, Any]) -> None:
         logger.warning("comment_unregistered_platform", platform=platform, post_id=external_post_id)
         return
 
-    post = await get_post_by_external_id(platform, external_post_id) if external_post_id else None
-    if post is None:
-        # Bài chứa comment này chưa có trong D1 (hoặc sẽ không bao giờ có - ví dụ bị
-        # content_too_short bỏ qua, xem persist_post) - comment không thể tồn tại nếu không có
-        # dòng cha (post_id có khoá ngoại NOT NULL, xem schema.ts của cinemark-scraper), nên
-        # không có gì để gắn nó vào.
-        logger.warning("comment_unknown_post", platform=platform, post_id=external_post_id)
+    if not external_post_id:
+        logger.warning("comment_without_post_id", platform=platform)
         return
+    post = await get_post_by_external_id(platform, external_post_id)
+    if post is None:
+        # Bài chứa comment này chưa có trong D1 - có thể đang trên đường về ở raw_posts, hoặc sẽ không bao giờ có (ví dụ bị
+        # content_too_short bỏ qua, xem persist_post). Comment không thể tồn tại nếu không có dòng cha (post_id có khoá ngoại
+        # NOT NULL, xem schema.ts của cinemark-scraper), nên chờ có giới hạn rồi chuyển sang dead letter.
+        raise CommentParentNotReady(platform, str(external_post_id))
 
     draft = mapper(payload)
+    if not draft.get("external_id"):
+        logger.warning("comment_missing_external_id", platform=platform, post_id=external_post_id)
+        return
     # Ở đây sentiment vẫn là NULL - sentiment_sweep.py phân loại comment mới theo lô qua
     # Kira trong vòng một hai phút.
     ok = await persist_comment(post_id=post["id"], platform=platform, draft=draft, sentiment=None)
     if not ok:
-        logger.warning("d1_comment_persist_failed", platform=platform, post_id=external_post_id)
-        return
+        raise IngestWriteFailed(f"persist_comment {platform}:{external_post_id}")
     logger.info("comment_persisted", platform=platform, post_id=external_post_id)
 
 
@@ -559,28 +594,102 @@ class _OffsetTracker:
         return {tp: advanced + 1}
 
 
+def _retry_delays(exc: Exception) -> tuple[float, ...]:
+    if isinstance(exc, CommentParentNotReady):
+        return () if _missing_parents.get(exc.parent, 0.0) > time.monotonic() else _PARENT_RETRY_DELAYS
+    if isinstance(exc, (D1Unavailable, IngestWriteFailed, RedisError, KafkaError)):
+        return _INFRA_RETRY_DELAYS
+    return _UNEXPECTED_RETRY_DELAYS
+
+
+def _failure_reason(exc: Exception) -> str:
+    if isinstance(exc, CommentParentNotReady):
+        return "comment_parent_missing"
+    if isinstance(exc, (D1Unavailable, IngestWriteFailed)):
+        return "d1_write_failed"
+    return "handler_error"
+
+
+async def _dead_letter(message: Any, exc: Exception, attempts: int) -> None:
+    """Chuyển message sang ingest_dead_letters. Chỉ trả về khi broker đã xác nhận: Kafka cũng hỏng thì giữ message ở đây và
+    thử tiếp - offset của nó (và mọi offset sau nó) chưa commit, nên restart cũng không mất."""
+    reason = _failure_reason(exc)
+    payload = message.value if isinstance(message.value, dict) else {}
+    platform = payload.get("platform") or ""
+    post_id = payload.get("post_id") or payload.get("video_id")
+    record = {
+        "topic": message.topic,
+        "partition": message.partition,
+        "offset": message.offset,
+        "reason": reason,
+        "error": str(exc)[:500],
+        "error_type": type(exc).__name__,
+        "attempts": attempts,
+        "dead_lettered_at": datetime.now(UTC).isoformat(),
+        "payload": message.value,
+    }
+    key = f"{message.topic}:{message.partition}:{message.offset}"
+    while not await publish_dead_letter(key, record):
+        logger.error("ingest_dead_letter_blocked", key=key, retry_seconds=_DEAD_LETTER_RETRY_SECONDS)
+        await asyncio.sleep(_DEAD_LETTER_RETRY_SECONDS)
+    logger.error("ingest_message_dead_lettered", key=key, reason=reason, attempts=attempts, error=str(exc)[:300])
+    if isinstance(exc, CommentParentNotReady):
+        if len(_missing_parents) > 5000:
+            _missing_parents.clear()
+        _missing_parents[exc.parent] = time.monotonic() + _MISSING_PARENT_MEMO_SECONDS
+    # Đã an toàn trong dead letter: lỗi của phần báo cáo bên dưới không được làm message đi lại từ đầu.
+    try:
+        await _note_drop(platform, "dead_letter", post_id=post_id, reason=reason)
+        if message.topic == RAW_POSTS_TOPIC:
+            await _drop(platform=platform, post_id=post_id, reason=reason, keyword_id=payload.get("keyword_id"))
+    except Exception as report_exc:  # noqa: BLE001
+        logger.warning("ingest_dead_letter_report_failed", key=key, error=str(report_exc)[:200])
+
+
+async def _handle_with_retries(message: Any, semaphore: asyncio.Semaphore) -> None:
+    """Chạy handler tới khi message có kết cục: xử lý xong (giữ hoặc cố ý loại) hoặc đã nằm trong dead letter. d1_strict: lỗi
+    D1 tạm thời raise thay vì trả None, nên không bị nhầm thành "không có từ khoá/bài cha" rồi loại luôn."""
+    attempt = 0
+    while True:
+        try:
+            async with semaphore:
+                with d1_strict():
+                    if message.topic == RAW_POSTS_TOPIC:
+                        await handle_post(message.value)
+                    elif message.topic == RAW_COMMENTS_TOPIC:
+                        await handle_comment(message.value)
+            return
+        except Exception as exc:
+            delays = _retry_delays(exc)
+            if attempt >= len(delays):
+                await _dead_letter(message, exc, attempt + 1)
+                return
+            logger.warning(
+                "ingest_message_retrying",
+                topic=message.topic,
+                offset=message.offset,
+                attempt=attempt + 1,
+                delay_seconds=delays[attempt],
+                error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
+            await asyncio.sleep(delays[attempt])
+            attempt += 1
+
+
 async def _process_message(
     message: Any, semaphore: asyncio.Semaphore, tracker: _OffsetTracker, consumer: AIOKafkaConsumer
 ) -> None:
     tp = TopicPartition(message.topic, message.partition)
-    async with semaphore:
+    # Bị huỷ giữa chừng (tắt tiến trình) thì CancelledError đi thẳng qua đây, offset không được đánh dấu xong và message được
+    # giao lại lần chạy sau. persist_post/persist_comment là upsert nên chạy lại vô hại.
+    await _handle_with_retries(message, semaphore)
+    to_commit = tracker.finished(tp, message.offset)
+    if to_commit:
         try:
-            if message.topic == RAW_POSTS_TOPIC:
-                await handle_post(message.value)
-            elif message.topic == RAW_COMMENTS_TOPIC:
-                await handle_comment(message.value)
-        except Exception as exc:
-            logger.error("ingest_message_failed", topic=message.topic, error=str(exc))
-        finally:
-            # Commit bất kể thành công/thất bại - một message mà tiến trình này không xử lý được
-            # (payload lỗi, từ khoá không tra được) được cố ý bỏ qua, không thử lại mãi (xem
-            # docstring module); chỉ crash giữa lúc xử lý mới nên giao lại nó.
-            to_commit = tracker.finished(tp, message.offset)
-            if to_commit:
-                try:
-                    await consumer.commit(to_commit)
-                except KafkaError as exc:
-                    logger.error("kafka_commit_failed", error=str(exc))
+            await consumer.commit(to_commit)
+        except KafkaError as exc:
+            logger.error("kafka_commit_failed", error=str(exc))
 
 
 async def _seed_offsets_from_legacy_group(consumer: AIOKafkaConsumer, topic: str, group_id: str) -> None:
@@ -640,6 +749,9 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
         # hẹn giờ mặc định, vốn không gắn với việc task song song của message đó đã thực sự xong
         # hay chưa.
         enable_auto_commit=False,
+        # Vòng đọc có thể đứng chờ `pending` hết chỗ suốt một lịch thử lại (vài lần 5 phút + backoff của d1_query). Mặc định
+        # 5 phút là broker đẩy consumer khỏi group đúng lúc D1 đang lỗi.
+        max_poll_interval_ms=1_800_000,
     )
 
     try:
@@ -672,6 +784,9 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
     except KafkaError as exc:
         logger.error("kafka_connection_error", topic=topic, error=str(exc))
     finally:
+        # Không chờ các message đang trong khoảng nghỉ thử lại (có thể vài phút): chưa commit nên được giao lại lần chạy sau.
+        for task in pending:
+            task.cancel()
         if pending:
             await asyncio.wait(pending)
         await consumer.stop()

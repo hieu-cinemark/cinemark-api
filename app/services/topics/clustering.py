@@ -80,8 +80,9 @@ def cluster_payload(rows: list[dict], x: np.ndarray, clusters: list[Cluster]) ->
     total = sum(len(c.indices) for c in clusters) or 1
     out = []
     for c in clusters:
-        closest = list(c.indices[np.argsort(-(x[c.indices] @ c.centroid))][:15])
-        rest = [i for i in c.indices if i not in set(closest)]
+        closest = [int(i) for i in c.indices[np.argsort(-(x[c.indices] @ c.centroid))][:15]]
+        closest_set = set(closest)
+        rest = [int(i) for i in c.indices if int(i) not in closest_set]
         picked = closest + rng.sample(rest, min(SAMPLES_FOR_BEE - len(closest), len(rest)))
         sentiments = Counter(rows[i].get("sentiment") for i in c.indices)
         out.append({
@@ -128,7 +129,7 @@ def calibrate(x: np.ndarray, clusters: list[Cluster]) -> dict[str, float]:
     centers = np.stack([c.centroid for c in clusters])
     sims = np.sort(x @ centers.T, axis=1)
     own, second = sims[:, -1], sims[:, -2]
-    pct = lambda a, p: round(float(np.percentile(a, p)), 3)  # noqa: E731
+    pct = lambda a, p: round(float(np.percentile(a, p)), 3)
     return {
         "own_p10": pct(own, 10), "own_p25": pct(own, 25), "own_p50": pct(own, 50),
         "second_p50": pct(second, 50), "second_p90": pct(second, 90),

@@ -21,7 +21,7 @@ from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient
-from aiokafka.errors import KafkaError
+from aiokafka.errors import KafkaError, MessageSizeTooLargeError
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -112,13 +112,18 @@ async def publish_crawl_request(
     bfs_depth: int | None = None,
     lane: str | None = None,
     released_at: str | None = None,
+    clear_stop: bool = False,
+    run_id: str | None = None,
 ) -> bool:
     """Trả về request có thực sự được publish hay không - chỗ gọi tự quyết định báo gì cho
     người dùng nếu Kafka sập (ví dụ vẫn trả 202 vì nhiệm vụ của endpoint kích hoạt chỉ
     là yêu cầu, không bảo đảm giao tới nơi, hoặc hiện một cảnh báo - xem
     app/api/routes/platform_scraper.py). keyword_id là keywords.id của D1 (xem
     app/repositories/d1/store.py) - truyền qua nguyên vẹn để message raw_posts mà lượt crawl này
-    sinh ra mang một id mà ingest consumer có thể tra ngược thẳng về D1."""
+    sinh ra mang một id mà ingest consumer có thể tra ngược thẳng về D1.
+
+    clear_stop=True chỉ dành cho lần bấm Chạy của người vận hành. run_id ổn định (lượt theo lịch thử lại) để spider-hub bỏ
+    qua bản trùng của job đã chạy xong; không truyền thì sinh mới."""
     if platform == "threads" and keyword.strip().startswith("#"):
         # Threads không cào hashtag (2026-10-15, ~1% liên quan - xem app/api/routes/keywords.py) - kể cả từ khoá cũ còn bật.
         logger.info("crawl_request_skipped_threads_hashtag", keyword=keyword, keyword_id=keyword_id)
@@ -128,14 +133,21 @@ async def publish_crawl_request(
         return False
     # Một lần bấm Dừng trước đó bật platform_drain khoảng 15 phút để bỏ qua hàng tồn. Một
     # lần kích hoạt có chủ đích mới phải gỡ cờ đó, nếu không lượt crawl được publish xong
-    # sẽ bị log ngay là request_skipped_drain.
-    await clear_drain(platform)
+    # sẽ bị log ngay là request_skipped_drain. Lịch và job nền không được gỡ (02/11/2026): trước đó mọi publish đều gỡ, nên
+    # lượt theo lịch kế tiếp âm thầm xoá ý định Dừng; hàng tồn cũ nay bị chặn riêng bằng published_at so với mốc Dừng.
+    if clear_stop:
+        await clear_drain(platform)
     # Cho crawl_request_consumer.py của spider-hub theo dõi đúng tiến trình con này
     # (crawl_job:<platform> trong Redis) để nút Dừng trên dashboard (xem
     # app/services/crawl/crawl_jobs.py) có cái để huỷ - xem docstring của module đó để biết đầy
     # đủ cơ chế.
-    run_id = str(uuid.uuid4())
-    value: dict[str, Any] = {"platform": platform, "keyword": keyword, "keyword_id": keyword_id, "run_id": run_id}
+    value: dict[str, Any] = {
+        "platform": platform,
+        "keyword": keyword,
+        "keyword_id": keyword_id,
+        "run_id": run_id or str(uuid.uuid4()),
+        "published_at": time.time(),
+    }
     if max_pages is not None:
         value["max_pages"] = max_pages
     # Khoảng ngày chỉ có ở tìm kiếm Facebook. Threads/TikTok bỏ qua.
@@ -236,6 +248,7 @@ async def publish_comments_crawl_request(
     post_url: str,
     max_pages: int = DEFAULT_COMMENTS_MAX_PAGES,
     bypass_drain: bool = True,
+    run_id: str | None = None,
 ) -> bool:
     """Publish một request type="comments", gắn nhãn để _run_comments_spider trong
     crawl_request_consumer.py (spider-hub) chạy spider comment của nền tảng đó cho đúng
@@ -258,7 +271,7 @@ async def publish_comments_crawl_request(
     bypass_drain=True, một hàng tồn comment tiktok bị kẹt/chậm (sâu hơn 500) hoàn toàn
     không có cách nào huỷ qua app - Dừng có bật cờ drain nhưng mọi message đang xếp hàng
     đều bỏ qua cờ đó theo thiết kế."""
-    run_id = str(uuid.uuid4())
+    run_id = run_id or str(uuid.uuid4())
     return await publish_action_request(
         platform,
         "comments",
@@ -538,6 +551,33 @@ async def publish_raw_comment(*, key: str, value: dict[str, Any]) -> bool:
 
 
 INGEST_DECISIONS_TOPIC = "ingest_decisions"
+
+
+# Message ingest không xử lý được sau khi đã thử lại (app/workers/ingest_consumer/main.py) nằm ở đây thay vì mất; phát lại
+# bằng scripts/tools/replay_ingest_dead_letters.py sau khi xử lý xong sự cố.
+INGEST_DEAD_LETTER_TOPIC = "ingest_dead_letters"
+
+
+async def publish_dead_letter(key: str, value: dict[str, Any]) -> bool:
+    """True chỉ khi broker đã xác nhận - chỗ gọi mới được commit message gốc. Producer chưa chạy thì thử khởi động lại:
+    start_kafka_producer lúc khởi động có thể đã hỏng và không tự thử lại."""
+    if _producer is None:
+        await start_kafka_producer()
+    if _producer is None:
+        return False
+    try:
+        try:
+            await _producer.send_and_wait(INGEST_DEAD_LETTER_TOPIC, key=key, value=value)
+        except MessageSizeTooLargeError:
+            # Không bao giờ gửi được nguyên bản: giữ toạ độ topic/partition/offset, payload đọc lại từ topic gốc hoặc lake.
+            logger.warning("dead_letter_payload_too_large", key=key)
+            await _producer.send_and_wait(
+                INGEST_DEAD_LETTER_TOPIC, key=key, value={**value, "payload": None, "payload_dropped": True}
+            )
+    except KafkaError as exc:
+        logger.warning("dead_letter_publish_failed", key=key, error=str(exc))
+        return False
+    return True
 
 
 async def publish_ingest_decision(decision: dict[str, Any]) -> None:

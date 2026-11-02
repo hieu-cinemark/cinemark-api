@@ -23,8 +23,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from app.services.topics.text import normalize
 from scripts.tools.aspect_probe import DATA_DIR, MIN_SUPPORT, SEED, _split, download
-from scripts.tools.topic_cluster_probe import normalize
 
 BASE_MODEL = "5CD-AI/Vietnamese-Sentiment-visobert"
 OUT_DIR = DATA_DIR / "visobert-aspects"

@@ -14,8 +14,11 @@ thành import vòng."""
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import sqlite3
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +44,34 @@ _http_client_lock = asyncio.Lock()
 # 8 cho service API (giữ dashboard không treo); service ingest đặt D1_MAX_CONCURRENCY cao hơn để xử lý kịp hàng tồn Kafka.
 _remote_sem = asyncio.Semaphore(settings.d1_max_concurrency)
 _READ_TIMEOUT_RETRIES = 2
+
+
+class D1Unavailable(Exception):
+    """D1 tạm thời không trả lời được (mạng, 5xx, quá tải, hết hạn mức) - chỉ raise trong d1_strict()."""
+
+
+# Mặc định d1_query trả None khi lỗi, cùng giá trị với "không có gì" của nhiều repository (get_keyword, get_post_by_external_id...).
+# Chỗ cần phân biệt hai việc đó (ingest: lỗi D1 thì thử lại, không có dòng thì bỏ) bọc lời gọi trong d1_strict() thay vì sửa
+# từng repository. Contextvar nên chỉ có tác dụng trong task asyncio hiện tại. Lỗi SQL cố định (400 thường) vẫn trả None:
+# các migration idempotent chờ lỗi "duplicate column" như trước.
+_strict: contextvars.ContextVar[bool] = contextvars.ContextVar("d1_strict", default=False)
+
+# Body của HTTP 400 mà vẫn là lỗi tạm của D1, không phải lỗi SQL.
+_TRANSIENT_400_MARKERS = ("overloaded", "network connection lost", "reset", "timeout", "timed out", "try again")
+
+
+@contextmanager
+def d1_strict() -> Iterator[None]:
+    token = _strict.set(True)
+    try:
+        yield
+    finally:
+        _strict.reset(token)
+
+
+def _unavailable(detail: str) -> None:
+    if _strict.get():
+        raise D1Unavailable(detail)
 
 
 def _get_local_conn() -> sqlite3.Connection:
@@ -152,7 +183,7 @@ async def d1_query(
     treo vì một database hỏng hẳn; nếu lần thử nào cũng 429 thì hàm vẫn trả về None kèm
     một log cảnh báo cuối cùng để chỗ gọi tự quyết định làm gì."""
     if not _configured():
-        return None
+        return _unavailable("d1_not_configured")
 
     global _logged_db_target
     if not _logged_db_target:
@@ -169,6 +200,8 @@ async def d1_query(
         except (sqlite3.Error, IndexError) as exc:
             if not quiet:
                 logger.warning("local_db_query_failed", error=str(exc), sql=sql[:200])
+            if isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc) or "busy" in str(exc)):
+                return _unavailable(str(exc))
             return None
 
     url = (
@@ -204,7 +237,7 @@ async def d1_query(
                     error_type=type(exc).__name__,
                     attempt=attempt,
                 )
-            return None
+            return _unavailable(f"{type(exc).__name__}: {exc}")
 
         # 429 do backoff storage: thử lại với backoff, không coi là lỗi hẳn. Đây là loại 429
         # DUY NHẤT được thử lại - rate-limit thật (body không có mã 7429) hoặc lỗi 4xx
@@ -219,7 +252,7 @@ async def d1_query(
                         body=resp.text[:500],
                         attempts=attempt - 1,
                     )
-                return None
+                return _unavailable("d1_storage_backoff_retries_exhausted")
             sleep_seconds = min(
                 _D1_STORAGE_BACKOFF_CAP_SECONDS, _D1_STORAGE_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1))
             )
@@ -236,13 +269,16 @@ async def d1_query(
         if resp.status_code >= 400:
             if not quiet:
                 logger.warning("d1_request_failed", status=resp.status_code, body=resp.text[:500])
+            body = resp.text.lower()
+            if resp.status_code != 400 or any(marker in body for marker in _TRANSIENT_400_MARKERS):
+                return _unavailable(f"d1_http_{resp.status_code}")
             return None
 
         data = resp.json()
         if not data.get("success"):
             if not quiet:
                 logger.warning("d1_query_failed", errors=data.get("errors"))
-            return None
+            return _unavailable("d1_query_failed")
 
         results = data.get("result") or []
         return results[0].get("results", []) if results else []

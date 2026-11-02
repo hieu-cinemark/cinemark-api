@@ -52,6 +52,7 @@ import asyncio
 from typing import Any
 
 from app.clients.kafka import publish_auto_login_request
+from app.core.config import settings as app_settings
 from app.core.logging import get_logger
 from app.schemas.settings import (
     AutoLoginRunHistoryEntry,
@@ -244,7 +245,12 @@ async def run_auto_login_tick(*, triggered_by: str = "schedule", force: bool = F
     lưu trước khi tiến trình kịp khởi động).
 
     Trả về auto_login_run_history.id của lượt này (hoặc -1 nếu không ghi lượt nào vì
-    lượt đó không làm gì do enabled=false)."""
+    lượt đó không làm gì do enabled=false).
+
+    settings.auto_login_allowed tắt (mặc định từ 02/11/2026) thì không có lượt nào, kể cả force và nút "Run now"."""
+    if not app_settings.auto_login_allowed:
+        logger.info("auto_login_tick_blocked", triggered_by=triggered_by)
+        return -1
     settings = await resolve_auto_login_settings()
     if not settings.enabled and not force:
         logger.info(

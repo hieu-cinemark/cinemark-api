@@ -26,6 +26,10 @@ STOP_FLAG_TTL_SECONDS = 3600
 # Đủ dài để xả hết một lần bấm "lấy comment" hàng loạt.
 BFS_DRAIN_TTL_SECONDS = 900
 
+# Mốc thời gian của lần bấm Dừng, độc lập với cờ drain (cờ bị một lần Run mới gỡ): spider-hub luôn bỏ message publish trước
+# mốc này. Sống lâu hơn thời gian giữ message của Kafka (mặc định 7 ngày) để hàng tồn cũ không bao giờ được nhận lại.
+STOP_CUTOFF_TTL_SECONDS = 8 * 86400
+
 
 async def get_running_job(platform: str) -> dict[str, Any] | None:
     """None nếu hiện không có job nào đang chạy cho nền tảng này - xem _run_spider trong
@@ -74,11 +78,15 @@ async def request_stop(platform: str) -> bool:
     await client.set(f"{REDIS_KEY_PREFIX}comments_drain:{platform}", "1", ex=BFS_DRAIN_TTL_SECONDS)
     # Giá trị là thời điểm bấm Dừng: spider-hub bỏ qua các message bypass_drain được
     # publish trước thời điểm đó (xem crawl_request_consumer._handle_request bên đó).
-    await client.set(f"{REDIS_KEY_PREFIX}platform_drain:{platform}", str(time.time()), ex=BFS_DRAIN_TTL_SECONDS)
+    stopped_at = str(time.time())
+    await client.set(f"{REDIS_KEY_PREFIX}platform_drain:{platform}", stopped_at, ex=BFS_DRAIN_TTL_SECONDS)
+    await client.set(f"{REDIS_KEY_PREFIX}platform_stop_cutoff:{platform}", stopped_at, ex=STOP_CUTOFF_TTL_SECONDS)
+    # Cùng TTL với drain, không phải STOP_FLAG_TTL_SECONDS: lịch không còn gỡ cờ này (publish_crawl_request), nên để 1 giờ thì
+    # mọi job theo lịch trong giờ đó bị SIGTERM ngay khi vừa chạy. Job đang chạy lúc Dừng vẫn có crawl_job_cancel:<run_id>.
     await client.set(
         f"{REDIS_KEY_PREFIX}crawl_job_cancel_platform:{platform}",
         "1",
-        ex=STOP_FLAG_TTL_SECONDS,
+        ex=BFS_DRAIN_TTL_SECONDS,
     )
     await clear_pending(platform)
 
@@ -141,7 +149,8 @@ async def _remove_running_entry(platform: str, run_id: str) -> bool:
 async def clear_drain(platform: str) -> None:
     """Xoá các cờ bỏ qua của lần Dừng để một lần kích hoạt mới từ dashboard thực sự chạy.
     Các message Kafka đã bị consume trong lúc drain thì mất rồi; việc này chỉ gỡ chặn cho
-    công việc được publish sau khi người dùng chủ động bắt đầu crawl lại."""
+    công việc được publish sau khi người dùng chủ động bắt đầu crawl lại. Không xoá
+    platform_stop_cutoff: hàng tồn publish trước lần Dừng vẫn phải bị bỏ."""
     client = get_redis_client()
     await client.delete(
         f"{REDIS_KEY_PREFIX}bfs_drain:{platform}",

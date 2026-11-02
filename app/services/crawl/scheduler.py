@@ -28,10 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 import zlib
-from datetime import datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from zoneinfo import ZoneInfo
 
+from app.clients.d1 import d1_strict
 from app.clients.kafka import (
     publish_cookie_check_request,
     publish_crawl_request,
@@ -45,7 +49,7 @@ from app.schemas.settings import parse_run_times
 from app.services.accounts import platform_config_db as db
 from app.services.accounts.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.crawl import channel_profiles, crawl_lanes, priority_channels, tracked_posts
-from app.services.crawl.comment_planner import run_comment_round
+from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.crawl.source_pages import queue_enabled_sources as queue_source_pages
@@ -59,7 +63,7 @@ from app.services.omar.omar_tiktok import get_pause as get_omar_pause
 from app.services.omar.omar_tiktok import is_running as omar_is_running
 from app.services.omar.omar_tiktok import pause_over as omar_pause_over
 from app.services.omar.omar_tiktok import run_omar_round_tracked
-from app.services.ops import ops_alerts
+from app.services.ops import health_checks, ops_alerts
 from app.services.relevance.cleanup import resolve_cleanup_settings, run_purge
 from app.services.stats import comment_rollup
 from app.services.stats.stats_summary import reconcile_recent_days
@@ -107,19 +111,66 @@ NURTURE_PLATFORMS = {"facebook", "threads", "tiktok"}
 RECENT_LATER_SLOT_PLATFORMS = {"facebook", "threads"}
 
 
+class _SlotProgress:
+    """Những gì một lượt theo lịch đã giao được cho Kafka (từng từ khoá, nurture, trang nguồn) - sống qua lần thử lại và qua
+    restart, để lần sau chỉ gửi phần còn thiếu. Redis lỗi thì vẫn nhớ trong tiến trình."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        self._done: set[str] = set()
+
+    async def load(self) -> None:
+        try:
+            self._done |= set(await get_redis_client().smembers(f"{_CRAWL_PROGRESS_PREFIX}{self.key}"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduler_slot_progress_load_failed", error=str(exc))
+
+    def __contains__(self, item: str) -> bool:
+        return item in self._done
+
+    async def add(self, item: str) -> None:
+        self._done.add(item)
+        try:
+            client = get_redis_client()
+            await client.sadd(f"{_CRAWL_PROGRESS_PREFIX}{self.key}", item)
+            await client.expire(f"{_CRAWL_PROGRESS_PREFIX}{self.key}", _CRAWL_FIRED_TTL_SECONDS)
+            # Còn đang giao được thì gia hạn lease: lượt dài (D1 chậm) không bị tick khác chạy chồng.
+            await client.expire(f"{_CRAWL_LEASE_PREFIX}{self.key}", _CRAWL_LEASE_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduler_slot_progress_save_failed", error=str(exc))
+
+    def run_id(self, keyword_id: str) -> str:
+        """Cùng slot + từ khoá thì cùng run_id: crash giữa lúc publish và lúc ghi tiến độ làm job gửi hai lần, spider-hub
+        bỏ bản sau khi bản đầu đã chạy xong."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"cinemark:crawl_slot:{self.key}:{keyword_id}"))
+
+
+async def _deliver_once(progress: _SlotProgress, item: str, publish: Callable[[], Awaitable[bool]]) -> bool:
+    if item in progress:
+        return True
+    ok = await publish()
+    if ok:
+        await progress.add(item)
+    return ok
+
+
 async def _trigger_platform(
     platform: str,
     *,
+    progress: _SlotProgress,
     nurture_before: bool = False,
     nurture_after: bool = False,
     recent: bool = False,
     slot_index: int = 0,
-) -> None:
+) -> bool:
+    """True khi mọi thứ của lượt đã được Kafka nhận; False thì _run_crawl_slot cho thử lại phần còn thiếu."""
+    complete = True
     # Cùng topic Kafka và consumer theo nền tảng với crawl, nên nurture publish trước thì
     # thực sự chạy xong rồi mới tới các lượt crawl từ khoá phía sau; publish sau cùng thì
     # nó chạy sau khi chúng xong hết.
     if nurture_before and platform in NURTURE_PLATFORMS:
-        ok = await publish_nurture_request(platform)
+        ok = await _deliver_once(progress, "nurture_before", lambda: publish_nurture_request(platform))
+        complete = complete and ok
         logger.info("scheduled_nurture_queued", platform=platform, when="before", ok=ok)
     elif nurture_before:
         logger.info("scheduled_nurture_skipped_platform", platform=platform, when="before")
@@ -146,31 +197,43 @@ async def _trigger_platform(
             # FACEBOOK_NO_NEW_PAGES (10) trang liên tiếp không có bài mới - không giảm trang cho từ khoá kém nữa.
             low_pages = {}
         for keyword in keywords:
+            if platform == "threads" and keyword["keyword"].strip().startswith("#"):
+                # publish_crawl_request luôn từ chối (Threads không cào hashtag) - không phải một lần giao hỏng cần thử lại.
+                continue
             if fresh_lane:
-                ok = await publish_crawl_request(
+                publish = partial(
+                    publish_crawl_request,
                     platform=platform,
                     keyword=keyword["keyword"],
                     keyword_id=keyword["id"],
                     max_pages=crawl_lanes.facebook_max_pages(keyword.get("released_at"), today),
                     lane="fresh",
+                    run_id=progress.run_id(keyword["id"]),
                 )
             else:
-                ok = await publish_crawl_request(
+                publish = partial(
+                    publish_crawl_request,
                     platform=platform,
                     keyword=keyword["keyword"],
                     keyword_id=keyword["id"],
                     max_pages=low_pages.get(keyword["id"]),
                     recent_post=recent,
+                    run_id=progress.run_id(keyword["id"]),
                 )
-            if ok:
+            if await _deliver_once(progress, f"keyword:{keyword['id']}", publish):
                 published += 1
+            else:
+                complete = False
         # Trang nguồn: mỗi ngày một lượt (lượt đầu) khi chạy theo phần - 6 lượt bài mới mà lượt nào cũng xếp lại bảng
         # tin mọi trang nguồn là gấp 6 lần request page_feed.
         if platform == "facebook" and (not fresh_lane or slot_index == 0):
             # Cào theo nguồn: bảng tin các trang nguồn đang bật (app/services/crawl/source_pages.py).
             try:
-                await queue_source_pages()
+                if "source_pages" not in progress:
+                    await queue_source_pages()
+                    await progress.add("source_pages")
             except Exception as exc:  # noqa: BLE001 - lỗi trang nguồn không chặn lượt tìm kiếm
+                complete = False
                 logger.warning("source_pages_queue_failed", error=str(exc)[:200])
         logger.info(
             "scheduled_crawl_triggered",
@@ -180,36 +243,97 @@ async def _trigger_platform(
             recent=recent,
             lane="fresh" if fresh_lane else None,
             slot_index=slot_index,
+            complete=complete,
             telegram=True,
         )
 
     if nurture_after and platform in NURTURE_PLATFORMS:
-        ok = await publish_nurture_request(platform)
+        ok = await _deliver_once(progress, "nurture_after", lambda: publish_nurture_request(platform))
+        complete = complete and ok
         logger.info("scheduled_nurture_queued", platform=platform, when="after", ok=ok)
     elif nurture_after:
         logger.info("scheduled_nurture_skipped_platform", platform=platform, when="after")
+    return complete
 
 
 # Từ 2026-10-09 một nền tảng có thể chạy tối đa 3 lần mỗi ngày (run_time = "HH:MM,HH:MM,HH:MM"). last_triggered_date chỉ
 # chống chạy lặp theo NGÀY nên không đủ: mỗi giờ chạy có cờ riêng trong Redis (sống qua restart), kèm bản trong bộ nhớ
 # phòng khi Redis trục trặc.
+#
+# 02/11/2026: tách "đang giao" khỏi "đã giao xong". Trước đó cờ được đặt trước khi đọc từ khoá và publish, nên D1/Kafka lỗi
+# (hoặc restart giữa chừng) làm mất cả lượt dù hạ tầng hồi phục ngay trong khung giờ. Giờ cờ fired chỉ đặt khi Kafka đã nhận
+# đủ; lease chặn chạy chồng và sau một lần hỏng thì giữ vai trò khoảng nghỉ trước lần thử lại. Số lần thử có giới hạn tự nhiên
+# vì slot hết hạn sau _CATCH_UP_MINUTES (_is_due).
 _CRAWL_FIRED_PREFIX = f"{REDIS_KEY_PREFIX}scheduler:crawl_fired:"
+_CRAWL_LEASE_PREFIX = f"{REDIS_KEY_PREFIX}scheduler:crawl_lease:"
+_CRAWL_PROGRESS_PREFIX = f"{REDIS_KEY_PREFIX}scheduler:crawl_progress:"
+_CRAWL_FIRED_TTL_SECONDS = 2 * 24 * 3600
+_CRAWL_LEASE_SECONDS = 600
+_CRAWL_RETRY_BACKOFF_SECONDS = 120
 _crawl_fired: set[str] = set()
+_crawl_running: set[str] = set()
+
+
+def _crawl_slot_key(platform: str, today: str, slot: str) -> str:
+    return f"{platform}:{today}:{slot}"
 
 
 async def _claim_crawl_slot(platform: str, today: str, slot: str) -> bool:
-    key = f"{platform}:{today}:{slot}"
-    if key in _crawl_fired:
+    key = _crawl_slot_key(platform, today, slot)
+    if key in _crawl_fired or key in _crawl_running:
         return False
-    _crawl_fired.add(key)
-    if len(_crawl_fired) > 500:
-        _crawl_fired.clear()
+    try:
+        client = get_redis_client()
+        if await client.exists(f"{_CRAWL_FIRED_PREFIX}{key}"):
+            return False
+        if not await client.set(f"{_CRAWL_LEASE_PREFIX}{key}", "1", nx=True, ex=_CRAWL_LEASE_SECONDS):
+            return False
+    except Exception as exc:  # noqa: BLE001 - không có Redis thì các tập trong bộ nhớ vẫn chặn lặp trong tiến trình này
+        logger.warning("scheduler_crawl_slot_redis_failed", error=str(exc))
+    _crawl_running.add(key)
+    return True
+
+
+async def _finish_crawl_slot(platform: str, today: str, slot: str, *, complete: bool) -> None:
+    key = _crawl_slot_key(platform, today, slot)
+    _crawl_running.discard(key)
+    if complete:
+        if len(_crawl_fired) > 500:
+            _crawl_fired.clear()
         _crawl_fired.add(key)
     try:
-        return bool(await get_redis_client().set(f"{_CRAWL_FIRED_PREFIX}{key}", "1", nx=True, ex=2 * 24 * 3600))
-    except Exception as exc:  # noqa: BLE001 - không có Redis thì cờ trong bộ nhớ vẫn chặn lặp trong tiến trình này
+        client = get_redis_client()
+        if complete:
+            await client.set(f"{_CRAWL_FIRED_PREFIX}{key}", "1", ex=_CRAWL_FIRED_TTL_SECONDS)
+            await client.delete(f"{_CRAWL_LEASE_PREFIX}{key}", f"{_CRAWL_PROGRESS_PREFIX}{key}")
+        else:
+            await client.set(f"{_CRAWL_LEASE_PREFIX}{key}", "1", ex=_CRAWL_RETRY_BACKOFF_SECONDS)
+    except Exception as exc:  # noqa: BLE001
         logger.warning("scheduler_crawl_slot_redis_failed", error=str(exc))
-        return True
+
+
+async def _run_crawl_slot(platform: str, today: str, slot: str, **kwargs) -> None:
+    """Giao một lượt theo lịch cho Kafka. d1_strict: D1 tạm lỗi không được giống "không có từ khoá nào" - lượt đó sẽ được coi là
+    đã xong trong khi chưa gửi gì."""
+    key = _crawl_slot_key(platform, today, slot)
+    progress = _SlotProgress(key)
+    await progress.load()
+    complete = False
+    try:
+        with d1_strict():
+            complete = await _trigger_platform(platform, progress=progress, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - slot còn hạn thì lần sau thử lại phần còn thiếu
+        logger.warning("scheduled_crawl_attempt_failed", platform=platform, slot=slot, error=str(exc)[:300])
+    await _finish_crawl_slot(platform, today, slot, complete=complete)
+    if complete:
+        try:
+            await db.mark_crawl_schedule_triggered(platform, today)
+        except Exception as exc:  # noqa: BLE001 - chỉ để hiển thị, cờ fired mới là thứ chống chạy lặp
+            logger.warning("scheduled_crawl_mark_failed", platform=platform, error=str(exc)[:200])
+    elif not _is_due(slot, datetime.now(TIMEZONE) + timedelta(seconds=_CRAWL_RETRY_BACKOFF_SECONDS)):
+        logger.error(
+            "scheduled_crawl_incomplete", platform=platform, slot=slot, delivered=len(progress._done), telegram=True
+        )
 
 
 async def _tick() -> None:
@@ -227,14 +351,15 @@ async def _tick() -> None:
         platform = sched["platform"]
         if not await _claim_crawl_slot(platform, today, due[0]):
             continue
-        await db.mark_crawl_schedule_triggered(platform, today)
         logger.info("scheduled_crawl_firing", platform=platform, run_time=due[0], fired_at=current_hm)
         # Không await tại chỗ - một lần publish Kafka hoặc query D1 chậm cho một nền tảng không
         # được làm trễ việc kiểm tra (hoặc bắn) lịch của mọi nền tảng khác trong cùng lượt.
         slots = parse_run_times(sched["run_time"])
         _spawn(
-            _trigger_platform(
+            _run_crawl_slot(
                 platform,
+                today,
+                due[0],
                 nurture_before=bool(sched.get("nurture_before")),
                 nurture_after=bool(sched.get("nurture_after")),
                 recent=platform in RECENT_LATER_SLOT_PLATFORMS and len(slots) > 1 and due[0] != slots[0],
@@ -245,7 +370,7 @@ async def _tick() -> None:
 
 # Lượt comment mỗi giờ chạy từ phút này (cho lượt crawl bài đầu giờ kịp đổ bài mới về) - và giờ đã chạy của mỗi nền
 # tảng, để vòng 30 giây không bắn lặp. Mất khi khởi động lại tiến trình: tệ nhất chạy thêm một lượt, các bài vừa xếp
-# hàng đã được đánh dấu comments_crawled_at nên không bị quét trùng.
+# hàng đã có lease comments_queued_at nên không bị quét trùng.
 _COMMENT_ROUND_MINUTE = 5
 _comment_round_done: dict[str, str] = {}
 # Số bài nóng mỗi phim = top_n của lịch, kẹp trong khoảng này. top_n trước 2026-10-08 nghĩa là "top N bài mỗi từ
@@ -365,6 +490,8 @@ _auto_login_last_tick_at: float | None = None
 
 async def _auto_login_tick() -> None:
     global _auto_login_last_tick_at
+    if not settings.auto_login_allowed:
+        return
     try:
         cfg = await resolve_auto_login_settings()
     except Exception:
@@ -616,6 +743,31 @@ async def _ops_alerts_tick() -> None:
     _spawn(_run_ops_alerts())
 
 
+# --- Sức khoẻ tài khoản (mỗi 6 giờ) + sản lượng bất thường (mỗi ngày, 18:xx UTC = gần cuối ngày UTC của
+# stats_platform_daily) - app/services/ops/health_checks.py. Trước 02/11/2026 chạy qua crontab trigger_scheduled_crawl.sh.
+_HEALTH_CHECK_KEY = f"{REDIS_KEY_PREFIX}scheduler:account_health:{{slot}}"
+_VOLUME_CHECK_KEY = f"{REDIS_KEY_PREFIX}scheduler:volume_anomaly:{{day}}"
+_VOLUME_CHECK_UTC_HOUR = 18
+
+
+async def _run_health_check(name: str, check) -> None:
+    try:
+        await check()
+    except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
+        logger.error(f"{name}_failed", error=str(exc)[:300])
+
+
+async def _health_checks_tick() -> None:
+    now = datetime.now(UTC)
+    redis = get_redis_client()
+    if await redis.set(_HEALTH_CHECK_KEY.format(slot=f"{now:%Y-%m-%d}:{now.hour // 6}"), "1", nx=True, ex=7 * 3600):
+        _spawn(_run_health_check("account_health_check", health_checks.check_account_health))
+    if now.hour == _VOLUME_CHECK_UTC_HOUR and await redis.set(
+        _VOLUME_CHECK_KEY.format(day=f"{now:%Y-%m-%d}"), "1", nx=True, ex=26 * 3600
+    ):
+        _spawn(_run_health_check("volume_anomaly_check", health_checks.check_volume_anomaly))
+
+
 # --- Omar: "video đang nổi" mỗi settings.omar_trending_interval_hours giờ (app/services/omar/omar_trending.py) -----------
 _OMAR_TRENDING_KEY = f"{REDIS_KEY_PREFIX}scheduler:omar_trending:last_run"
 
@@ -826,11 +978,19 @@ async def _loop() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_channel_profiles_tick_failed", error=str(exc))
         try:
+            await asyncio.wait_for(apply_comment_completions(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - tín hiệu còn nguyên trong hàng cho nhịp sau
+            logger.error("scheduler_comment_completions_tick_failed", error=str(exc))
+        try:
             await asyncio.wait_for(_ops_alerts_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:
             logger.error("scheduler_ops_alerts_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_ops_alerts_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_health_checks_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_health_checks_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_tracked_posts_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:
@@ -845,6 +1005,12 @@ async def _loop() -> None:
             await asyncio.wait_for(_report_schedule_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_report_schedule_tick_failed", error=str(exc))
+        try:
+            from app.services.post_release_news import start_tick as news_tick
+
+            news_tick()
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_news_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_stats_reconcile_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
@@ -871,6 +1037,9 @@ def start() -> None:
 
 
 def stop() -> None:
+    from app.services.post_release_news import stop as stop_news
+
+    stop_news()
     global _task
     if _task is not None:
         _task.cancel()

@@ -17,7 +17,8 @@ case "$repo" in
     ;;
   spider-hub)
     dir=/opt/spider-hub
-    units="spider-hub-crawl"
+    # Tên unit trên VPS là spider-hub-crawl, file trong repo là spider-hub-crawl-consumer - unit nào đang chạy thì restart.
+    units="spider-hub-crawl spider-hub-crawl-consumer spider-hub-auto-login"
     health=""
     ;;
   *)
@@ -56,14 +57,28 @@ install_requirements() {
 if as_owner git -C "$dir" diff --name-only "$before" "$after" | grep -qx requirements.txt; then
   echo "requirements.txt đổi - cài lại thư viện"
   install_requirements
+  if [ "$repo" = spider-hub ]; then
+    as_owner "$dir/.venv/bin/python" -m patchright install chromium
+  fi
 fi
 
+# Trước khi restart: thiếu trình duyệt / lệch phiên bản / mất Redis thì service cũ chạy tiếp, không để job đầu tiên lỗi trên
+# tài khoản thật. Không mở trang nào của nền tảng.
+if [ "$repo" = spider-hub ]; then
+  as_owner bash -c "cd '$dir' && .venv/bin/python -m scripts.preflight_browser"
+fi
+
+restarted=0
 for unit in $units; do
   if systemctl is-active --quiet "$unit"; then
     systemctl restart "$unit"
     echo "restarted $unit"
+    restarted=$((restarted + 1))
   fi
 done
+if [ "$restarted" = 0 ]; then
+  echo "CẢNH BÁO: không unit nào của $repo đang chạy, chưa restart gì ($units)" >&2
+fi
 
 if [ -n "$health" ]; then
   for _ in $(seq 1 30); do
