@@ -69,17 +69,15 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         if (
             not force
             and old
-            and old["data"].get("groups_version") == 1
+            and old["data"].get("groups_version") == 2
             and datetime.fromisoformat(old["nextRefreshAt"]) > now()
         ):
             if old["data"].get("extraction_version") != 1:
                 previous_id = old["snapshotId"]
-                old["data"]["news_results"] = old["data"].get("news_results", [])[: news_articles.MAX_ARTICLES]
-                await news_articles.enrich(old["data"]["news_results"])
+                old["data"]["sources"] = old["data"].get("sources", [])[: news_articles.MAX_ARTICLES]
+                await news_articles.enrich(old["data"]["sources"])
                 press_groups.sync_enriched(old["data"])
-                old["data"]["analysis_input"] = news_articles.analysis_input(
-                    movie["title"], old["data"]["news_results"]
-                )
+                old["data"]["analysis_input"] = news_articles.analysis_input(movie["title"], old["data"]["sources"])
                 old["data"]["extraction_version"] = 1
                 old["snapshotId"] = uuid.uuid4().hex
                 old["analysis"] = None
@@ -92,21 +90,17 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
             raise UpstreamError("Lượt tìm tin trước chưa thành công, vui lòng thử lại sau.")
         # Giãn retry khi quota/mạng lỗi, không gọi lại ở mỗi nhịp scheduler.
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
-        data = await google_news.search_web(GoogleNewsRequest(q=f"phim {movie['title']} đánh giá", no_cache=force))
-        articles = press_groups.flatten(data.get("organic_results", []))
-        data["collection_queries"] = [f"phim {movie['title']} đánh giá"]
-        extra = None
-        if len(articles) < 5:
-            extra_query = f"phim {movie['title']} review"
-            try:
-                extra = await google_news.search_web(GoogleNewsRequest(q=extra_query, no_cache=force))
-                data["collection_queries"].append(extra_query)
-            except UpstreamError:
-                pass
-        press_groups.select_groups(data, extra)
-        await news_articles.enrich(data["news_results"])
+        query = f"phim {movie['title']} đánh giá"
+        news_query = f"phim {movie['title']} review"
+        data, press = await asyncio.gather(
+            google_news.search_web(GoogleNewsRequest(q=query, no_cache=force)),
+            google_news.search(GoogleNewsRequest(q=news_query, no_cache=force)),
+        )
+        data["collection_queries"] = [query, news_query]
+        press_groups.select_groups(data, press)
+        await news_articles.enrich(data["sources"])
         press_groups.sync_enriched(data)
-        data["analysis_input"] = news_articles.analysis_input(movie["title"], data["news_results"])
+        data["analysis_input"] = news_articles.analysis_input(movie["title"], data["sources"])
         data["extraction_version"] = 1
         snapshot = now()
         result = {
@@ -133,7 +127,7 @@ async def tick() -> None:
     if not settings.serpapi_api_key:
         return
     cache = get_redis_client()
-    if not await cache.set(PREFIX + "schedule_scan:google_search:v1", "1", nx=True, ex=3600):
+    if not await cache.set(PREFIX + "schedule_scan:hybrid_search:v2", "1", nx=True, ex=3600):
         return
     with d1_strict():
         movies = await d1_query("SELECT id, released_at FROM movies WHERE enabled = 1 AND released_at IS NOT NULL")

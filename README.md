@@ -1,6 +1,6 @@
 # cinemark-api
 
-## Tin sau công chiếu (Google Search, lưu D1)
+## Tin sau công chiếu (Google Search + News Light, lưu D1)
 
 Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` rồi restart web/scheduler.
 `SERPAPI_TIMEOUT_SECONDS` mặc định 120 giây. Không cần SDK mới.
@@ -15,7 +15,10 @@ Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` rồi restart web/schedule
 Scheduler kiểm tra mỗi giờ và lấy tin cho các phim đang theo dõi, đã khởi chiếu (giờ
 Việt Nam), mỗi 72 giờ kể từ lần thành công. Tác vụ chạy nền, không chặn lịch crawl.
 Dữ liệu lưu tại bảng `movie_press_reviews` trong D1 dùng chung với Cinemark; mỗi phim
-một snapshot hiện tại, có ngày lấy tin/lịch lấy tiếp và trường phân tích Bee.
+một snapshot hiện tại, có ngày lấy tin/lịch lấy tiếp và trường phân tích Cinemark AI.
+Mỗi lượt cập nhật gọi hai engine: Google Search cho organic_results và Google News
+Light cho news_results. sources là bộ nguồn chung đã bỏ trùng, tối đa 10 nguồn,
+ưu tiên cân bằng 5 nguồn mỗi nhóm nếu có đủ dữ liệu. Không dùng top_stories cho tab báo chí.
 Tin mới xoá phân tích của snapshot trước. Lỗi lấy tin giữ dữ liệu cũ, giãn retry 1 giờ;
 Redis chỉ giữ khoá/cooldown, không còn chứa bản tin. Không tự theo trang kế tiếp. Giữ tối đa 10 bài; trafilatura trích nội dung, tác giả và
 ngày xuất bản gốc, chuẩn bị sẵn analysis_input trong JSON trước khi gửi Bee. Nội dung

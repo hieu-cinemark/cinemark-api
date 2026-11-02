@@ -68,6 +68,9 @@ def setup(monkeypatch):
     search.return_value["organic_results"] = [
         {**item, "link": f"https://example.com/{i}"} for i, item in enumerate(search.return_value["organic_results"])
     ]
+    monkeypatch.setattr(
+        news.google_news, "search", AsyncMock(return_value={"news_results": search.return_value["organic_results"]})
+    )
     monkeypatch.setattr(news.news_articles, "enrich", AsyncMock())
     yield cache, clock, movie, search, db
     db.close()
@@ -102,9 +105,10 @@ async def test_reuses_news_for_72_hours_then_invalidates_analysis(setup):
 
 async def test_empty_news_is_persisted_and_not_retried_early(setup):
     setup[3].return_value = {"organic_results": []}
+    news.google_news.search.return_value = {"news_results": []}
     await news.refresh_news("film")
-    assert (await news.refresh_news("film"))["data"]["news_results"] == []
-    assert setup[3].await_count == 2
+    assert (await news.refresh_news("film"))["data"]["sources"] == []
+    assert setup[3].await_count == 1
 
 
 async def test_failed_refresh_preserves_old_result_and_backs_off(setup):
@@ -175,19 +179,20 @@ async def test_tick_only_released_movies_and_not_more_than_once_per_hour(setup, 
     refresh.assert_awaited_once_with("film")
 
 
-async def test_sparse_results_use_one_broader_query_and_deduplicate(setup):
-    setup[3].side_effect = [
-        {"organic_results": [{"title": "One", "link": "https://example.com/one"}]},
-        {
-            "organic_results": [
-                {"title": "Duplicate", "link": "https://example.com/one#section"},
-                {"title": "Two", "link": "https://example.com/two"},
-            ]
-        },
-    ]
+async def test_two_engines_are_merged_and_duplicates_share_one_source(setup):
+    setup[3].return_value = {"organic_results": [{"title": "One", "link": "https://example.com/one"}]}
+    news.google_news.search.return_value = {
+        "news_results": [
+            {"title": "Duplicate", "link": "https://example.com/one#section"},
+            {"title": "Two", "link": "https://example.com/two"},
+        ]
+    }
     result = await news.refresh_news("film")
+    assert len(result["data"]["sources"]) == 2
+    assert len(result["data"]["organic_results"]) == 1
     assert len(result["data"]["news_results"]) == 2
-    assert [call.args[0].q for call in setup[3].call_args_list] == ["phim Út Lan 2 đánh giá", "phim Út Lan 2 review"]
+    assert setup[3].await_count == news.google_news.search.await_count == 1
+    assert news.google_news.search.call_args.args[0].q == "phim Út Lan 2 review"
 
 
 async def test_force_bypasses_snapshot_and_provider_cache(setup):
@@ -198,12 +203,11 @@ async def test_force_bypasses_snapshot_and_provider_cache(setup):
     assert setup[3].call_args.args[0].no_cache is True
 
 
-async def test_failed_extra_query_keeps_first_results(setup):
-    setup[3].side_effect = [
-        {"organic_results": [{"title": "One", "link": "https://example.com/one"}]},
-        UpstreamError("unavailable"),
-    ]
-    assert len((await news.refresh_news("film"))["data"]["news_results"]) == 1
+async def test_news_engine_failure_preserves_complete_old_snapshot(setup):
+    old = await news.refresh_news("film")
+    setup[1]["now"] += timedelta(days=3)
+    news.google_news.search.side_effect = UpstreamError("unavailable")
+    assert await news.refresh_news("film") == old
 
 
 async def test_existing_snapshot_is_enriched_without_search_or_schedule_change(setup):
