@@ -117,7 +117,7 @@ def analysis_input(title: str, articles: list[dict]) -> dict:
         "movieTitle": title,
         "articles": [
             {
-                "sourceIndex": i + 1,
+                "sourceIndex": item.get("source_index", i + 1),
                 "title": item.get("extracted_title") or item.get("title"),
                 "source": item.get("source"),
                 "link": item.get("link"),

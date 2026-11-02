@@ -55,3 +55,8 @@ def test_prepared_input_caps_sources_and_marks_snippet_fallback():
     data = analysis_input("Phim", [{"snippet": "Brief"}])
     assert data["articles"][0]["contentStatus"] == "snippet_only"
     assert data["articles"][0]["content"] == "Brief"
+
+
+def test_analysis_preserves_global_numbers_for_balanced_selection():
+    result = analysis_input("Phim", [{"source_index": 12, "snippet": "News"}])
+    assert result["articles"][0]["sourceIndex"] == 12

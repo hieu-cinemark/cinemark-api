@@ -69,15 +69,17 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         if (
             not force
             and old
-            and old["data"].get("groups_version") == 2
+            and old["data"].get("groups_version") == 3
             and datetime.fromisoformat(old["nextRefreshAt"]) > now()
         ):
             if old["data"].get("extraction_version") != 1:
                 previous_id = old["snapshotId"]
-                old["data"]["sources"] = old["data"].get("sources", [])[: news_articles.MAX_ARTICLES]
-                await news_articles.enrich(old["data"]["sources"])
+                old["data"]["analysis_sources"] = old["data"].get("analysis_sources", [])[: news_articles.MAX_ARTICLES]
+                await news_articles.enrich(old["data"]["analysis_sources"])
                 press_groups.sync_enriched(old["data"])
-                old["data"]["analysis_input"] = news_articles.analysis_input(movie["title"], old["data"]["sources"])
+                old["data"]["analysis_input"] = news_articles.analysis_input(
+                    movie["title"], old["data"]["analysis_sources"]
+                )
                 old["data"]["extraction_version"] = 1
                 old["snapshotId"] = uuid.uuid4().hex
                 old["analysis"] = None
@@ -98,9 +100,9 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         )
         data["collection_queries"] = [query, news_query]
         press_groups.select_groups(data, press)
-        await news_articles.enrich(data["sources"])
+        await news_articles.enrich(data["analysis_sources"])
         press_groups.sync_enriched(data)
-        data["analysis_input"] = news_articles.analysis_input(movie["title"], data["sources"])
+        data["analysis_input"] = news_articles.analysis_input(movie["title"], data["analysis_sources"])
         data["extraction_version"] = 1
         snapshot = now()
         result = {
@@ -127,7 +129,7 @@ async def tick() -> None:
     if not settings.serpapi_api_key:
         return
     cache = get_redis_client()
-    if not await cache.set(PREFIX + "schedule_scan:hybrid_search:v2", "1", nx=True, ex=3600):
+    if not await cache.set(PREFIX + "schedule_scan:hybrid_full_page:v3", "1", nx=True, ex=3600):
         return
     with d1_strict():
         movies = await d1_query("SELECT id, released_at FROM movies WHERE enabled = 1 AND released_at IS NOT NULL")

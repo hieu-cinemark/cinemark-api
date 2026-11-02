@@ -28,13 +28,15 @@ def test_keeps_search_and_news_separate_with_shared_references():
     assert data["news_search_parameters"]["engine"] == "google_news_light"
 
 
-def test_balances_five_sources_from_each_engine_under_global_cap():
+def test_displays_full_pages_but_balances_only_ai_sources():
     data = {"organic_results": [{"link": f"https://example.com/o/{i}"} for i in range(10)]}
     press = {"news_results": [{"link": f"https://example.com/n/{i}"} for i in range(10)]}
     articles = select_groups(data, press)
-    assert len(articles) == 10
-    assert len(data["news_results"]) == 5
-    assert len(data["organic_results"]) == 5
+    assert len(articles) == 20
+    assert len(data["news_results"]) == 10
+    assert len(data["organic_results"]) == 10
+    assert len(data["analysis_sources"]) == 10
+    assert [item["source_index"] for item in data["analysis_sources"]] == [1, 2, 3, 4, 5, 11, 12, 13, 14, 15]
 
 
 def test_empty_news_is_not_filled_from_search_and_metadata_is_synced():
