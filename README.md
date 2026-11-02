@@ -1,30 +1,42 @@
 # cinemark-api
 
-## Tin sau công chiếu (Google News Light + Bee)
+## Tin sau công chiếu (Google News Light, lưu D1)
 
-Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` và restart API. Timeout mặc định
-`SERPAPI_TIMEOUT_SECONDS=120`. Không cần SDK mới.
+Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` rồi restart web/scheduler.
+`SERPAPI_TIMEOUT_SECONDS` mặc định 120 giây. Không cần SDK mới.
 
 - `POST /research/google-news`: tìm trực tiếp, body `{"q":"phim Út Lan 2 đánh giá","gl":"vn","hl":"vi"}`.
-  Dùng engine cố định `google_news_light`, trả JSON gồm `news_results` và metadata/phân trang.
-- `GET /research/movies/{movie_id}/news`: chỉ phim đang theo dõi, có ngày khởi chiếu không ở tương lai (giờ Việt Nam).
-  Tải cache hoặc tìm mới nếu chưa có/đã đủ 72 giờ. Cache Redis không hết hạn; lỗi cập nhật giữ bản cũ.
-- `POST /research/movies/{movie_id}/news/analyze`: Bee phân tích tiêu đề/trích đoạn của snapshot tin hiện tại.
-  Dùng provider `beeknoee` trong cấu hình AI, không phụ thuộc provider đang chọn cho task khác.
-  Phân tích được lưu và tái sử dụng cho tới khi tin được cập nhật. Không tự gọi AI theo lịch.
+  Dùng engine `google_news_light`, trả `news_results` cùng metadata/phân trang.
+- `GET /research/movies/{movie_id}/news`: chỉ đọc bản đã lưu từ D1, trả null khi chưa có.
+  Không gọi SerpApi hay Bee khi đọc.
+- `POST /research/movies/{movie_id}/news/refresh`: lấy tin đến hạn và lưu D1; không gọi Bee.
 
-Scheduler hiện có kiểm tra mỗi giờ và tìm lại từng phim đã chiếu sau 72 giờ kể từ
-lần thành công. Tác vụ tin chạy nền, không chặn lịch crawl. Cần chạy tiến trình
-scheduler (`cinemark-scheduler` trên VPS, hoặc `scheduler_in_web` theo cấu hình hiện có).
-Có khoá Redis chống gọi đồng thời; lỗi tìm tin giãn thử lại 1 giờ. Không tự phân trang
-hay thử lại request SerpApi để tránh tiêu quota ngoài dự kiến. Redis cần persistence
-nếu muốn giữ snapshot qua restart Redis.
+Scheduler kiểm tra mỗi giờ và lấy tin cho các phim đang theo dõi, đã khởi chiếu (giờ
+Việt Nam), mỗi 72 giờ kể từ lần thành công. Tác vụ chạy nền, không chặn lịch crawl.
+Dữ liệu lưu tại bảng `movie_press_reviews` trong D1 dùng chung với Cinemark; mỗi phim
+một snapshot hiện tại, có ngày lấy tin/lịch lấy tiếp và trường phân tích Bee.
+Tin mới xoá phân tích của snapshot trước. Lỗi lấy tin giữ dữ liệu cũ, giãn retry 1 giờ;
+Redis chỉ giữ khoá/cooldown, không còn chứa bản tin. Không tự theo trang kế tiếp.
 
-Cinemark Worker kết nối bằng `CINEMARK_API_BASE_URL` và secret `CINEMARK_API_AUTH_KEY`
-(khớp `API_AUTH_KEY` bên API nếu bật xác thực). Không gửi key SerpApi xuống trình duyệt.
+Cinemark Worker đọc D1 trực tiếp và gọi Bee từ cấu hình AI của Cinemark khi người dùng
+bấm phân tích; cinemark-api không còn endpoint phân tích Bee cho tính năng này.
+Bản tin/AI đã lưu không cần URL, key API VPS hoặc SerpApi để xem.
 
-Thiếu key trả 503; provider lỗi/timeout trả 502. Chỉ dùng tin làm tư liệu bổ sung,
-không coi phân tích trích đoạn là khảo sát khán giả hay đánh giá toàn văn bài báo.
+Chạy `cinemark-scheduler` trên VPS (hoặc cấu hình `scheduler_in_web` hiện có). API tự
+`CREATE TABLE IF NOT EXISTS`; migration tương ứng ở repo Cinemark:
+`scripts/migrations/20261102_movie_press_reviews.sql`.
+
+Cấu hình lần đầu trên VPS:
+
+```sh
+cd /opt/cinemark-api
+sudo nano .env
+# Thêm SERPAPI_API_KEY=<key của bạn>, không có dấu ngoặc nhọn.
+sudo systemctl restart cinemark-api-web cinemark-scheduler
+```
+
+Nếu chưa có key, đọc bản tin vẫn hoạt động; chưa có dữ liệu thì giao diện báo chờ lần
+thu thập đầu tiên. Không commit key vào git.
 
 Tài liệu provider: [Google News Light API](https://serpapi.com/google-news-light-api).
 

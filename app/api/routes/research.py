@@ -17,10 +17,11 @@ async def google_news_search(payload: GoogleNewsRequest) -> dict[str, Any]:
 
 
 @router.get("/movies/{movie_id}/news")
-async def movie_news(movie_id: str) -> dict[str, Any]:
-    return await post_release_news.get_news(movie_id)
+async def movie_news(movie_id: str) -> dict[str, Any] | None:
+    return await post_release_news.read_news(movie_id)
 
 
-@router.post("/movies/{movie_id}/news/analyze")
-async def analyze_movie_news(movie_id: str) -> dict[str, Any]:
-    return await post_release_news.analyze(movie_id)
+@router.post("/movies/{movie_id}/news/refresh")
+async def refresh_movie_news(movie_id: str) -> dict[str, Any]:
+    """Lấy tin đến hạn và lưu D1; không gọi Bee."""
+    return await post_release_news.refresh_news(movie_id)
