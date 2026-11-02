@@ -66,3 +66,20 @@ async def save(snapshot: dict) -> None:
                 json.dumps(snapshot["data"], ensure_ascii=False),
             ],
         )
+
+
+async def update_extracted(snapshot: dict, previous_id: str) -> None:
+    """Bổ sung nội dung vào bản đã lưu, không đổi lịch lấy tin hoặc ghi đè bản mới hơn."""
+    with d1_strict():
+        await d1_query(
+            """UPDATE movie_press_reviews SET snapshot_id = ?, response_json = ?,
+            analysis_text = NULL, analysis_at = NULL, analysis_model = NULL,
+            analysis_lock_owner = NULL, analysis_lock_until = NULL
+            WHERE movie_id = ? AND snapshot_id = ?""",
+            [
+                snapshot["snapshotId"],
+                json.dumps(snapshot["data"], ensure_ascii=False),
+                snapshot["movieId"],
+                previous_id,
+            ],
+        )

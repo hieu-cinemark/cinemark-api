@@ -16,7 +16,9 @@ Việt Nam), mỗi 72 giờ kể từ lần thành công. Tác vụ chạy nền
 Dữ liệu lưu tại bảng `movie_press_reviews` trong D1 dùng chung với Cinemark; mỗi phim
 một snapshot hiện tại, có ngày lấy tin/lịch lấy tiếp và trường phân tích Bee.
 Tin mới xoá phân tích của snapshot trước. Lỗi lấy tin giữ dữ liệu cũ, giãn retry 1 giờ;
-Redis chỉ giữ khoá/cooldown, không còn chứa bản tin. Không tự theo trang kế tiếp.
+Redis chỉ giữ khoá/cooldown, không còn chứa bản tin. Không tự theo trang kế tiếp. Giữ tối đa 10 bài; trafilatura trích nội dung, tác giả và
+ngày xuất bản gốc, chuẩn bị sẵn analysis_input trong JSON trước khi gửi Bee. Nội dung
+được giới hạn độ dài và đánh dấu fallback khi chỉ có snippet.
 
 Cinemark Worker đọc D1 trực tiếp và gọi Bee từ cấu hình AI của Cinemark khi người dùng
 bấm phân tích; cinemark-api không còn endpoint phân tích Bee cho tính năng này.

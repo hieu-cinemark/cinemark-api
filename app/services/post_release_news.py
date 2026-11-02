@@ -12,7 +12,7 @@ from app.core.errors import ConflictError, NotFoundError, UpstreamError, Validat
 from app.core.logging import get_logger
 from app.repositories.d1 import press_reviews
 from app.schemas.research import GoogleNewsRequest
-from app.services import google_news, news_images
+from app.services import google_news, news_articles
 
 logger = get_logger(__name__)
 INTERVAL = timedelta(days=3)
@@ -67,6 +67,18 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
     try:
         old = await cached(movie_id)
         if not force and old and datetime.fromisoformat(old["nextRefreshAt"]) > now():
+            if old["data"].get("extraction_version") != 1:
+                previous_id = old["snapshotId"]
+                old["data"]["news_results"] = old["data"].get("news_results", [])[: news_articles.MAX_ARTICLES]
+                await news_articles.enrich(old["data"]["news_results"])
+                old["data"]["analysis_input"] = news_articles.analysis_input(
+                    movie["title"], old["data"]["news_results"]
+                )
+                old["data"]["extraction_version"] = 1
+                old["snapshotId"] = uuid.uuid4().hex
+                old["analysis"] = None
+                await press_reviews.update_extracted(old, previous_id)
+                return await cached(movie_id) or old
             return old
         if not force and await cache.get(PREFIX + movie_id + ":retry"):
             if old:
@@ -96,8 +108,10 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
             if identity and identity not in seen:
                 seen.add(identity)
                 unique.append(article)
-        data["news_results"] = unique[:20]
-        await news_images.enrich(data["news_results"])
+        data["news_results"] = unique[: news_articles.MAX_ARTICLES]
+        await news_articles.enrich(data["news_results"])
+        data["analysis_input"] = news_articles.analysis_input(movie["title"], data["news_results"])
+        data["extraction_version"] = 1
         snapshot = now()
         result = {
             "movieId": movie_id,

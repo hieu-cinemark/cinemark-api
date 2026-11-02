@@ -31,7 +31,7 @@ structlog==26.1.0
 tzdata==2026.4
 typing-inspection==0.4.4
 typing_extensions==4.16.0
-urllib3==2.7.0
+urllib3==2.8.0
 uvicorn==0.54.0
 uvloop==0.22.1
 watchfiles==1.2.0
@@ -41,3 +41,4 @@ aioboto3==13.4.0
 orjson==3.13.0
 emoji==2.16.0
 openai==3.8.0
+trafilatura==2.3.1

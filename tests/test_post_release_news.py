@@ -68,7 +68,7 @@ def setup(monkeypatch):
     search.return_value["news_results"] = [
         {**item, "link": f"https://example.com/{i}"} for i, item in enumerate(search.return_value["news_results"])
     ]
-    monkeypatch.setattr(news.news_images, "enrich", AsyncMock())
+    monkeypatch.setattr(news.news_articles, "enrich", AsyncMock())
     yield cache, clock, movie, search, db
     db.close()
 
@@ -204,3 +204,16 @@ async def test_failed_extra_query_keeps_first_results(setup):
         UpstreamError("unavailable"),
     ]
     assert len((await news.refresh_news("film"))["data"]["news_results"]) == 1
+
+
+async def test_existing_snapshot_is_enriched_without_search_or_schedule_change(setup):
+    old = await news.refresh_news("film")
+    data = old["data"]
+    data.pop("extraction_version")
+    setup[4].execute("UPDATE movie_press_reviews SET response_json = ?", [json.dumps(data)])
+    setup[4].commit()
+    updated = await news.refresh_news("film")
+    assert setup[3].await_count == 1
+    assert updated["snapshotId"] != old["snapshotId"]
+    assert updated["nextRefreshAt"] == old["nextRefreshAt"]
+    assert updated["data"]["extraction_version"] == 1
