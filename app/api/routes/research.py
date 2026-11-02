@@ -22,6 +22,6 @@ async def movie_news(movie_id: str) -> dict[str, Any] | None:
 
 
 @router.post("/movies/{movie_id}/news/refresh")
-async def refresh_movie_news(movie_id: str) -> dict[str, Any]:
+async def refresh_movie_news(movie_id: str, force: bool = False) -> dict[str, Any]:
     """Lấy tin đến hạn và lưu D1; không gọi Bee."""
-    return await post_release_news.refresh_news(movie_id)
+    return await post_release_news.refresh_news(movie_id, force=force)

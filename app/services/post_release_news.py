@@ -12,7 +12,7 @@ from app.core.errors import ConflictError, NotFoundError, UpstreamError, Validat
 from app.core.logging import get_logger
 from app.repositories.d1 import press_reviews
 from app.schemas.research import GoogleNewsRequest
-from app.services import google_news
+from app.services import google_news, news_images
 
 logger = get_logger(__name__)
 INTERVAL = timedelta(days=3)
@@ -52,7 +52,7 @@ async def read_news(movie_id: str) -> dict | None:
     return await cached(movie_id)
 
 
-async def refresh_news(movie_id: str) -> dict:
+async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
     movie = await movie_for_news(movie_id)
     await press_reviews.ensure_table()
     cache = get_redis_client()
@@ -66,18 +66,38 @@ async def refresh_news(movie_id: str) -> dict:
     old = None
     try:
         old = await cached(movie_id)
-        if old and datetime.fromisoformat(old["nextRefreshAt"]) > now():
+        if not force and old and datetime.fromisoformat(old["nextRefreshAt"]) > now():
             return old
-        if await cache.get(PREFIX + movie_id + ":retry"):
+        if not force and await cache.get(PREFIX + movie_id + ":retry"):
             if old:
                 return old
             raise UpstreamError("Lượt tìm tin trước chưa thành công, vui lòng thử lại sau.")
         # Giãn retry khi quota/mạng lỗi, không gọi lại ở mỗi nhịp scheduler.
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
-        data = await google_news.search(GoogleNewsRequest(q=f'phim "{movie["title"]}" đánh giá'))
+        data = await google_news.search(GoogleNewsRequest(q=f"phim {movie['title']} đánh giá", no_cache=force))
         articles = data.get("news_results", [])
         if not isinstance(articles, list) or any(not isinstance(article, dict) for article in articles):
             raise UpstreamError("Danh sách tin không hợp lệ.")
+        data["collection_queries"] = [f"phim {movie['title']} đánh giá"]
+        if len(articles) < 5:
+            # Tối đa một câu tìm bổ sung, không theo URL phân trang tuỳ ý.
+            extra_query = f"phim {movie['title']} review"
+            try:
+                extra = await google_news.search(GoogleNewsRequest(q=extra_query, no_cache=force))
+                more = extra.get("news_results", [])
+                if isinstance(more, list):
+                    articles = articles + [item for item in more if isinstance(item, dict)]
+                data["collection_queries"].append(extra_query)
+            except UpstreamError:
+                pass  # vẫn lưu kết quả câu đầu nếu câu bổ sung lỗi
+        unique, seen = [], set()
+        for article in articles:
+            identity = str(article.get("link") or article.get("title") or "").strip().split("#", 1)[0]
+            if identity and identity not in seen:
+                seen.add(identity)
+                unique.append(article)
+        data["news_results"] = unique[:20]
+        await news_images.enrich(data["news_results"])
         snapshot = now()
         result = {
             "movieId": movie_id,

@@ -64,6 +64,11 @@ def setup(monkeypatch):
         }
     )
     monkeypatch.setattr(news.google_news, "search", search)
+    search.return_value["news_results"] *= 5
+    search.return_value["news_results"] = [
+        {**item, "link": f"https://example.com/{i}"} for i, item in enumerate(search.return_value["news_results"])
+    ]
+    monkeypatch.setattr(news.news_images, "enrich", AsyncMock())
     yield cache, clock, movie, search, db
     db.close()
 
@@ -80,7 +85,7 @@ async def test_unreleased_or_unknown_date_cannot_fetch_or_read(setup, value):
 
 async def test_reuses_news_for_72_hours_then_invalidates_analysis(setup):
     first = await news.refresh_news("film")
-    assert setup[3].call_args.args[0].q == 'phim "Út Lan 2" đánh giá'
+    assert setup[3].call_args.args[0].q == "phim Út Lan 2 đánh giá"
     setup[4].execute(
         "UPDATE movie_press_reviews SET analysis_text = 'Khen [1]', analysis_at = '2026-11-02', analysis_model = 'bee-model'"
     )
@@ -99,7 +104,7 @@ async def test_empty_news_is_persisted_and_not_retried_early(setup):
     setup[3].return_value = {"news_results": []}
     await news.refresh_news("film")
     assert (await news.refresh_news("film"))["data"]["news_results"] == []
-    assert setup[3].await_count == 1
+    assert setup[3].await_count == 2
 
 
 async def test_failed_refresh_preserves_old_result_and_backs_off(setup):
@@ -168,3 +173,34 @@ async def test_tick_only_released_movies_and_not_more_than_once_per_hour(setup, 
     await news.tick()
     await news.tick()
     refresh.assert_awaited_once_with("film")
+
+
+async def test_sparse_results_use_one_broader_query_and_deduplicate(setup):
+    setup[3].side_effect = [
+        {"news_results": [{"title": "One", "link": "https://example.com/one"}]},
+        {
+            "news_results": [
+                {"title": "Duplicate", "link": "https://example.com/one#section"},
+                {"title": "Two", "link": "https://example.com/two"},
+            ]
+        },
+    ]
+    result = await news.refresh_news("film")
+    assert len(result["data"]["news_results"]) == 2
+    assert [call.args[0].q for call in setup[3].call_args_list] == ["phim Út Lan 2 đánh giá", "phim Út Lan 2 review"]
+
+
+async def test_force_bypasses_snapshot_and_provider_cache(setup):
+    old = await news.refresh_news("film")
+    setup[1]["now"] += timedelta(minutes=1)
+    result = await news.refresh_news("film", force=True)
+    assert result["snapshotId"] != old["snapshotId"]
+    assert setup[3].call_args.args[0].no_cache is True
+
+
+async def test_failed_extra_query_keeps_first_results(setup):
+    setup[3].side_effect = [
+        {"news_results": [{"title": "One", "link": "https://example.com/one"}]},
+        UpstreamError("unavailable"),
+    ]
+    assert len((await news.refresh_news("film"))["data"]["news_results"]) == 1
