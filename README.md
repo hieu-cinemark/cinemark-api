@@ -1,12 +1,13 @@
 # cinemark-api
 
-## Tin sau công chiếu (Google News Light, lưu D1)
+## Tin sau công chiếu (Google Search, lưu D1)
 
 Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` rồi restart web/scheduler.
 `SERPAPI_TIMEOUT_SECONDS` mặc định 120 giây. Không cần SDK mới.
 
-- `POST /research/google-news`: tìm trực tiếp, body `{"q":"phim Út Lan 2 đánh giá","gl":"vn","hl":"vi"}`.
-  Dùng engine `google_news_light`, trả `news_results` cùng metadata/phân trang.
+- `POST /research/google-search`: tìm trực tiếp, body `{"q":"phim Út Lan 2 đánh giá","gl":"vn","hl":"vi"}`.
+  Dùng engine `google`, trả `organic_results` và `top_stories` nếu có.
+  Endpoint `/research/google-news` cũ vẫn giữ Google News Light cho client cũ.
 - `GET /research/movies/{movie_id}/news`: chỉ đọc bản đã lưu từ D1, trả null khi chưa có.
   Không gọi SerpApi hay Bee khi đọc.
 - `POST /research/movies/{movie_id}/news/refresh`: lấy tin đến hạn và lưu D1; không gọi Bee.

@@ -12,7 +12,7 @@ from app.core.errors import ConflictError, NotFoundError, UpstreamError, Validat
 from app.core.logging import get_logger
 from app.repositories.d1 import press_reviews
 from app.schemas.research import GoogleNewsRequest
-from app.services import google_news, news_articles
+from app.services import google_news, news_articles, press_groups
 
 logger = get_logger(__name__)
 INTERVAL = timedelta(days=3)
@@ -66,11 +66,17 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
     old = None
     try:
         old = await cached(movie_id)
-        if not force and old and datetime.fromisoformat(old["nextRefreshAt"]) > now():
+        if (
+            not force
+            and old
+            and old["data"].get("groups_version") == 1
+            and datetime.fromisoformat(old["nextRefreshAt"]) > now()
+        ):
             if old["data"].get("extraction_version") != 1:
                 previous_id = old["snapshotId"]
                 old["data"]["news_results"] = old["data"].get("news_results", [])[: news_articles.MAX_ARTICLES]
                 await news_articles.enrich(old["data"]["news_results"])
+                press_groups.sync_enriched(old["data"])
                 old["data"]["analysis_input"] = news_articles.analysis_input(
                     movie["title"], old["data"]["news_results"]
                 )
@@ -86,30 +92,20 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
             raise UpstreamError("Lượt tìm tin trước chưa thành công, vui lòng thử lại sau.")
         # Giãn retry khi quota/mạng lỗi, không gọi lại ở mỗi nhịp scheduler.
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
-        data = await google_news.search(GoogleNewsRequest(q=f"phim {movie['title']} đánh giá", no_cache=force))
-        articles = data.get("news_results", [])
-        if not isinstance(articles, list) or any(not isinstance(article, dict) for article in articles):
-            raise UpstreamError("Danh sách tin không hợp lệ.")
+        data = await google_news.search_web(GoogleNewsRequest(q=f"phim {movie['title']} đánh giá", no_cache=force))
+        articles = press_groups.flatten(data.get("organic_results", []))
         data["collection_queries"] = [f"phim {movie['title']} đánh giá"]
+        extra = None
         if len(articles) < 5:
-            # Tối đa một câu tìm bổ sung, không theo URL phân trang tuỳ ý.
             extra_query = f"phim {movie['title']} review"
             try:
-                extra = await google_news.search(GoogleNewsRequest(q=extra_query, no_cache=force))
-                more = extra.get("news_results", [])
-                if isinstance(more, list):
-                    articles = articles + [item for item in more if isinstance(item, dict)]
+                extra = await google_news.search_web(GoogleNewsRequest(q=extra_query, no_cache=force))
                 data["collection_queries"].append(extra_query)
             except UpstreamError:
-                pass  # vẫn lưu kết quả câu đầu nếu câu bổ sung lỗi
-        unique, seen = [], set()
-        for article in articles:
-            identity = str(article.get("link") or article.get("title") or "").strip().split("#", 1)[0]
-            if identity and identity not in seen:
-                seen.add(identity)
-                unique.append(article)
-        data["news_results"] = unique[: news_articles.MAX_ARTICLES]
+                pass
+        press_groups.select_groups(data, extra)
         await news_articles.enrich(data["news_results"])
+        press_groups.sync_enriched(data)
         data["analysis_input"] = news_articles.analysis_input(movie["title"], data["news_results"])
         data["extraction_version"] = 1
         snapshot = now()
@@ -137,7 +133,7 @@ async def tick() -> None:
     if not settings.serpapi_api_key:
         return
     cache = get_redis_client()
-    if not await cache.set(PREFIX + "schedule_scan", "1", nx=True, ex=3600):
+    if not await cache.set(PREFIX + "schedule_scan:google_search:v1", "1", nx=True, ex=3600):
         return
     with d1_strict():
         movies = await d1_query("SELECT id, released_at FROM movies WHERE enabled = 1 AND released_at IS NOT NULL")

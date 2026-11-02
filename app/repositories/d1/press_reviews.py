@@ -39,7 +39,7 @@ async def load(movie_id: str) -> dict | None:
             "text": row["analysis_text"],
             "generatedAt": row["analysis_at"],
             "model": row["analysis_model"],
-            "provider": "Bee",
+            "provider": "Cinemark AI",
         }
         if row["analysis_text"]
         else None,

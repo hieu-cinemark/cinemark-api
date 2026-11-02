@@ -52,7 +52,7 @@ def setup(monkeypatch):
     monkeypatch.setattr(press_reviews, "d1_query", query)
     search = AsyncMock(
         return_value={
-            "news_results": [
+            "organic_results": [
                 {
                     "title": "Review",
                     "link": "https://example.com",
@@ -63,10 +63,10 @@ def setup(monkeypatch):
             ]
         }
     )
-    monkeypatch.setattr(news.google_news, "search", search)
-    search.return_value["news_results"] *= 5
-    search.return_value["news_results"] = [
-        {**item, "link": f"https://example.com/{i}"} for i, item in enumerate(search.return_value["news_results"])
+    monkeypatch.setattr(news.google_news, "search_web", search)
+    search.return_value["organic_results"] *= 5
+    search.return_value["organic_results"] = [
+        {**item, "link": f"https://example.com/{i}"} for i, item in enumerate(search.return_value["organic_results"])
     ]
     monkeypatch.setattr(news.news_articles, "enrich", AsyncMock())
     yield cache, clock, movie, search, db
@@ -101,7 +101,7 @@ async def test_reuses_news_for_72_hours_then_invalidates_analysis(setup):
 
 
 async def test_empty_news_is_persisted_and_not_retried_early(setup):
-    setup[3].return_value = {"news_results": []}
+    setup[3].return_value = {"organic_results": []}
     await news.refresh_news("film")
     assert (await news.refresh_news("film"))["data"]["news_results"] == []
     assert setup[3].await_count == 2
@@ -177,9 +177,9 @@ async def test_tick_only_released_movies_and_not_more_than_once_per_hour(setup, 
 
 async def test_sparse_results_use_one_broader_query_and_deduplicate(setup):
     setup[3].side_effect = [
-        {"news_results": [{"title": "One", "link": "https://example.com/one"}]},
+        {"organic_results": [{"title": "One", "link": "https://example.com/one"}]},
         {
-            "news_results": [
+            "organic_results": [
                 {"title": "Duplicate", "link": "https://example.com/one#section"},
                 {"title": "Two", "link": "https://example.com/two"},
             ]
@@ -200,7 +200,7 @@ async def test_force_bypasses_snapshot_and_provider_cache(setup):
 
 async def test_failed_extra_query_keeps_first_results(setup):
     setup[3].side_effect = [
-        {"news_results": [{"title": "One", "link": "https://example.com/one"}]},
+        {"organic_results": [{"title": "One", "link": "https://example.com/one"}]},
         UpstreamError("unavailable"),
     ]
     assert len((await news.refresh_news("film"))["data"]["news_results"]) == 1

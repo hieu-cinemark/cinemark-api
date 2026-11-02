@@ -137,6 +137,17 @@ async def test_echoed_key_is_removed(upstream):
     assert "api_key" not in result["search_parameters"]
 
 
+async def test_web_search_uses_google_and_preserves_both_groups(upstream):
+    upstream[0]["body"] = {
+        "search_metadata": {"status": "Success"},
+        "organic_results": [{"title": "Review", "link": "https://example.com/review"}],
+        "top_stories": [{"title": "News", "link": "https://example.com/news"}],
+    }
+    result = await google_news.search_web(GoogleNewsRequest(q="phim"))
+    assert upstream[1][0].url.params["engine"] == "google"
+    assert len(result["organic_results"]) == len(result["top_stories"]) == 1
+
+
 async def test_httpx_request_log_redacts_key(upstream, caplog):
     import logging
 

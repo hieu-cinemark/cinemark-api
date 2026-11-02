@@ -32,11 +32,19 @@ class SerpApiNotConfigured(AppError):
 
 
 async def search(payload: GoogleNewsRequest) -> dict[str, Any]:
+    return await _search(payload, engine="google_news_light")
+
+
+async def search_web(payload: GoogleNewsRequest) -> dict[str, Any]:
+    return await _search(payload, engine="google")
+
+
+async def _search(payload: GoogleNewsRequest, *, engine: str) -> dict[str, Any]:
     key = (settings.serpapi_api_key or "").strip()
     if not key:
         raise SerpApiNotConfigured("Chưa cấu hình SERPAPI_API_KEY.")
     params = payload.model_dump(exclude_none=True)
-    params.update(engine="google_news_light", api_key=key)
+    params.update(engine=engine, api_key=key)
     params["no_cache"] = "true" if payload.no_cache else "false"
     # Không retry tự động: mỗi request có thể dùng quota. Không log URL/exception
     # httpx vì query string có chứa api_key.
@@ -45,9 +53,9 @@ async def search(payload: GoogleNewsRequest) -> dict[str, Any]:
             response = await client.get(SEARCH_URL, params=params)
             response.raise_for_status()
     except httpx.TimeoutException:
-        raise UpstreamError("SerpApi Google News Light hết thời gian chờ.") from None
+        raise UpstreamError("SerpApi Google Search hết thời gian chờ.") from None
     except httpx.HTTPError:
-        raise UpstreamError("Không gọi được SerpApi Google News Light.") from None
+        raise UpstreamError("Không gọi được SerpApi Google Search.") from None
     try:
         data = response.json()
     except ValueError:

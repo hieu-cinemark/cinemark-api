@@ -16,6 +16,12 @@ async def google_news_search(payload: GoogleNewsRequest) -> dict[str, Any]:
     return await google_news.search(payload)
 
 
+@router.post("/google-search")
+async def google_search(payload: GoogleNewsRequest) -> dict[str, Any]:
+    """Google Search: organic_results và top_stories khi Google có trả về."""
+    return await google_news.search_web(payload)
+
+
 @router.get("/movies/{movie_id}/news")
 async def movie_news(movie_id: str) -> dict[str, Any] | None:
     return await post_release_news.read_news(movie_id)
