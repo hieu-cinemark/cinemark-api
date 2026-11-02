@@ -56,8 +56,13 @@ def _patch(monkeypatch, redis):
     monkeypatch.setattr(settings, "facebook_deep_hours", "06-22")
     monkeypatch.setattr(settings, "facebook_deep_jobs_per_account_hour", 1.0)
     monkeypatch.setattr(settings, "facebook_deep_jobs_max_per_hour", 60)
+    monkeypatch.setattr(crawl_lanes, "_threads_busy", _threads_idle)
     _accounts(monkeypatch, 10)
     return published
+
+
+async def _threads_idle():
+    return False
 
 
 def _accounts(monkeypatch, n):
@@ -157,3 +162,19 @@ def test_deep_jobs_carry_max_pages(monkeypatch):
     asyncio.run(crawl_lanes.run_deep_tick(datetime(2026, 10, 27, 10, 25, tzinfo=VN)))
     pages = {p["keyword_id"]: p["max_pages"] for p in published}
     assert pages == {"showing": 100, "upcoming": 50}
+
+
+def test_deep_tick_waits_while_threads_busy(monkeypatch):
+    """02/11/2026: Threads đang chạy / chờ thì không xếp đào bài cũ, và giờ đó chưa bị đánh dấu là đã chạy."""
+    redis = _FakeRedis()
+    published = _patch(monkeypatch, redis)
+
+    async def busy():
+        return True
+
+    monkeypatch.setattr(crawl_lanes, "_threads_busy", busy)
+    now = datetime(2026, 10, 27, 10, 25, tzinfo=VN)
+    assert asyncio.run(crawl_lanes.run_deep_tick(now)) == 0
+    assert published == []
+    monkeypatch.setattr(crawl_lanes, "_threads_busy", _threads_idle)
+    assert asyncio.run(crawl_lanes.run_deep_tick(now.replace(minute=40))) > 0  # Threads xong: cùng giờ vẫn chạy

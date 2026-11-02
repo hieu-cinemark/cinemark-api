@@ -8,7 +8,8 @@ services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài 
   (tới 100 trang, dừng sau 10 trang liên tiếp không có bài mới - 28/10/2026) - chỉ phim đang chiếu (mọi lượt) và sắp
   chiếu (lượt chẵn). Phim cũ không cần.
 - "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp số job theo số tài khoản dùng được (deep_jobs_this_hour); spider-hub
-  (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Ưu tiên phim ra rạp tháng
+  (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Không xếp khi Threads đang
+  có job chạy / chờ (cùng cổng proxy). Ưu tiên phim ra rạp tháng
   này / tháng sau (30/10/2026), rồi đang chiếu, sắp chiếu, phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
 Trần request mỗi giờ của tài khoản (spider-hub FACEBOOK_HOURLY_REQUEST_CAP) rải cả hai phần ra cả ngày.
 """
@@ -140,6 +141,11 @@ async def run_deep_tick(now: datetime) -> int:
         return 0
     if now.minute < DEEP_TICK_MINUTE or not _in_deep_hours(now):
         return 0
+    # Threads đang có job chạy / chờ (02/11/2026): tài khoản FB và Threads dùng chung cổng proxy webtui (#12, #13) -
+    # đào bài cũ lúc đó chỉ tranh cổng. Kiểm tra TRƯỚC khi đánh dấu giờ đã chạy, nên Threads xong là nhịp của giờ
+    # này vẫn chạy (lượt 30 giây kế tiếp).
+    if await _threads_busy():
+        return 0
     redis = get_redis_client()
     hour_key = _DEEP_FIRED_KEY.format(hour=now.strftime("%Y-%m-%dT%H"))
     if not await redis.set(hour_key, "1", nx=True, ex=2 * 3600):
@@ -184,6 +190,29 @@ async def run_deep_tick(now: datetime) -> int:
             await redis.hset(DEEP_LAST_QUEUED_KEY, str(keyword["id"]), str(time.time()))
     logger.info("deep_crawl_queued", queued=queued, jobs=jobs, candidates=len(candidates), keywords=len(keywords))
     return queued
+
+
+_threads_busy_logged: str | None = None
+
+
+async def _threads_busy() -> bool:
+    """Threads có job đang chạy hoặc đang chờ trong hàng (task_queue). Lỗi đọc -> coi như rảnh (không chặn đào)."""
+    global _threads_busy_logged
+    from app.services.crawl.crawl_jobs import get_running_jobs
+    from app.services.crawl.task_queue import list_pending
+
+    try:
+        running = await get_running_jobs("threads")
+        pending = await list_pending("threads")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("deep_threads_busy_check_failed", error=str(exc)[:200])
+        return False
+    busy = bool(running or pending)
+    hour = datetime.now().strftime("%Y-%m-%dT%H")
+    if busy and _threads_busy_logged != hour:
+        _threads_busy_logged = hour
+        logger.info("deep_crawl_waiting_for_threads", running=len(running), pending=len(pending))
+    return busy
 
 
 async def deep_jobs_this_hour() -> int:
