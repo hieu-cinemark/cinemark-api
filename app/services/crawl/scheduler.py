@@ -52,6 +52,7 @@ from app.services.crawl import channel_profiles, crawl_lanes, priority_channels,
 from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS
+from app.services.crawl.source_pages import fill_public_pages_queue
 from app.services.crawl.source_pages import queue_enabled_sources as queue_source_pages
 from app.services.crawl.source_pages import review_suggestions as review_source_pages
 from app.services.discovery.hashtag_discovery import run_discovery
@@ -400,8 +401,7 @@ async def _comments_tick() -> None:
             continue
         if _comment_round_done.get(platform) == hour_key:
             continue
-        if platform == "facebook" and not await _facebook_crawl_enabled():
-            continue
+        # Facebook không còn phụ thuộc công tắc lịch cào (03/11/2026): comment theo lịch mặc định ẩn danh, không dùng tài khoản.
         _comment_round_done[platform] = hour_key
         low, high = _HOT_PER_MOVIE_RANGE
         top_n = int(sched.get("top_n") or _HOT_PER_MOVIE_DEFAULT)
@@ -559,9 +559,9 @@ async def _cookie_check_tick() -> None:
 
 
 async def _facebook_crawl_enabled() -> bool:
-    """Công tắc lịch cào Facebook (crawl_schedules) - 30/10/2026: tắt nó là ngừng MỌI việc dùng tài khoản / proxy Facebook
-    do scheduler xếp (nhịp đào mỗi giờ, lượt bình luận, bài booking theo dõi), không chỉ các lượt cào theo giờ. Trước đó
-    người vận hành tắt lịch để cho tài khoản nghỉ nhưng nhịp đào + bình luận vẫn chạy. Nuôi tài khoản không bị ảnh hưởng."""
+    """Công tắc lịch cào Facebook (crawl_schedules) - 30/10/2026: tắt nó là ngừng mọi việc dùng tài khoản Facebook do
+    scheduler xếp (nhịp đào mỗi giờ, bài booking theo dõi), không chỉ các lượt cào theo giờ. Trước đó người vận hành tắt lịch
+    để cho tài khoản nghỉ nhưng nhịp đào vẫn chạy. Nuôi tài khoản, comment ẩn danh và đọc page không đăng nhập không bị ảnh hưởng."""
     return any(sched["platform"] == "facebook" and sched["enabled"] for sched in await db.list_crawl_schedules())
 
 
@@ -939,6 +939,12 @@ async def _loop() -> None:
             logger.error("scheduler_comments_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
         except Exception as exc:
             logger.error("scheduler_comments_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(fill_public_pages_queue(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_public_pages_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - như các lượt khác: không được giết vòng lặp
+            logger.error("scheduler_public_pages_tick_failed", error=str(exc)[:300])
         try:
             await asyncio.wait_for(_auto_login_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:

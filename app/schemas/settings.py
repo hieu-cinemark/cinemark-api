@@ -8,6 +8,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 FilterKeywordCategory = Literal["movie_relevant", "spam_offtopic"]
+# Người vận hành tự đánh dấu (03/11/2026), chỉ để phân biệt khi gán tài khoản: pool không đọc trường này. "rotating" là IP do
+# nhà cung cấp đổi, "unknown" là chưa đo.
+ProxyIpType = Literal["unknown", "static", "rotating"]
 
 
 class AccountOut(BaseModel):
@@ -112,6 +115,7 @@ class ProxyOut(BaseModel):
     username: str
     password: str
     login_use_proxy: bool
+    ip_type: ProxyIpType = "unknown"
     enabled: bool
     created_at: datetime
     updated_at: datetime
@@ -133,6 +137,7 @@ class ProxyCreate(BaseModel):
     username: str = ""
     password: str = ""
     login_use_proxy: bool = False
+    ip_type: ProxyIpType = "unknown"
     enabled: bool = True
 
 
@@ -142,6 +147,7 @@ class ProxyUpdate(BaseModel):
     username: str | None = None
     password: str | None = None
     login_use_proxy: bool | None = None
+    ip_type: ProxyIpType | None = None
     enabled: bool | None = None
 
 

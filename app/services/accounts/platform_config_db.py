@@ -37,7 +37,7 @@ ACCOUNT_COLUMNS = (
     "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id"
 )
 PROXY_COLUMNS = (
-    "id, platform, proxy_url, username, password, login_use_proxy, enabled, created_at, updated_at, "
+    "id, platform, proxy_url, username, password, login_use_proxy, ip_type, enabled, created_at, updated_at, "
     "status AS pool_status, cooldown_until, consecutive_failures, last_used_at"
 )
 
@@ -71,6 +71,9 @@ async def _ensure_pool_columns() -> None:
             "ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS consecutive_failures int NOT NULL DEFAULT 0"
         )
         await cur.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
+        await cur.execute(
+            "ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS ip_type text NOT NULL DEFAULT 'unknown'"
+        )
         await conn.commit()
     _pool_columns_ready = True
 
@@ -86,7 +89,7 @@ _ACCOUNT_CREATE_COLUMNS = (
     "email_password",
     "enabled",
 )
-_PROXY_CREATE_COLUMNS = ("platform", "proxy_url", "username", "password", "login_use_proxy", "enabled")
+_PROXY_CREATE_COLUMNS = ("platform", "proxy_url", "username", "password", "login_use_proxy", "ip_type", "enabled")
 
 
 # Một pool dùng chung cho cả tiến trình thay vì mở kết nối mới cho mỗi query: mỗi lần
@@ -364,7 +367,7 @@ async def delete_account(account_id: int) -> None:
 
 
 _PROXY_LIST_COLUMNS = (
-    "pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.enabled, "
+    "pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.ip_type, pp.enabled, "
     "pp.created_at, pp.updated_at, pp.status AS pool_status, pp.cooldown_until, pp.consecutive_failures, "
     "pp.last_used_at, "
     # Số dòng platform_accounts còn sống đang được ghim cố định vào proxy này (đang bật,

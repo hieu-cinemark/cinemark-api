@@ -172,6 +172,10 @@ class Settings(BaseSettings):
     facebook_nurture_jitter_minutes: int = 50
     facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"
+    # Đọc trang nguồn không đăng nhập (03/11/2026): hàng đợi vơi là nạp thêm, spider-hub giới hạn số job song song mỗi proxy.
+    facebook_public_pages_enabled: bool = True
+    facebook_public_pages_queue_target: int = 6
+    facebook_public_pages_min_gap_minutes: int = 60
 
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/discovery/hashtag_discovery.py) -
     # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.

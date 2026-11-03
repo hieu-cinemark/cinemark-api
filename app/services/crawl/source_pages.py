@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 from app.ai.runtime import call_llm, parse_json_response
 from app.clients.kafka import publish_action_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
@@ -244,7 +245,9 @@ async def _update_quiet_runs(source: dict[str, Any]) -> None:
     last = json.loads(raw)
     if last.get("page_id") and not source.get("page_id"):
         # Spider đã dò ra id của trang - lưu lại để các lượt sau không tốn request dò lại.
-        await d1_query("UPDATE source_pages SET page_id = ? WHERE id = ?", [str(last["page_id"]), source["id"]], quiet=True)
+        await d1_query(
+            "UPDATE source_pages SET page_id = ? WHERE id = ?", [str(last["page_id"]), source["id"]], quiet=True
+        )
         source["page_id"] = str(last["page_id"])
     quiet = 0 if int(last.get("new") or 0) > 0 else int(source.get("quiet_runs") or 0) + 1
     if quiet != int(source.get("quiet_runs") or 0):
@@ -277,6 +280,106 @@ async def queue_enabled_sources() -> int:
         if await queue_source(row):
             queued += 1
     logger.info("source_pages_queued", queued=queued, total=len(rows or []))
+    return queued
+
+
+# Đọc page không đăng nhập (03/11/2026): chạy liên tục kể cả khi không có tài khoản (spider-hub job public_page, worker song song).
+_PUBLIC_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_public_pages:facebook"
+_PUBLIC_PAUSED_KEY = f"{REDIS_KEY_PREFIX}facebook:public_pages:paused"  # spider-hub đặt khi hết proxy dùng được
+_PUBLIC_PLAN_REFRESH = timedelta(minutes=10)
+_public_plan: list[dict[str, Any]] = []
+_public_plan_at: datetime | None = None
+
+
+async def _refresh_public_plan(now: datetime) -> None:
+    """Page cần đọc: tới hạn theo lịch trang nguồn trước, rồi mọi page đã xếp quá min_gap (cũ nhất trước) để worker không rảnh.
+    Đọc lại tối đa mỗi _PUBLIC_PLAN_REFRESH, không phải mỗi page: D1 tính phí theo dòng đọc."""
+    global _public_plan, _public_plan_at
+    if _public_plan or (_public_plan_at and now - _public_plan_at < _PUBLIC_PLAN_REFRESH):
+        return
+    await _ensure_table()
+    rows = await d1_query(
+        "SELECT s.* FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
+        "WHERE s.enabled = 1 AND (s.movie_id IS NULL OR m.enabled = 1)",
+        quiet=True,
+    )
+    min_gap = timedelta(minutes=settings.facebook_public_pages_min_gap_minutes)
+    plan = []
+    for row in rows or []:
+        await _update_quiet_runs(row)
+        last = str(row.get("last_queued_at") or "")
+        try:
+            ready = now - datetime.fromisoformat(last) >= min_gap
+        except ValueError:
+            ready = True
+        if ready or _due(row, now):
+            plan.append(row)
+    plan.sort(
+        key=lambda row: (
+            0 if _due(row, now) else 1,
+            int(row.get("quiet_runs") or 0),
+            0 if row.get("movie_id") else 1,
+            str(row.get("last_queued_at") or ""),
+        )
+    )
+    _public_plan, _public_plan_at = plan, now
+    logger.info("public_pages_plan", ready=len(plan), total=len(rows or []))
+
+
+async def _public_since_days(url: str, now: datetime) -> int | None:
+    """Lần đọc trước đã đi hết khoảng ngày thì lần này chỉ cần phần mới (cộng 1 ngày phòng bài đăng trễ). None: để job dùng
+    khoảng mặc định, gồm cả khi lần trước dừng giữa chừng vì bị chặn. Bài đã thấy không được gửi lại nên đi lại toàn bộ là phí."""
+    try:
+        raw = await get_redis_client().get(f"{REDIS_KEY_PREFIX}page_feed_last:{url}")
+        last = json.loads(raw) if raw else {}
+    except Exception:  # noqa: BLE001 - không đọc được thì đọc đủ khoảng ngày
+        return None
+    if last.get("pagination_status") or last.get("stop_reason") not in ("exhausted", "since_days", "no_new_posts"):
+        return None
+    if not last.get("at"):
+        return None
+    days = (now.timestamp() - float(last["at"])) / 86400
+    return min(SINCE_DAYS, int(days) + 2)
+
+
+async def fill_public_pages_queue(now: datetime | None = None) -> int:
+    """Gọi từ mỗi nhịp scheduler: thấy hàng đợi vơi là nạp đủ facebook_public_pages_queue_target, trả số page đã xếp. Spider-hub
+    không chạy thì hàng đợi đầy và không xếp thêm; last_queued_at chỉ ghi khi đã xếp nên page không bị tính là đã đọc."""
+    now = now or datetime.now(tz=UTC)
+    if not settings.facebook_public_pages_enabled:
+        return 0
+    redis = get_redis_client()
+    if await redis.exists(_PUBLIC_PAUSED_KEY):
+        return 0
+    room = settings.facebook_public_pages_queue_target - await redis.llen(_PUBLIC_QUEUE_KEY)
+    if room <= 0:
+        return 0
+    await _refresh_public_plan(now)
+    queued = 0
+    while queued < room and _public_plan:
+        source = _public_plan.pop(0)
+        keyword_id = None
+        if source.get("movie_id"):
+            movie = await d1_query("SELECT title FROM movies WHERE id = ?", [source["movie_id"]], quiet=True)
+            keyword = await get_or_create_keyword(source["movie_id"], "facebook", movie[0]["title"]) if movie else None
+            if keyword is None:
+                continue
+            keyword_id = keyword["id"]
+        request: dict[str, Any] = {
+            "type": "public_page",
+            "platform": "facebook",
+            "page_url": source["url"],
+            "keyword_id": keyword_id,
+            "run_id": str(uuid.uuid4()),
+        }
+        since_days = await _public_since_days(source["url"], now)
+        if since_days:
+            request["since_days"] = since_days
+        await redis.lpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
+        await d1_query(
+            "UPDATE source_pages SET last_queued_at = ? WHERE id = ?", [now.isoformat(), source["id"]], quiet=True
+        )
+        queued += 1
     return queued
 
 
