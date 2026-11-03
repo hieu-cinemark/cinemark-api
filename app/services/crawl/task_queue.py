@@ -31,6 +31,8 @@ def task_label(request: dict[str, Any]) -> str:
     if kind == "channel_videos":
         username = str(request.get("username") or "").lstrip("@")
         return f"@{username}" if username else ""
+    if kind == "public_page":
+        return str(request.get("page_url") or "")
     if kind == "profiles":
         return f"Follower kênh (tối đa {request.get('max') or 200})"
     if kind == "nurture":
@@ -148,4 +150,6 @@ async def snapshot() -> dict[str, list[dict[str, Any]]]:
         # Lần Dừng đã xoá danh sách; mọi thứ xếp hàng sau đó mà không có bypass_drain sẽ bị bỏ
         # qua, nên không hiển thị là đang chờ.
         queued.extend(item for item in await list_pending(platform) if not draining or item.get("bypass_drain"))
+    # Tìm kiếm từ khoá lên trước, đúng thứ tự spider-hub ưu tiên; sắp xếp ổn định nên trong từng nhóm vẫn theo thứ tự xếp hàng.
+    queued.sort(key=lambda item: 0 if item.get("type") == "search" else 1)
     return {"running": running, "queued": queued, "history": await list_history()}

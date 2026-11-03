@@ -34,7 +34,7 @@ from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.repositories.d1.store import d1_query, get_or_create_keyword
-from app.services.crawl.task_queue import list_pending
+from app.services.crawl.task_queue import enqueue_published, list_pending
 from app.services.relevance.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
@@ -371,10 +371,12 @@ async def fill_public_pages_queue(now: datetime | None = None) -> int:
             "page_url": source["url"],
             "keyword_id": keyword_id,
             "run_id": str(uuid.uuid4()),
+            "published_at": now.timestamp(),
         }
         since_days = await _public_since_days(source["url"], now)
         if since_days:
             request["since_days"] = since_days
+        await enqueue_published(request)  # hiện trên trang Hàng đợi
         await redis.lpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
         await d1_query(
             "UPDATE source_pages SET last_queued_at = ? WHERE id = ?", [now.isoformat(), source["id"]], quiet=True

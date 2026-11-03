@@ -48,6 +48,7 @@ async def get_running_jobs(platform: str) -> list[dict[str, Any]]:
         base,
         *([f"{base}:public"] if platform == "facebook" else []),
         *sorted([key async for key in client.scan_iter(match=f"{base}:lane*")]),
+        *sorted([key async for key in client.scan_iter(match=f"{base}:public_page:*")]),
     ]
     jobs = []
     for raw in await client.mget(keys):
@@ -142,6 +143,7 @@ async def _remove_running_entry(platform: str, run_id: str) -> bool:
         base,
         *([f"{base}:public"] if platform == "facebook" else []),
         *[key async for key in client.scan_iter(match=f"{base}:lane*")],
+        *[key async for key in client.scan_iter(match=f"{base}:public_page:*")],
     ]:
         raw = await client.get(key)
         try:

@@ -51,6 +51,7 @@ def env(monkeypatch):
     monkeypatch.setattr(sp, "_public_plan_at", None)
     monkeypatch.setattr(sp, "_ensure_table", AsyncMock())
     monkeypatch.setattr(sp, "_update_quiet_runs", AsyncMock())
+    monkeypatch.setattr(sp, "enqueue_published", AsyncMock())
     monkeypatch.setattr(sp, "_due", lambda row, now: row["id"] != "recent")
     monkeypatch.setattr(sp.settings, "facebook_public_pages_enabled", True)
     monkeypatch.setattr(sp.settings, "facebook_public_pages_queue_target", 2)
@@ -164,3 +165,30 @@ class _At(datetime):
     @classmethod
     def now(cls, tz=None):
         return datetime(2026, 11, 3, 15, 10, tzinfo=tz)
+
+
+def test_queued_page_is_listed_on_the_queue_page(env):
+    asyncio.run(sp.fill_public_pages_queue(NOW))
+    listed = sp.enqueue_published.await_args_list
+    assert [call.args[0]["page_url"].rsplit("/", 1)[1] for call in listed] == ["film", "shared"]
+    assert listed[0].args[0]["published_at"] == NOW.timestamp()
+
+
+def test_queue_label_and_search_first_ordering(monkeypatch):
+    from app.services.crawl import crawl_jobs, task_queue
+
+    assert task_queue.task_label({"type": "public_page", "page_url": "https://www.facebook.com/x"}).endswith("/x")
+    pending = {
+        "facebook": [
+            {"id": "p", "type": "public_page"},
+            {"id": "s1", "type": "search"},
+            {"id": "c", "type": "comments"},
+        ],
+        "threads": [{"id": "s2", "type": "search"}],
+        "tiktok": [],
+    }
+    monkeypatch.setattr(task_queue, "list_pending", AsyncMock(side_effect=lambda platform: pending[platform]))
+    monkeypatch.setattr(task_queue, "list_history", AsyncMock(return_value=[]))
+    monkeypatch.setattr(crawl_jobs, "get_running_jobs", AsyncMock(return_value=[]))
+    monkeypatch.setattr(crawl_jobs, "is_platform_draining", AsyncMock(return_value=False))
+    assert [item["id"] for item in asyncio.run(task_queue.snapshot())["queued"]] == ["s1", "s2", "p", "c"]
