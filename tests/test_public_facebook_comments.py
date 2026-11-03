@@ -63,7 +63,7 @@ class Redis:
     def __init__(self, data):
         self.data = data
 
-    async def scan_iter(self, match):
+    async def scan_iter(self, match, count=None):
         for key in list(self.data):
             if key.startswith(match.rstrip("*")):
                 yield key

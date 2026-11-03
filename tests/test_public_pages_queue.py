@@ -192,3 +192,25 @@ def test_queue_label_and_search_first_ordering(monkeypatch):
     monkeypatch.setattr(crawl_jobs, "get_running_jobs", AsyncMock(return_value=[]))
     monkeypatch.setattr(crawl_jobs, "is_platform_draining", AsyncMock(return_value=False))
     assert [item["id"] for item in asyncio.run(task_queue.snapshot())["queued"]] == ["s1", "s2", "p", "c"]
+
+
+def test_only_facebook_scans_for_running_keys_and_uses_a_large_count():
+    from app.services.crawl import crawl_jobs
+
+    calls = []
+
+    class Client:
+        def scan_iter(self, match, count):
+            calls.append((match, count))
+
+            async def keys():
+                for key in ("b:lane1", "a:public_page:15"):
+                    yield key
+
+            return keys()
+
+    assert len(asyncio.run(crawl_jobs._running_keys(Client(), "tiktok"))) == 1
+    assert calls == []
+    keys = asyncio.run(crawl_jobs._running_keys(Client(), "facebook"))
+    assert keys[1:] == ["a:public_page:15", "b:lane1"]
+    assert len(calls) == 1 and calls[0][1] >= 1000

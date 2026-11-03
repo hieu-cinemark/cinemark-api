@@ -39,17 +39,25 @@ async def get_running_job(platform: str) -> dict[str, Any] | None:
     return jobs[0] if jobs else None
 
 
+# SCAN mặc định lấy 10 key mỗi lượt: Redis hàng trăm nghìn key tốn hàng chục nghìn lượt đi về, đo local 118 nghìn key mất 4,4 giây
+# mỗi lần quét; count lớn còn 0,05 giây.
+_SCAN_COUNT = 5000
+
+
+async def _running_keys(client: Any, platform: str) -> list[str]:
+    """Key "đang chạy" của nền tảng. Chỉ Facebook có key phụ (làn, comment ẩn danh, cào page) nên nền tảng khác không phải quét."""
+    base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
+    if platform != "facebook":
+        return [base]
+    extra = [key async for key in client.scan_iter(match=f"{base}:*", count=_SCAN_COUNT)]
+    return [base, *sorted(extra)]
+
+
 async def get_running_jobs(platform: str) -> list[dict[str, Any]]:
     """Mọi job đang chạy của nền tảng: crawl_job:<platform> cộng các key làn crawl_job:<platform>:lane<N> (25/10/2026,
     Facebook chạy song song nhiều làn - mỗi làn một job, xem crawl_job_key của spider-hub)."""
     client = get_redis_client()
-    base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
-    keys = [
-        base,
-        *([f"{base}:public"] if platform == "facebook" else []),
-        *sorted([key async for key in client.scan_iter(match=f"{base}:lane*")]),
-        *sorted([key async for key in client.scan_iter(match=f"{base}:public_page:*")]),
-    ]
+    keys = await _running_keys(client, platform)
     jobs = []
     for raw in await client.mget(keys):
         if raw:
@@ -137,14 +145,8 @@ async def _remove_running_entry(platform: str, run_id: str) -> bool:
     """Xoá dòng "đang chạy" của run_id. Job thật vẫn dừng nhờ cờ crawl_job_cancel; còn dòng mồ côi (spider-hub bị restart
     giữa job, key không có TTL) thì trước 28/10/2026 bấm Dừng chỉ đặt cờ mà không ai xoá key - dòng hiện lại mãi."""
     client = get_redis_client()
-    base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
     found = False
-    for key in [
-        base,
-        *([f"{base}:public"] if platform == "facebook" else []),
-        *[key async for key in client.scan_iter(match=f"{base}:lane*")],
-        *[key async for key in client.scan_iter(match=f"{base}:public_page:*")],
-    ]:
+    for key in await _running_keys(client, platform):
         raw = await client.get(key)
         try:
             job = json.loads(raw) if raw else None

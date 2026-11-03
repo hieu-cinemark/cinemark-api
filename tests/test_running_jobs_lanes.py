@@ -11,7 +11,7 @@ class _FakeRedis:
     def __init__(self, data):
         self.data = data
 
-    async def scan_iter(self, match):
+    async def scan_iter(self, match, count=None):
         prefix = match.rstrip("*")
         for key in list(self.data):
             if key.startswith(prefix):
