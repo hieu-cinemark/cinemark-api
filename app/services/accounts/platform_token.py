@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import time
+
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 
 _DEFAULT_ACCOUNT_KEY = "default"
@@ -67,4 +70,13 @@ async def get_token_status(platform: str) -> tuple[str | None, int | None]:
     ttl = await client.ttl(cache_key)
     if ttl is None or ttl < 0:
         return account, None
+    if platform == "facebook":
+        raw = await client.get(cache_key)
+        try:
+            recipe = json.loads(raw) if raw else {}
+            refreshed = float(recipe.get("http_refreshed_at", recipe.get("captured_at", 0)))
+            remaining = int(refreshed + 6 * 3600 - time.time())
+        except TypeError, ValueError, AttributeError:
+            return account, None
+        return account, min(ttl, remaining) if remaining > 0 else None
     return account, ttl

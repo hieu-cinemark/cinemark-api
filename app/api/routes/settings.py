@@ -6,6 +6,7 @@ bảng mà spider-hub đọc để lấy thông tin đăng nhập và cấu hìn
 from __future__ import annotations
 
 import asyncio
+import binascii
 import re
 import time
 from typing import Any
@@ -226,12 +227,17 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
     account = await db.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
-    secret = (account.get("totp_secret") or "").strip()
+    # App/người bán thường cho secret dạng "ABCD EFGH ...", pyotp từ chối khoảng trắng.
+    secret = "".join((account.get("totp_secret") or "").split())
     if not secret:
         raise ValidationError(f"Account {account_id} has no 2FA secret configured")
     totp = TOTP(secret)
     expires_in = totp.interval - (int(time.time()) % totp.interval)
-    return TotpCodeResponse(code=totp.now(), expires_in_seconds=expires_in)
+    try:
+        code = totp.now()
+    except (binascii.Error, ValueError) as exc:
+        raise ValidationError(f"Account {account_id} has an invalid 2FA secret") from exc
+    return TotpCodeResponse(code=code, expires_in_seconds=expires_in)
 
 
 @router.post("/accounts/{account_id}/enabled", response_model=AccountOut)
