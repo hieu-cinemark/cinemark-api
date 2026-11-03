@@ -12,7 +12,9 @@ không có trong đó thì đơn giản là không gọi builder này)."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Query
 
 from app.clients.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 from app.core.errors import NotFoundError, UpstreamError
@@ -113,7 +115,9 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
     @router.post("/posts/{post_id}/comments/run", response_model=RunCommentsResponse)
     async def run_comments(
         post_id: str,
-        max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=1, le=500),
+        max_pages: int = Query(default=DEFAULT_COMMENTS_MAX_PAGES, ge=0, le=500),
+        access_mode: Literal["anonymous", "authenticated"] | None = Query(default=None),
+        include_replies: bool | None = Query(default=None),
         bypass_drain: bool = Query(
             default=True,
             description="True (default): a one-off single-post trigger the platform's Stop "
@@ -123,6 +127,12 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
             "deliberate click.",
         ),
     ) -> RunCommentsResponse:
+        if platform != "facebook" and (access_mode is not None or max_pages == 0):
+            raise HTTPException(
+                status_code=422, detail="Anonymous access/unlimited comment pages apply only to Facebook"
+            )
+        if platform == "facebook" and access_mode == "authenticated" and max_pages == 0:
+            raise HTTPException(status_code=422, detail="Authenticated comments require a positive page limit")
         post = await get_post(post_id)
         if post is None:
             raise NotFoundError(f"No post {post_id}")
@@ -142,6 +152,7 @@ def build_comments_run_route(router: APIRouter, platform: str) -> None:
             post_url=post["url"],
             max_pages=max_pages,
             bypass_drain=bypass_drain,
+            **({"access_mode": access_mode, "include_replies": include_replies} if platform == "facebook" else {}),
         )
         logger.info(
             "comments_run_triggered",

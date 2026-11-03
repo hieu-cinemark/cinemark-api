@@ -44,7 +44,11 @@ async def get_running_jobs(platform: str) -> list[dict[str, Any]]:
     Facebook chạy song song nhiều làn - mỗi làn một job, xem crawl_job_key của spider-hub)."""
     client = get_redis_client()
     base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
-    keys = [base, *sorted([key async for key in client.scan_iter(match=f"{base}:lane*")])]
+    keys = [
+        base,
+        *([f"{base}:public"] if platform == "facebook" else []),
+        *sorted([key async for key in client.scan_iter(match=f"{base}:lane*")]),
+    ]
     jobs = []
     for raw in await client.mget(keys):
         if raw:
@@ -134,7 +138,11 @@ async def _remove_running_entry(platform: str, run_id: str) -> bool:
     client = get_redis_client()
     base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
     found = False
-    for key in [base, *[key async for key in client.scan_iter(match=f"{base}:lane*")]]:
+    for key in [
+        base,
+        *([f"{base}:public"] if platform == "facebook" else []),
+        *[key async for key in client.scan_iter(match=f"{base}:lane*")],
+    ]:
         raw = await client.get(key)
         try:
             job = json.loads(raw) if raw else None

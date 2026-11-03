@@ -536,8 +536,7 @@ _COOKIE_CHECK_LAST_KEY = f"{REDIS_KEY_PREFIX}scheduler:cookie_check:last_publish
 
 
 async def _cookie_check_tick() -> None:
-    """Mỗi cookie_check_interval_hours xếp một lượt kiểm tra cookie Facebook (xem publish_cookie_check_request).
-    stale_hours nhỏ hơn chu kỳ 1 giờ để tài khoản kiểm tra ở lượt trước (lệch vài phút) vẫn được kiểm tra lại."""
+    """Schedule a read of recorded session observations; never opens Facebook or validates cookies live."""
     cfg = await resolve_auto_login_settings()
     if not cfg.cookie_check_enabled or "facebook" not in cfg.platforms:
         return

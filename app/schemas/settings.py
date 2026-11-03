@@ -498,11 +498,9 @@ class AutoLoginSettings(BaseModel):
     # khoản "chết" ở mỗi lượt (hành vi ban đầu).
     min_age_seconds: int = Field(default=0, ge=0, le=3600)
     telegram_alert: bool = True
-    # Cron kiểm tra cookie (2026-10-07): mỗi cookie_check_interval_hours xếp một request type=cookie_check để
-    # spider-hub chạy scripts/check_facebook_cookies.py (không đăng nhập, chỉ mở FB bằng phiên sẵn có). Tài khoản bị
-    # FB đăng xuất được ghi last_check_status='dead' -> lượt auto-login kế tiếp nạp cookie mới. Độc lập với `enabled`:
-    # tắt auto-login thì cron vẫn phát hiện + báo Telegram để nạp cookie tay.
-    cookie_check_enabled: bool = True
+    # Reads recorded Facebook session observations. No browser, live validation or auto-login.
+    # Disabled by default; existing enabled schedules only perform read-only checks.
+    cookie_check_enabled: bool = False
     cookie_check_interval_hours: int = Field(default=6, ge=1, le=48)
     # Tối đa bấy nhiêu lần đăng nhập lại mỗi nền tảng mỗi lượt (2026-10-07): một lượt cookie check có thể đánh dấu
     # chết cả chục tài khoản, và đăng nhập lại hết trong vài phút qua 2 proxy (consumer chỉ nghỉ 5-10s giữa các lần)

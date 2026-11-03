@@ -31,6 +31,7 @@ from app.services.crawl.task_queue import enqueue_published
 logger = get_logger(__name__)
 
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
+FACEBOOK_PUBLIC_COMMENTS_TOPIC = "crawl_requests.facebook_public_comments"
 
 # Yêu cầu auto-login có topic riêng thay vì dùng lại crawl_requests - auto_login/consumer.py
 # của spider-hub có logic điều phối hoàn toàn khác (một message = một lần thử đăng
@@ -50,6 +51,7 @@ _producer: AIOKafkaProducer | None = None
 # cùng lúc - xem get_consumer_lag() bên dưới.
 CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("facebook", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.facebook"),
+    ("facebook_public", FACEBOOK_PUBLIC_COMMENTS_TOPIC, "spider-hub.crawl-requests.facebook-public-comments"),
     ("threads", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.threads"),
     ("tiktok", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.tiktok"),
     ("ingest_posts", "raw_posts", "cinemark-api.ingest.posts"),
@@ -249,6 +251,8 @@ async def publish_comments_crawl_request(
     max_pages: int = DEFAULT_COMMENTS_MAX_PAGES,
     bypass_drain: bool = True,
     run_id: str | None = None,
+    access_mode: str | None = None,
+    include_replies: bool | None = None,
 ) -> bool:
     """Publish một request type="comments", gắn nhãn để _run_comments_spider trong
     crawl_request_consumer.py (spider-hub) chạy spider comment của nền tảng đó cho đúng
@@ -271,11 +275,23 @@ async def publish_comments_crawl_request(
     bypass_drain=True, một hàng tồn comment tiktok bị kẹt/chậm (sâu hơn 500) hoàn toàn
     không có cách nào huỷ qua app - Dừng có bật cờ drain nhưng mọi message đang xếp hàng
     đều bỏ qua cờ đó theo thiết kế."""
+    payload = {"post_id": post_external_id, "post_url": post_url, "max_pages": max_pages}
+    if platform == "facebook":
+        mode = "anonymous" if access_mode is None else access_mode
+        if mode not in ("anonymous", "authenticated"):
+            raise ValueError("Invalid Facebook comments access mode")
+        payload["access_mode"] = mode
+        payload["include_replies"] = include_replies if include_replies is not None else mode == "anonymous"
+    elif access_mode is not None:
+        raise ValueError("Comments access mode applies only to Facebook")
+    if platform == "facebook" and mode == "authenticated" and max_pages <= 0:
+        raise ValueError("Authenticated Facebook comments need a positive page limit")
     run_id = run_id or str(uuid.uuid4())
+    payload["run_id"] = run_id
     return await publish_action_request(
         platform,
         "comments",
-        {"post_id": post_external_id, "post_url": post_url, "max_pages": max_pages, "run_id": run_id},
+        payload,
         bypass_drain=bypass_drain,
     )
 
@@ -307,8 +323,13 @@ async def publish_action_request(
         # (crawl_jobs.request_stop lưu thời điểm bấm) mà vẫn chạy những message được kích hoạt
         # sau đó.
         value["published_at"] = time.time()
+    topic = (
+        FACEBOOK_PUBLIC_COMMENTS_TOPIC
+        if platform == "facebook" and action == "comments" and payload.get("access_mode") == "anonymous"
+        else CRAWL_REQUESTS_TOPIC
+    )
     try:
-        await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{action}:{platform}:{key}", value=value)
+        await _producer.send_and_wait(topic, key=f"{action}:{platform}:{key}", value=value)
     except KafkaError as exc:
         logger.warning("kafka_publish_failed", error=str(exc), platform=platform)
         return False
