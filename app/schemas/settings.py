@@ -44,6 +44,10 @@ class AccountOut(BaseModel):
     consecutive_failures: int | None = 0
     last_used_at: datetime | None = None
     assigned_proxy_id: int | None = None
+    # Client duy nhất được dùng phiên này (manual | browser | http); null = chưa khai báo, Facebook không gửi gì.
+    session_client: str | None = None
+    session_client_since: datetime | None = None
+    manual_nurture_days: int | None = 0
     # Tên các trường bí mật đang có giá trị. Các trường đó luôn trả về rỗng ở đây (xem
     # AccountOut.masked) - giá trị thật chỉ lấy qua GET /settings/accounts/{id}/credentials.
     secrets_set: list[str] = Field(default_factory=list)
@@ -90,6 +94,10 @@ class AccountCreate(BaseModel):
 
 class AccountSetProxy(BaseModel):
     proxy_id: int
+
+
+class AccountSetSessionClient(BaseModel):
+    client: Literal["manual", "browser", "http"] | None = None
 
 
 class AccountSetEnabled(BaseModel):
@@ -269,8 +277,6 @@ class ImportCommitResponse(BaseModel):
 class NurtureRequest(BaseModel):
     platform: Literal["facebook", "threads", "all"] = "all"
     account_id: int | None = None
-    like: bool = True
-    comment: bool = False  # tắt mặc định - xem --comment trong nurture_accounts.py của spider-hub
     visits: int = Field(default=3, ge=0, le=8)
 
 
@@ -473,85 +479,6 @@ class CleanupRunHistoryEntry(BaseModel):
     snapshots_deleted: int = 0
     batches: int = 0
     remaining_posts: int | None = None
-    error: str | None = None
-
-
-# --- Bộ lập lịch auto-login (app/services/accounts/auto_login.py) ---
-# Các tham số sửa được trên dashboard cho bộ lập lịch auto-login chạy mỗi giờ. Một dòng
-# singleton trong auto_login_settings (cùng kiểu với ProxySettings / CleanupSettings -
-# xem platform_config_db.get_auto_login_settings cho phía lưu trữ). Giá trị mặc định
-# khớp với giá trị dự phòng từ env mà auto_login/scheduler.py của spider-hub dùng, nên
-# một bản deploy mới với env AUTO_LOGIN_ENABLED=true + bật setting mới trên dashboard
-# chạy giống hệt nhau dù bộ lập lịch chạy ở spider-hub hay cinemark-api.
-#
-# `platforms` là danh sách nền tảng duyệt qua mỗi lượt; consumer của spider-hub đặt
-# consumer group theo danh sách này (mỗi nền tảng một group) để hàng đợi đăng nhập lại
-# của Facebook không chặn đầu hàng của Threads (và ngược lại). `dry_run` được tôn
-# trọng ở cả producer (vẫn publish message Kafka, gắn dry_run, để consumer log "lẽ ra
-# đã đăng nhập lại tài khoản này" và không ghi gì) lẫn consumer (không thực sự mở
-# Playwright). `telegram_alert` giống tuỳ chọn cùng tên trong CleanupSettings - mặc
-# định tắt vì bản thân auto-login ban đầu cũng mặc định tắt.
-
-
-class AutoLoginSettings(BaseModel):
-    enabled: bool = False
-    interval_seconds: int = Field(default=3600, ge=60, le=86400)
-    platforms: list[Literal["facebook", "threads"]] = Field(default_factory=lambda: ["facebook", "threads"])
-    dry_run: bool = False
-    # Bỏ qua tài khoản có last_checked_at mới hơn chừng này giây - tránh để bộ lập lịch
-    # dồn dập vào một tài khoản mà check_facebook_cookies.py vừa đánh dấu chết và chưa đủ
-    # thời gian để trục trặc tạm thời qua đi. Mặc định 0 = không cooldown, xử lý mọi tài
-    # khoản "chết" ở mỗi lượt (hành vi ban đầu).
-    min_age_seconds: int = Field(default=0, ge=0, le=3600)
-    telegram_alert: bool = True
-    # Reads recorded Facebook session observations. No browser, live validation or auto-login.
-    # Disabled by default; existing enabled schedules only perform read-only checks.
-    cookie_check_enabled: bool = False
-    cookie_check_interval_hours: int = Field(default=6, ge=1, le=48)
-    # Tối đa bấy nhiêu lần đăng nhập lại mỗi nền tảng mỗi lượt (2026-10-07): một lượt cookie check có thể đánh dấu
-    # chết cả chục tài khoản, và đăng nhập lại hết trong vài phút qua 2 proxy (consumer chỉ nghỉ 5-10s giữa các lần)
-    # là kiểu đăng nhập hàng loạt từ một IP mà FB gắn cờ. Phần còn lại chờ các lượt sau (mỗi interval_seconds).
-    max_logins_per_tick: int = Field(default=2, ge=1, le=20)
-
-
-class AutoLoginSettingsOut(BaseModel):
-    values: AutoLoginSettings
-    defaults: AutoLoginSettings
-    running: bool = False
-    last_run_at: datetime | None = None
-    updated_at: datetime | None = None
-
-
-class AutoLoginSettingsUpdate(BaseModel):
-    enabled: bool | None = None
-    interval_seconds: int | None = Field(default=None, ge=60, le=86400)
-    platforms: list[Literal["facebook", "threads"]] | None = None
-    dry_run: bool | None = None
-    min_age_seconds: int | None = Field(default=None, ge=0, le=3600)
-    telegram_alert: bool | None = None
-    cookie_check_enabled: bool | None = None
-    cookie_check_interval_hours: int | None = Field(default=None, ge=1, le=48)
-    max_logins_per_tick: int | None = Field(default=None, ge=1, le=20)
-
-
-class AutoLoginRunHistoryEntry(BaseModel):
-    started_at: datetime
-    finished_at: datetime | None = None
-    triggered_by: Literal["schedule", "manual"]
-    dry_run: bool
-    interval_seconds: int
-    platforms: list[str]
-    # Khối JSON lấy từ auto_login_run_history.per_platform. Dạng:
-    # { "<platform>": { "attempted": N, "relogged_in": N, ... } }
-    # Dashboard hiển thị thành một bảng chi tiết nhỏ theo nền tảng dưới mỗi dòng lịch sử.
-    per_platform: dict[str, Any] = Field(default_factory=dict)
-    total_attempted: int = 0
-    total_relogged_in: int = 0
-    total_needs_human: int = 0
-    total_failed: int = 0
-    total_error: int = 0
-    kafka_published: int = 0
-    kafka_publish_failed: int = 0
     error: str | None = None
 
 

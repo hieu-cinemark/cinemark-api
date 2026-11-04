@@ -5,7 +5,6 @@ bảng mà spider-hub đọc để lấy thông tin đăng nhập và cấu hìn
 
 from __future__ import annotations
 
-import asyncio
 import binascii
 import re
 import time
@@ -18,7 +17,7 @@ from pyotp import TOTP
 from app.ai.tasks.import_parser import parse_import
 from app.clients.kafka import publish_nurture_request, publish_tiktok_identity_reset
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.core.errors import NotFoundError, UpstreamError, ValidationError
+from app.core.errors import CookieRefusedError, NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.schemas.settings import (
     ACCOUNT_SECRET_FIELDS,
@@ -27,16 +26,13 @@ from app.schemas.settings import (
     AccountOut,
     AccountSetEnabled,
     AccountSetProxy,
+    AccountSetSessionClient,
     AccountUpdate,
     AiActiveProviderUpdate,
     AiProviderOut,
     AiProviderUpdate,
     AiSettingsOut,
     AiSettingsUpdate,
-    AutoLoginRunHistoryEntry,
-    AutoLoginSettings,
-    AutoLoginSettingsOut,
-    AutoLoginSettingsUpdate,
     CleanupRunHistoryEntry,
     CleanupSettings,
     CleanupSettingsOut,
@@ -68,19 +64,15 @@ from app.schemas.settings import (
     TotpCodeResponse,
     parse_run_times,
 )
-from app.services.accounts import auto_login as auto_login_svc
 from app.services.accounts import platform_config_db as db
 from app.services.accounts.account_health import evaluate_account_health
+from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.platform_token import account_key as _account_key
 from app.services.accounts.user_agent import merge_user_agent, split_user_agent
 from app.services.crawl.scheduler import purge_in_progress, run_purge_now
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
-
-# Giữ tham chiếu mạnh tới các task chạy nền kiểu bắn-rồi-quên - event loop chỉ giữ
-# tham chiếu yếu, nên task không ai tham chiếu có thể bị garbage-collect giữa chừng.
-_background_tasks: set[asyncio.Task] = set()
 
 
 @router.get("/accounts", response_model=list[AccountOut])
@@ -91,8 +83,26 @@ async def list_accounts(platform: str | None = Query(default=None)) -> list[Acco
 
 @router.post("/accounts", response_model=AccountOut)
 async def create_account(payload: AccountCreate) -> AccountOut:
-    row = await db.create_account(_with_user_agent(payload.model_dump()))
+    fields = _with_user_agent(payload.model_dump())
+    _refuse_bad_cookie(fields["platform"], fields["account_id"], fields.get("cookie") or "")
+    row = await db.create_account(fields)
+    await _record_cookie_saved(row)
     return AccountOut.masked(row)
+
+
+def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
+    """Cookie Facebook được kiểm tra ngay khi nhập, trước khi có request nào lên Facebook (cookie_quality.py). Cookie trống vẫn
+    lưu được: tài khoản có thể thêm trước, nhập phiên sau."""
+    if platform != "facebook" or not cookie.strip():
+        return
+    problems = assess_cookie(cookie, account_id).problems
+    if problems:
+        raise CookieRefusedError(",".join(problems))
+
+
+async def _record_cookie_saved(row: dict) -> None:
+    if row.get("platform") == "facebook" and row.get("cookie"):
+        await db.record_account_event(row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts)
 
 
 def _with_user_agent(fields: dict) -> dict:
@@ -125,12 +135,19 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
         user_agent = user_agent or split_user_agent(cookie)[1] or split_user_agent(stored_cookie)[1]
         if user_agent:
             changes["cookie"] = merge_user_agent(cookie, user_agent)
+        # Lưu lại đúng cookie cũ không phải cookie mới: không được làm spider-hub tưởng phiên đã được cứu.
+        if changes.get("cookie") == stored_cookie:
+            changes.pop("cookie")
+        elif "cookie" in changes:
+            _refuse_bad_cookie(current["platform"], current["account_id"], changes["cookie"])
     if not changes:
         row = await db.get_account(account_id)
         if row is None:
             raise NotFoundError(f"Account {account_id} not found.")
         return AccountOut.masked(row)
     row = await db.update_account(account_id, changes)
+    if "cookie" in changes:
+        await _record_cookie_saved(row)
     return AccountOut.masked(row)
 
 
@@ -194,8 +211,6 @@ async def nurture_accounts(payload: NurtureRequest) -> NurtureResponse:
         ok = await publish_nurture_request(
             platform,
             account_key,
-            like=payload.like,
-            comment=payload.comment,
             visits=payload.visits,
         )
         if ok:
@@ -245,6 +260,15 @@ async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> Ac
     """Nút bật/tắt tài khoản trên dashboard - bật lại cũng gỡ checkpoint/cooldown (xem
     app/services/platform_config_db.set_account_enabled)."""
     row = await db.set_account_enabled(account_id, payload.enabled)
+    await db.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
+    return AccountOut.masked(row)
+
+
+@router.post("/accounts/{account_id}/session-client", response_model=AccountOut)
+async def set_session_client(account_id: int, payload: AccountSetSessionClient) -> AccountOut:
+    """Client duy nhất được dùng phiên này - xem spider-hub accounts/session_client.py."""
+    row = await db.set_session_client(account_id, payload.client)
+    await db.record_account_event(row, "session_client_changed", client=payload.client)
     return AccountOut.masked(row)
 
 
@@ -255,6 +279,7 @@ async def reset_account_proxy(account_id: int) -> AccountOut:
     nó sẽ được ghim lại vào proxy đang có ít tài khoản nhất. Dùng từ dashboard khi bỏ một
     proxy hoặc cân bằng lại sau khi thêm proxy mới."""
     row = await db.reset_account_proxy(account_id)
+    await db.record_account_event(row, "proxy_unpinned")
     return AccountOut.masked(row)
 
 
@@ -264,6 +289,7 @@ async def set_account_proxy(account_id: int, payload: AccountSetProxy) -> Accoun
     app/services/platform_config_db.set_account_proxy. Ngược với reset-proxy phía trên
     (xoá ghim để quay về tự gán)."""
     row = await db.set_account_proxy(account_id, payload.proxy_id)
+    await db.record_account_event(row, "proxy_pinned", proxy_id=payload.proxy_id)
     return AccountOut.masked(row)
 
 
@@ -608,7 +634,11 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
         fields = {**row, "platform": payload.platform, "enabled": row.get("enabled", True)}
         try:
             if payload.target == "accounts":
-                await db.create_account(_with_user_agent(fields))
+                account_fields = _with_user_agent(fields)
+                _refuse_bad_cookie(
+                    payload.platform, str(account_fields.get("account_id") or ""), account_fields.get("cookie") or ""
+                )
+                await _record_cookie_saved(await db.create_account(account_fields))
             else:
                 await db.create_proxy(fields)
             created += 1
@@ -685,88 +715,6 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
     cùng con số được log trong `irrelevant_purge_done telegram=True`."""
     rows = await db.list_cleanup_run_history(limit=limit)
     return [CleanupRunHistoryEntry(**row) for row in rows]
-
-
-# --- Bộ lập lịch auto-login (app/services/accounts/auto_login.py) ---
-# Cùng dạng với /cleanup: GET trả về cấu hình đang có hiệu lực trên nền mặc định + cờ
-# đang chạy + last_run_at; PUT là cập nhật một phần (giao diện bật/tắt trên dashboard
-# chỉ gửi `{enabled: true}`); POST /run chạy một lượt riêng và trả về có thực sự bắt
-# đầu không (False nếu đang có lượt khác chạy). /history cho xem các lượt gần đây.
-
-
-@router.get("/auto-login", response_model=AutoLoginSettingsOut)
-async def get_auto_login_route() -> AutoLoginSettingsOut:
-    """Các tham số đang có hiệu lực (giá trị lưu trên dashboard đè lên mặc định từ env),
-    cờ đang chạy (để dashboard làm mờ nút "Run now" khi có lượt đang chạy) và
-    started_at của lượt gần nhất."""
-    return await auto_login_svc.get_auto_login_settings_out()
-
-
-@router.put("/auto-login", response_model=AutoLoginSettingsOut)
-async def set_auto_login_route(payload: AutoLoginSettingsUpdate) -> AutoLoginSettingsOut:
-    """Cập nhật một phần - key không có trong payload giữ nguyên giá trị đã lưu. Giống PUT
-    của cleanup/proxy: không cần gửi lại mọi trường chỉ để bật/tắt.
-
-    Kiểm tra bằng schema TRƯỚC khi ghi - interval_seconds sai (ví dụ <60) hay tên nền
-    tảng lạ phải bị trả về lỗi ngay ở đây, không để làm hỏng vòng lặp scheduler về sau.
-    """
-    # Dựng bản sau khi trộn trước, để một key sai trả về 400 kèm thông báo rõ ràng thay
-    # vì ghi được một nửa payload. Cùng cách làm với /cleanup - kiểu PutRecord của
-    # schema_update_settings_update.
-    set_fields = set(payload.model_fields_set) & set(AutoLoginSettings().model_dump().keys())
-    if not set_fields:
-        # Không có gì để cập nhật - chỉ trả về trạng thái hiện tại.
-        return await auto_login_svc.get_auto_login_settings_out()
-    values_to_write = {key: getattr(payload, key) for key in set_fields}
-    # Kiểm tra giá trị sau khi trộn bằng schema để bắt lỗi ràng buộc trước khi tới
-    # Supabase. Lấy cấu hình hiện tại, đè phần cập nhật lên, rồi cho Pydantic kiểm tra
-    # kết quả.
-    merged = (await auto_login_svc.resolve_auto_login_settings()).model_dump()
-    merged.update(values_to_write)
-    AutoLoginSettings(**merged)  # raise ValidationError nếu không hợp lệ
-    await db.upsert_auto_login_settings(values_to_write)
-    logger.info("auto_login_settings_updated", **values_to_write)
-    return await auto_login_svc.get_auto_login_settings_out()
-
-
-@router.post("/auto-login/run", response_model=dict)
-async def run_auto_login_route() -> dict:
-    """Kích hoạt tay từ nút "Run now" trên dashboard. Trả về ngay
-    `{"started": True/False}`; lượt chạy thật chạy dưới dạng asyncio task nền, nên người
-    vận hành có thể chuyển trang mà không huỷ nó. `started: false` nghĩa là lượt trước
-    vẫn đang chạy (dashboard nên hiện "running..." thay vì thử lại)."""
-    started = await _kick_auto_login_tick(triggered_by="manual")
-    return {"started": started}
-
-
-async def _kick_auto_login_tick(*, triggered_by: str) -> bool:
-    """Lên lịch run_auto_login_tick thành một asyncio task bắn-rồi-quên, trả về True nếu
-    thực sự đã lên lịch. Trả về False nếu đang có lượt khác chạy (khoá chống chạy trùng
-    thật sự nằm trong run_auto_login_tick; hàm này chỉ quyết định sớm "lên lịch hay bỏ
-    qua" để HTTP response có ý nghĩa với dashboard).
-
-    Cùng kiểu bắn-rồi-quên mà scheduler.py dùng cho các task crawl/comment/auto_login -
-    một lần publish Kafka chậm cho một tài khoản không được chặn chính request API đã yêu
-    cầu chạy. Lỗi bên trong lượt chạy được bắt và lưu vào auto_login_run_history.error;
-    không có gì nổi lên tới tầng HTTP.
-    """
-    if auto_login_svc.is_auto_login_in_flight():
-        return False
-    # force=True: bấm "Run now" thì vẫn chạy kể cả khi lịch đang tắt - nếu không, lượt
-    # chạy trả về -1 mà không làm gì.
-    task = asyncio.create_task(auto_login_svc.run_auto_login_tick(triggered_by=triggered_by, force=True))
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-    return True
-
-
-@router.get("/auto-login/history", response_model=list[AutoLoginRunHistoryEntry])
-async def auto_login_history_route(limit: int = 20) -> list[AutoLoginRunHistoryEntry]:
-    """Danh sách các dòng auto_login_run_history, mới nhất trước, giới hạn bởi `limit`
-    (mặc định 20). Các cột `kafka_published` / `kafka_publish_failed` của mỗi dòng cho
-    người vận hành biết bao nhiêu tài khoản trong số được thử đã thực sự tới được
-    spider-hub (so với số bị rơi do Kafka sập giữa lượt)."""
-    return await auto_login_svc.list_auto_login_history(limit=limit)
 
 
 # --- Omar API settings (dev.omar-thing.site) --------------------------------

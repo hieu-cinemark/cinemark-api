@@ -16,7 +16,7 @@ import json
 import re
 import time
 import uuid
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import Any
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -32,14 +32,6 @@ logger = get_logger(__name__)
 
 CRAWL_REQUESTS_TOPIC = "crawl_requests"
 FACEBOOK_PUBLIC_COMMENTS_TOPIC = "crawl_requests.facebook_public_comments"
-
-# Yêu cầu auto-login có topic riêng thay vì dùng lại crawl_requests - auto_login/consumer.py
-# của spider-hub có logic điều phối hoàn toàn khác (một message = một lần thử đăng
-# nhập lại bằng Playwright, không phải một tiến trình "scrapy crawl") và thuộc một
-# consumer group riêng với cấu hình đồng thời riêng. Dùng lại crawl_requests sẽ bắt
-# auto_login/consumer.py phải lọc bỏ luồng crawl ồn ào hơn nhiều chỉ để theo kịp. Xem
-# app/services/accounts/auto_login.py:publish_auto_login_request cho phía producer.
-AUTO_LOGIN_REQUESTS_TOPIC = "auto_login_requests"
 
 _producer: AIOKafkaProducer | None = None
 
@@ -58,11 +50,6 @@ CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("ingest_comments", "raw_comments", "cinemark-api.ingest.comments"),
     ("lake_posts", "raw_posts", "cinemark-api.lake"),
     ("lake_comments", "raw_comments", "cinemark-api.lake"),
-    # Yêu cầu auto-login có consumer group riêng trong auto_login/consumer.py của
-    # spider-hub - mỗi nền tảng một group để hàng đợi đăng nhập lại của Facebook không
-    # chặn đầu hàng của Threads (và ngược lại).
-    ("auto_login_facebook", AUTO_LOGIN_REQUESTS_TOPIC, "spider-hub.auto-login.facebook"),
-    ("auto_login_threads", AUTO_LOGIN_REQUESTS_TOPIC, "spider-hub.auto-login.threads"),
 )
 
 # producer.start() chỉ raise KafkaError khi kết nối bị *từ chối* - một broker vẫn
@@ -337,45 +324,6 @@ async def publish_action_request(
     return True
 
 
-async def publish_auto_login_request(platform: str, account_id: str, *, dry_run: bool = False) -> bool:
-    """Publish một yêu cầu auto-login lên AUTO_LOGIN_REQUESTS_TOPIC. auto_login/consumer.py
-    của spider-hub đọc nó và chạy luồng social_crawler.accounts.auto_login cho đúng account_id đó.
-
-    Mỗi tài khoản một message (thay vì gom lô) để Kafka sập giữa lượt chỉ làm hỏng từng
-    tài khoản lẻ thay vì cả một nền tảng - và vì mỗi tài khoản đằng nào cũng mở trình
-    duyệt riêng, chi phí publish từng tài khoản không đáng kể so với chi phí Playwright.
-    Key theo account_id để spider-hub có thể gộp các lần publish lặp lại của cùng một
-    tài khoản trong consumer nếu sau này cần.
-
-    Consumer của spider-hub tôn trọng `dry_run=true`: nó chỉ log dòng "lẽ ra đã đăng
-    nhập lại tài khoản này" và không ghi gì cả. Giúp người vận hành kiểm tra nhanh danh
-    sách ứng viên mà không có lượt đăng nhập thật nào - cùng ý tưởng với
-    scripts.relogin_facebook_accounts nhưng điều khiển từ dashboard thay vì shell script.
-
-    Trả về True nếu publish thành công, False nếu Kafka sập - chỗ gọi
-    (auto_login.run_auto_login_tick) tự quyết định xử lý False thế nào (tính vào
-    kafka_publish_failed, log cảnh báo, lượt chạy vẫn tiếp tục với phần còn lại của nền
-    tảng)."""
-    if _producer is None:
-        logger.warning("kafka_producer_not_started", platform=platform, kind="auto_login")
-        return False
-    key = f"{platform}:{account_id}"
-    value: dict[str, Any] = {
-        "type": "relogin",
-        "platform": platform,
-        "account_id": account_id,
-        "dry_run": dry_run,
-        "run_id": str(uuid.uuid4()),
-        "requested_at": datetime.now(UTC).isoformat(),
-    }
-    try:
-        await _producer.send_and_wait(AUTO_LOGIN_REQUESTS_TOPIC, key=key, value=value)
-    except KafkaError as exc:
-        logger.warning("auto_login_request_publish_failed", error=str(exc), platform=platform, account_id=account_id)
-        return False
-    return True
-
-
 async def publish_tiktok_identity_reset(account_id: int) -> bool:
     """TikTok không có luồng bootstrap trình duyệt bằng query/mật khẩu để chạy lại như
     Facebook/Threads (xem tiktok/auth/bootstrap.py của spider-hub) - một lần kích hoạt
@@ -392,19 +340,15 @@ async def publish_nurture_request(
     platform: str,
     account: str | None = None,
     *,
-    like: bool = True,
-    comment: bool = False,
     visits: int = 3,
 ) -> bool:
     """Xếp hàng type=nurture để crawl_request_consumer của spider-hub chạy
     `python -m social_crawler.accounts.nurture` cho facebook, threads hoặc tiktok. Phần
     làm ấm riêng của TikTok (vào các trang /tag/<hashtag>, không phải feed trang chủ -
-    xem docstring module nurture_accounts.py của spider-hub) bỏ qua `comment` và coi
+    xem docstring module nurture_accounts.py của spider-hub) coi
     `visits` là số trang hashtag cần vào; không có tham số riêng cho việc này nên một
     dạng lời gọi phủ được mọi nền tảng mà chỗ gọi không cần biết trường nào áp dụng."""
     payload: dict[str, Any] = {
-        "like": like,
-        "comment": comment,
         "visits": visits,
         "run_id": str(uuid.uuid4()),
     }
@@ -420,16 +364,6 @@ async def publish_threads_profiles_request(max_profiles: int) -> bool:
     return await publish_action_request(
         "threads", "profiles", {"max": max_profiles, "run_id": str(uuid.uuid4())}, bypass_drain=False
     )
-
-
-async def publish_cookie_check_request(platform: str = "facebook", *, stale_hours: float | None = None) -> bool:
-    """Xếp hàng type=cookie_check để crawl_request_consumer của spider-hub chạy scripts/check_facebook_cookies.py
-    (chỉ tài khoản chưa được kiểm tra trong `stale_hours` giờ). Chung hàng đợi với crawl nên không mở cùng một
-    session song song với một lượt crawl. Xem cookie_check_* trong AutoLoginSettings."""
-    payload: dict[str, Any] = {"run_id": str(uuid.uuid4())}
-    if stale_hours:
-        payload["stale_hours"] = stale_hours
-    return await publish_action_request(platform, "cookie_check", payload)
 
 
 async def publish_cookie_import_request(

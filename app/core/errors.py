@@ -59,6 +59,18 @@ class ConflictError(AppError):
     code = "conflict"
 
 
+class CookieRefusedError(ValidationError):
+    """Cookie không qua kiểm tra lúc nhập. message là các mã lỗi cách nhau bằng dấu phẩy, dashboard dịch từng mã."""
+
+    code = "cookie_refused"
+
+
+class ProxyPolicyError(ConflictError):
+    """Ghim proxy vi phạm chính sách IP. message là mã lý do (cùng tên với spider-hub meta_proxy_violation)."""
+
+    code = "proxy_policy"
+
+
 class UpstreamError(AppError):
     """Một phụ thuộc mà app này dựa vào (Kafka, database, một API bên ngoài) bị lỗi hoặc
     không truy cập được."""

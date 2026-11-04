@@ -18,7 +18,7 @@ case "$repo" in
   spider-hub)
     dir=/opt/spider-hub
     # Tên unit trên VPS là spider-hub-crawl, file trong repo là spider-hub-crawl-consumer - unit nào đang chạy thì restart.
-    units="spider-hub-crawl spider-hub-crawl-consumer spider-hub-auto-login"
+    units="spider-hub-crawl spider-hub-crawl-consumer"
     health=""
     ;;
   *)

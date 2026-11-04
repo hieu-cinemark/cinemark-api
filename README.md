@@ -200,7 +200,7 @@ app/
     crawl/               scheduler, crawl jobs/lanes, task queue, platform registry, tracked posts, comment value
     discovery/           AI hashtag/query discovery
     omar/                Omar API crawling (TikTok hashtags, channels, comments, trending)
-    accounts/            account health, auto-login, platform accounts/proxies (Supabase), tokens
+    accounts/            account health, platform accounts/proxies (Supabase), tokens
     relevance/           relevance rules, cleanup
     reports/             social topic AI reports, report queue/schedule
     stats/               daily stats rollup + comment rollup per movie x day (read by dashboard / cinemark)

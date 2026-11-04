@@ -12,16 +12,17 @@ query."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, LiteralString, cast
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from app.core.config import settings
-from app.core.errors import ConflictError, NotFoundError, UpstreamError
+from app.core.errors import ConflictError, NotFoundError, ProxyPolicyError, UpstreamError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -34,7 +35,9 @@ ACCOUNT_COLUMNS = (
     # tài khoản) - xem ACCOUNT_CREATE_COLUMNS bên dưới, cố ý loại chúng ra. Cột gốc chỉ tên
     # là "status" - đặt alias thành pool_status để không lẫn với last_check_status ở trên
     # (một tín hiệu khác, kích hoạt bằng tay - xem app/services/accounts/account_health.py).
-    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id"
+    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id, "
+    # Một phiên một client (spider-hub accounts/session_client.py) - chỉ đổi qua set_session_client.
+    "session_client, session_client_since, manual_nurture_days"
 )
 PROXY_COLUMNS = (
     "id, platform, proxy_url, username, password, login_use_proxy, ip_type, enabled, created_at, updated_at, "
@@ -65,6 +68,19 @@ async def _ensure_pool_columns() -> None:
         )
         await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
         await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS assigned_proxy_id int")
+        await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client text")
+        await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client_since timestamptz")
+        await cur.execute(
+            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS manual_nurture_days int NOT NULL DEFAULT 0"
+        )
+        await cur.execute(
+            "CREATE TABLE IF NOT EXISTS account_events (id bigserial PRIMARY KEY, at timestamptz NOT NULL DEFAULT now(), "
+            "platform text NOT NULL, account_key text NOT NULL, event text NOT NULL, "
+            "details jsonb NOT NULL DEFAULT '{}'::jsonb)"
+        )
+        await cur.execute(
+            "CREATE INDEX IF NOT EXISTS account_events_account_at ON account_events (platform, account_key, at DESC)"
+        )
         await cur.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active'")
         await cur.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS cooldown_until timestamptz")
         await cur.execute(
@@ -207,11 +223,27 @@ async def count_crawl_ready_accounts(platform: str) -> int:
         await cur.execute(
             "SELECT count(*) AS n FROM platform_accounts WHERE platform = %s AND enabled = true "
             "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-            "AND NOT coalesce(nurture_only, false)",
+            "AND NOT coalesce(nurture_only, false) "
+            "AND (platform != 'facebook' OR session_client IN ('browser', 'http'))",
             (platform,),
         )
         row = await cur.fetchone()
     return int(row["n"]) if row else 0
+
+
+async def record_account_event(account: dict[str, Any], event: str, **details: Any) -> None:
+    """Dòng thời gian của tài khoản (spider-hub db/account_events.py). Ghi lỗi không làm hỏng thao tác của người vận hành."""
+    key = str(account.get("email") or account.get("account_id") or "").strip().lower()
+    try:
+        await _ensure_pool_columns()
+        async with _connect() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO account_events (platform, account_key, event, details) VALUES (%s, %s, %s, %s)",
+                (account["platform"], key, event, Jsonb(details)),
+            )
+            await conn.commit()
+    except psycopg.Error as exc:
+        logger.warning("account_event_write_failed", event_name=event, error_type=type(exc).__name__)
 
 
 async def list_accounts(platform: str | None = None, *, with_secrets: bool = True) -> list[dict[str, Any]]:
@@ -260,12 +292,13 @@ async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, A
         raise NotFoundError("No fields to update")
     set_clause = ", ".join(f"{c} = %s" for c in columns)
     values = [fields[c] for c in columns] + [account_id]
+    # spider-hub coi updated_at mới hơn lần kiểm tra là "đã có cookie mới" và bỏ trạng thái dead. Sửa mật khẩu hay email không
+    # cứu được phiên đã bị từ chối nên chỉ đổi cookie mới được chạm vào nó (04/11/2026).
+    touch = ", updated_at = now()" if "cookie" in columns else ""
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            _trusted_sql(
-                f"UPDATE platform_accounts SET {set_clause}, updated_at = now() WHERE id = %s RETURNING {ACCOUNT_COLUMNS}"
-            ),
+            _trusted_sql(f"UPDATE platform_accounts SET {set_clause}{touch} WHERE id = %s RETURNING {ACCOUNT_COLUMNS}"),
             values,
         )
         row = await cur.fetchone()
@@ -282,10 +315,39 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
     trong _ACCOUNT_CREATE_COLUMNS."""
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
+        # Kiểm tra này thụ động, không biết gì về phiên: nó từng ghi đè 'dead' mỗi 6 giờ, nên cookie vừa bị Facebook từ chối lại
+        # được dùng tiếp (04/11/2026). 'dead' chỉ mất khi có cookie mới, cùng quy ước với spider-hub.
         await cur.execute(
-            f"UPDATE platform_accounts SET last_checked_at = now(), last_check_status = %s "
-            f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
+            "UPDATE platform_accounts SET last_checked_at = now(), last_check_status = %s "
+            "WHERE id = %s AND NOT (last_check_status IS NOT DISTINCT FROM 'dead' "
+            "AND (last_checked_at IS NULL OR updated_at IS NULL OR last_checked_at >= updated_at)) "
+            f"RETURNING {ACCOUNT_COLUMNS}",
             (status, account_id),
+        )
+        row = await cur.fetchone()
+        await conn.commit()
+    if row is None:
+        row = await get_account(account_id)
+    if row is None:
+        raise NotFoundError(f"Account {account_id} not found")
+    return row
+
+
+SESSION_CLIENTS = ("manual", "browser", "http")
+
+
+async def set_session_client(account_id: int, client: str | None) -> dict[str, Any]:
+    """Khai báo client duy nhất được dùng phiên này. Rời "manual" thì cộng số ngày đã nuôi tay vào warm-up, vì chỉ phiên chạy qua
+    nurture.py mới được tính ngày, và tài khoản nuôi bằng Chrome thật không nên phải đi qua trình duyệt tự động chỉ để qua cổng."""
+    await _ensure_pool_columns()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "UPDATE platform_accounts SET "
+            "manual_nurture_days = manual_nurture_days + CASE WHEN session_client = 'manual' AND %s::text IS DISTINCT FROM 'manual' "
+            "THEN GREATEST(0, EXTRACT(DAY FROM now() - coalesce(session_client_since, now()))::int) ELSE 0 END, "
+            "session_client_since = CASE WHEN session_client IS DISTINCT FROM %s::text THEN now() ELSE session_client_since END, "
+            f"session_client = %s WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
+            (client, client, client, account_id),
         )
         row = await cur.fetchone()
         await conn.commit()
@@ -302,10 +364,7 @@ async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
     reset = ", status = 'active', consecutive_failures = 0, cooldown_until = NULL" if enabled else ""
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            _trusted_sql(
-                f"UPDATE platform_accounts SET enabled = %s{reset}, updated_at = now() "
-                f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}"
-            ),
+            _trusted_sql(f"UPDATE platform_accounts SET enabled = %s{reset} WHERE id = %s RETURNING {ACCOUNT_COLUMNS}"),
             (enabled, account_id),
         )
         row = await cur.fetchone()
@@ -313,6 +372,23 @@ async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
     if row is None:
         raise NotFoundError(f"Account {account_id} not found")
     return row
+
+
+def proxy_pin_refusal(target: dict[str, Any]) -> str | None:
+    """Lý do tài khoản không được ghim vào proxy này (spider-hub db/proxies.meta_proxy_violation). Mỗi tài khoản Facebook một IP
+    cố định, đã đo: proxy tự xoay từng làm #90-92 chết trong một ngày, và nhãn unknown nghĩa là chưa ai đo."""
+    platform, ip_type = target["platform"], target["ip_type"]
+    if platform not in ("facebook", "threads"):
+        return None
+    if ip_type == "rotating":
+        return "rotating_ip"
+    if int(target["others"]):
+        return "shared_ip"
+    if target["proxy_platform"] == "public":
+        return "public_proxy"
+    if platform == "facebook" and ip_type != "static":
+        return "ip_type_not_static"
+    return None
 
 
 async def reset_account_proxy(account_id: int) -> dict[str, Any]:
@@ -324,8 +400,7 @@ async def reset_account_proxy(account_id: int) -> dict[str, Any]:
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"UPDATE platform_accounts SET assigned_proxy_id = NULL, updated_at = now() "
-            f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
+            f"UPDATE platform_accounts SET assigned_proxy_id = NULL WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
             (account_id,),
         )
         row = await cur.fetchone()
@@ -342,12 +417,24 @@ async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
     định tài khoản nào nằm trên IP nào thay vì để pool tự cân bằng. Ràng buộc khoá ngoại
     trên assigned_proxy_id (xem scripts/dev_db_schema.sql của spider-hub) từ chối
     proxy_id không tồn tại - lỗi hiện ra ở đây là lỗi psycopg thường, không xử lý riêng,
-    vì ô chọn proxy trên dashboard chỉ đưa ra id thật."""
+    vì ô chọn proxy trên dashboard chỉ đưa ra id thật.
+
+    Tài khoản Meta phải qua chính sách IP (proxy_pin_refusal), cùng quy tắc spider-hub áp lúc giao proxy."""
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"UPDATE platform_accounts SET assigned_proxy_id = %s, updated_at = now() "
-            f"WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
+            "SELECT a.platform, a.account_id, a.email, p.platform AS proxy_platform, p.ip_type, "
+            "(SELECT count(*) FROM platform_accounts o JOIN platform_proxies same ON same.id = o.assigned_proxy_id "
+            " WHERE same.proxy_url = p.proxy_url AND o.id != a.id AND o.platform IN ('facebook', 'threads') "
+            " AND o.enabled = true AND o.status != 'checkpoint') AS others "
+            "FROM platform_accounts a JOIN platform_proxies p ON p.id = %s WHERE a.id = %s",
+            (proxy_id, account_id),
+        )
+        target = await cur.fetchone()
+        if target and (refusal := proxy_pin_refusal(target)):
+            raise ProxyPolicyError(refusal)
+        await cur.execute(
+            f"UPDATE platform_accounts SET assigned_proxy_id = %s WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
             (proxy_id, account_id),
         )
         row = await cur.fetchone()
@@ -358,6 +445,9 @@ async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
 
 
 async def delete_account(account_id: int) -> None:
+    account = await get_account(account_id)
+    if account is not None:
+        await record_account_event(account, "account_deleted", last_check_status=account.get("last_check_status"))
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM platform_accounts WHERE id = %s", (account_id,))
         deleted = cur.rowcount
@@ -1117,221 +1207,6 @@ async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
                    posts_deleted, comments_deleted, snapshots_deleted,
                    batches, remaining_posts, error
             FROM cleanup_run_history
-            ORDER BY started_at DESC
-            LIMIT %s
-            """,
-            (limit,),
-        )
-        return await cur.fetchall()
-
-
-# auto_login_settings: jsonb singleton chứa các tham số sửa được trên dashboard cho bộ
-# lập lịch auto-login mỗi giờ (xem app/services/accounts/auto_login.py + auto_login/consumer.py
-# của spider-hub). Cùng dạng với cleanup_settings (singleton id=1 + settings JSON +
-# updated_at) để ngữ nghĩa PUT ("chỉ các key trong payload thay đổi") giống hệt nhau
-# trên cả trang.
-#
-# auto_login_run_history: log chỉ-thêm của mọi lượt mà bộ lập lịch hoặc endpoint /run
-# bấm tay kích hoạt - cùng kiểu với cleanup_run_history, nhưng theo dõi nền tảng nào đã
-# được xử lý, bao nhiêu tài khoản được thử trên mỗi nền tảng, bao nhiêu trả về
-# relogged_in / needs_human / failed / error, và bộ lập lịch bên dưới có thực sự
-# publish request cho từng tài khoản không (lỗi publish Kafka được theo dõi riêng - xem
-# cờ `telegram_alert` trong setting lịch, đối chiếu với dòng log
-# "auto_login_request_publish_failed" của auto_login.py).
-
-_auto_login_settings_ready = False
-
-
-async def _ensure_auto_login_tables() -> None:
-    global _auto_login_settings_ready
-    if _auto_login_settings_ready:
-        return
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auto_login_settings (
-                id integer PRIMARY KEY CHECK (id = 1),
-                settings jsonb NOT NULL DEFAULT '{}'::jsonb,
-                updated_at timestamptz NOT NULL DEFAULT now()
-            )
-            """
-        )
-        await cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auto_login_run_history (
-                id bigserial PRIMARY KEY,
-                started_at timestamptz NOT NULL DEFAULT now(),
-                finished_at timestamptz,
-                triggered_by text NOT NULL DEFAULT 'schedule',
-                dry_run boolean NOT NULL DEFAULT false,
-                -- Snapshot of the settings used for THIS run - captures
-                -- the operator's intent at tick-time, not whatever the
-                -- settings table currently says. Lets the dashboard
-                -- render "the last scheduled tick was a dry-run"
-                -- without having to dereference the settings row.
-                interval_seconds integer NOT NULL,
-                platforms text NOT NULL,
-                -- Per-platform attempted / by_status. JSONB so we don't
-                -- need a schema change to track a new outcome (Facebook
-                -- today, Threads adds `needs_2fa` tomorrow, ...).
-                per_platform jsonb NOT NULL DEFAULT '{}'::jsonb,
-                total_attempted integer NOT NULL DEFAULT 0,
-                total_relogged_in integer NOT NULL DEFAULT 0,
-                total_needs_human integer NOT NULL DEFAULT 0,
-                total_failed integer NOT NULL DEFAULT 0,
-                total_error integer NOT NULL DEFAULT 0,
-                kafka_published integer NOT NULL DEFAULT 0,
-                kafka_publish_failed integer NOT NULL DEFAULT 0,
-                error text
-            )
-            """
-        )
-        # Bản đầu tiên tạo total_relogged_in kiểu boolean, nên không ghi được tổng số nguyên
-        # của record_auto_login_run_finish vào đó.
-        await cur.execute(
-            """
-            DO $$
-            BEGIN
-                IF EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'auto_login_run_history'
-                      AND column_name = 'total_relogged_in' AND data_type = 'boolean'
-                ) THEN
-                    ALTER TABLE auto_login_run_history ALTER COLUMN total_relogged_in DROP DEFAULT;
-                    ALTER TABLE auto_login_run_history
-                        ALTER COLUMN total_relogged_in TYPE integer USING total_relogged_in::integer;
-                    ALTER TABLE auto_login_run_history ALTER COLUMN total_relogged_in SET DEFAULT 0;
-                END IF;
-            END $$
-            """
-        )
-        await cur.execute(
-            "CREATE INDEX IF NOT EXISTS auto_login_run_history_started_at_idx ON auto_login_run_history (started_at DESC)"
-        )
-    _auto_login_settings_ready = True
-
-
-async def get_auto_login_settings() -> dict[str, Any]:
-    await _ensure_auto_login_tables()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT settings, updated_at FROM auto_login_settings WHERE id = 1")
-        row = await cur.fetchone()
-    return row or {"settings": {}, "updated_at": None}
-
-
-async def upsert_auto_login_settings(values: dict[str, Any]) -> dict[str, Any]:
-    """Cập nhật một phần: chỉ ghi các key có trong `values`; key thiếu giữ giá trị đã lưu
-    trước đó. Cho PUT của dashboard hoạt động như một nút bật/tắt (chỉ gửi
-    `{enabled: true}`) hoặc sửa toàn bộ (gửi mọi key) mà không cái nào đè cái nào."""
-    from psycopg.types.json import Json
-
-    await _ensure_auto_login_tables()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT settings FROM auto_login_settings WHERE id = 1")
-        existing = await cur.fetchone()
-        merged: dict[str, Any] = dict((existing or {}).get("settings") or {})
-        for key, value in values.items():
-            if value is None:
-                continue
-            merged[key] = value
-        await cur.execute(
-            """
-            INSERT INTO auto_login_settings (id, settings) VALUES (1, %s)
-            ON CONFLICT (id) DO UPDATE SET settings = EXCLUDED.settings, updated_at = now()
-            RETURNING settings, updated_at
-            """,
-            (Json(merged),),
-        )
-        row = await cur.fetchone()
-        await conn.commit()
-    return row  # type: ignore[return-value]
-
-
-async def record_auto_login_run_start(
-    *,
-    triggered_by: str,
-    dry_run: bool,
-    interval_seconds: int,
-    platforms: Sequence[str],
-) -> int:
-    await _ensure_auto_login_tables()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            INSERT INTO auto_login_run_history
-                (triggered_by, dry_run, interval_seconds, platforms)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id
-            """,
-            (triggered_by, dry_run, interval_seconds, ",".join(platforms)),
-        )
-        row = await cur.fetchone()
-        await conn.commit()
-    return int(row["id"])  # type: ignore[arg-type]
-
-
-async def record_auto_login_run_finish(
-    run_id: int,
-    *,
-    per_platform: dict[str, dict[str, Any]],
-    kafka_published: int,
-    kafka_publish_failed: int,
-    error: str | None = None,
-) -> None:
-    """Ghi chi tiết theo nền tảng + bộ đếm publish Kafka + thông báo lỗi tuỳ chọn. Cùng dạng
-    mà auto_login.py vốn trả về trong bộ nhớ, chỉ là được lưu lại để bảng lịch sử trên
-    dashboard hiện "lần trước đã xảy ra gì" mà không phải truy lại log của API."""
-    from psycopg.types.json import Json
-
-    total_attempted = sum(p.get("attempted", 0) for p in per_platform.values())
-    total_relogged_in = sum(p.get("relogged_in", 0) for p in per_platform.values())
-    total_needs_human = sum(p.get("needs_human", 0) for p in per_platform.values())
-    total_failed = sum(p.get("failed", 0) for p in per_platform.values())
-    total_error = sum(p.get("error", 0) for p in per_platform.values())
-    await _ensure_auto_login_tables()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            UPDATE auto_login_run_history SET
-                finished_at = now(),
-                per_platform = %s,
-                total_attempted = %s,
-                total_relogged_in = %s,
-                total_needs_human = %s,
-                total_failed = %s,
-                total_error = %s,
-                kafka_published = %s,
-                kafka_publish_failed = %s,
-                error = %s
-            WHERE id = %s
-            """,
-            (
-                Json(per_platform),
-                total_attempted,
-                total_relogged_in,
-                total_needs_human,
-                total_failed,
-                total_error,
-                kafka_published,
-                kafka_publish_failed,
-                error,
-                run_id,
-            ),
-        )
-        await conn.commit()
-
-
-async def list_auto_login_run_history(limit: int = 20) -> list[dict[str, Any]]:
-    await _ensure_auto_login_tables()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            SELECT id, started_at, finished_at, triggered_by, dry_run,
-                   interval_seconds, platforms, per_platform,
-                   total_attempted, total_relogged_in, total_needs_human,
-                   total_failed, total_error,
-                   kafka_published, kafka_publish_failed, error
-            FROM auto_login_run_history
             ORDER BY started_at DESC
             LIMIT %s
             """,

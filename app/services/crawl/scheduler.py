@@ -37,7 +37,6 @@ from zoneinfo import ZoneInfo
 
 from app.clients.d1 import d1_strict
 from app.clients.kafka import (
-    publish_cookie_check_request,
     publish_crawl_request,
     publish_nurture_request,
 )
@@ -47,7 +46,6 @@ from app.core.logging import get_logger
 from app.repositories.d1.store import get_enabled_keywords
 from app.schemas.settings import parse_run_times
 from app.services.accounts import platform_config_db as db
-from app.services.accounts.auto_login import resolve_auto_login_settings, run_auto_login_tick
 from app.services.crawl import channel_profiles, crawl_lanes, priority_channels, tracked_posts
 from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
@@ -473,91 +471,6 @@ def purge_in_progress() -> bool:
     return _purge_running
 
 
-# --- Lượt của bộ lập lịch auto-login ---
-# Nhịp khác với crawl/cleanup/comments: mặc định mỗi giờ thay vì mỗi ngày. Thay vì ở
-# mỗi lần kiểm tra 30s lại xem đã đủ một giờ chưa (buộc vòng lặp của scheduler.py phải
-# theo dõi mốc thời gian), ta chạy một lượt bên trong:
-#   * Đọc interval_seconds do người vận hành cấu hình trong auto_login_settings mỗi lần
-#     thức dậy, nên đổi chu kỳ trên dashboard có hiệu lực ở lần thức tiếp theo (không
-#     cần restart API).
-#   * So một mốc "lượt gần nhất lúc" trong bộ nhớ với thời gian hiện tại.
-# Quay về mặc định 3600s nếu dòng setting rỗng/thiếu (khớp với giá trị dự phòng từ env
-# mà auto_login/scheduler.py của spider-hub dùng từ ngày đầu). Lỗi bên trong
-# run_auto_login_tick được service bắt + log + lưu vào auto_login_run_history; vòng lặp
-# này chỉ ngủ rồi lên lịch lại.
-_auto_login_last_tick_at: float | None = None
-
-
-async def _auto_login_tick() -> None:
-    global _auto_login_last_tick_at
-    if not settings.auto_login_allowed:
-        return
-    try:
-        cfg = await resolve_auto_login_settings()
-    except Exception:
-        # Bảng settings chưa tồn tại / Supabase trục trặc / v.v. - log rồi bỏ qua khung 30s
-        # này, lượt sau sẽ thử lại.
-        logger.error("scheduler_auto_login_settings_read_failed")
-        return
-    if not cfg.enabled:
-        # Không cần ngủ - người vận hành muốn tắt auto-login, ta chỉ ngừng kiểm tra. Bật lại
-        # công tắc thì dòng đó được đọc lại ở lần kiểm tra 30s kế tiếp, nên lật công tắc trên
-        # dashboard có hiệu lực trong vòng 30s.
-        _auto_login_last_tick_at = None
-        return
-    interval = int(cfg.interval_seconds or 3600)
-    now = datetime.now(TIMEZONE).timestamp()
-    if _auto_login_last_tick_at is None:
-        # Lấy mốc từ lượt chạy đã ghi gần nhất thay vì bắn ngay - API restart mỗi lần lưu code
-        # khi chạy `uvicorn --reload`, và nếu không thì mỗi lần restart sẽ publish một loạt
-        # đăng nhập thật mới.
-        history = await db.list_auto_login_run_history(limit=1)
-        if history:
-            _auto_login_last_tick_at = history[0]["started_at"].timestamp()
-    if _auto_login_last_tick_at is not None and (now - _auto_login_last_tick_at) < interval:
-        return
-    _auto_login_last_tick_at = now
-    logger.info(
-        "scheduler_auto_login_firing",
-        interval_seconds=interval,
-        platforms=list(cfg.platforms),
-        dry_run=cfg.dry_run,
-    )
-    # Bắn-rồi-quên - publish Kafka chậm theo từng tài khoản (mỗi tài khoản chết một lần, có
-    # thể tới vài trăm mỗi nền tảng) không được chặn các lượt khác của vòng lặp scheduler
-    # (crawl/comments/cleanup). Cờ _in_flight của service ngăn lượt theo lịch thứ hai đua
-    # với lượt đầu dù ở đây không await.
-    _spawn(run_auto_login_tick(triggered_by="schedule", force=True))
-
-
-# Mốc lần xếp cookie_check gần nhất nằm trong Redis, không trong biến của tiến trình: `uvicorn --reload` khởi động lại
-# tiến trình mỗi lần sửa code, và mốc trong bộ nhớ sẽ khiến mỗi lần restart lại xếp thêm một lượt kiểm tra.
-_COOKIE_CHECK_LAST_KEY = f"{REDIS_KEY_PREFIX}scheduler:cookie_check:last_published_at"
-
-
-async def _cookie_check_tick() -> None:
-    """Schedule a read of recorded session observations; never opens Facebook or validates cookies live."""
-    cfg = await resolve_auto_login_settings()
-    if not cfg.cookie_check_enabled or "facebook" not in cfg.platforms:
-        return
-    interval_seconds = cfg.cookie_check_interval_hours * 3600
-    client = get_redis_client()
-    last = await client.get(_COOKIE_CHECK_LAST_KEY)
-    if last is not None and time.time() - float(last) < interval_seconds:
-        return
-    await client.set(_COOKIE_CHECK_LAST_KEY, str(time.time()), ex=interval_seconds * 2)
-    stale_hours = max(1, cfg.cookie_check_interval_hours - 1)
-    ok = await publish_cookie_check_request("facebook", stale_hours=stale_hours)
-    if not ok:
-        await client.delete(_COOKIE_CHECK_LAST_KEY)  # Kafka lỗi: thử lại ở vòng 30s kế tiếp
-    logger.info(
-        "scheduler_cookie_check_published",
-        ok=ok,
-        interval_hours=cfg.cookie_check_interval_hours,
-        stale_hours=stale_hours,
-    )
-
-
 async def _facebook_crawl_enabled() -> bool:
     """Background authenticated work requires a separate opt-in AND an enabled schedule.
 
@@ -949,19 +862,6 @@ async def _loop() -> None:
             logger.error("scheduler_public_pages_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001 - như các lượt khác: không được giết vòng lặp
             logger.error("scheduler_public_pages_tick_failed", error=str(exc)[:300])
-        try:
-            await asyncio.wait_for(_auto_login_tick(), timeout=_TICK_TIMEOUT_SECONDS)
-        except TimeoutError:
-            logger.error("scheduler_auto_login_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
-        except Exception as exc:
-            # Đọc auto_login_settings lỗi hoặc lỗi ném ra từ create_task không được giết vòng lặp.
-            logger.error("scheduler_auto_login_tick_failed", error=str(exc))
-        try:
-            await asyncio.wait_for(_cookie_check_tick(), timeout=_TICK_TIMEOUT_SECONDS)
-        except TimeoutError:
-            logger.error("scheduler_cookie_check_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS, telegram=True)
-        except Exception as exc:
-            logger.error("scheduler_cookie_check_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_hashtag_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:

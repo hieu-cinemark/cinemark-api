@@ -358,18 +358,6 @@ def test_no_lease_means_no_publish(monkeypatch):
     assert _round(monkeypatch, publish)["published"] == 0
 
 
-def test_auto_login_blocked_even_when_forced(monkeypatch):
-    from app.core.config import settings
-    from app.services.accounts import auto_login
-
-    async def must_not_run():
-        raise AssertionError("cổng cứng phải chặn trước khi đọc cấu hình")
-
-    monkeypatch.setattr(settings, "auto_login_allowed", False)
-    monkeypatch.setattr(auto_login, "resolve_auto_login_settings", must_not_run)
-    assert asyncio.run(auto_login.run_auto_login_tick(triggered_by="manual", force=True)) == -1
-
-
 def test_completion_stays_queued_when_d1_fails(monkeypatch):
     item = {"platform": "tiktok", "post_id": "x1", "status": "done", "finished_at": 100}
     redis, _ = _completions(monkeypatch, item, d1_result=lambda sql: None)

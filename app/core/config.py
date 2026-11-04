@@ -169,9 +169,6 @@ class Settings(BaseSettings):
     # jitter_minutes phút (ổn định trong ngày) để không lặp đúng một giờ. "" = tắt.
     # Rỗng từ 03/11/2026: tắt nuôi tự động theo giờ trong giai đoạn chẩn đoán checkpoint; nuôi tay trên dashboard vẫn dùng được.
     facebook_nurture_times: str = ""
-    # Cổng cứng cho auto-login, đứng trên công tắc của dashboard (02/11/2026, người vận hành chọn tắt): không lượt nào được
-    # publish, kể cả nút "Run now". Phía spider-hub còn có AUTO_LOGIN_KILL_SWITCH (mặc định bật).
-    auto_login_allowed: bool = False
     facebook_nurture_jitter_minutes: int = 50
     facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"
