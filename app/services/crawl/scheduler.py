@@ -559,9 +559,13 @@ async def _cookie_check_tick() -> None:
 
 
 async def _facebook_crawl_enabled() -> bool:
-    """Công tắc lịch cào Facebook (crawl_schedules) - 30/10/2026: tắt nó là ngừng mọi việc dùng tài khoản Facebook do
-    scheduler xếp (nhịp đào mỗi giờ, bài booking theo dõi), không chỉ các lượt cào theo giờ. Trước đó người vận hành tắt lịch
-    để cho tài khoản nghỉ nhưng nhịp đào vẫn chạy. Nuôi tài khoản, comment ẩn danh và đọc page không đăng nhập không bị ảnh hưởng."""
+    """Background authenticated work requires a separate opt-in AND an enabled schedule.
+
+    Explicit schedule slots use _tick directly. Hourly deep crawl and daily tracked-post
+    refresh must not silently turn one daily slot into many account sessions.
+    """
+    if not settings.facebook_background_crawl_enabled:
+        return False
     return any(sched["platform"] == "facebook" and sched["enabled"] for sched in await db.list_crawl_schedules())
 
 

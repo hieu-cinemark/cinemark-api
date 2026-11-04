@@ -155,6 +155,9 @@ class Settings(BaseSettings):
     ingest_comment_concurrency: int = 8
 
     facebook_crawl_lanes: bool = True
+    # Pilot accounts: only explicit crawl_schedules slots should enqueue authenticated
+    # Facebook work. Opt in separately to hourly deep crawl / daily tracked-post refresh.
+    facebook_background_crawl_enabled: bool = False
     # Số job đào mỗi giờ = ceil(số tài khoản FB dùng được x facebook_deep_jobs_per_account_hour), trong
     # [1, facebook_deep_jobs_max_per_hour]. Phần "deep" 300 request/tài khoản/ngày, ~10 request/job, khung 17 giờ
     # -> ~1,8 job/tài khoản/giờ. 0 = tắt nhịp đào.
