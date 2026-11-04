@@ -98,3 +98,82 @@ class AtSlot(scheduler.datetime):
     @classmethod
     def now(cls, tz=None):
         return cls(2026, 11, 4, 19, 30, tzinfo=tz)
+
+
+def test_facebook_slot_crawls_without_nurture_even_with_old_flags_enabled(monkeypatch):
+    keyword = {"id": "movie", "keyword": "Test movie"}
+    monkeypatch.setattr(scheduler.settings, "facebook_crawl_lanes", False)
+    monkeypatch.setattr(scheduler, "get_enabled_keywords", AsyncMock(return_value=[keyword]))
+    monkeypatch.setattr(scheduler, "plan_keyword_crawl", AsyncMock(return_value=([keyword], {})))
+    monkeypatch.setattr(scheduler, "queue_source_pages", AsyncMock())
+    publish = AsyncMock(return_value=True)
+    nurture = AsyncMock(side_effect=AssertionError("Facebook no longer queues nurture jobs"))
+    monkeypatch.setattr(scheduler, "publish_crawl_request", publish)
+    monkeypatch.setattr(scheduler, "publish_nurture_request", nurture)
+
+    class Progress(set):
+        def run_id(self, identifier):
+            return f"test-{identifier}"
+
+        async def add(self, value):
+            super().add(value)
+
+    assert asyncio.run(
+        scheduler._trigger_platform(
+            "facebook",
+            progress=Progress(),
+            nurture_before=True,
+            nurture_after=True,
+        )
+    )
+    publish.assert_awaited_once()
+    assert publish.await_args.kwargs["keyword"] == "Test movie"
+    nurture.assert_not_awaited()
+
+
+def test_nurture_all_only_queues_threads(monkeypatch):
+    from app.api.routes import settings as routes
+
+    publish = AsyncMock(return_value=True)
+    monkeypatch.setattr(routes, "publish_nurture_request", publish)
+    asyncio.run(routes.nurture_accounts(routes.NurtureRequest()))
+    publish.assert_awaited_once()
+    assert publish.await_args.args[0] == "threads"
+
+
+def test_nurture_cannot_target_a_facebook_account(monkeypatch):
+    from app.api.routes import settings as routes
+
+    monkeypatch.setattr(routes.db, "get_account", AsyncMock(return_value={"id": 1, "platform": "facebook"}))
+    publish = AsyncMock()
+    monkeypatch.setattr(routes, "publish_nurture_request", publish)
+    with pytest.raises(routes.ValidationError):
+        asyncio.run(routes.nurture_accounts(routes.NurtureRequest(account_id=1)))
+    publish.assert_not_awaited()
+
+
+def test_saving_facebook_schedule_discards_old_nurture_flags(monkeypatch):
+    from app.api.routes import settings as routes
+
+    save = AsyncMock(
+        return_value={
+            "platform": "facebook",
+            "run_time": "19:30",
+            "enabled": True,
+            "updated_at": "2026-11-04T12:30:00Z",
+        }
+    )
+    monkeypatch.setattr(routes.db, "upsert_crawl_schedule", save)
+    asyncio.run(
+        routes.set_crawl_schedule(
+            "facebook",
+            routes.CrawlScheduleUpdate(
+                run_times=["19:30"],
+                enabled=True,
+                nurture_before=True,
+                nurture_after=True,
+            ),
+        )
+    )
+    assert save.await_args.kwargs["nurture_before"] is False
+    assert save.await_args.kwargs["nurture_after"] is False

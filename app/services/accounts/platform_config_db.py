@@ -35,9 +35,7 @@ ACCOUNT_COLUMNS = (
     # tài khoản) - xem ACCOUNT_CREATE_COLUMNS bên dưới, cố ý loại chúng ra. Cột gốc chỉ tên
     # là "status" - đặt alias thành pool_status để không lẫn với last_check_status ở trên
     # (một tín hiệu khác, kích hoạt bằng tay - xem app/services/accounts/account_health.py).
-    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id, "
-    # Một phiên một client (spider-hub accounts/session_client.py) - chỉ đổi qua set_session_client.
-    "session_client, session_client_since, manual_nurture_days"
+    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id"
 )
 PROXY_COLUMNS = (
     "id, platform, proxy_url, username, password, login_use_proxy, ip_type, enabled, created_at, updated_at, "
@@ -68,11 +66,6 @@ async def _ensure_pool_columns() -> None:
         )
         await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
         await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS assigned_proxy_id int")
-        await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client text")
-        await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS session_client_since timestamptz")
-        await cur.execute(
-            "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS manual_nurture_days int NOT NULL DEFAULT 0"
-        )
         await cur.execute(
             "CREATE TABLE IF NOT EXISTS account_events (id bigserial PRIMARY KEY, at timestamptz NOT NULL DEFAULT now(), "
             "platform text NOT NULL, account_key text NOT NULL, event text NOT NULL, "
@@ -223,8 +216,7 @@ async def count_crawl_ready_accounts(platform: str) -> int:
         await cur.execute(
             "SELECT count(*) AS n FROM platform_accounts WHERE platform = %s AND enabled = true "
             "AND status != 'checkpoint' AND (cooldown_until IS NULL OR cooldown_until <= now()) "
-            "AND NOT coalesce(nurture_only, false) "
-            "AND (platform != 'facebook' OR session_client IN ('browser', 'http'))",
+            "AND (platform = 'facebook' OR NOT coalesce(nurture_only, false))",
             (platform,),
         )
         row = await cur.fetchone()
@@ -328,29 +320,6 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
         await conn.commit()
     if row is None:
         row = await get_account(account_id)
-    if row is None:
-        raise NotFoundError(f"Account {account_id} not found")
-    return row
-
-
-SESSION_CLIENTS = ("manual", "browser", "http")
-
-
-async def set_session_client(account_id: int, client: str | None) -> dict[str, Any]:
-    """Khai báo client duy nhất được dùng phiên này. Rời "manual" thì cộng số ngày đã nuôi tay vào warm-up, vì chỉ phiên chạy qua
-    nurture.py mới được tính ngày, và tài khoản nuôi bằng Chrome thật không nên phải đi qua trình duyệt tự động chỉ để qua cổng."""
-    await _ensure_pool_columns()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "UPDATE platform_accounts SET "
-            "manual_nurture_days = manual_nurture_days + CASE WHEN session_client = 'manual' AND %s::text IS DISTINCT FROM 'manual' "
-            "THEN GREATEST(0, EXTRACT(DAY FROM now() - coalesce(session_client_since, now()))::int) ELSE 0 END, "
-            "session_client_since = CASE WHEN session_client IS DISTINCT FROM %s::text THEN now() ELSE session_client_since END, "
-            f"session_client = %s WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
-            (client, client, client, account_id),
-        )
-        row = await cur.fetchone()
-        await conn.commit()
     if row is None:
         raise NotFoundError(f"Account {account_id} not found")
     return row

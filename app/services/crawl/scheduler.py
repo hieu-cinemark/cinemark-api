@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-import zlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -101,7 +100,7 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
-NURTURE_PLATFORMS = {"facebook", "threads", "tiktok"}
+NURTURE_PLATFORMS = {"threads", "tiktok"}
 
 
 # Lượt cào sau trong ngày (không phải giờ đầu tiên của lịch) với FB/Threads chỉ lấy bài mới nhất ("Bài viết gần đây" /
@@ -480,37 +479,6 @@ async def _facebook_crawl_enabled() -> bool:
     if not settings.facebook_background_crawl_enabled:
         return False
     return any(sched["platform"] == "facebook" and sched["enabled"] for sched in await db.list_crawl_schedules())
-
-
-def _jittered(slot: str, day: str, jitter_minutes: int) -> str:
-    """ "HH:MM" cộng 0..jitter_minutes phút, cố định theo (ngày, mốc) - mọi tiến trình / lượt 30 giây ra cùng một giờ."""
-    if jitter_minutes <= 0:
-        return slot
-    hour, minute = (int(part) for part in slot.split(":", 1))
-    total = min(hour * 60 + minute + zlib.crc32(f"{day}:{slot}".encode()) % (jitter_minutes + 1), 23 * 60 + 59)
-    return f"{total // 60:02d}:{total % 60:02d}"
-
-
-_NURTURE_FIRED_KEY = f"{REDIS_KEY_PREFIX}scheduler:nurture:{{platform}}:{{day}}:{{slot}}"
-
-
-async def _nurture_tick() -> None:
-    """Xếp một lượt nuôi Facebook ở mỗi mốc settings.facebook_nurture_times, kể cả khi lịch cào đang tắt. Trùng với cờ
-    nuôi của lịch cào cũng không sao: spider-hub bỏ qua tài khoản đã nuôi trong ngày / nửa ngày."""
-    now = datetime.now(TIMEZONE)
-    day = now.date().isoformat()
-    due = [
-        slot
-        for slot in parse_run_times(settings.facebook_nurture_times or "")
-        if _is_due(_jittered(slot, day, settings.facebook_nurture_jitter_minutes), now)
-    ]
-    if not due:
-        return
-    key = _NURTURE_FIRED_KEY.format(platform="facebook", day=day, slot=due[0])
-    if not await get_redis_client().set(key, "1", nx=True, ex=2 * 86400):
-        return
-    ok = await publish_nurture_request("facebook")
-    logger.info("scheduled_nurture_queued", platform="facebook", when="nurture_schedule", slot=due[0], ok=ok)
 
 
 # AI tìm thêm hashtag TikTok mỗi ngày một lần ở settings.hashtag_discovery_time (xem app/services/discovery/hashtag_discovery.py).
@@ -924,10 +892,6 @@ async def _loop() -> None:
             await asyncio.wait_for(_stats_reconcile_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_stats_reconcile_tick_failed", error=str(exc))
-        try:
-            await asyncio.wait_for(_nurture_tick(), timeout=_TICK_TIMEOUT_SECONDS)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("scheduler_nurture_tick_failed", error=str(exc))
         try:
             if await _facebook_crawl_enabled():
                 await asyncio.wait_for(crawl_lanes.run_deep_tick(datetime.now(TIMEZONE)), timeout=_TICK_TIMEOUT_SECONDS)

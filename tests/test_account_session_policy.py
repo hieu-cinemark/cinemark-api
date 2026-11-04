@@ -176,13 +176,3 @@ async def test_resaving_the_same_cookie_is_not_a_new_session(monkeypatch):
     payload = SimpleNamespace(model_dump=lambda exclude_unset: {"cookie": stored})
     await routes.update_account(1, payload)
     update.assert_not_called()
-
-
-async def test_set_session_client_records_the_change(monkeypatch):
-    row = {"id": 1, "platform": "facebook", "account_id": "123"}
-    monkeypatch.setattr(routes.db, "set_session_client", AsyncMock(return_value=row))
-    events = AsyncMock()
-    monkeypatch.setattr(routes.db, "record_account_event", events)
-    monkeypatch.setattr(routes.AccountOut, "masked", staticmethod(lambda r: r))
-    await routes.set_session_client(1, routes.AccountSetSessionClient(client="http"))
-    assert events.await_args.kwargs == {"client": "http"}

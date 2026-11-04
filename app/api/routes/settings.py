@@ -26,7 +26,6 @@ from app.schemas.settings import (
     AccountOut,
     AccountSetEnabled,
     AccountSetProxy,
-    AccountSetSessionClient,
     AccountUpdate,
     AiActiveProviderUpdate,
     AiProviderOut,
@@ -183,15 +182,13 @@ async def delete_account(account_id: int) -> dict[str, bool]:
     return {"ok": True}
 
 
-_NURTURE_PLATFORMS = ("facebook", "threads")
+_NURTURE_PLATFORMS = ("threads",)
 
 
 @router.post("/accounts/nurture", response_model=NurtureResponse)
 async def nurture_accounts(payload: NurtureRequest) -> NurtureResponse:
-    """Xếp hàng một lượt "làm ấm" bảng tin Facebook/Threads (cuộn, vài lượt like, tối đa
-    một comment ngắn, mở vài bài rồi quay lại). Tài khoản chưa có session trình duyệt
-    đã lưu sẽ bị bỏ qua ở phía sau - việc này không bao giờ gõ mật khẩu. Không hỗ trợ
-    TikTok."""
+    """Xếp hàng một lượt lướt bảng tin Threads bằng phiên đã lưu, không tự đăng nhập.
+    Facebook không còn luồng nuôi; chỉ cần bật account và lịch crawl."""
     targets: list[tuple[str, str | None]] = []
     if payload.account_id is not None:
         account = await db.get_account(payload.account_id)
@@ -199,7 +196,7 @@ async def nurture_accounts(payload: NurtureRequest) -> NurtureResponse:
             raise NotFoundError(f"Account {payload.account_id} not found")
         platform = account["platform"]
         if platform not in _NURTURE_PLATFORMS:
-            raise ValidationError("Session warm-up is only supported for Facebook and Threads accounts")
+            raise ValidationError("Session warm-up is only supported for Threads accounts")
         needle = _account_key(account)
         targets.append((platform, needle))
     else:
@@ -261,14 +258,6 @@ async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> Ac
     app/services/platform_config_db.set_account_enabled)."""
     row = await db.set_account_enabled(account_id, payload.enabled)
     await db.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
-    return AccountOut.masked(row)
-
-
-@router.post("/accounts/{account_id}/session-client", response_model=AccountOut)
-async def set_session_client(account_id: int, payload: AccountSetSessionClient) -> AccountOut:
-    """Client duy nhất được dùng phiên này - xem spider-hub accounts/session_client.py."""
-    row = await db.set_session_client(account_id, payload.client)
-    await db.record_account_event(row, "session_client_changed", client=payload.client)
     return AccountOut.masked(row)
 
 
@@ -445,8 +434,8 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
         platform,
         run_time=",".join(payload.run_times or []),
         enabled=payload.enabled,
-        nurture_before=payload.nurture_before,
-        nurture_after=payload.nurture_after,
+        nurture_before=payload.nurture_before and platform != "facebook",
+        nurture_after=payload.nurture_after and platform != "facebook",
     )
     return _crawl_schedule_out(row)
 

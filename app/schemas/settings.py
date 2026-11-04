@@ -45,9 +45,6 @@ class AccountOut(BaseModel):
     last_used_at: datetime | None = None
     assigned_proxy_id: int | None = None
     # Client duy nhất được dùng phiên này (manual | browser | http); null = chưa khai báo, Facebook không gửi gì.
-    session_client: str | None = None
-    session_client_since: datetime | None = None
-    manual_nurture_days: int | None = 0
     # Tên các trường bí mật đang có giá trị. Các trường đó luôn trả về rỗng ở đây (xem
     # AccountOut.masked) - giá trị thật chỉ lấy qua GET /settings/accounts/{id}/credentials.
     secrets_set: list[str] = Field(default_factory=list)
@@ -94,10 +91,6 @@ class AccountCreate(BaseModel):
 
 class AccountSetProxy(BaseModel):
     proxy_id: int
-
-
-class AccountSetSessionClient(BaseModel):
-    client: Literal["manual", "browser", "http"] | None = None
 
 
 class AccountSetEnabled(BaseModel):
@@ -275,7 +268,7 @@ class ImportCommitResponse(BaseModel):
 
 
 class NurtureRequest(BaseModel):
-    platform: Literal["facebook", "threads", "all"] = "all"
+    platform: Literal["threads", "all"] = "all"
     account_id: int | None = None
     visits: int = Field(default=3, ge=0, le=8)
 
