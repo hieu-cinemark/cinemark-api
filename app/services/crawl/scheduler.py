@@ -843,7 +843,7 @@ TRACKED_POSTS_HOUR = 6
 
 async def _run_tracked_posts() -> None:
     try:
-        await tracked_posts.run_daily(include_facebook=await _facebook_crawl_enabled())
+        await tracked_posts.run_daily(include_authenticated_facebook=await _facebook_crawl_enabled())
     except Exception as exc:  # noqa: BLE001 - lượt lỗi: hôm sau chạy lại (hoặc restart trong ngày chạy lại)
         logger.error("tracked_posts_failed", error=str(exc)[:300])
 
