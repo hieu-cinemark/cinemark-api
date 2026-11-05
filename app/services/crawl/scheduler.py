@@ -45,7 +45,7 @@ from app.core.logging import get_logger
 from app.repositories.d1.store import get_enabled_keywords
 from app.schemas.settings import parse_run_times
 from app.services.accounts import platform_config_db as db
-from app.services.crawl import channel_profiles, crawl_lanes, priority_channels, tracked_posts
+from app.services.crawl import channel_profiles, crawl_lanes, priority_channels, tracked_posts, watch_pages
 from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS
@@ -678,6 +678,23 @@ async def _omar_trending_tick() -> None:
     _spawn(_run_omar_trending())
 
 
+_WATCH_PAGES_KEY = f"{REDIS_KEY_PREFIX}scheduler:facebook_watch_pages:last_run"
+
+
+async def _watch_pages_tick() -> None:
+    """Quét lại page của phim đang chiếu (app/services/crawl/watch_pages.py). Lượt không xếp được gì (giờ yên lặng, chưa bật
+    tài khoản) thì nhả khoá để nhịp sau thử lại, thay vì mất trọn một chu kỳ."""
+    if not settings.facebook_watch_pages_enabled:
+        return
+    ttl = max(60, int(settings.facebook_watch_pages_interval_hours * 3600) - 120)
+    now = datetime.now(TIMEZONE)
+    client = get_redis_client()
+    if not await client.set(_WATCH_PAGES_KEY, now.isoformat(), nx=True, ex=ttl):
+        return
+    if not await watch_pages.queue_round(now):
+        await client.delete(_WATCH_PAGES_KEY)
+
+
 # Cấu hình AI cho Worker cinemark (app/services/ops/ai_runtime_sync.py): chép sang D1 mỗi AI_RUNTIME_SYNC_SECONDS - lưu ở
 # dashboard thì đã chép ngay, vòng này bắt cả thay đổi sửa thẳng trên Supabase.
 AI_RUNTIME_SYNC_SECONDS = 600
@@ -848,6 +865,10 @@ async def _loop() -> None:
             logger.error("scheduler_omar_trending_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_omar_trending_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_watch_pages_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_watch_pages_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_channel_profiles_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:

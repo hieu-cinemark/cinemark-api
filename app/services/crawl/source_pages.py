@@ -185,8 +185,11 @@ async def delete_source(source_id: str) -> None:
     await d1_query("DELETE FROM source_pages WHERE id = ?", [source_id])
 
 
-async def queue_source(source: dict[str, Any], *, bypass_drain: bool = False) -> bool:
-    """Xếp một yêu cầu page_feed cho trang (từ khoá Facebook là tên phim làm keyword_id)."""
+async def queue_source(
+    source: dict[str, Any], *, bypass_drain: bool = False, overrides: dict[str, Any] | None = None
+) -> bool:
+    """Xếp một yêu cầu page_feed cho trang (từ khoá Facebook là tên phim làm keyword_id). `overrides`: tham số job riêng của
+    chỗ gọi, vd. lượt quét lại chỉ đọc trang mới nhất (app/services/crawl/watch_pages.py)."""
     keyword_id = None
     if source.get("movie_id"):
         movie = await d1_query("SELECT title FROM movies WHERE id = ?", [source["movie_id"]], quiet=True)
@@ -207,6 +210,7 @@ async def queue_source(source: dict[str, Any], *, bypass_drain: bool = False) ->
             "max_pages": MAX_PAGES,
             "since_days": SINCE_DAYS,
             "run_id": str(uuid.uuid4()),
+            **(overrides or {}),
         },
         bypass_drain=bypass_drain,
     )

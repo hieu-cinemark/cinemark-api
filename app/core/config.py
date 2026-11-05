@@ -277,6 +277,13 @@ class Settings(BaseSettings):
     # luận trong omar_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận Omar.
     # Follower kênh TikTok cho trang "Xuất thông tin theo kênh" (app/services/crawl/channel_profiles.py) - mỗi chừng này giờ một lượt.
     channel_profiles_interval_hours: float = 6
+    # Quét lại page Facebook của phim đang chiếu cho mục "Đang nổi" (app/services/crawl/watch_pages.py). Mỗi lượt tối đa
+    # per_round page, mỗi page max_pages trang bảng tin: ~15 request mỗi lượt, ~6 lượt mỗi ngày ngoài giờ yên lặng của Meta.
+    facebook_watch_pages_enabled: bool = True
+    facebook_watch_pages_interval_hours: float = 3
+    facebook_watch_pages_per_round: int = 15
+    facebook_watch_pages_max_pages: int = 1
+    facebook_watch_pages_since_days: float = 14
     omar_trending_enabled: bool = True
     omar_trending_interval_hours: float = 3
     omar_trending_per_movie: int = 30
