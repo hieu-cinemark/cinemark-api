@@ -21,6 +21,14 @@ def test_comment_updates_are_chunked_within_the_d1_parameter_limit():
     assert all("raw_json = NULL" in sql for sql, _ in updates)
 
 
+def test_comment_keeps_only_its_attachment():
+    raw = {"message": "x", "sticker_url": "https://s", "is_sticker": True, "gif": None, "author_name": "a"}
+    rows = [{"id": "s", "raw_json": json.dumps(raw)}, {"id": "t", "raw_json": json.dumps({"message": "y"})}]
+    updates = trim_raw_json.build_updates("comments", rows)
+    assert ("UPDATE comments SET raw_json = NULL WHERE id IN (?)", ["t"]) in updates
+    assert ("UPDATE comments SET raw_json = ? WHERE id = ?", [json.dumps({"sticker_url": "https://s"}), "s"]) in updates
+
+
 def test_post_update_is_skipped_when_already_trimmed():
     trimmed = json.dumps({"cover_url": "c"})
     rows = [{"id": "a", "raw_json": trimmed}, {"id": "b", "raw_json": json.dumps({"cover_url": "c", "video": 1})}]

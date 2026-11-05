@@ -22,6 +22,9 @@ _PLACEHOLDER = re.compile(r"\[(?:sticker|photo|gif|video|image|ảnh|hình ảnh
 # Chỉ tiếng cười: haha, hihi, kkk, =)), :))) - không nói gì về phim.
 _LAUGH = re.compile(r"^(?:(?:ha|he|hi|ho|hu|hj){2,}h*|[hk]{3,}|=+\)+|:+\)+|=+d+|x+d+|lol|wkwk+)[.!~]*$", re.IGNORECASE)
 _EMPTY_LITERALS = {"none", "null", "nan", "undefined"}
+# Nhãn dán TikTok lưu thành chữ trong ngoặc vuông: "[Cười chảy nước mắt][Ấm lòng]". Cả comment chỉ có chúng thì là icon.
+_BRACKET = re.compile(r"\[[^\[\]]{1,30}\]")
+_BRACKET_ONLY = re.compile(r"^(?:\s*\[[^\[\]]{1,30}\]\s*)+$")
 # Họ phổ biến: tag tên không còn "@" (nền tảng bỏ ký tự @ khi lưu) vẫn nhận ra được qua "<Họ> <Tên viết hoa>...".
 _SURNAMES = {
     "nguyễn", "trần", "lê", "phạm", "hoàng", "huỳnh", "phan", "vũ", "võ", "đặng", "bùi", "đỗ", "hồ", "ngô",
@@ -57,10 +60,16 @@ def _only_plain_name_tags(text: str) -> bool:
     )
 
 
+def _only_brackets(message: str | None) -> bool:
+    return bool(_BRACKET_ONLY.match(emoji.replace_emoji(message or "", "")))
+
+
 def rule_sentiment(message: str | None) -> str | None:
     """Nhãn không cần model cho comment KHÔNG mang nội dung (rỗng, chỉ sticker/emoji, chỉ tag bạn bè, chỉ tiếng cười,
     quá ngắn); None nghĩa là có chữ, để Kira/ViSoBERT gán."""
     text = _PLACEHOLDER.sub(" ", message or "")
+    if _only_brackets(message):
+        text = _BRACKET.sub(" ", text)
     if not text.strip() or text.strip().lower() in _EMPTY_LITERALS:
         return "neutral"
 
@@ -95,6 +104,8 @@ def is_tag_or_icon(message: str | None) -> bool:
     """Comment chỉ có tag tên, icon hoặc sticker: người vận hành coi là đang hóng (rủ bạn đi xem, thả cảm xúc), 05/11/2026.
     Comment rỗng, chỉ tiếng cười hay chữ quá ngắn không tính."""
     raw = message or ""
+    if _only_brackets(raw):
+        return True
     text = _URL.sub(" ", _PLACEHOLDER.sub(" ", raw)).strip()
     if not text:
         return bool(_PLACEHOLDER.search(raw))

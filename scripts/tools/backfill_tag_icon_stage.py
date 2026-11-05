@@ -1,7 +1,7 @@
 """Gán audience_stage='hong' cho comment cũ chỉ có tag tên hoặc icon (2026-11-05), như ingest giờ làm cho comment mới.
 
-Chỉ đụng dòng có sentiment_source='rule' mà giai đoạn còn trống hoặc 'khac', không đè nhãn 'hong'/'da_xem' đã có. Tiếng cười
-và câu quá ngắn giữ nguyên. Đọc theo id, con trỏ lưu trong file nên dừng rồi chạy lại được. Chạy giờ vắng.
+Chỉ đụng dòng giai đoạn còn trống hoặc 'khac', không đè nhãn 'hong'/'da_xem' đã có. Tiếng cười và câu quá ngắn giữ nguyên. Nhãn
+dán "[Cười lớn]" trước đây lọt qua luật nên cũng được ghi sentiment_source='rule'. Đọc theo id, con trỏ lưu trong file nên dừng rồi chạy lại được. Chạy giờ vắng.
 
     python -m scripts.tools.backfill_tag_icon_stage --dry-run
     python -m scripts.tools.backfill_tag_icon_stage
@@ -33,7 +33,8 @@ async def main(args: argparse.Namespace) -> None:
     read = updated = 0
     while True:
         rows = await d1_query(
-            "SELECT id, message, audience_stage FROM comments WHERE id > ? AND sentiment_source = 'rule' ORDER BY id LIMIT ?",
+            "SELECT id, message, audience_stage FROM comments "
+            "WHERE id > ? AND (sentiment_source = 'rule' OR message LIKE '[%') ORDER BY id LIMIT ?",
             [last_id, PAGE_SIZE],
             timeout=60.0,
             quiet=True,
@@ -52,7 +53,10 @@ async def main(args: argparse.Namespace) -> None:
             return
         for i in range(0, len(ids), UPDATE_CHUNK):
             chunk = ids[i : i + UPDATE_CHUNK]
-            sql = f"UPDATE comments SET audience_stage = 'hong' WHERE id IN ({','.join('?' * len(chunk))})"
+            sql = (
+                "UPDATE comments SET audience_stage = 'hong', sentiment_source = 'rule' "
+                f"WHERE id IN ({','.join('?' * len(chunk))})"
+            )
             while await d1_query(sql, chunk, timeout=60.0, quiet=True) is None:
                 print(f"ghi lỗi, nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
                 await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)

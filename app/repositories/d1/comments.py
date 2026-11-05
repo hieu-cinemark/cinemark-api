@@ -95,6 +95,16 @@ _comment_insight_columns_ready = False
 _comment_insight_columns_lock = asyncio.Lock()
 # Khía cạnh khen/chê (JSON list "key:+"), giai đoạn khán giả và thời điểm gán - xem app/ai/aspects.py. Thêm 2026-10-07.
 # first_seen_at: lần đầu comment vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - thêm 2026-10-28.
+# Khoá raw_json của comment còn được đọc: tệp đính kèm hiện trên dashboard. Bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer).
+COMMENT_RAW_KEEP = ("sticker_url", "gif", "image", "video")
+
+
+def trim_comment_raw(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    return {key: raw[key] for key in COMMENT_RAW_KEEP if raw.get(key)} or None
+
+
 COMMENT_INSIGHT_COLUMNS = ("aspects", "audience_stage", "insights_classified_at", "first_seen_at")
 
 
@@ -294,8 +304,8 @@ class CommentRepository:
             return False
 
         scraped_at = datetime.now(tz=UTC).isoformat()
-        # Không chỗ nào đọc raw_json của comment, bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer).
-        raw_json = None
+        kept_raw = trim_comment_raw(draft.get("raw"))
+        raw_json = json.dumps(kept_raw) if kept_raw else None
         sentiment_classified_at = scraped_at if sentiment is not None else None
 
         existing_rows = await d1_query(

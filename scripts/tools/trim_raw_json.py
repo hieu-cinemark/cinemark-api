@@ -1,7 +1,7 @@
 """Dọn raw_json cũ trên D1 (2026-11-05): chép nguyên bản lên R2 trước, kiểm tra đã có trên R2, rồi mới bỏ khỏi D1.
 
 D1 đã dùng ~7,6 GB, trong đó raw_json của comment ~1,65 GB và của bài ~0,65 GB (đo mẫu 05/11). Comment không có chỗ nào đọc
-raw_json nên đặt NULL; bài chỉ giữ các khoá đang được đọc (app.repositories.d1.posts.RAW_JSON_KEEP). Bản gốc nằm ở
+raw_json trừ tệp đính kèm (trim_comment_raw) nên chỉ giữ phần đó; bài chỉ giữ các khoá đang được đọc (app.repositories.d1.posts.RAW_JSON_KEEP). Bản gốc nằm ở
 archive/raw_json/<bảng>/ trên bucket lake, mỗi lô một file gzip NDJSON {"id", "raw_json"}.
 
 Chạy giờ vắng vì mỗi lô là vài lệnh D1. Con trỏ lưu ở file local nên dừng rồi chạy lại được; D1 quá tải thì nghỉ rồi thử lại.
@@ -23,6 +23,7 @@ from typing import Any
 import boto3
 
 from app.core.config import settings
+from app.repositories.d1.comments import trim_comment_raw
 from app.repositories.d1.posts import trim_post_raw
 from app.repositories.d1.store import d1_query
 
@@ -40,14 +41,21 @@ def cursor_file(table: str) -> Path:
 def build_updates(table: str, rows: list[dict[str, Any]]) -> list[tuple[str, list[Any]]]:
     """Các câu UPDATE cho một lô. Bài đã gọn sẵn thì không cần ghi lại."""
     if table == "comments":
-        ids = [row["id"] for row in rows]
+        empty = []
+        media = []
+        for row in rows:
+            kept = trim_comment_raw(json.loads(row["raw_json"]))
+            if kept:
+                media.append(("UPDATE comments SET raw_json = ? WHERE id = ?", [json.dumps(kept), row["id"]]))
+            else:
+                empty.append(row["id"])
         return [
             (
-                f"UPDATE comments SET raw_json = NULL WHERE id IN ({','.join('?' * len(ids[i : i + UPDATE_CHUNK]))})",
-                ids[i : i + UPDATE_CHUNK],
+                f"UPDATE comments SET raw_json = NULL WHERE id IN ({','.join('?' * len(empty[i : i + UPDATE_CHUNK]))})",
+                empty[i : i + UPDATE_CHUNK],
             )
-            for i in range(0, len(ids), UPDATE_CHUNK)
-        ]
+            for i in range(0, len(empty), UPDATE_CHUNK)
+        ] + media
     updates = []
     for row in rows:
         trimmed = trim_post_raw(json.loads(row["raw_json"]))
