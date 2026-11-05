@@ -294,7 +294,8 @@ class CommentRepository:
             return False
 
         scraped_at = datetime.now(tz=UTC).isoformat()
-        raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
+        # Không chỗ nào đọc raw_json của comment, bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer).
+        raw_json = None
         sentiment_classified_at = scraped_at if sentiment is not None else None
 
         existing_rows = await d1_query(

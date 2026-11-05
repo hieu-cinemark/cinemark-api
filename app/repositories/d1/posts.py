@@ -395,6 +395,17 @@ def movie_hashtag_present(
     return False
 
 
+# Khoá của raw_json bài đang được đọc (json_extract ở đây và ở cinemark). Bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer):
+# lưu cả khối trên D1 khiến mọi truy vấn json_extract phải đọc thêm nhiều trang (05/11/2026, D1 đã ~7,6 GB).
+RAW_JSON_KEEP = ("reactions", "collect_count", "author_name", "author_followers", "media_url", "cover_url")
+
+
+def trim_post_raw(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    return {key: raw[key] for key in RAW_JSON_KEEP if raw.get(key) is not None} or None
+
+
 # Video phát được / permalink không đặt vào <img> được. Các dòng TikTok cũ lưu playAddr
 # làm media_url và chỉ để cover_url trong raw_json.
 _VIDEO_URL_HINTS = (
@@ -832,7 +843,8 @@ class PostRepository:
 
         scraped_at = datetime.now(tz=timezone.utc).isoformat()
         media_json = json.dumps(draft.get("media") or {})
-        raw_json = json.dumps(draft.get("raw")) if draft.get("raw") is not None else None
+        kept_raw = trim_post_raw(draft.get("raw"))
+        raw_json = json.dumps(kept_raw) if kept_raw else None
         engagement = {field: draft.get(field) or 0 for field in ENGAGEMENT_FIELDS}
         # D1 lưu boolean dưới dạng số nguyên SQLite (0/1) - truyền int, không truyền bool
         # JSON, để HTTP API bind đúng kiểu mà cột integer(..., {mode: "boolean"}) của Drizzle
