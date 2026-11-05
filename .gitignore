@@ -25,3 +25,4 @@ scripts/_*.csv
 /data/comment_embeddings.sqlite
 /data/*.cursor
 /data/clusters/
+/data/summaries/
