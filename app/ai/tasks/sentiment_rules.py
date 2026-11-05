@@ -84,6 +84,13 @@ def rule_sentiment(message: str | None) -> str | None:
     return "neutral"
 
 
+def with_parent_context(message: str | None, parent: str | None, parent_chars: int = 200) -> str:
+    """Chữ đưa cho model: phản hồi đứng một mình thường không rõ nghĩa ("Coi bình thường nha ní"), nên đặt bình luận cha lên trước."""
+    text = strip_placeholders(message)
+    context = strip_placeholders(parent)[:parent_chars]
+    return f"{context}\n{text}" if context else text
+
+
 def is_tag_or_icon(message: str | None) -> bool:
     """Comment chỉ có tag tên, icon hoặc sticker: người vận hành coi là đang hóng (rủ bạn đi xem, thả cảm xúc), 05/11/2026.
     Comment rỗng, chỉ tiếng cười hay chữ quá ngắn không tính."""

@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
+from app.ai.tasks.sentiment_rules import rule_sentiment, with_parent_context
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.repositories.d1.store import d1_query
@@ -102,7 +102,11 @@ async def _select(
         )
         alias = "p"
     else:
-        sql = f"SELECT c.id, c.scraped_at, c.message FROM comments c WHERE {pending_sql('c', reprocess_empty)}"
+        sql = (
+            "SELECT c.id, c.scraped_at, c.message, par.message AS parent_message FROM comments c "
+            "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
+            f"WHERE {pending_sql('c', reprocess_empty)}"
+        )
         alias = "c"
     params: list[Any] = []
     if cursor:
@@ -172,7 +176,7 @@ async def run(args: argparse.Namespace) -> None:
                 totals["no_content"] += 1
             else:
                 model_rows.append(row)
-        preds = await asyncio.to_thread(model.predict, [strip_placeholders(row["message"] or "") for row in model_rows])
+        preds = await asyncio.to_thread(model.predict, [with_parent_context(row["message"], row.get("parent_message")) for row in model_rows])
         for row, labels in zip(model_rows, preds, strict=True):
             result[row["id"]] = labels
             totals["with_aspect" if labels else "no_aspect"] += 1

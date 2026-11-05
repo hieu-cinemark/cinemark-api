@@ -2,7 +2,8 @@
 
 D1 không chứa nổi (~2,2 triệu dòng x 384 chiều), nên lưu ở máy chạy job: data/comment_embeddings.sqlite, float16 như
 app/repositories/local/topic_state.py. Comment chỉ có tag tên, icon hay tiếng cười (rule_sentiment) không có nội dung để
-embed nên bỏ qua. Đọc theo id, con trỏ lưu trong file nên dừng rồi chạy lại được.
+embed nên bỏ qua. Phản hồi được embed kèm bình luận cha để giữ ngữ cảnh (cột with_context). Đọc theo id, con trỏ lưu trong file
+nên dừng rồi chạy lại được.
 
     python -m scripts.jobs.embed_comments --limit 2000
     python -m scripts.jobs.embed_comments
@@ -20,7 +21,7 @@ from typing import Any
 import numpy as np
 
 from app.ai.local.embedding import embed_texts
-from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
+from app.ai.tasks.sentiment_rules import rule_sentiment, with_parent_context
 from app.repositories.d1.store import d1_query
 
 DB_PATH = Path(__file__).resolve().parents[2] / "data" / "comment_embeddings.sqlite"
@@ -40,14 +41,24 @@ def connect(path: Path = DB_PATH) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS embed_cursor (id INTEGER PRIMARY KEY CHECK (id = 1), last_id TEXT NOT NULL);
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(comment_embeddings)")}
+    if "with_context" not in columns:
+        conn.execute("ALTER TABLE comment_embeddings ADD COLUMN with_context INTEGER NOT NULL DEFAULT 0")
     return conn
 
 
-def texts_to_embed(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+def texts_to_embed(rows: list[dict[str, Any]], done: dict[str, int] | None = None) -> list[tuple[dict[str, Any], str]]:
+    """Bỏ comment không có nội dung và dòng đã embed đúng. Phản hồi đã embed trước khi có ngữ cảnh thì làm lại."""
+    done = done or {}
     picked = []
     for row in rows:
-        text = strip_placeholders(row.get("message"))
-        if text and rule_sentiment(row.get("message")) is None:
+        if rule_sentiment(row.get("message")) is not None:
+            continue
+        parent = row.get("parent_message")
+        if row["id"] in done and (not parent or done[row["id"]]):
+            continue
+        text = with_parent_context(row.get("message"), parent)
+        if text:
             picked.append((row, text))
     return picked
 
@@ -55,9 +66,9 @@ def texts_to_embed(rows: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str
 def save_page(conn: sqlite3.Connection, picked: list[tuple[dict[str, Any], str]], vectors: np.ndarray, last_id: str) -> None:
     with conn:
         conn.executemany(
-            "INSERT OR REPLACE INTO comment_embeddings (comment_id, movie_id, embedding) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO comment_embeddings (comment_id, movie_id, embedding, with_context) VALUES (?, ?, ?, ?)",
             [
-                (row["id"], row.get("movie_id"), vector.astype(np.float16).tobytes())
+                (row["id"], row.get("movie_id"), vector.astype(np.float16).tobytes(), int(bool(row.get("parent_message"))))
                 for (row, _), vector in zip(picked, vectors, strict=True)
             ],
         )
@@ -67,12 +78,14 @@ def save_page(conn: sqlite3.Connection, picked: list[tuple[dict[str, Any], str]]
 async def main(args: argparse.Namespace) -> None:
     conn = connect()
     row = conn.execute("SELECT last_id FROM embed_cursor WHERE id = 1").fetchone()
-    last_id = row[0] if row else ""
+    last_id = "" if args.restart or not row else row[0]
     read = saved = 0
     started = time.monotonic()
     while not args.limit or read < args.limit:
         rows = await d1_query(
-            "SELECT c.id, c.message, p.movie_id FROM comments c LEFT JOIN posts p ON p.id = c.post_id "
+            "SELECT c.id, c.message, p.movie_id, par.message AS parent_message FROM comments c "
+            "LEFT JOIN posts p ON p.id = c.post_id "
+            "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
             "WHERE c.id > ? ORDER BY c.id LIMIT ?",
             [last_id, PAGE_SIZE],
             timeout=60.0,
@@ -84,7 +97,9 @@ async def main(args: argparse.Namespace) -> None:
             continue
         if not rows:
             break
-        picked = texts_to_embed(rows)
+        marks = ",".join("?" * len(rows))
+        done = dict(conn.execute(f"SELECT comment_id, with_context FROM comment_embeddings WHERE comment_id IN ({marks})", [r["id"] for r in rows]))
+        picked = texts_to_embed(rows, done)
         vectors = embed_texts([text for _, text in picked]) if picked else np.zeros((0, 384), dtype=np.float32)
         last_id = rows[-1]["id"]
         save_page(conn, picked, vectors, last_id)
@@ -98,4 +113,5 @@ async def main(args: argparse.Namespace) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--limit", type=int, default=0, help="đọc tối đa ngần này comment lượt này")
+    parser.add_argument("--restart", action="store_true", help="đọc lại từ đầu, dòng đã embed đúng thì bỏ qua")
     asyncio.run(main(parser.parse_args()))
