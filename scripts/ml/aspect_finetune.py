@@ -9,6 +9,8 @@ sạch). Chia train/val/test THEO BÀI giống aspect_probe để so sánh đư�
     python -m scripts.ml.aspect_finetune                    # 2 epoch, 30.000 mẫu âm
     python -m scripts.ml.aspect_finetune --epochs 3 --neg 60000
     python -m scripts.ml.aspect_finetune --calibrate        # chỉ chọn lại ngưỡng theo số đếm cho model đã train
+    python -m scripts.ml.aspect_finetune --haiku --min-support 100 --out ~/cinemark-ml/aspects/visobert-aspects-haiku
+                                                            # học từ nhãn Haiku (scripts/ml/aspect_label_haiku.py)
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from scripts.tools.aspect_probe import DATA_DIR, MIN_SUPPORT, SEED, _split, down
 
 BASE_MODEL = "5CD-AI/Vietnamese-Sentiment-visobert"
 OUT_DIR = DATA_DIR / "visobert-aspects"
+HAIKU_FILE = DATA_DIR / "haiku_labels.jsonl"
 MAX_TOKENS = 128
 MIN_CHARS = 10
 
@@ -128,6 +131,8 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=3e-5)
     parser.add_argument("--out", type=Path, default=OUT_DIR)
+    parser.add_argument("--haiku", action="store_true", help="chỉ dùng comment đã có nhãn Haiku, thay cho nhãn AI cũ")
+    parser.add_argument("--min-support", type=int, default=MIN_SUPPORT, help="nhãn ít mẫu hơn chừng này thì bỏ")
     parser.add_argument(
         "--calibrate", action="store_true", help="không train: chọn lại ngưỡng theo số đếm cho model đã lưu"
     )
@@ -136,12 +141,15 @@ def main() -> None:
     from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast
 
     rows = [r for r in download(60000) if len(normalize(r["text"])) >= MIN_CHARS]
+    if args.haiku:
+        haiku = {item["id"]: item["aspects"] for item in map(json.loads, HAIKU_FILE.open(encoding="utf-8"))}
+        rows = [{**r, "labels": haiku[r["id"]]} for r in rows if r["id"] in haiku]
     pos = [r for r in rows if r["labels"]]
     neg = [r for r in rows if not r["labels"]]
     random.Random(SEED).shuffle(neg)
     rows = pos + neg[: args.neg]
     support = Counter(label for r in rows for label in r["labels"])
-    labels = sorted(label for label, n in support.items() if n >= MIN_SUPPORT)
+    labels = sorted(label for label, n in support.items() if n >= args.min_support)
     index = {label: i for i, label in enumerate(labels)}
     y = np.zeros((len(rows), len(labels)), dtype=np.float32)
     for i, r in enumerate(rows):
