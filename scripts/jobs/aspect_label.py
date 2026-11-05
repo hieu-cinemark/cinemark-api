@@ -5,7 +5,7 @@ Từ 23/10/2026 comment không còn qua AI nên gần như không comment mới 
 (VPS: systemd timer deploy/systemd/cinemark-aspects.*). Ngưỡng từng nhãn = count_thresholds (chọn để SỐ ĐẾM sát thực tế:
 thứ hạng khía cạnh khớp nhãn thật 0,95 trên tập test - xem aspect_finetune --calibrate).
 
-Chỉ ghi dòng aspects IS NULL (không đè nhãn AI cũ), kèm aspects_source='model'. Comment không mang nội dung (sticker,
+Mặc định chỉ ghi dòng aspects IS NULL (không đè nhãn AI cũ), kèm aspects_source='model'; --reprocess-ai gán lại cả dòng chưa qua model. Comment không mang nội dung (sticker,
 emoji, tag tên - rule_sentiment) hoặc không có khía cạnh nào được ghi [] để lượt sau không chọn lại.
 
 Cần torch + transformers (requirements-ml.txt) và thư mục model ở models/visobert-aspects (không có trong git).
@@ -14,7 +14,7 @@ Cách dùng:
     python -m scripts.jobs.aspect_label --dry-run --limit 50     # in thử, không ghi
     python -m scripts.jobs.aspect_label --days 0.25              # comment thu trong 6 giờ qua (timer)
     python -m scripts.jobs.aspect_label --table posts --days 30  # nội dung bài liên quan tới phim
-    python -m scripts.jobs.aspect_label --days 30 --reprocess-empty  # cả comment mang [] mà chưa qua model
+    python -m scripts.jobs.aspect_label --days 30 --reprocess-ai  # cả comment mang nhãn AI cũ hoặc [] chưa qua model
 """
 
 from __future__ import annotations
@@ -83,11 +83,12 @@ async def _ensure_columns(table: str) -> None:
 
 
 def pending_sql(alias: str, reprocess_empty: bool) -> str:
-    """Dòng cần gán. reprocess_empty: cả dòng [] chưa qua model (05/11/2026: ~80% comment của Chị Chị Em Em 3 mang [] từ lượt AI cũ
-    nên chưa có chủ đề). Dấu "+" chặn planner dùng index trên aspects, xem _save."""
+    """Dòng cần gán. reprocess_empty: mọi dòng chưa qua model (05/11/2026: ~80% comment của Chị Chị Em Em 3 mang [] từ lượt AI cũ nên
+    chưa có chủ đề; nhãn AI cũ cũng sai nhiều, vd. khen ngoại hình diễn viên thành "thông điệp"). Dấu "+" chặn planner dùng index
+    trên aspects, xem _save."""
     if not reprocess_empty:
         return f"+{alias}.aspects IS NULL"
-    return f"(+{alias}.aspects IS NULL OR (+{alias}.aspects = '[]' AND +{alias}.aspects_source IS NULL))"
+    return f"(+{alias}.aspects IS NULL OR +{alias}.aspects_source IS NULL)"
 
 
 async def _select(
@@ -216,6 +217,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--days", type=float, help="chỉ dòng thu thập trong N ngày gần nhất")
     parser.add_argument("--limit", type=int, help="tối đa ngần này dòng lượt này")
-    parser.add_argument("--reprocess-empty", action="store_true", help="gán cả dòng [] chưa qua model, cần --days")
+    parser.add_argument(
+        "--reprocess-ai", "--reprocess-empty", dest="reprocess_empty", action="store_true",
+        help="gán lại mọi dòng chưa qua model (nhãn AI cũ, [] cũ), nên kèm --days",
+    )
     parser.add_argument("--dry-run", action="store_true", help="gán một trang và in ra, không ghi")
     asyncio.run(run(parser.parse_args()))

@@ -28,7 +28,7 @@ def test_post_update_is_skipped_when_already_trimmed():
     assert updates == [("UPDATE posts SET raw_json = ? WHERE id = ?", [trimmed, "b"])]
 
 
-def test_aspect_job_only_reprocesses_empty_rows_when_asked():
+def test_aspect_job_replaces_ai_labels_only_when_asked():
     from scripts.jobs.aspect_label import pending_sql
 
     assert pending_sql("c", False) == "+c.aspects IS NULL"

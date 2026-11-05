@@ -18,6 +18,7 @@ def db(monkeypatch):
         CREATE TABLE comments (id TEXT, post_id TEXT, posted_at TEXT, audience_stage TEXT, sentiment TEXT,
                                sentiment_source TEXT, aspects TEXT);
         INSERT INTO posts VALUES ('p1','m1','tiktok','related',1), ('p2','m1','facebook',NULL,1), ('p3','m2','tiktok','not_related',0);
+        ALTER TABLE posts ADD COLUMN trend_post INTEGER NOT NULL DEFAULT 0;
         INSERT INTO comments VALUES
           ('c1','p1','2026-10-28T17:00:00+00:00','da_xem','positive','jev','["dien_xuat:+"]'),
           ('c2','p1','2026-10-29T16:59:59+00:00',NULL,'negative','jev','["dien_xuat:+","kich_ban:-"]'),

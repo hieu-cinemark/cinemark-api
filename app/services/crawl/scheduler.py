@@ -63,6 +63,7 @@ from app.services.omar.omar_tiktok import pause_over as omar_pause_over
 from app.services.omar.omar_tiktok import run_omar_round_tracked
 from app.services.ops import health_checks, ops_alerts
 from app.services.relevance.cleanup import resolve_cleanup_settings, run_purge
+from app.services.relevance.trend_posts import mark_showing_movies
 from app.services.stats import comment_rollup
 from app.services.stats.stats_summary import reconcile_recent_days
 
@@ -678,6 +679,23 @@ async def _omar_trending_tick() -> None:
     _spawn(_run_omar_trending())
 
 
+_TREND_POSTS_KEY = f"{REDIS_KEY_PREFIX}scheduler:trend_posts:last_run"
+_TREND_POSTS_INTERVAL_SECONDS = 3 * 3600
+
+
+async def _run_trend_posts() -> None:
+    try:
+        logger.info("trend_posts_marked", changed=await mark_showing_movies())
+    except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để lượt sau chạy lại
+        logger.error("trend_posts_failed", error=str(exc)[:300])
+
+
+async def _trend_posts_tick() -> None:
+    """Đánh dấu bài hưởng ứng trend của phim đang chiếu (app/services/relevance/trend_posts.py)."""
+    if await get_redis_client().set(_TREND_POSTS_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=_TREND_POSTS_INTERVAL_SECONDS):
+        _spawn(_run_trend_posts())
+
+
 _WATCH_PAGES_KEY = f"{REDIS_KEY_PREFIX}scheduler:facebook_watch_pages:last_run"
 
 
@@ -865,6 +883,10 @@ async def _loop() -> None:
             logger.error("scheduler_omar_trending_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_omar_trending_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_trend_posts_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_trend_posts_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_watch_pages_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001

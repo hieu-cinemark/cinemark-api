@@ -97,7 +97,7 @@ async def rebuild_day(day: str) -> bool:
                 SELECT p.movie_id, ?3, je.value, COUNT(*), ?4
                 FROM comments c JOIN posts p ON p.id = c.post_id, json_each(c.aspects) je
                 WHERE c.posted_at >= ?1 AND c.posted_at < ?2 AND p.movie_id IS NOT NULL AND {RELEVANT_POST_SQL}
-                  AND COALESCE(c.sentiment_source, '') != 'rule' AND c.aspects IS NOT NULL AND c.aspects != '[]'
+                  AND COALESCE(p.trend_post, 0) = 0 AND COALESCE(c.sentiment_source, '') != 'rule' AND c.aspects IS NOT NULL AND c.aspects != '[]'
                 GROUP BY 1, 3
                 ON CONFLICT (movie_id, day, aspect) DO UPDATE SET n = excluded.n, run = excluded.run""",
             [start, end, day, run],
