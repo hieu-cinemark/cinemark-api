@@ -14,6 +14,7 @@ Cách dùng:
     python -m scripts.jobs.aspect_label --dry-run --limit 50     # in thử, không ghi
     python -m scripts.jobs.aspect_label --days 0.25              # comment thu trong 6 giờ qua (timer)
     python -m scripts.jobs.aspect_label --table posts --days 30  # nội dung bài liên quan tới phim
+    python -m scripts.jobs.aspect_label --days 30 --reprocess-empty  # cả comment mang [] mà chưa qua model
 """
 
 from __future__ import annotations
@@ -81,16 +82,26 @@ async def _ensure_columns(table: str) -> None:
         logger.info("aspect_column_added", table=table, column="aspects_source")
 
 
-async def _select(table: str, limit: int, cursor: tuple[str, str] | None, since: str | None) -> list[dict[str, Any]]:
+def pending_sql(alias: str, reprocess_empty: bool) -> str:
+    """Dòng cần gán. reprocess_empty: cả dòng [] chưa qua model (05/11/2026: ~80% comment của Chị Chị Em Em 3 mang [] từ lượt AI cũ
+    nên chưa có chủ đề). Dấu "+" chặn planner dùng index trên aspects, xem _save."""
+    if not reprocess_empty:
+        return f"+{alias}.aspects IS NULL"
+    return f"(+{alias}.aspects IS NULL OR (+{alias}.aspects = '[]' AND +{alias}.aspects_source IS NULL))"
+
+
+async def _select(
+    table: str, limit: int, cursor: tuple[str, str] | None, since: str | None, reprocess_empty: bool = False
+) -> list[dict[str, Any]]:
     """Một trang dòng chưa có khía cạnh, mới nhất trước, sau con trỏ (scraped_at, id) của trang trước."""
     if table == "posts":
         sql = (
             f"SELECT p.id, p.scraped_at, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message FROM posts p "
-            f"WHERE p.aspects IS NULL AND {RELEVANT_POST_SQL}"
+            f"WHERE {pending_sql('p', reprocess_empty)} AND {RELEVANT_POST_SQL}"
         )
         alias = "p"
     else:
-        sql = "SELECT c.id, c.scraped_at, c.message FROM comments c WHERE c.aspects IS NULL"
+        sql = f"SELECT c.id, c.scraped_at, c.message FROM comments c WHERE {pending_sql('c', reprocess_empty)}"
         alias = "c"
     params: list[Any] = []
     if cursor:
@@ -107,7 +118,7 @@ async def _select(table: str, limit: int, cursor: tuple[str, str] | None, since:
     return rows
 
 
-async def _save(table: str, aspects: dict[str, list[str]]) -> int:
+async def _save(table: str, aspects: dict[str, list[str]], reprocess_empty: bool = False) -> int:
     """Một câu UPDATE cho cả khối qua json_each, tra theo khoá chính. Dấu "+" chặn planner dùng index trên aspects (cùng
     bẫy với sentiment 19/10/2026: điều kiện IS NULL có index làm câu UPDATE quét mọi dòng chưa có nhãn)."""
     if not aspects:
@@ -116,7 +127,7 @@ async def _save(table: str, aspects: dict[str, list[str]]) -> int:
     result = await d1_query(
         f"UPDATE {table} SET aspects = j.a, aspects_source = '{SOURCE}' "
         f"FROM (SELECT value ->> 'id' AS id, value ->> 'a' AS a FROM json_each(?1)) AS j "
-        f"WHERE {table}.id = j.id AND +{table}.aspects IS NULL",
+        f"WHERE {table}.id = j.id AND {pending_sql(table, reprocess_empty)}",
         [payload],
         timeout=60.0,
     )
@@ -143,11 +154,11 @@ async def run(args: argparse.Namespace) -> None:
 
     async def save_chunk(chunk: dict[str, list[str]]) -> int:
         async with sem:
-            return await _save(args.table, chunk)
+            return await _save(args.table, chunk, args.reprocess_empty)
 
     while args.limit is None or totals["selected"] < args.limit:
         page = PAGE_SIZE if args.limit is None else min(PAGE_SIZE, args.limit - totals["selected"])
-        rows = await _select(args.table, page, cursor, since)
+        rows = await _select(args.table, page, cursor, since, args.reprocess_empty)
         if not rows:
             break
         cursor = (str(rows[-1]["scraped_at"] or ""), str(rows[-1]["id"]))
@@ -205,5 +216,6 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--days", type=float, help="chỉ dòng thu thập trong N ngày gần nhất")
     parser.add_argument("--limit", type=int, help="tối đa ngần này dòng lượt này")
+    parser.add_argument("--reprocess-empty", action="store_true", help="gán cả dòng [] chưa qua model, cần --days")
     parser.add_argument("--dry-run", action="store_true", help="gán một trang và in ra, không ghi")
     asyncio.run(run(parser.parse_args()))

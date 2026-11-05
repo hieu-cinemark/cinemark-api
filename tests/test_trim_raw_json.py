@@ -26,3 +26,10 @@ def test_post_update_is_skipped_when_already_trimmed():
     rows = [{"id": "a", "raw_json": trimmed}, {"id": "b", "raw_json": json.dumps({"cover_url": "c", "video": 1})}]
     updates = trim_raw_json.build_updates("posts", rows)
     assert updates == [("UPDATE posts SET raw_json = ? WHERE id = ?", [trimmed, "b"])]
+
+
+def test_aspect_job_only_reprocesses_empty_rows_when_asked():
+    from scripts.jobs.aspect_label import pending_sql
+
+    assert pending_sql("c", False) == "+c.aspects IS NULL"
+    assert "aspects_source IS NULL" in pending_sql("c", True)
