@@ -1,6 +1,6 @@
 import pytest
 
-from app.ai.tasks.sentiment_rules import rule_sentiment
+from app.ai.tasks.sentiment_rules import is_tag_or_icon, rule_sentiment
 
 
 @pytest.mark.parametrize(
@@ -40,3 +40,25 @@ from app.ai.tasks.sentiment_rules import rule_sentiment
 )
 def test_rule_sentiment(message, expected):
     assert rule_sentiment(message) == expected
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("@Nguyễn Văn A", True),
+        ("@Lan @Hoa", True),
+        ("Nguyễn Văn A", True),
+        ("❤️❤️❤️", True),
+        ("@Lan ❤️", True),
+        ("[Sticker]", True),
+        ("[Photo] 😂", True),
+        ("", False),
+        ("hahaha", False),
+        ("ok", False),
+        ("=))", False),
+        ("@Lan đẹp quá", False),
+        ("Phim hay quá ❤️", False),
+    ],
+)
+def test_tag_or_icon(message, expected):
+    assert is_tag_or_icon(message) is expected

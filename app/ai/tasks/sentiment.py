@@ -33,7 +33,7 @@ from app.ai.local import visobert
 from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
 from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
-from app.ai.tasks.sentiment_rules import cached_comment_labels, remember_comment_labels, rule_sentiment
+from app.ai.tasks.sentiment_rules import cached_comment_labels, is_tag_or_icon, remember_comment_labels, rule_sentiment
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.store import MIN_CONTENT_LENGTH
@@ -163,7 +163,8 @@ async def classify_comments(
     rest = []
     for i, m in todo:
         if (sentiment := rule_sentiment(m)) is not None:
-            labels[i] = {"sentiment": sentiment, "aspects": [], "stage": "khac", "source": "rule"}
+            stage = "hong" if is_tag_or_icon(m) else "khac"
+            labels[i] = {"sentiment": sentiment, "aspects": [], "stage": stage, "source": "rule"}
             routed["rule"] += 1
         else:
             rest.append((i, m))

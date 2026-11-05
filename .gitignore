@@ -22,3 +22,5 @@ scripts/_*.csv
 /data/visobert/
 /models/
 /data/topics.sqlite
+/data/comment_embeddings.sqlite
+/data/*.cursor
