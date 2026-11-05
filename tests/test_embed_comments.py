@@ -1,5 +1,11 @@
+import pytest
+
 from app.ai.tasks.sentiment_rules import with_parent_context
-from scripts.jobs.embed_comments import texts_to_embed
+
+# numpy nằm trong requirements-ml.txt, CI không cài.
+pytest.importorskip("numpy")
+
+from scripts.jobs.embed_comments import texts_to_embed  # noqa: E402
 
 
 def row(cid, message, parent=None):
