@@ -24,7 +24,19 @@ ASPECTS: dict[str, tuple[str, str]] = {
     "san_phim": ("Sạn, lỗi phim", "goofs, mistakes, continuity errors, things that break immersion"),
     "quang_ba": ("Trailer, quảng bá", "trailer, posters, marketing, promotional events"),
     "rap_ve": ("Giá vé, suất chiếu, rạp", "ticket prices, showtimes, theater availability, age rating"),
+    "di_rap": (
+        "Đi xem phim ở rạp",
+        (
+            "explicit plans, invitations, decisions to go or not go to the cinema, cinema check-ins, or going again; "
+            "not merely a film review saying 'watched it', and not ticket prices/showtimes/theater facilities (rap_ve). "
+            "Use + for enthusiasm/recommendations to go, - for reluctance/refusal, 0 for a factual check-in or "
+            "an invitation/question with no expressed opinion"
+        ),
+    ),
 }
+
+# Chủ đề hành vi xem phim không phải điểm khen/chê chất lượng phim trong report.
+DISCUSSION_ONLY_ASPECTS = frozenset({"di_rap"})
 
 # Giai đoạn của người viết so với phim.
 STAGES: dict[str, tuple[str, str]] = {
@@ -37,7 +49,7 @@ POLARITIES = {"+": "khen", "-": "che"}
 
 
 def parse_aspects(value: Any) -> list[str]:
-    """Danh sách "key:+"/"key:-" hợp lệ, không trùng, theo thứ tự xuất hiện - bỏ âm thầm mọi thứ ngoài bộ
+    """Danh sách "key:+"/"key:-" (thêm "di_rap:0") hợp lệ, không trùng - bỏ mọi thứ ngoài bộ
     ASPECTS (model đôi khi tự đặt key mới). Nhận cả dạng {"a": key, "p": "+"} lẫn chuỗi "key:+"."""
     if not isinstance(value, list):
         return []
@@ -52,7 +64,8 @@ def parse_aspects(value: Any) -> list[str]:
         key = str(key).strip().lower()
         polarity = str(polarity).strip()
         tag = f"{key}:{polarity}"
-        if key in ASPECTS and polarity in POLARITIES and tag not in result:
+        valid_polarity = polarity in POLARITIES or (key in DISCUSSION_ONLY_ASPECTS and polarity == "0")
+        if key in ASPECTS and valid_polarity and tag not in result:
             result.append(tag)
     return result
 

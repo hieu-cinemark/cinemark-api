@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from app.ai.aspects import ASPECTS
+from app.ai.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, parse_aspects
 from app.ai.decisions import COMMENT, POST, decide, usage_totals
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -34,6 +34,7 @@ _STAGE = {
     "chi tiết cảnh phim đã xem",
     "khac": "Không có dấu hiệu nào ở trên: bàn chuyện ngoài lề, hỏi thông tin chung, tag bạn, quảng cáo",
 }
+_ASPECT_POLARITY = {"khen": "+", "che": "-", "nhac_den": "0"}
 
 
 def _questions() -> dict[str, dict[str, Any]]:
@@ -62,6 +63,13 @@ def _questions() -> dict[str, dict[str, Any]]:
                 "khong": "Không nhắc tới khía cạnh này",
             },
         }
+        if key in DISCUSSION_ONLY_ASPECTS:
+            questions[f"a_{key}"]["criteria"] = {
+                "khen": "Háo hức, muốn đi xem/xem lại hoặc khuyên người khác ra rạp",
+                "che": "Không muốn hoặc quyết định không đi xem phim ở rạp",
+                "nhac_den": "Nói về việc đi rạp, rủ nhau đi/hỏi ai đi hoặc check-in, không có thái độ khen/chê rõ ràng",
+                "khong": "Không bàn việc đi xem phim ở rạp; chỉ review nội dung phim hoặc hỏi giá vé/suất chiếu",
+            }
     return questions
 
 
@@ -88,17 +96,20 @@ def _label(answers: dict[str, Any]) -> dict[str, Any] | None:
         return None
     stage = answers.get("stage") or {}
     aspects = [
-        f"{key[2:]}:{'+' if answer.get('choice') == 'khen' else '-'}"
+        f"{key[2:]}:{_ASPECT_POLARITY[answer['choice']]}"
         for key, answer in answers.items()
         if key.startswith("a_")
-        and answer.get("choice") in ("khen", "che")
+        and (
+            answer.get("choice") in ("khen", "che")
+            or (key[2:] in DISCUSSION_ONLY_ASPECTS and answer.get("choice") == "nhac_den")
+        )
         and float(answer.get("confidence") or 0) >= settings.jev_aspect_min_confidence
     ]
     return {
         "sentiment": sentiment["choice"]
         if float(sentiment.get("confidence") or 0) >= settings.jev_min_confidence
         else "neutral",
-        "aspects": aspects,
+        "aspects": parse_aspects(aspects),
         "stage": stage.get("choice")
         if stage.get("choice") in _STAGE and float(stage.get("confidence") or 0) >= settings.jev_stage_min_confidence
         else "khac",

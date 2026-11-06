@@ -330,6 +330,9 @@ async def test_aspect_stats_counts_all_tagged_comments_with_min_n_and_trend() ->
     # Âm thanh: chỉ 3 lượt nhắc -> dưới min_n, không báo %.
     rows += [comment(30 + i, ["am_thanh:+"], 10, "positive", "hong") for i in range(3)]
     rows += [comment(40 + i, [], 10, "neutral", "hong") for i in range(7)]
+    # Việc đi rạp có chủ đề riêng, không trở thành điểm khen/chê chất lượng phim.
+    rows[0]["aspects"] = json.dumps(["dien_xuat:+", "di_rap:+"])
+    rows[-1]["aspects"] = json.dumps(["di_rap:0"])
     rows.append({**comment(99, [], 10, "neutral", "khac"), "message": "@Nguyễn Văn An"})  # chỉ tag: không tính
 
     async def fake_query(sql: str, params: list | None = None, **_kwargs) -> list[dict]:

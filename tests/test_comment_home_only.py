@@ -33,3 +33,9 @@ def test_low_confidence_comments_still_labelled_by_visobert(monkeypatch):
 def test_model_unavailable_leaves_comments_unlabelled_without_ai(monkeypatch):
     _setup(monkeypatch, lambda texts: None)
     assert asyncio.run(sentiment.classify_comments(["phim này hay thật sự, xem hai lần"])) == [None]
+
+
+def test_cinema_topic_is_added_in_local_only_mode_without_calling_ai(monkeypatch):
+    _setup(monkeypatch, lambda texts: [("neutral", 0.6)] * len(texts))
+    labels = asyncio.run(sentiment.classify_comments(["Ai đi xem phim ở rạp tối nay không?"]))
+    assert labels == [{"sentiment": "neutral", "aspects": ["di_rap:0"], "stage": "khac", "source": "visobert"}]

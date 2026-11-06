@@ -37,7 +37,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.ai.aspects import ASPECTS, STAGES
+from app.ai.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
 from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.clients.d1 import _configured, d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
@@ -737,6 +737,8 @@ async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
     aspects_out: list[dict[str, Any]] = []
     quotes: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for key, (label, _desc) in ASPECTS.items():
+        if key in DISCUSSION_ONLY_ASPECTS:
+            continue
         pos = [r for r in tagged if f"{key}:+" in r["aspect_tags"]]
         neg = [r for r in tagged if f"{key}:-" in r["aspect_tags"]]
         mentions = len(pos) + len(neg)

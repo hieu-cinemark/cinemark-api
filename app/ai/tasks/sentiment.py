@@ -27,6 +27,7 @@ from typing import Any, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
 from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
+from app.ai.cinema_visit import cinema_visit_aspect
 from app.ai.decisions import POST, decisions_supported
 from app.ai.jev import classify_comments_jev, use_jev
 from app.ai.local import visobert
@@ -47,7 +48,7 @@ VALID_SENTIMENTS = {"positive", "negative", "neutral"}
 
 class CommentLabel(TypedDict):
     sentiment: str
-    aspects: list[str]  # "key:+" / "key:-", key trong app.ai.aspects.ASPECTS
+    aspects: list[str]  # "key:+" / "key:-", thêm "di_rap:0" cho chuyện đi rạp trung tính
     stage: str  # key trong app.ai.aspects.STAGES
     source: NotRequired[str]  # "rule": gán bằng rule_sentiment (comment không có nội dung) - ghi vào sentiment_source
 
@@ -194,7 +195,7 @@ async def classify_comments(
             routed["unlabelled_no_ai"] = len(rest)  # model không dùng được (thiếu torch/thư mục) - để lượt sau
         if routed:
             logger.info("sentiment_routed", **routed)
-        return labels
+        return _with_cinema_visits(messages, labels, kind)
 
     # 4. Ca khó -> model quyết định của Bee (settings.classifier = "jev"): bình luận jev-1.14, nội dung bài OpenAI.
     jev_mode = use_jev()
@@ -226,6 +227,20 @@ async def classify_comments(
         routed["llm_failed"] = len(rest) - len(done)
     if routed:
         logger.info("sentiment_routed", **routed)
+    return _with_cinema_visits(messages, labels, kind)
+
+
+def _with_cinema_visits(
+    messages: list[str | None], labels: list[CommentLabel | None], kind: str
+) -> list[CommentLabel | None]:
+    if kind != "comment":
+        return labels
+    for message, label in zip(messages, labels, strict=True):
+        if not message or label is None or label.get("source") == "rule":
+            continue
+        # Ưu tiên nhãn theo ngữ cảnh của AI/cache; chỉ bổ sung khi còn thiếu chủ đề này.
+        if not any(tag.startswith("di_rap:") for tag in label["aspects"]) and (tag := cinema_visit_aspect(message)):
+            label["aspects"] = [*label["aspects"], tag]
     return labels
 
 

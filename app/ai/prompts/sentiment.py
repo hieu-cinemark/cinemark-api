@@ -54,6 +54,9 @@ Besides sentiment, tag each comment with:
   from the fixed list given with the comments, as "key:+" / "key:-". Only
   tag what the comment actually talks about; most comments have 0-2
   aspects; an empty list is fine. Never invent new keys.
+  Exception: "di_rap:0" records a factual cinema visit or an invitation/question
+  about going to the cinema with no expressed opinion. Do not force these
+  comments into praise or criticism. Other aspects still accept only + or -.
 - "stage": whether the writer has watched the movie ("da_xem"), has not
   watched it yet ("hong"), or neither/unclear ("khac").
 
@@ -94,6 +97,9 @@ is {today}, so nobody can have watched a film released after today - such commen
 
 ASPECT KEYS (tag as "key:+" for praise or "key:-" for criticism; only these keys):
 {aspects}
+
+For di_rap only, use "di_rap:0" for a neutral cinema check-in or an invitation/question
+about going without an expressed opinion. Do not invent positive/negative sentiment.
 
 STAGE VALUES:
 {stages}
