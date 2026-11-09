@@ -22,19 +22,22 @@ from app.ai.runtime import call_llm
 from scripts.tools.cluster_film_comments import OUT_DIR as CLUSTER_DIR
 
 ROOT = Path(__file__).resolve().parents[2]
-OUT_FILE = ROOT / "data" / "stage" / "haiku_labels.jsonl"
+# v2 (09/11/2026): khen nhan sắc chung chung là khac - bản đầu xếp vào hong, model học theo và thổi phồng phần "đang hóng".
+OUT_FILE = ROOT / "data" / "stage" / "haiku_labels_v2.jsonl"
 TASK = "comment_stage_label"
 LABELS = ("hong", "da_xem", "khac")
 BATCH = 25
 SEED = 11
 
 SYSTEM_PROMPT = """Bạn phân loại bình luận mạng xã hội về một phim điện ảnh Việt Nam theo giai đoạn của người viết:
-- hong: chưa xem phim - mong chờ, hóng, rủ đi xem, hỏi lịch chiếu / giá vé, đoán nội dung, khen trailer / poster / diễn viên
-  khi chưa thấy dấu hiệu đã xem.
-- da_xem: đã xem phim - kể lại cảm nhận sau khi xem, nhắc cảnh / tình tiết / cái kết như người đã xem, "xem rồi", "vừa ra rạp",
-  "coi xong", review, khen chê cụ thể nội dung phim.
-- khac: không xác định được hoặc không liên quan việc xem phim (chuyện đời tư diễn viên, tin tức, tag bạn, câu chung chung).
+- hong: CÓ Ý ĐỊNH hoặc MONG CHỜ xem phim rõ ràng - sẽ đi xem, chờ ngày chiếu, đếm ngày, hỏi lịch chiếu / suất / giá vé / rạp,
+  rủ bạn đi xem, đặt vé, "hóng quá", "bao giờ chiếu".
+- da_xem: CÓ DẤU HIỆU ĐÃ XEM phim - "xem rồi", "vừa ra rạp", "coi xong", kể cảm nhận sau khi xem, nhắc cảnh / tình tiết / cái
+  kết / diễn biến như người đã xem, review hay khen chê cụ thể nội dung phim.
+- khac: mọi trường hợp còn lại - khen nhan sắc / diễn viên / trang phục chung chung, chuyện đời tư, tin tức, doanh thu, tag bạn
+  không kèm lời rủ, câu đùa, câu không rõ đã xem hay chưa.
 
+Khen đẹp, khen diễn viên mà không có ý định xem hay dấu hiệu đã xem thì là khac, không phải hong.
 Chỉ dựa vào chữ trong bình luận. Không chắc thì chọn khac.
 Trả về đúng một mảng JSON theo thứ tự đầu vào: [{"i": số, "stage": "hong|da_xem|khac"}, ...]. Không thêm gì khác."""
 

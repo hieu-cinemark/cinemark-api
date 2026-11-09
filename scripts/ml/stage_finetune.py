@@ -16,7 +16,7 @@ from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DATA_FILE = ROOT / "data" / "stage" / "haiku_labels.jsonl"
+DATA_FILE = ROOT / "data" / "stage" / "haiku_labels_v2.jsonl"
 INIT_MODEL = ROOT / "models" / "visobert-cinemark"
 OUT_DIR = ROOT / "models" / "visobert-stage"
 LABELS = ("hong", "da_xem", "khac")
