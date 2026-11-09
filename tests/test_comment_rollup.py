@@ -26,6 +26,15 @@ def db(monkeypatch):
           ('c4','p1','2026-10-29T05:00:00+00:00',NULL,'neutral','rule','["x:+"]'),
           ('c5','p3','2026-10-29T05:00:00+00:00',NULL,'positive','jev',NULL),
           ('c6','p1','2026-10-29T17:00:00+00:00',NULL,'positive','jev',NULL);
+        ALTER TABLE posts ADD COLUMN posted_at TEXT;
+        ALTER TABLE comments ADD COLUMN message TEXT NOT NULL DEFAULT 'chữ';
+        ALTER TABLE comments ADD COLUMN parent_external_id TEXT;
+        CREATE TABLE movies (id TEXT PRIMARY KEY, released_at TEXT);
+        CREATE TABLE movie_measure_settings (movie_id TEXT PRIMARY KEY, premiere_date TEXT);
+        INSERT INTO movies VALUES ('m1', '2026-10-30');
+        INSERT INTO movie_measure_settings VALUES ('m1', '2026-10-29');
+        UPDATE posts SET posted_at = '2026-10-28T20:00:00+00:00' WHERE id = 'p1';
+        UPDATE posts SET posted_at = '2026-10-27T20:00:00+00:00' WHERE id = 'p2';
         """
     )
 
@@ -66,3 +75,28 @@ def test_rebuild_day_replaces_stale_rows(db):
 def test_vn_days_uses_vietnam_calendar():
     late_utc = datetime(2026, 10, 29, 18, 0, tzinfo=ZoneInfo("UTC"))  # 01:00 VN ngày 30/10
     assert vn_days(2, late_utc) == ["2026-10-30", "2026-10-29"]
+
+
+def test_rebuild_day_counts_comment_groups(db):
+    db.executescript(
+        """
+        INSERT INTO comments (id, post_id, posted_at, sentiment, sentiment_source, aspects, message, parent_external_id) VALUES
+          ('r1','p1','2026-10-29T05:00:00+00:00','positive','jev','["dien_vien:+"]','phản hồi','c1'),
+          ('e1','p1','2026-10-29T05:00:00+00:00',NULL,NULL,NULL,'  ',NULL);
+        """
+    )
+    assert asyncio.run(cr.rebuild_day("2026-10-29"))
+    rows = db.execute(
+        "SELECT platform, sentiment, after_premiere, grp, n FROM movie_comment_group_daily WHERE day='2026-10-29' ORDER BY 1, 2, 4"
+    ).fetchall()
+    # p1 đăng 03:00 VN 29/10 = từ ngày chiếu sớm; p2 đăng trước. Phản hồi (r1) và bình luận rỗng (e1) không đếm.
+    assert rows == [
+        ("facebook", "", 0, "none", 1),
+        ("facebook", "", 0, "total", 1),
+        ("tiktok", "negative", 1, "dien_xuat:+", 1),
+        ("tiktok", "negative", 1, "kich_ban:-", 1),
+        ("tiktok", "negative", 1, "total", 1),
+        ("tiktok", "neutral", 1, "icon", 1),
+        ("tiktok", "positive", 1, "dien_xuat:+", 1),
+        ("tiktok", "positive", 1, "total", 1),
+    ]

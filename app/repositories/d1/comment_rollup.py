@@ -4,11 +4,17 @@ chạy các câu của một database gần như lần lượt, nên request c�
 
     movie_comment_daily  (movie_id, day, platform, stage, sentiment, meaningful) -> n
     movie_aspect_daily   (movie_id, day, aspect) -> n
+    movie_comment_group_daily (movie_id, day, platform, sentiment, after_premiere, grp) -> n
 
 - day: ngày giờ Việt Nam của c.posted_at (chỉ ~20/2 triệu bình luận thiếu posted_at - bỏ qua);
 - chỉ bình luận thuộc bài liên quan (RELEVANT_POST_SQL, cùng điều kiện RELEVANT_POST_FILTER của cinemark);
 - stage = audience_stage ('' khi chưa gán), sentiment ('' khi chưa chấm), meaningful = sentiment_source khác 'rule'
   (MEANINGFUL_COMMENT_FILTER của cinemark); bảng khía cạnh chỉ đếm bình luận meaningful.
+
+movie_comment_group_daily là số của "Bình luận đã thu thập theo chủ đề" trên Social Topic (cinemark api/lib/topicComments.ts):
+chỉ bình luận gốc có chữ; grp = 'total' / 'icon' (bình luận gắn nhãn 'rule') / 'trend' (bài hưởng ứng trend) / 'none' (chưa có
+chủ đề) / nhãn chủ đề như 'dien_vien:+'. after_premiere = bài đăng từ ngày chiếu sớm (hoặc ngày khởi chiếu) của phim trở đi,
+cho giai đoạn Chiếu sớm / Chính thức. Đếm trực tiếp trên bình luận mất tới 107 giây với khoảng ngày rộng (09/11/2026).
 
 Tính lại theo NGUYÊN NGÀY (app/services/stats/comment_rollup.py): upsert số mới của ngày rồi xoá các dòng của ngày đó
 không còn xuất hiện (đánh dấu bằng `run`) - không có lúc nào ngày đó trống. Đọc một ngày đi qua index comments(posted_at)
@@ -57,6 +63,18 @@ async def ensure_rollup_schema() -> bool:
             PRIMARY KEY (movie_id, day, aspect)
         )""",
         "CREATE INDEX IF NOT EXISTS idx_movie_aspect_daily_day ON movie_aspect_daily(day)",
+        """CREATE TABLE IF NOT EXISTS movie_comment_group_daily (
+            movie_id TEXT NOT NULL,
+            day TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            sentiment TEXT NOT NULL,
+            after_premiere INTEGER NOT NULL,
+            grp TEXT NOT NULL,
+            n INTEGER NOT NULL,
+            run TEXT NOT NULL,
+            PRIMARY KEY (movie_id, day, platform, sentiment, after_premiere, grp)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_movie_comment_group_daily_day ON movie_comment_group_daily(day)",
         "CREATE INDEX IF NOT EXISTS idx_comments_posted_at ON comments(posted_at)",
     )
     for sql in statements:
@@ -103,6 +121,31 @@ async def rebuild_day(day: str) -> bool:
             [start, end, day, run],
         ),
         ("DELETE FROM movie_aspect_daily WHERE day = ?1 AND run != ?2", [day, run]),
+        (
+            f"""INSERT INTO movie_comment_group_daily (movie_id, day, platform, sentiment, after_premiere, grp, n, run)
+                WITH base AS (
+                    SELECT p.movie_id, p.platform, COALESCE(c.sentiment, '') AS sentiment, c.aspects,
+                           COALESCE(p.posted_at >= strftime('%Y-%m-%dT%H:%M:%S', substr(COALESCE(s.premiere_date, m.released_at), 1, 10), '-7 hours'), 0)
+                               AS after_premiere,
+                           COALESCE(c.sentiment_source, '') != 'rule' AS meaningful, COALESCE(p.trend_post, 0) = 1 AS trend
+                    FROM comments c JOIN posts p ON p.id = c.post_id
+                    LEFT JOIN movies m ON m.id = p.movie_id LEFT JOIN movie_measure_settings s ON s.movie_id = p.movie_id
+                    WHERE c.posted_at >= ?1 AND c.posted_at < ?2 AND p.movie_id IS NOT NULL AND {RELEVANT_POST_SQL}
+                      AND c.parent_external_id IS NULL AND TRIM(COALESCE(c.message, '')) != ''
+                )
+                SELECT movie_id, ?3, platform, sentiment, after_premiere, grp, COUNT(*), ?4 FROM (
+                    SELECT movie_id, platform, sentiment, after_premiere, CASE WHEN meaningful THEN 'total' ELSE 'icon' END AS grp FROM base
+                    UNION ALL SELECT movie_id, platform, sentiment, after_premiere, 'trend' FROM base WHERE meaningful AND trend
+                    UNION ALL SELECT movie_id, platform, sentiment, after_premiere, 'none' FROM base
+                        WHERE meaningful AND NOT trend AND (aspects IS NULL OR aspects IN ('', '[]'))
+                    UNION ALL SELECT b.movie_id, b.platform, b.sentiment, b.after_premiere, je.value FROM base b, json_each(b.aspects) je
+                        WHERE b.meaningful AND NOT b.trend AND b.aspects IS NOT NULL AND b.aspects NOT IN ('', '[]')
+                )
+                GROUP BY 1, 3, 4, 5, 6
+                ON CONFLICT (movie_id, day, platform, sentiment, after_premiere, grp) DO UPDATE SET n = excluded.n, run = excluded.run""",
+            [start, end, day, run],
+        ),
+        ("DELETE FROM movie_comment_group_daily WHERE day = ?1 AND run != ?2", [day, run]),
     )
     for sql, params in steps:
         if await d1_query(sql, params, timeout=120.0) is None:
