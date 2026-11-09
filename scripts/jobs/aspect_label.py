@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from app.ai.tasks.sentiment_rules import rule_sentiment, with_parent_context
+from app.ai.tasks.sentiment_rules import rule_sentiment, slang_positive, with_parent_context
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.repositories.d1.store import d1_query
@@ -92,7 +92,11 @@ def pending_sql(alias: str, reprocess_empty: bool) -> str:
 
 
 async def _select(
-    table: str, limit: int, cursor: tuple[str, str] | None, since: str | None, reprocess_empty: bool = False
+    table: str,
+    limit: int,
+    cursor: tuple[str, str] | None,
+    since: str | None,
+    reprocess_empty: bool = False,
 ) -> list[dict[str, Any]]:
     """Một trang dòng chưa có khía cạnh, mới nhất trước, sau con trỏ (scraped_at, id) của trang trước."""
     if table == "posts":
@@ -121,6 +125,37 @@ async def _select(
     if rows is None:
         raise RuntimeError("aspect_select_failed")
     return rows
+
+
+MOVIE_POST_CHUNK = 40
+
+
+async def _movie_pages(table: str, movie_id: str, reprocess_empty: bool):
+    """--movie-id: đọc theo từng nhóm bài của phim qua index post_id (09/11/2026). Bản đầu lọc `post_id IN (bài của phim)` rồi
+    sắp theo scraped_at - mỗi trang đọc và sắp lại cả trăm nghìn bình luận của phim, D1 báo quá tải từ trang thứ hai."""
+    posts = await d1_query("SELECT id FROM posts WHERE movie_id = ?", [movie_id], timeout=90.0)
+    if posts is None:
+        raise RuntimeError("aspect_select_failed")
+    post_ids = [row["id"] for row in posts]
+    for i in range(0, len(post_ids), MOVIE_POST_CHUNK):
+        chunk = post_ids[i : i + MOVIE_POST_CHUNK]
+        marks = ",".join("?" * len(chunk))
+        if table == "posts":
+            sql = (
+                f"SELECT p.id, p.scraped_at, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message FROM posts p "
+                f"WHERE p.id IN ({marks}) AND {pending_sql('p', reprocess_empty)} AND {RELEVANT_POST_SQL}"
+            )
+        else:
+            sql = (
+                "SELECT c.id, c.scraped_at, c.message, par.message AS parent_message FROM comments c "
+                "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
+                f"WHERE c.post_id IN ({marks}) AND {pending_sql('c', reprocess_empty)}"
+            )
+        rows = await d1_query(sql, chunk, timeout=90.0)
+        if rows is None:
+            raise RuntimeError("aspect_select_failed")
+        if rows:
+            yield rows
 
 
 async def _save(table: str, aspects: dict[str, list[str]], reprocess_empty: bool = False) -> int:
@@ -161,12 +196,23 @@ async def run(args: argparse.Namespace) -> None:
         async with sem:
             return await _save(args.table, chunk, args.reprocess_empty)
 
-    while args.limit is None or totals["selected"] < args.limit:
-        page = PAGE_SIZE if args.limit is None else min(PAGE_SIZE, args.limit - totals["selected"])
-        rows = await _select(args.table, page, cursor, since, args.reprocess_empty)
-        if not rows:
+    async def pages():
+        nonlocal cursor
+        if args.movie_id:
+            async for rows in _movie_pages(args.table, args.movie_id, args.reprocess_empty):
+                yield rows
+            return
+        while args.limit is None or totals["selected"] < args.limit:
+            page = PAGE_SIZE if args.limit is None else min(PAGE_SIZE, args.limit - totals["selected"])
+            rows = await _select(args.table, page, cursor, since, args.reprocess_empty)
+            if not rows:
+                return
+            cursor = (str(rows[-1]["scraped_at"] or ""), str(rows[-1]["id"]))
+            yield rows
+
+    async for rows in pages():
+        if args.limit is not None and totals["selected"] >= args.limit:
             break
-        cursor = (str(rows[-1]["scraped_at"] or ""), str(rows[-1]["id"]))
         totals["selected"] += len(rows)
         result: dict[str, list[str]] = {}
         model_rows = []
@@ -176,8 +222,13 @@ async def run(args: argparse.Namespace) -> None:
                 totals["no_content"] += 1
             else:
                 model_rows.append(row)
-        preds = await asyncio.to_thread(model.predict, [with_parent_context(row["message"], row.get("parent_message")) for row in model_rows])
+        preds = await asyncio.to_thread(
+            model.predict, [with_parent_context(row["message"], row.get("parent_message")) for row in model_rows]
+        )
         for row, labels in zip(model_rows, preds, strict=True):
+            if slang_positive(row.get("message")):
+                # Tiếng lóng khen ("t gãy khúc này") model đọc thành chê.
+                labels = [label[:-1] + "+" if label.endswith(":-") else label for label in labels]
             result[row["id"]] = labels
             totals["with_aspect" if labels else "no_aspect"] += 1
             for label in labels:
@@ -222,8 +273,12 @@ if __name__ == "__main__":
     parser.add_argument("--days", type=float, help="chỉ dòng thu thập trong N ngày gần nhất")
     parser.add_argument("--limit", type=int, help="tối đa ngần này dòng lượt này")
     parser.add_argument(
-        "--reprocess-ai", "--reprocess-empty", dest="reprocess_empty", action="store_true",
+        "--reprocess-ai",
+        "--reprocess-empty",
+        dest="reprocess_empty",
+        action="store_true",
         help="gán lại mọi dòng chưa qua model (nhãn AI cũ, [] cũ), nên kèm --days",
     )
+    parser.add_argument("--movie-id", help="chỉ bình luận / bài của một phim")
     parser.add_argument("--dry-run", action="store_true", help="gán một trang và in ra, không ghi")
     asyncio.run(run(parser.parse_args()))

@@ -27,7 +27,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
+from app.ai.tasks.sentiment_rules import rule_sentiment, slang_positive, strip_placeholders
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH, RELEVANT_POST_SQL, ensure_post_voice_columns
@@ -234,6 +234,8 @@ async def run(args: argparse.Namespace) -> None:
         preds = await asyncio.to_thread(clf.predict, [strip_placeholders(row["message"]) for row in model_rows])
         confident: dict[str, tuple[str, float]] = {}
         for row, (label, conf) in zip(model_rows, preds, strict=True):
+            if label == "negative" and slang_positive(row.get("message")):
+                label = "positive"  # tiếng lóng khen ("t gãy khúc này") model đọc thành chê
             if conf >= args.min_confidence:
                 confident[row["id"]] = (label, conf)
                 totals[label] += 1

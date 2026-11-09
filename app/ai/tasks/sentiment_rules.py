@@ -27,9 +27,48 @@ _BRACKET = re.compile(r"\[[^\[\]]{1,30}\]")
 _BRACKET_ONLY = re.compile(r"^(?:\s*\[[^\[\]]{1,30}\]\s*)+$")
 # Họ phổ biến: tag tên không còn "@" (nền tảng bỏ ký tự @ khi lưu) vẫn nhận ra được qua "<Họ> <Tên viết hoa>...".
 _SURNAMES = {
-    "nguyễn", "trần", "lê", "phạm", "hoàng", "huỳnh", "phan", "vũ", "võ", "đặng", "bùi", "đỗ", "hồ", "ngô",
-    "dương", "lý", "đinh", "đoàn", "lâm", "mai", "trịnh", "trương", "lưu", "cao", "tạ", "hà", "quách", "thái",
-    "châu", "tô", "tăng", "vương", "kiều", "la", "văn", "phùng", "triệu", "hứa", "lương", "từ", "chu", "đào",
+    "nguyễn",
+    "trần",
+    "lê",
+    "phạm",
+    "hoàng",
+    "huỳnh",
+    "phan",
+    "vũ",
+    "võ",
+    "đặng",
+    "bùi",
+    "đỗ",
+    "hồ",
+    "ngô",
+    "dương",
+    "lý",
+    "đinh",
+    "đoàn",
+    "lâm",
+    "mai",
+    "trịnh",
+    "trương",
+    "lưu",
+    "cao",
+    "tạ",
+    "hà",
+    "quách",
+    "thái",
+    "châu",
+    "tô",
+    "tăng",
+    "vương",
+    "kiều",
+    "la",
+    "văn",
+    "phùng",
+    "triệu",
+    "hứa",
+    "lương",
+    "từ",
+    "chu",
+    "đào",
 }
 # Bảng tự chỉnh dần. Emoji khóc/cười để trung lập: trên bài phim, 😭 hay là "xúc động", 😂 có thể là chê.
 _POSITIVE = set("♥❤😍🥰😘🔥👏👍💯🤩😊🥳💕💖💗💓💞💘🫶❣😻✨🙌😁😄🤗💪🎉")
@@ -150,3 +189,21 @@ async def remember_comment_labels(pairs: list[tuple[str, dict[str, Any]]]) -> No
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - không ghi được cache thì lần sau gọi Kira lại, không sao
         logger.warning("comment_label_cache_write_failed", error=exc)
+
+
+# Tiếng lóng khen (09/11/2026): "t gãy khúc này rồi" kèm ảnh diễn viên là mê đẹp, nhưng model cảm xúc và model khía cạnh đọc
+# thành chê. Chữ "gãy" cũng có nghĩa chê khi đi với nhịp / mạch / kịch bản ("phim gãy nhịp") nên loại các cụm đó.
+_SLANG_POSITIVE = re.compile(
+    r"(?<!\w)(gãy|gục ngã|đổ gục|đổ rầm|u mê|xỉu ngang|xỉu up xỉu down|rụng tim|chết mê|mê mẩn|ngất ngây|cưng xỉu|mlem|slay)(?!\w)",
+    re.IGNORECASE,
+)
+_SLANG_NEGATIVE_CONTEXT = re.compile(
+    r"gãy\s+(nhịp|mạch|cảm\s*xúc|logic|kịch\s*bản|phim|truyện|cốt|tay|chân|lưng)|(nhịp|mạch|kịch\s*bản|phim|truyện|cốt\s*truyện)\s+(bị\s+|hơi\s+|quá\s+)?gãy",
+    re.IGNORECASE,
+)
+
+
+def slang_positive(message: str | None) -> bool:
+    """Câu dùng tiếng lóng khen ("gãy", "u mê", "rụng tim"...) và không phải nghĩa chê "phim gãy nhịp"."""
+    text = strip_placeholders(message)
+    return bool(_SLANG_POSITIVE.search(text)) and not _SLANG_NEGATIVE_CONTEXT.search(text)
