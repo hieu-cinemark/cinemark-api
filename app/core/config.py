@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     cloudflare_account_id: str | None = None
     cloudflare_api_token: str | None = None
     cloudflare_d1_database_id: str | None = None
+    # Hai database D1 khác của Worker cinemark (cùng tài khoản): "app" = cinemark-db (nhãn tác giả, author_ai_*), "config"
+    # = cinemark-config-db (settings). Dùng cho các job AI chuyển từ Worker sang (app/services/ai_jobs, 10/11/2026); thiếu
+    # thì các job đó tự bỏ qua. Lấy id trong wrangler.toml của repo cinemark.
+    cloudflare_d1_app_database_id: str | None = None
+    cloudflare_d1_config_database_id: str | None = None
+    # Bật các job AI chuyển từ Worker (gắn nhãn tác giả, niche kênh, Review Angles). Tắt = không chạy ở đâu cả.
+    ai_jobs_enabled: bool = True
 
     # "local" trỏ d1_query() của app.repositories.d1.store vào một file SQLite local thay vì HTTP
     # query API của Cloudflare - không tốn quota đọc dòng hằng ngày của D1 khi dev/test ở

@@ -118,6 +118,15 @@ def _run_local_query(sql: str, params: list[Any] | None) -> list[dict[str, Any]]
         return rows
 
 
+def _database_id(database: str) -> str | None:
+    """scraper = cinemark-scraper (mặc định); app = cinemark-db; config = cinemark-config-db (xem config.py)."""
+    return {
+        "scraper": settings.cloudflare_d1_database_id,
+        "app": settings.cloudflare_d1_app_database_id,
+        "config": settings.cloudflare_d1_config_database_id,
+    }.get(database)
+
+
 def _configured() -> bool:
     if settings.db_mode == "local":
         return Path(settings.local_db_path).exists()
@@ -172,6 +181,7 @@ async def d1_query(
     quiet: bool = False,
     timeout: float = 10.0,
     max_retries: int = _D1_STORAGE_BACKOFF_MAX_RETRIES,
+    database: str = "scraper",
 ) -> list[dict[str, Any]] | None:
     """Chạy một câu SQL trên database D1 đã cấu hình. Trả về các dòng kết quả, hoặc None
     nếu D1 chưa được cấu hình hoặc lời gọi thất bại. quiet=True bỏ qua log lỗi (dùng cho
@@ -182,7 +192,8 @@ async def d1_query(
     lại bị giới hạn khoảng 60s tổng thời gian sleep để một request dashboard không bị
     treo vì một database hỏng hẳn; nếu lần thử nào cũng 429 thì hàm vẫn trả về None kèm
     một log cảnh báo cuối cùng để chỗ gọi tự quyết định làm gì."""
-    if not _configured():
+    database_id = _database_id(database)
+    if not _configured() or not database_id:
         return _unavailable("d1_not_configured")
 
     global _logged_db_target
@@ -194,7 +205,7 @@ async def d1_query(
             path=settings.local_db_path if settings.db_mode == "local" else None,
         )
 
-    if settings.db_mode == "local":
+    if settings.db_mode == "local" and database == "scraper":
         try:
             return await asyncio.to_thread(_run_local_query, sql, params)
         except (sqlite3.Error, IndexError) as exc:
@@ -204,9 +215,7 @@ async def d1_query(
                 return _unavailable(str(exc))
             return None
 
-    url = (
-        f"{_BASE_URL}/accounts/{settings.cloudflare_account_id}/d1/database/{settings.cloudflare_d1_database_id}/query"
-    )
+    url = f"{_BASE_URL}/accounts/{settings.cloudflare_account_id}/d1/database/{database_id}/query"
     headers = {"Authorization": f"Bearer {settings.cloudflare_api_token}"}
 
     attempt = 0

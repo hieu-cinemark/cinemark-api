@@ -45,6 +45,7 @@ from app.core.logging import get_logger
 from app.repositories.d1.store import get_enabled_keywords
 from app.schemas.settings import parse_run_times
 from app.services.accounts import platform_config_db as db
+from app.services.ai_jobs import author_classify, channel_niches, review_angles
 from app.services.crawl import channel_profiles, crawl_lanes, priority_channels, tracked_posts, watch_pages
 from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
@@ -837,6 +838,50 @@ async def _stats_reconcile_tick() -> None:
         _spawn(comment_rollup.refresh_recent(include_yesterday=slot == _STATS_RECONCILE_FULL_SLOT))
 
 
+# Job AI chuyển từ Worker cinemark (10/11/2026, app/services/ai_jobs): gắn nhãn tác giả mỗi 2 phút, niche kênh mỗi giờ,
+# Review Angles mỗi ~3 phút (mỗi phút khi đang ưu tiên một phim). Mỗi job chạy nền, không chồng lượt.
+_AI_JOB_EVERY = {"author_classify": 120, "review_angles": 200, "review_angles_focus": 60, "channel_niches": 3600}
+_ai_job_running: set[str] = set()
+_ai_job_last: dict[str, float] = {}
+
+
+def _run_ai_job(name: str, coro_factory) -> None:
+    if name in _ai_job_running:
+        return
+    _ai_job_running.add(name)
+    _ai_job_last[name] = time.monotonic()
+
+    async def runner() -> None:
+        try:
+            result = await coro_factory()
+            if result:
+                logger.info("ai_job_finished", job=name, result=result)
+        except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
+            logger.warning("ai_job_failed", job=name, error=str(exc)[:300])
+        finally:
+            _ai_job_running.discard(name)
+
+    _spawn(runner())
+
+
+async def _ai_jobs_tick() -> None:
+    if not settings.ai_jobs_enabled:
+        return
+    now = time.monotonic()
+
+    def due(key: str) -> bool:
+        return now - _ai_job_last.get(key, 0.0) >= _AI_JOB_EVERY[key]
+
+    if due("author_classify"):
+        _run_ai_job("author_classify", author_classify.process_author_queue)
+    focus = await get_redis_client().exists(review_angles.REVIEW_FOCUS_KEY)
+    if due("review_angles_focus" if focus else "review_angles"):
+        _run_ai_job("review_angles", review_angles.run_tick)
+    niches_key = f"{REDIS_KEY_PREFIX}scheduler:channel_niches"
+    if await get_redis_client().set(niches_key, "1", nx=True, ex=_AI_JOB_EVERY["channel_niches"]):
+        _run_ai_job("channel_niches", channel_niches.process_channel_niches)
+
+
 async def _loop() -> None:
     while True:
         try:
@@ -917,6 +962,10 @@ async def _loop() -> None:
             logger.error("scheduler_tracked_posts_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
             logger.error("scheduler_tracked_posts_tick_failed", error=str(exc))
+        try:
+            await asyncio.wait_for(_ai_jobs_tick(), timeout=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("scheduler_ai_jobs_tick_failed", error=str(exc))
         try:
             await asyncio.wait_for(_ai_runtime_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
