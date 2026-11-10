@@ -1,26 +1,11 @@
-"""Đọc bài và comment đã crawl từ Kafka (do các spider của spider-hub publish - xem
-social_crawler/clients/kafka.py bên đó) và ghi sang D1 (xem app/repositories/d1/store.py).
-Chạy như một tiến trình sống lâu riêng, tách khỏi app FastAPI:
+"""Đọc bài và bình luận spider-hub đẩy lên Kafka, phân loại và ghi D1. Chạy: `python -m app.workers.ingest_consumer.main`.
 
-    python -m app.workers.ingest_consumer.main
+Mỗi message có ba kết cục: giữ, cố ý loại, hoặc lỗi thử lại được (D1, bài cha chưa có). Lỗi thử lại có giới hạn rồi
+chuyển sang topic `ingest_dead_letters`; offset chỉ commit khi message đã có kết cục.
 
-Mỗi message được xử lý độc lập, và một message lỗi không giết cả consumer - một message
-"thuốc độc" không được làm sập việc ingest của mọi message phía sau nó. Có ba kết cục:
-giữ, cố ý loại (từ khoá không có, ngoài chủ đề...), và lỗi có thể thử lại (D1, bài cha chưa
-vào). Loại thứ ba được thử lại có giới hạn rồi chuyển sang topic ingest_dead_letters; offset
-chỉ được commit sau khi message đã có một trong các kết cục đó (xem _process_message).
-
-Hai vòng lặp consumer độc lập, mỗi topic một vòng (xem _run_topic_consumer), không
-phải một consumer subscribe cả hai - tách ngày 2026-09-17 sau khi xác nhận thực tế
-rằng raw_posts và raw_comments dùng chung một consumer group/semaphore khiến một bài
-nhiều comment (hàng trăm comment, mỗi comment một message) có thể chiếm hết chỗ
-chạy song song của việc ingest bài, và ngược lại. Mỗi vòng xử lý message của mình với
-mức song song có giới hạn (theo _POST_MESSAGE_CONCURRENCY /
-_COMMENT_MESSAGE_CONCURRENCY) thay vì từng cái một, vì giờ mỗi message là vài lượt
-gọi HTTP tới D1 chứ không phải một lần ghi DB local.
-
-Cảm xúc comment được phân loại riêng, không làm tại chỗ: một task thứ ba,
-sentiment_sweep.sweep_forever(), gắn nhãn comment mới theo lô qua Kira."""
+Hai vòng consumer độc lập cho `raw_posts` và `raw_comments` (để bài nhiều bình luận không chiếm chỗ của bài), mỗi vòng
+xử lý song song có giới hạn. Cảm xúc bình luận gán ở task nền riêng (`sentiment_sweep`).
+"""
 
 from __future__ import annotations
 

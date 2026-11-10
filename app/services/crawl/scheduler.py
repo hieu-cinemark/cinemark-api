@@ -1,28 +1,12 @@
-"""Bộ lập lịch crawl hằng ngày chạy trong tiến trình - bản thay thế của dashboard cho cả
-scripts/trigger_scheduled_crawl.sh chạy bằng crontab hệ điều hành của cinemark-api
-(nhịp cố định "mỗi 6 giờ", chỉ đổi được bằng cách sửa crontab trên máy) lẫn
-Cloudflare Cron Triggers của cinemark-scraper cho Threads/TikTok (wrangler.toml, phải
-deploy lại Worker mới đổi được). Từ giờ, đây là nguồn sự thật duy nhất về lúc nào
-crawl của một nền tảng chạy - sửa được từ thẻ "Crawl schedule" trên dashboard (xem
-CRUD crawl_schedules trong app/services/accounts/platform_config_db.py), không cần deploy
-crontab/Worker để đổi.
+"""Bộ lập lịch chạy trong tiến trình `cinemark-scheduler`: nguồn duy nhất quyết định khi nào cào và khi nào chạy job nền.
 
-Một asyncio task sống suốt đời tiến trình (bắt đầu/dừng từ hook startup/shutdown của
-app/main.py), thức dậy mỗi _POLL_INTERVAL_SECONDS để so run_time ("HH:MM", giờ cố
-định Asia/Ho_Chi_Minh - xem comment của cột đó trong scripts/dev_db_schema.sql của
-spider-hub) của mọi dòng crawl_schedules đang bật với phút hiện tại. last_triggered_date
-là cờ chống chạy lặp: không có nó, một vòng lặp kiểm tra mỗi 30s sẽ bắn cùng một lượt
-theo lịch có khi cả chục lần trong một phút mà run_time khớp.
+Vòng lặp thức dậy mỗi `_POLL_INTERVAL_SECONDS`, so `run_time` ("HH:MM" giờ Việt Nam, sửa trên dashboard - bảng
+`crawl_schedules`) với phút hiện tại; `last_triggered_date` chống bắn lặp. Lượt theo lịch dùng cùng lời gọi với nút
+"chạy tất cả" (`POST /<nền tảng>/run`).
 
-Dùng lại đúng các lời gọi get_enabled_keywords + publish_crawl_request mà route POST
-/<platform>/run trong app/api/routes/platform_scraper.py dùng cho "mọi từ khoá đang
-bật" - một lượt chạy theo lịch và một lần bấm nút "chạy tất cả" là cùng một thao tác,
-chỉ khác cách kích hoạt.
-
-_comments_tick bên dưới chạy crawl comment MỖI GIỜ cho các nền tảng có comment_crawl_schedules đang bật (từ
-2026-10-08; trước đó là một lượt mỗi ngày, top 100 theo tương tác của từng từ khoá, mỗi bài chỉ một lần): theo dõi
-bài nóng của từng phim mỗi giờ (top_n của lịch = số bài nóng mỗi phim), và thêm lượt mẫu phân tầng ở run_time và
-run_time + 12 giờ - xem app/services/crawl/comment_planner.py."""
+Ngoài ra mỗi nhịp chạy: cào bình luận mỗi giờ (`comment_planner`), Omar, khám phá hashtag, trang nguồn, rollup, thống kê,
+cảnh báo, bài booking và các job AI (`app.services.ai_jobs`). Mỗi nhịp có timeout để một việc treo không chặn vòng lặp.
+"""
 
 from __future__ import annotations
 
@@ -106,7 +90,7 @@ NURTURE_PLATFORMS = {"threads", "tiktok"}
 
 
 # Lượt cào sau trong ngày (không phải giờ đầu tiên của lịch) với FB/Threads chỉ lấy bài mới nhất ("Bài viết gần đây" /
-# tab "Gần đây") - lượt đầu đã đào sâu theo độ liên quan; kết quả kiểu đó lặp lại giữa các lượt (2026-10-16), còn xếp
+# tab "Gần đây") - lượt đầu đã đào sâu theo độ liên quan; kết quả kiểu đó lặp lại giữa các lượt, còn xếp
 # theo thời gian thì ra tập bài khác và bắt được bài mới đăng trong ngày.
 RECENT_LATER_SLOT_PLATFORMS = {"facebook", "threads"}
 
@@ -260,7 +244,7 @@ async def _trigger_platform(
 # chống chạy lặp theo NGÀY nên không đủ: mỗi giờ chạy có cờ riêng trong Redis (sống qua restart), kèm bản trong bộ nhớ
 # phòng khi Redis trục trặc.
 #
-# 02/11/2026: tách "đang giao" khỏi "đã giao xong". Trước đó cờ được đặt trước khi đọc từ khoá và publish, nên D1/Kafka lỗi
+# tách "đang giao" khỏi "đã giao xong". Trước đó cờ được đặt trước khi đọc từ khoá và publish, nên D1/Kafka lỗi
 # (hoặc restart giữa chừng) làm mất cả lượt dù hạ tầng hồi phục ngay trong khung giờ. Giờ cờ fired chỉ đặt khi Kafka đã nhận
 # đủ; lease chặn chạy chồng và sau một lần hỏng thì giữ vai trò khoảng nghỉ trước lần thử lại. Số lần thử có giới hạn tự nhiên
 # vì slot hết hạn sau _CATCH_UP_MINUTES (_is_due).
@@ -400,7 +384,7 @@ async def _comments_tick() -> None:
             continue
         if _comment_round_done.get(platform) == hour_key:
             continue
-        # Facebook không còn phụ thuộc công tắc lịch cào (03/11/2026): comment theo lịch mặc định ẩn danh, không dùng tài khoản.
+        # Facebook không còn phụ thuộc công tắc lịch cào: comment theo lịch mặc định ẩn danh, không dùng tài khoản.
         _comment_round_done[platform] = hour_key
         low, high = _HOT_PER_MOVIE_RANGE
         top_n = int(sched.get("top_n") or _HOT_PER_MOVIE_DEFAULT)
@@ -693,7 +677,9 @@ async def _run_trend_posts() -> None:
 
 async def _trend_posts_tick() -> None:
     """Đánh dấu bài hưởng ứng trend của phim đang chiếu (app/services/relevance/trend_posts.py)."""
-    if await get_redis_client().set(_TREND_POSTS_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=_TREND_POSTS_INTERVAL_SECONDS):
+    if await get_redis_client().set(
+        _TREND_POSTS_KEY, datetime.now(TIMEZONE).isoformat(), nx=True, ex=_TREND_POSTS_INTERVAL_SECONDS
+    ):
         _spawn(_run_trend_posts())
 
 
@@ -814,7 +800,7 @@ async def _channel_profiles_tick() -> None:
     _spawn(channel_profiles.refresh_followers())
 
 
-# Đối soát bảng tổng hợp số liệu (stats_summary.reconcile_recent_days) mỗi 10 phút: từ 30/10/2026 đây là nguồn DUY NHẤT
+# Đối soát bảng tổng hợp số liệu (stats_summary.reconcile_recent_days) mỗi 10 phút: đây là nguồn DUY NHẤT
 # của bảng tổng hợp (ingest không cộng từng bài nữa - xem docstring stats_summary). Lượt thường chỉ tính hôm nay; lượt
 # _STATS_RECONCILE_FULL_SLOT mỗi giờ tính cả hôm qua (bài về trễ sau nửa đêm).
 _STATS_RECONCILE_EVERY_MINUTES = 10
@@ -838,7 +824,7 @@ async def _stats_reconcile_tick() -> None:
         _spawn(comment_rollup.refresh_recent(include_yesterday=slot == _STATS_RECONCILE_FULL_SLOT))
 
 
-# Job AI chuyển từ Worker cinemark (10/11/2026, app/services/ai_jobs): gắn nhãn tác giả mỗi 2 phút, niche kênh mỗi giờ,
+# Job AI chuyển từ Worker cinemark (app/services/ai_jobs): gắn nhãn tác giả mỗi 2 phút, niche kênh mỗi giờ,
 # Review Angles mỗi ~3 phút (mỗi phút khi đang ưu tiên một phim). Mỗi job chạy nền, không chồng lượt.
 _AI_JOB_EVERY = {"author_classify": 120, "review_angles": 200, "review_angles_focus": 60, "channel_niches": 3600}
 _ai_job_running: set[str] = set()

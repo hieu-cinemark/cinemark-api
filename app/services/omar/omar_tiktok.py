@@ -1,4 +1,4 @@
-"""Cào video TikTok theo hashtag qua Omar API (dev.omar-thing.site, từ 2026-10-12) - chạy MỖI GIỜ (scheduler._omar_tick),
+"""Cào video TikTok theo hashtag qua Omar API (dev.omar-thing.site,) - chạy MỖI GIỜ (scheduler._omar_tick),
 song song với spider TikTok của spider-hub. Video đi qua ĐÚNG đường ingest của spider: publish lên topic raw_posts với
 key "tiktok:<video_id>" và cùng tên trường TikTokVideoItem (map_aweme), nên ingest consumer lọc liên quan, chống trùng,
 cập nhật tương tác và chọn bài cào comment như mọi bài TikTok khác.
@@ -269,7 +269,7 @@ async def _fetch_page(
 
 async def hashtag_exists(hashtag: str) -> bool | None:
     """Hashtag có video trên TikTok không (trang 1 của hashtag_videos). None khi không biết (chưa có key, Omar lỗi khác).
-    Omar trả 424 cho hashtag không tồn tại (đo 12/10/2026: biến thể kiểu #ChiChiEmEm32026 luôn 424, #chichiemem3 có video)."""
+    Omar trả 424 cho hashtag không tồn tại (đo biến thể kiểu #ChiChiEmEm32026 luôn 424, #chichiemem3 có video)."""
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
     if not api_key:
@@ -293,7 +293,7 @@ async def hashtag_exists(hashtag: str) -> bool | None:
 
 async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str) -> dict[str, Any]:
     """Tổng số video / lượt xem TikTok báo cho hashtag (hashtag_info, format=clean) - để biết đã cào được bao nhiêu phần."""
-    # 424 ở endpoint này thường là "Hashtag not found or lookup failed" (đo 2026-10-12) - chỉ thử lại một lần.
+    # 424 ở endpoint này thường là "Hashtag not found or lookup failed" - chỉ thử lại một lần.
     data = await omar_get(client, pacer, api_key, "hashtag_info", {"name": hashtag, "format": "clean"}, retries_424=1)
     info = (data or {}).get("hashtag") or {}
     nested = {**(info.get("ch_info") or {}), **(info.get("stats") or {}), **(info.get("statistics") or {})}
@@ -477,7 +477,7 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
         logger.warning("omar_cooccur_failed", error=str(exc)[:200])
 
 
-# Tạm dừng khi hết hạn mức (2026-10-15): lượt kết thúc vì dùng hết hạn mức ngày (hoặc key sai) thì ghi lại tới khi nào
+# Tạm dừng khi hết hạn mức: lượt kết thúc vì dùng hết hạn mức ngày (hoặc key sai) thì ghi lại tới khi nào
 # chạy được - scheduler không gọi Omar nữa (kể cả /usage) cho tới lúc đó rồi mở lượt NGAY khi hạn mức reset, không đợi
 # mốc giờ kế tiếp. Con trỏ hashtag / hàng đợi bình luận / tìm kiếm vốn lưu sau mỗi trang nên lượt sau đi tiếp đúng chỗ.
 _PAUSE_KEY = f"{REDIS_KEY_PREFIX}omar:paused"
@@ -796,7 +796,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 # Rải đều: phần còn lại chia cho số giờ tới lúc reset, trần một giờ.
                 budget = min(hour_cap, spendable // max(1, -(-resets_in // 3600)))
             else:
-                # Chạy liên tục (mặc định từ 2026-10-12): dùng hết hạn mức còn lại ngay trong lượt này - lượt có thể dài
+                # Chạy liên tục (mặc định): dùng hết hạn mức còn lại ngay trong lượt này - lượt có thể dài
                 # nhiều giờ (scheduler không mở lượt chồng lên); hết thì chờ reset ngày / key mới.
                 budget = spendable
         else:
@@ -817,7 +817,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         halted = False
         # Bình luận (app/services/omar/omar_comments.py) chạy SAU phần video mới (hashtag chưa xong, tìm kiếm, kênh), tối đa
         # settings.omar_comments_budget_share ngân sách, và TRƯỚC phần cào lại hashtag đã xong (phần đó dùng hết hạn mức
-        # còn lại nên đặt sau thì bình luận không bao giờ tới lượt). Ưu tiên video (20/10/2026); trước đó bình luận chạy
+        # còn lại nên đặt sau thì bình luận không bao giờ tới lượt). Ưu tiên video; trước đó bình luận chạy
         # song song và tranh nhịp gọi mỗi phút với video. Trước 12/10/2026 nó chạy trước và chặn mọi hashtag.
         comment_budget = Budget(int(budget * settings.omar_comments_budget_share), parent=spend)
 

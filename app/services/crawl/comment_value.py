@@ -1,4 +1,4 @@
-"""Kira chấm "bài này có đáng cào comment không" (từ 2026-10-10), cho comment_planner.
+"""Kira chấm "bài này có đáng cào comment không", cho comment_planner.
 
 Hai lớp cũ (bài nóng theo tốc độ tương tác, mẫu phân tầng) không nhìn nội dung bài: bài minigame "comment tag 3 người
 bạn nhận vé" có hàng nghìn comment rác nên luôn đứng đầu lớp bài nóng, trong khi một bài review gây tranh cãi vừa phải

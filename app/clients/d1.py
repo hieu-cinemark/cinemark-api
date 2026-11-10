@@ -233,7 +233,7 @@ async def d1_query(
                 )
         except httpx.HTTPError as exc:
             # D1 chạy tuần tự từng câu: một câu nặng của tiến trình khác (ingest, Worker) làm câu SELECT nhỏ ở đây
-            # quá giờ (26/10/2026: tra một phim theo id hết 10 giây). Câu chỉ đọc thì thử lại an toàn - tối đa 2 lần,
+            # quá giờ (tra một phim theo id hết 10 giây). Câu chỉ đọc thì thử lại an toàn - tối đa 2 lần,
             # chờ lâu dần; câu ghi không thử lại (có thể đã chạy xong ở D1, ghi lại sẽ thành hai lần).
             read_only = sql.lstrip().upper().startswith(("SELECT", "WITH"))
             if read_only and isinstance(exc, httpx.TimeoutException) and attempt < _READ_TIMEOUT_RETRIES:

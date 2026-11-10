@@ -46,7 +46,9 @@ async def rebuild_days(days: list[str]) -> dict[str, int]:
                 done += 1
             else:
                 failed += 1
-        logger.info("comment_rollup_rebuilt", days=len(days), done=done, failed=failed, newest=days[0] if days else None)
+        logger.info(
+            "comment_rollup_rebuilt", days=len(days), done=done, failed=failed, newest=days[0] if days else None
+        )
         return {"done": done, "failed": failed}
 
 

@@ -1,26 +1,9 @@
-"""Hàng đợi nền trong tiến trình cho việc tạo report social-topic - phục vụ nút "Tạo
-report" trên dashboard (POST /movies/{id}/generate-report,
-app/api/routes/movies.py). Thêm ngày 2026-09-25: route đó từng chạy
-generate_report_for_movie đồng bộ ngay trong request handler (hai lời gọi Bee/Kira
-tuần tự, đã xác nhận thực tế riêng lời gọi gom topic có thể mất hơn 2 phút), và
-trạng thái mutation của dashboard khoá nút của MỌI dòng KHÁC trong lúc một dòng đang
-chạy - nên người vận hành không bao giờ tạo được quá một report cùng lúc. Đưa vào
-hàng đợi ở đây cho lời gọi HTTP trả về ngay và cho report của nhiều phim chạy song
-song.
+"""Hàng đợi trong bộ nhớ cho việc tạo report Social Topic (nút "Tạo report", `POST /movies/{id}/generate-report`).
 
-Trong bộ nhớ, không dùng Redis: bản deploy này là một tiến trình uvicorn (xem CMD
-trong Dockerfile - không có --workers), nên một dict thường là mọi request đều thấy,
-không tốn chi phí serialize của kho dùng chung; crawl_jobs.py/task_queue.py chọn
-ngược lại chỉ vì CHÚNG phải phối hợp giữa tiến trình này và tiến trình riêng của
-spider-hub. Nếu sau này API chạy nhiều worker/replica, phần này phải chuyển sang Redis
-(cùng dạng với crawl_jobs.py) - nếu không, một lần GET trạng thái rơi vào "nhầm"
-worker sẽ thấy trạng thái cũ/thiếu.
-
-Không có giới hạn đồng thời riêng ở đây - semaphore theo provider của app.ai.providers.client
-(asyncio.Semaphore(2), xem call_ai) vốn đã giới hạn số lời gọi Bee/Kira chạy cùng
-lúc; đưa vào hàng đợi nhiều phim hơn mức đó chỉ có nghĩa là các phim dư nằm chờ
-semaphore đó bên trong generate_report_for_movie, đúng cùng hành vi xếp hàng, chỉ là
-dùng điểm nghẽn duy nhất sẵn có thay vì thêm một điểm thứ hai lặp lại nó ở đây."""
+Request trả về ngay, report của nhiều phim chạy song song; số lời gọi AI đồng thời đã được giới hạn ở
+`app.ai.providers.client`. Dùng dict trong bộ nhớ vì API chạy một tiến trình uvicorn; nếu chạy nhiều worker phải chuyển
+sang Redis.
+"""
 
 from __future__ import annotations
 

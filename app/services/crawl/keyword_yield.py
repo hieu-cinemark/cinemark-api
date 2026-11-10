@@ -1,4 +1,4 @@
-"""Hiệu quả từng từ khoá Facebook/Threads và tự điều chỉnh (2026-10-15).
+"""Hiệu quả từng từ khoá Facebook/Threads và tự điều chỉnh.
 
 Đo 01-15/10/2026: một số từ khoá gần như chỉ đem về rác (Threads #QuyAnTang4 0%, Facebook "Mật Mã Đông Dương" 4%,
 "Loạn Thế" 11%) trong khi từ khoá khác trên 90% - nhưng mọi từ khoá được cào như nhau, tốn tài khoản/proxy như nhau.
@@ -13,7 +13,7 @@ Mỗi lượt cào theo lịch (scheduler._trigger_platform) gọi plan_crawl:
   thấy được, bật lại tay được). Không tắt từ khoá cuối cùng còn bật của phim trên nền tảng đó - chỉ giảm trang;
 - hiệu quả < LOW_BELOW -> chỉ cào LOW_PAGES trang (trang đầu của tìm kiếm là phần tốt nhất);
 - còn lại / chưa đủ mẫu -> mặc định của spider.
-Từ khoá ÍT BÀI (19/10/2026: 76/150 từ khoá FB và 78/103 Threads ra <= 20 bài/tuần, 28 và 31 cái ra 0 bài) không bao giờ đủ
+Từ khoá ÍT BÀI (76/150 từ khoá FB và 78/103 Threads ra <= 20 bài/tuần, 28 và 31 cái ra 0 bài) không bao giờ đủ
 MIN_SAMPLE nên trước đây luôn được cào đủ trang (FB: cả lượt quét 60 ngày, 16 khoảng) - tốn request của tài khoản mà gần
 như không có bài. Giờ: lưu < LOW_VOLUME_STORED bài trong WINDOW_DAYS ngày -> LOW_VOLUME_PAGES trang; 0 bài -> chỉ cào mỗi
 ZERO_EVERY_DAYS ngày một lần (mỗi từ khoá một ngày lệch nhau để rải tải).
@@ -186,7 +186,7 @@ async def plan_crawl(
         elif stats["ratio"] < LOW_BELOW:
             pages[str(keyword["id"])] = LOW_PAGES
         keep.append(keyword)
-    # 24/10/2026: tài khoản FB có hạn mức request/ngày - từ khoá ra nhiều bài liên quan nhất (WINDOW_DAYS) xếp hàng trước
+    # tài khoản FB có hạn mức request/ngày - từ khoá ra nhiều bài liên quan nhất (WINDOW_DAYS) xếp hàng trước
     # để phần hạn mức đầu ngày dồn vào đó; từ khoá yếu ở cuối, hết hạn mức thì đợi lượt sau.
     keep.sort(key=lambda keyword: rank.get(str(keyword["id"]), 0))
     logger.info(

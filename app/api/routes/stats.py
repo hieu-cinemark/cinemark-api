@@ -41,7 +41,7 @@ from app.services.stats.stats_summary import get_hourly_counts, get_ingest_funne
 router = APIRouter(prefix="/stats", tags=["stats"])
 logger = get_logger(__name__)
 
-# Số liệu tổng hợp cho trang Tổng quan (28/10/2026): D1 quá tải ("7429 overloaded") làm truy vấn mất 15-20 giây kèm thử
+# Số liệu tổng hợp cho trang Tổng quan: D1 quá tải ("7429 overloaded") làm truy vấn mất 15-20 giây kèm thử
 # lại, dashboard hết chờ và hiện 0. Giờ: kết quả còn mới (< _FRESH_SECONDS) trả thẳng từ Redis - nhiều tab/người cùng
 # mở không nhân số truy vấn D1 lên; truy vấn D1 quá _QUERY_TIMEOUT_SECONDS hoặc lỗi/rỗng thì trả số gần nhất đã có
 # (giữ tới _STALE_SECONDS) thay vì 0.

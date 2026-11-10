@@ -1,6 +1,6 @@
-"""AI thêm câu truy vấn tìm kiếm Facebook/Threads cho từng phim (từ 2026-10-10), chạy ngay sau hashtag_discovery mỗi
+"""AI thêm câu truy vấn tìm kiếm Facebook/Threads cho từng phim, chạy ngay sau hashtag_discovery mỗi
 sáng. Mỗi phim trước đó chỉ có 1-2 câu truy vấn, mà ô tìm kiếm của Facebook/Threads chỉ trả một phần nhỏ bài cho mỗi
-câu - mỗi câu khác nhau trả về một tập bài khác. Kompa (đo 2026-10-10: ~120 lần số bài của mình cho Trại Buôn Người)
+câu - mỗi câu khác nhau trả về một tập bài khác. Kompa (đo ~120 lần số bài của mình cho Trại Buôn Người)
 đếm cả bài nhắc tên phim kèm từ ngữ cảnh phim (review, đi xem...) hoặc tên diễn viên.
 
 1. Ứng viên: "phim <tên>", "review <tên>", "đi xem <tên>", "<diễn viên chính> <tên>" (QUERY_TEMPLATES, MAX_CAST).
@@ -12,7 +12,7 @@ câu - mỗi câu khác nhau trả về một tập bài khác. Kompa (đo 2026-
    hằng ngày lấy chúng ở lượt kế tiếp (tránh dồn thêm hàng chục lượt quét Facebook cùng lúc).
 5. Tự dọn: câu đã thêm PRUNE_AFTER_DAYS ngày mà đem về ít hơn MIN_NEW_POSTS bài MỚI (bài chưa có từ câu khác - posts
    chỉ lưu keyword_id của câu tìm ra đầu tiên) thì tắt. Không dọn câu của phim chưa chiếu / mới chiếu chưa đủ
-   PRUNE_AFTER_DAYS ngày, và câu đã bị dọn của phim chưa chiếu được bật lại (_revive_upcoming, từ 20/10/2026).
+   PRUNE_AFTER_DAYS ngày, và câu đã bị dọn của phim chưa chiếu được bật lại (_revive_upcoming,).
 
 Quyết định nằm chung bảng hashtag_ai_decisions với tag "<nền tảng>:<câu không dấu>" (source "query")."""
 
@@ -39,7 +39,7 @@ logger = get_logger(__name__)
 TASK = "query_discovery"
 PLATFORMS = ("facebook", "threads")
 # Nền tảng được THÊM câu mới. Threads chỉ nhận câu THEO MẪU (QUERY_TEMPLATES): câu AI tự sinh cho Threads gần như không ra
-# bài (19/10/2026, log: "cừu Shaun Halloween", "Shaun quái thú", "Steve Cox Shaun"... 0-1 bài, 9-34 bài lạc đề mỗi câu) nên
+# bài (log: "cừu Shaun Halloween", "Shaun quái thú", "Steve Cox Shaun"... 0-1 bài, 9-34 bài lạc đề mỗi câu) nên
 # bị tắt hẳn ngày 19/10; bật lại cho câu theo mẫu từ 20/10. QUERY_DISCOVERY_THREADS=0 tắt Threads.
 ADD_PLATFORMS = (
     ("facebook",)
@@ -47,7 +47,7 @@ ADD_PLATFORMS = (
     else ("facebook", "threads")
 )
 TEMPLATE_ONLY_PLATFORMS = ("threads",)
-# "trailer" / "suất chiếu sớm": giai đoạn hóng trước ngày chiếu, khi chưa ai "review" / "đi xem" (20/10/2026).
+# "trailer" / "suất chiếu sớm": giai đoạn hóng trước ngày chiếu, khi chưa ai "review" / "đi xem".
 QUERY_TEMPLATES = ("phim {title}", "review {title}", "đi xem {title}", "{title} trailer", "{title} suất chiếu sớm")
 MAX_CAST = 3
 MIN_CONFIDENCE = 80
@@ -55,10 +55,10 @@ MIN_CONFIDENCE = 80
 # để lấy nhiều bài nhất có thể.
 MAX_ADDS_PER_MOVIE = 4
 MAX_ADDS_PER_RUN = 30
-# 45 (trước 20/10/2026: 30) - phim sắp chiếu cần câu tìm từ sớm để bắt giai đoạn hóng.
+# 45 (trước 30) - phim sắp chiếu cần câu tìm từ sớm để bắt giai đoạn hóng.
 ACTIVE_BEFORE_DAYS = 45
 ACTIVE_AFTER_DAYS = 45
-# Tăng nhẹ Threads (24/10/2026): quyết định duyệt câu lưu theo (phim, câu) không theo nền tảng, nên câu theo mẫu đã duyệt
+# Tăng nhẹ Threads: quyết định duyệt câu lưu theo (phim, câu) không theo nền tảng, nên câu theo mẫu đã duyệt
 # cho Facebook trước khi Threads được nhận câu lại (20/10) không bao giờ tới Threads. Mỗi lượt thêm bù tối đa chừng này câu
 # (~20% số từ khoá Threads đang bật), ưu tiên phim gần ngày chiếu; câu kém vẫn bị _prune tắt như thường.
 THREADS_BACKFILL_PER_RUN = int(os.getenv("QUERY_THREADS_BACKFILL_PER_RUN", "14"))
@@ -84,7 +84,7 @@ Trả về JSON hợp lệ, không bọc code block:
 
 GENERATE_TASK = "query_generation"
 MAX_GENERATED = 6
-# Mỗi lần sinh câu mất ~150-170 giây và 11-15 nghìn token của Kira (đo 15/10/2026) - giới hạn số phim mỗi lượt, phim gần
+# Mỗi lần sinh câu mất ~150-170 giây và 11-15 nghìn token của Kira - giới hạn số phim mỗi lượt, phim gần
 # ngày chiếu nhất trước; phim còn lại chỉ xét câu theo mẫu và tới lượt ở các ngày sau.
 MAX_GENERATE_PER_RUN = 6
 SAMPLE_POSTS = 15

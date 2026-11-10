@@ -395,7 +395,7 @@ async def rebuild_from_source() -> dict[str, int]:
     dòng (app/services/relevance/cleanup.py). Các lệnh INSERT cho posts dùng upsert vì ingest
     consumer có thể tạo lại một dòng (day, platform) giữa lúc DELETE và lúc điền lại.
 
-    Ngày = first_seen_at (ngày thấy lần đầu). Dòng cũ hơn cột đó (trước 28/10/2026) không có first_seen_at nên rơi
+    Ngày = first_seen_at (ngày thấy lần đầu). Dòng cũ hơn cột đó không có first_seen_at nên rơi
     về scraped_at - tức ngày cào lại gần nhất, không phải ngày thu thập thật; số các ngày đó chỉ là xấp xỉ."""
     await ensure_stats_tables()
     # Phép tổng hợp toàn bảng có thể vượt timeout HTTP mặc định 10s của D1.
@@ -488,6 +488,7 @@ async def rebuild_from_source() -> dict[str, int]:
 async def subtract_deleted(posts: list[dict[str, Any]], comments: list[dict[str, Any]]) -> None:
     """Trừ các bài/comment vừa bị xoá khỏi hai bảng tổng hợp (theo ngày first_seen_at, không có thì scraped_at - cùng cách
     rebuild_from_source xếp ngày), không bao giờ xuống dưới 0. Rẻ hơn hẳn dựng lại toàn bộ sau mỗi lượt dọn."""
+
     def day(row: dict[str, Any]) -> str:
         return str(row.get("first_seen_at") or row.get("scraped_at") or "")[:10]
 
@@ -496,19 +497,27 @@ async def subtract_deleted(posts: list[dict[str, Any]], comments: list[dict[str,
     keyword_rows: dict[tuple[str, str, str], int] = {}
     for kind, rows in (("posts", posts), ("comments", comments)):
         for row in rows:
-            platform_rows[(kind, day(row), row.get("platform") or "")] = platform_rows.get((kind, day(row), row.get("platform") or ""), 0) + 1
+            platform_rows[(kind, day(row), row.get("platform") or "")] = (
+                platform_rows.get((kind, day(row), row.get("platform") or ""), 0) + 1
+            )
             keyword_id = row.get("keyword_id") if kind == "posts" else keyword_of.get(row.get("post_id"))
             if keyword_id:
                 keyword_rows[(kind, day(row), keyword_id)] = keyword_rows.get((kind, day(row), keyword_id), 0) + 1
     for (kind, d, platform), n in platform_rows.items():
-        await _q(f"UPDATE stats_platform_daily SET {kind} = MAX(0, {kind} - ?) WHERE day = ? AND platform = ?", [n, d, platform])
+        await _q(
+            f"UPDATE stats_platform_daily SET {kind} = MAX(0, {kind} - ?) WHERE day = ? AND platform = ?",
+            [n, d, platform],
+        )
     for (kind, d, keyword_id), n in keyword_rows.items():
-        await _q(f"UPDATE stats_keyword_daily SET {kind} = MAX(0, {kind} - ?) WHERE day = ? AND keyword_id = ?", [n, d, keyword_id])
+        await _q(
+            f"UPDATE stats_keyword_daily SET {kind} = MAX(0, {kind} - ?) WHERE day = ? AND keyword_id = ?",
+            [n, d, keyword_id],
+        )
 
 
 async def reconcile_recent_days(days: int = 2) -> bool:
     """Tính lại hai bảng tổng hợp cho `days` ngày gần nhất (UTC, giống cột day) từ posts/comments - bản nhẹ của
-    rebuild_from_source để chạy mỗi giờ (27/10/2026: D1 quá tải "7429 overloaded" làm các lần cộng dồn của ingest thất
+    rebuild_from_source để chạy mỗi giờ (D1 quá tải "7429 overloaded" làm các lần cộng dồn của ingest thất
     bại -> bảng tổng hợp đếm thiếu, dashboard hiện số sai). Chỉ quét các ngày đó qua index scraped_at, không đụng ngày cũ.
     Không DELETE: mọi upsert GHI ĐÈ giá trị bằng số đếm từ bảng gốc, nên một bước lỗi giữa chừng (đúng lúc D1 quá tải)
     chỉ để lại số cũ, không xoá trắng số liệu hôm nay.

@@ -1,4 +1,4 @@
-"""Hiệu quả từng nguồn cào Omar (từ 2026-10-13): mỗi ngày (giờ VN) đếm cho từng nguồn - hashtag, search (tìm theo từ
+"""Hiệu quả từng nguồn cào Omar: mỗi ngày (giờ VN) đếm cho từng nguồn - hashtag, search (tìm theo từ
 khoá), channel (cào theo kênh), comments (bình luận tuần) - số request, số video/bình luận gửi lên pipeline và số MỚI THẬT
 (chưa từng thấy - lần đầu vào tập chống trùng dùng chung với spider). Số liệu cho tab Omar và để chia ngân sách lượt Omar
 theo hiệu quả (adaptive_share): nguồn mang về nhiều bài mới trên mỗi request hơn hashtag thì được phần lớn hơn.

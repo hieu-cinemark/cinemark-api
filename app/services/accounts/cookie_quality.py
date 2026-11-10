@@ -1,4 +1,4 @@
-"""Kiểm tra cookie Facebook lúc nhập trên dashboard (04/11/2026). Chỉ đọc chuỗi cookie, không gửi gì lên Facebook.
+"""Kiểm tra cookie Facebook lúc nhập trên dashboard. Chỉ đọc chuỗi cookie, không gửi gì lên Facebook.
 
 Cùng quy tắc với spider-hub social_crawler/accounts/session_quality.py, nơi chặn lần cuối trước request đầu tiên: hai repo không
 dùng chung package nên sửa một bên thì sửa cả bên kia.
@@ -17,7 +17,7 @@ from urllib.parse import unquote
 from app.services.accounts.user_agent import split_user_agent
 
 REQUIRED_COOKIES = ("c_user", "xs", "datr")
-# Điểm xuất phát, chưa chứng minh là ngưỡng đúng: phiên 376 ngày đã bị Facebook đăng xuất ngay request đầu (04/11/2026).
+# Điểm xuất phát, chưa chứng minh là ngưỡng đúng: phiên 376 ngày đã bị Facebook đăng xuất ngay request đầu.
 MAX_XS_AGE_DAYS = int(os.getenv("FACEBOOK_COOKIE_MAX_AGE_DAYS", "180"))
 FIRST_BUILD_OF_CHROME_100 = 4896
 _CHROME_VERSION = re.compile(r"\bChrome/(\d+)\.\d+\.(\d+)\.\d+")

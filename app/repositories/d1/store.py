@@ -1,28 +1,9 @@
-"""Tầng truy cập Cloudflare D1 - cho service chạy trên VPS này đọc/ghi một database D1
-mà không cần Cloudflare Worker (binding D1 chỉ có bên trong Worker; từ một tiến trình
-thường, REST query API của D1 là cửa duy nhất). Nói chuyện với cùng database D1 mà
-Worker của cinemark-scraper sở hữu, dùng các bảng
-movies/keywords/posts/post_engagement_snapshots có sẵn của nó (xem
-cinemark-scraper/src/db/schema.ts) - không phải bảng riêng của mình, nên một lượt
-crawl kích hoạt từ đây (get_enabled_keywords/get_keyword) và bài nó sinh ra
-(persist_post) dùng chung đúng một không gian movie_id/keyword_id, không cần tầng ánh
-xạ ID nào.
+"""Truy cập D1 `cinemark-scraper` cho các bảng phim, từ khoá, report, thống kê và các truy vấn dùng chung.
 
-Tầng truyền tải HTTP-hay-local (d1_query) giờ nằm ở app/clients/d1.py, còn query
-riêng của posts/comments nằm ở app/repositories/d1/{posts,comments}.py - cả hai đều
-được re-export bên dưới để các chỗ gọi `from app.repositories.d1.store import persist_post`
-v.v. hiện có không phải sửa. Module này giữ logic không phụ thuộc tầng truyền tải cho
-mọi bảng khác (movies, keywords, social_topic_reports) cộng với các hàm chuyển tiếp
-sang stats_summary.py.
-
-Không phụ thuộc nền tảng: mọi hàm ở đây làm việc dựa trên registered_platforms() của
-app.services.crawl.platforms, không gán cứng chữ "facebook" - xem docstring của module đó
-để biết thêm một nền tảng mới cần những gì.
-
-Cố gắng hết mức có thể ở mọi chỗ: mọi hàm ở đây trả về None/[]/False và ghi log khi
-lỗi (thiếu cấu hình, lỗi mạng, lỗi HTTP) thay vì raise - một lần ghi D1 thất bại
-tuyệt đối không được làm sập việc ingest từ Kafka, vốn là bảo đảm giao nhận bền vững
-duy nhất mà service này có."""
+Dùng chung bảng với Worker cinemark (cùng không gian `movie_id` / `keyword_id`). Truy vấn bài và bình luận nằm ở
+`posts.py`, `comments.py` và được re-export ở đây cho chỗ gọi cũ. Mọi hàm fail open: lỗi thì log và trả None/[]/False
+thay vì raise, để một lần ghi D1 hỏng không làm sập ingest từ Kafka.
+"""
 
 from __future__ import annotations
 
@@ -364,9 +345,9 @@ MIN_COMMENTS_FOR_REPORT = 15
 # Trần số comment đưa vào một lời gọi Kira gom topic - giữ prompt (và lượng token suy
 # luận của model) có giới hạn bất kể số comment của phim lớn tới đâu. Xếp hạng theo
 # tương tác trước, nên nếu phim có nhiều comment đã phân loại hơn mức này thì những
-# comment có tín hiệu cao nhất là những comment được giữ lại. Nâng 400 -> 800 (2026-10-07)
+# comment có tín hiệu cao nhất là những comment được giữ lại. Nâng 400 -> 800
 # cùng lúc bỏ khỏi mẫu các comment không mang ý kiến (chỉ tag bạn bè/emoji/quá ngắn - xem
-# rule_sentiment) và comment bị gắn not_related, nên 800 chỗ đều là comment có nội dung. Nâng 800 -> 2000 (2026-10-20,
+# rule_sentiment) và comment bị gắn not_related, nên 800 chỗ đều là comment có nội dung. Nâng 800 -> 2000 (
 # Bee claude-opus-4-8 viết report): 800 chỉ là ~2% bình luận của phim lớn (Trại Buôn Người ~43k), chủ đề nhỏ bị sót.
 # Tỉ lệ cảm xúc / khía cạnh vẫn tính trên toàn bộ bình luận (SQL) - mẫu chỉ phục vụ chủ đề / trích dẫn / nhận định.
 REPORT_COMMENT_SAMPLE_SIZE = 2000
@@ -410,7 +391,7 @@ def _normalize_comment_text(message: str) -> str:
     dưới nhiều bài) mà không tốn chi phí/độ phức tạp của so khớp mờ thật sự - xem
     docstring của get_report_sample_for_movie để biết vì sao điều này quan trọng với một
     mẫu mà LLM coi là đại diện."""
-    # 20/10/2026: bỏ dấu câu / emoji và rút chữ kéo dài - "Phim hay quá!!!", "phim hayyy quá 😍" là một ý.
+    # bỏ dấu câu / emoji và rút chữ kéo dài - "Phim hay quá!!!", "phim hayyy quá 😍" là một ý.
     text = re.sub(r"[^\w\s]", " ", message.casefold())
     text = re.sub(r"(\w)\1{2,}", r"\1", text)
     return " ".join(text.split())
@@ -572,7 +553,7 @@ async def get_report_sample_for_movie(
     danh sách top 100 trong app/repositories/d1/posts.py: riêng relevance_label chỉ là bản sao phán quyết của AI lúc
     ingest - đã xác nhận 2026-09-24 với report "Huyết Thống"), và chỉ comment dưới những bài đó.
 
-    RÚT NGẪU NHIÊN, không lấy top tương tác (2026-10-07). Đo trên D1 thật với "Hoàng Hậu Cuối Cùng": 60 bài tương
+    RÚT NGẪU NHIÊN, không lấy top tương tác. Đo trên D1 thật với "Hoàng Hậu Cuối Cùng": 60 bài tương
     tác cao nhất gần như toàn là studio (15 bài của galaxystudiovn) và trang showbiz, và 800 comment top like dồn
     vào 74 bài - mẫu top tương tác đo tiếng nói của các kênh quảng bá, không phải của khán giả. Giờ:
     - comment: bỏ comment không mang nội dung (rule_sentiment - chỉ tag bạn bè/emoji/quá ngắn), comment bị gắn

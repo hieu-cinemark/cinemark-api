@@ -1,11 +1,11 @@
 """Cào lại MỖI NGÀY các bài booking đang theo dõi (bảng tracked_posts của D1 - trang "Theo dõi bài booking" của cinemark
-nhập từ link Google Sheet, xem cinemark api/lib/trackedPosts.ts), ở làn ưu tiên (21/10/2026).
+nhập từ link Google Sheet, xem cinemark api/lib/trackedPosts.ts), ở làn ưu tiên.
 
 - TikTok: Omar video_info từng video (số liệu hiện tại), gửi thẳng lên raw_posts với source="tracked" - không qua tập
   seen chống trùng của Omar (bài đã có vẫn phải cập nhật số).
 - Facebook: bài đã có trong D1 (đã khớp external_id) -> MỘT job post_metrics vào hàng đợi rảnh của spider-hub (Redis
   crawl_idle:facebook - chạy khi spider-hub không có việc khác hoặc trong giờ yên lặng Meta, vì job này không dùng tài
-  khoản): đọc từng trang bài KHÔNG đăng nhập, chỉ cập nhật like/comment/share (25/10/2026, tắt bằng
+  khoản): đọc từng trang bài KHÔNG đăng nhập, chỉ cập nhật like/comment/share (tắt bằng
   TRACKED_FACEBOOK_LOGGED_OUT=false). Job mang sẵn job page_feed dự phòng của từng page - bài nào spider-hub không lấy
   được số (IP bị chặn...) thì nó đẩy page_feed của page đó vào làn ưu tiên. Bài chưa có trong D1 (cần tạo mới, mà trang
   không đăng nhập chỉ có số) đi thẳng page_feed vào làn ưu tiên (Redis crawl_priority:facebook - spider-hub xả làn này

@@ -8,7 +8,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 FilterKeywordCategory = Literal["movie_relevant", "spam_offtopic"]
-# Người vận hành tự đánh dấu (03/11/2026), chỉ để phân biệt khi gán tài khoản: pool không đọc trường này. "rotating" là IP do
+# Người vận hành tự đánh dấu, chỉ để phân biệt khi gán tài khoản: pool không đọc trường này. "rotating" là IP do
 # nhà cung cấp đổi, "unknown" là chưa đo.
 ProxyIpType = Literal["unknown", "static", "rotating"]
 
@@ -173,7 +173,7 @@ class FilterKeywordUpdate(BaseModel):
     enabled: bool | None = None
 
 
-MAX_CRAWL_RUNS_PER_DAY = 8  # 3 -> 8 (2026-10-16): lượt sau trong ngày của FB/Threads chỉ lấy bài mới nhất, nhẹ
+MAX_CRAWL_RUNS_PER_DAY = 8  # 3 -> 8: lượt sau trong ngày của FB/Threads chỉ lấy bài mới nhất, nhẹ
 # Hai giờ chạy cách nhau ít nhất chừng này phút: scheduler.py còn bắn bù một lượt bị lỡ tới 30 phút sau giờ của nó.
 MIN_CRAWL_RUN_GAP_MINUTES = 60
 _HHMM = r"^([01]\d|2[0-3]):[0-5]\d$"
@@ -238,7 +238,7 @@ class CommentScheduleOut(BaseModel):
 class CommentScheduleUpdate(BaseModel):
     run_time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
-    # Từ 2026-10-08: số bài NÓNG mỗi phim được theo dõi comment mỗi giờ (3-30); run_time là giờ chạy lượt mẫu
+    # Từ số bài NÓNG mỗi phim được theo dõi comment mỗi giờ (3-30); run_time là giờ chạy lượt mẫu
     # phân tầng (và 12 tiếng sau) - xem app/services/crawl/comment_planner.py.
     top_n: int = Field(default=15, ge=1, le=500)
 
@@ -305,7 +305,7 @@ class AiSettingsOut(BaseModel):
     # ingest; tạo report là hành động do người vận hành/lịch kích hoạt, cùng nhóm với
     # import trong Settings).
     active_report_provider: str
-    # Nhà cung cấp đang dùng cho mọi lời gọi AI ("beeknoee" = Bee, "kira" = Kira) - 2026-10-22.
+    # Nhà cung cấp đang dùng cho mọi lời gọi AI ("beeknoee" = Bee, "kira" = Kira).
     active_provider: str = "beeknoee"
     updated_at: datetime | None = None
 

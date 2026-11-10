@@ -44,7 +44,7 @@ MIN_CONTENT_LENGTH = 10
 # thường lớn gấp 10-100 lần tổng số like/reply/repost/quote/reshare cộng lại, biến
 # cách sắp xếp này thành "xem nhiều nhất" khoác nhãn "tương tác".
 #
-# Mỗi comment (reply_count) nặng gấp COMMENT_WEIGHT lần một like/share (2026-10-07): bài nhiều comment
+# Mỗi comment (reply_count) nặng gấp COMMENT_WEIGHT lần một like/share: bài nhiều comment
 # nhưng ít like trước đây rơi khỏi top 100, nên lượt lấy comment hằng ngày (list_posts_needing_comments)
 # bỏ qua đúng những bài có nhiều ý kiến khán giả nhất. Mô phỏng trên D1 thật: với hệ số 3, top 100 của các
 # từ khoá Facebook có thêm ~13.300 comment, đổi lại mất ~1.400. Danh sách top 100 trên dashboard dùng
@@ -69,11 +69,11 @@ RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NUL
 
 
 # --- cột "tiếng nói" của bài + trạng thái quét comment -----------------------
-# Thêm 2026-10-08. Nội dung bài cũng là tiếng nói khán giả (trên Threads phần lớn cảm nhận nằm ở chính bài, ít
+# Nội dung bài cũng là tiếng nói khán giả (trên Threads phần lớn cảm nhận nằm ở chính bài, ít
 # comment), nên bài được gắn nhãn cảm xúc/khía cạnh/giai đoạn y như comment (sentiment_sweep.classify_pending_posts).
 # comments_crawled_at / comments_crawled_replies / comments_crawl_reason: lần cuối crawl comment xong thật cho bài,
 # reply_count lúc xếp hàng và lý do (hot/sample) - để app/services/crawl/comment_planner.py biết bài nào cần quét lại.
-# comments_queued_at / comments_queued_replies / comments_queued_run_id (02/11/2026): lease đang xếp hàng, ghi TRƯỚC khi publish
+# comments_queued_at / comments_queued_replies / comments_queued_run_id: lease đang xếp hàng, ghi TRƯỚC khi publish
 # và chỉ nhả bởi tín hiệu kết thúc của đúng run_id đó.
 POST_VOICE_COLUMNS = (
     ("sentiment", "TEXT"),
@@ -86,10 +86,10 @@ POST_VOICE_COLUMNS = (
     ("comments_queued_at", "TEXT"),
     ("comments_queued_replies", "INTEGER"),
     ("comments_queued_run_id", "TEXT"),
-    # Lần đầu bài vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - số đo Social Topic tách phần về trễ. Thêm 2026-10-28.
+    # Lần đầu bài vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - số đo Social Topic tách phần về trễ.
     ("first_seen_at", "TEXT"),
     # sentiment_sweep._save ghi cột này cho cả comments lẫn posts; posts thiếu nó nên mọi lần lưu cảm xúc bài đều lỗi
-    # "no such column" (relabel + lượt quét 48h lặp lại cùng bài và gọi lại Bee mãi). Thêm 2026-10-28.
+    # "no such column" (relabel + lượt quét 48h lặp lại cùng bài và gọi lại Bee mãi).
     ("sentiment_classified_at", "TEXT"),
 )
 _post_voice_columns_ready = False
@@ -343,7 +343,7 @@ def movie_hashtag_present(
        (cũng ở dạng fold). Cố ý so sánh nguyên token, không chứa chuỗi con như
        contains_keyword: một từ khoá ngắn/chung chung sau khi fold (ví dụ "Mẹ Mìn" thành
        "memin") có thể tình cờ là CHUỖI CON của một hashtag dài hơn hoàn toàn không liên
-       quan (đã xác nhận thực tế 2026-09-24: các bài
+       quan (đã xác nhận thực tế các bài
        "#botanasmemin"/"#echatelabotanaconbotanasmemin" của một hãng snack Mexico đạt
        99%+ "related" chỉ vì trùng hợp đó). Vẫn cần thêm _looks_vietnamese(content):
        "#memin" CŨNG là một biệt danh/hình ảnh văn hoá có sẵn trong tiếng Tây Ban Nha
@@ -353,7 +353,7 @@ def movie_hashtag_present(
     3. Tên phim nguyên văn xuất hiện ở bất cứ đâu trong văn bản tự do, không có hashtag
        nào hỗ trợ - đáng tin với tên phim tự đặt (gần như không bao giờ tình cờ xuất
        hiện), không đáng tin khi tên phim cũng là từ vựng thông thường. Đã xác nhận thực
-       tế 2026-09-25: "Huyết Thống" - nghĩa đen là quan hệ máu mủ - khớp với một bài về
+       tế "Huyết Thống" - nghĩa đen là quan hệ máu mủ - khớp với một bài về
        mâu thuẫn gia đình không liên quan của một người lạ trên Threads với độ tin
        "related" 99,9% từ CẢ kiểm tra chuỗi con lẫn bộ phân loại AI, vì cụm từ trơ trọi
        đó tự nó không mang tín hiệu riêng nào về phim. Chỉ được tin khi
@@ -396,7 +396,7 @@ def movie_hashtag_present(
 
 
 # Khoá của raw_json bài đang được đọc (json_extract ở đây và ở cinemark). Bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer):
-# lưu cả khối trên D1 khiến mọi truy vấn json_extract phải đọc thêm nhiều trang (05/11/2026, D1 đã ~7,6 GB).
+# lưu cả khối trên D1 khiến mọi truy vấn json_extract phải đọc thêm nhiều trang (D1 đã ~7,6 GB).
 RAW_JSON_KEEP = ("reactions", "collect_count", "author_name", "author_followers", "media_url", "cover_url")
 
 
@@ -506,7 +506,7 @@ class PostRepository:
         riêng relevance_label không phải ý kiến thứ hai như vẻ ngoài: persist_post lưu
         keyword_match như bản sao y nguyên phán quyết của AI mỗi khi AI thực sự được gọi (xem
         docstring của nó), nên chỉ dựa vào relevance_label thực chất là tin AI một lần, không
-        phải hai lần. Đã xác nhận thực tế 2026-09-24: các bài của một hãng snack Mexico đạt
+        phải hai lần. Đã xác nhận thực tế các bài của một hãng snack Mexico đạt
         99%+ "related" với phim "Mẹ Mìn" chỉ vì hashtag của nó fold ra cùng một chuỗi ngắn
         với tên phim - xem docstring của movie_hashtag_present cho cách sửa. Lấy dư
         (_ENGAGEMENT_OVERFETCH bên dưới) vì bộ lọc thứ hai này chạy bằng Python, rồi cắt lại

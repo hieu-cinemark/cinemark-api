@@ -1,11 +1,11 @@
-"""Quét lại page Facebook của phim đang chiếu (2026-11-05), để mục "Đang nổi" của Social Topic có tốc độ tăng tương tác.
+"""Quét lại page Facebook của phim đang chiếu, để mục "Đang nổi" của Social Topic có tốc độ tăng tương tác.
 
 Mỗi settings.facebook_watch_pages_interval_hours giờ xếp job đọc page cho page của phim đang chiếu, rồi tới page chung (CGV,
 Moveek...) hay có bài. Mỗi page chỉ đọc trang bảng tin mới nhất và gửi lại cả bài đã thấy (dedupe=false): một request cập
 nhật số của nhiều bài, ingest ghi post_engagement_snapshots khi số đổi, cinemark đọc bảng đó để tính tốc độ
 (api/lib/trendingPosts.ts).
 
-10/11/2026: chuyển sang luồng KHÔNG đăng nhập (job public_page của spider-hub, proxy riêng không gán tài khoản - người vận
+chuyển sang luồng KHÔNG đăng nhập (job public_page của spider-hub, proxy riêng không gán tài khoản - người vận
 hành quyết định) thay cho page_feed qua tài khoản: tài khoản Facebook chỉ còn vài cái, để dành hạn mức cho tìm kiếm. Không
 còn cần tài khoản sẵn sàng hay tránh giờ yên lặng của Meta; proxy bị chặn thì spider-hub tự cho nghỉ.
 

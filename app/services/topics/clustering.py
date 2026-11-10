@@ -85,14 +85,16 @@ def cluster_payload(rows: list[dict], x: np.ndarray, clusters: list[Cluster]) ->
         rest = [int(i) for i in c.indices if int(i) not in closest_set]
         picked = closest + rng.sample(rest, min(SAMPLES_FOR_BEE - len(closest), len(rest)))
         sentiments = Counter(rows[i].get("sentiment") for i in c.indices)
-        out.append({
-            "id": c.id,
-            "comments": len(c.indices),
-            "share_percent": round(len(c.indices) * 100 / total, 1),
-            "positive": sentiments.get("positive", 0),
-            "negative": sentiments.get("negative", 0),
-            "samples": [rows[i]["message"][:200] for i in picked],
-        })
+        out.append(
+            {
+                "id": c.id,
+                "comments": len(c.indices),
+                "share_percent": round(len(c.indices) * 100 / total, 1),
+                "positive": sentiments.get("positive", 0),
+                "negative": sentiments.get("negative", 0),
+                "samples": [rows[i]["message"][:200] for i in picked],
+            }
+        )
     return out
 
 
@@ -131,7 +133,11 @@ def calibrate(x: np.ndarray, clusters: list[Cluster]) -> dict[str, float]:
     own, second = sims[:, -1], sims[:, -2]
     pct = lambda a, p: round(float(np.percentile(a, p)), 3)
     return {
-        "own_p10": pct(own, 10), "own_p25": pct(own, 25), "own_p50": pct(own, 50),
-        "second_p50": pct(second, 50), "second_p90": pct(second, 90),
-        "gap_p25": pct(own - second, 25), "gap_p50": pct(own - second, 50),
+        "own_p10": pct(own, 10),
+        "own_p25": pct(own, 25),
+        "own_p50": pct(own, 50),
+        "second_p50": pct(second, 50),
+        "second_p90": pct(second, 90),
+        "gap_p25": pct(own - second, 25),
+        "gap_p50": pct(own - second, 50),
     }

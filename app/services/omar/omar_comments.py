@@ -1,4 +1,4 @@
-"""Bình luận TikTok qua Omar API - MỖI NGÀY (settings.omar_comments_cadence, từ 2026-10-20; mỗi tuần từ 2026-10-12).
+"""Bình luận TikTok qua Omar API - MỖI NGÀY (settings.omar_comments_cadence,; mỗi tuần).
 
 Mỗi ngày (hoặc từ thứ settings.omar_comments_weekday) lúc settings.omar_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
 hashtag TikTok đang bật settings.omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất (thích +
@@ -240,7 +240,7 @@ async def set_selected_keyword_ids(keyword_ids: list[str]) -> list[str]:
 
 
 async def comment_keywords() -> list[dict[str, Any]]:
-    """Từ khoá được cào bình luận ở lượt tới: danh sách đã chọn (cả từ khoá chữ, không chỉ hashtag - từ 13/10/2026 TikTok
+    """Từ khoá được cào bình luận ở lượt tới: danh sách đã chọn (cả từ khoá chữ, không chỉ hashtag TikTok
     cào được cả tìm kiếm từ khoá) hoặc mặc định mọi hashtag TikTok đang bật. Từ khoá đã chọn mà bị tắt thì bỏ qua."""
     enabled = await get_enabled_keywords(platform="tiktok")
     selected = set(await selected_keyword_ids())

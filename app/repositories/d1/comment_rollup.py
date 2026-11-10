@@ -1,4 +1,4 @@
-"""Bảng tổng hợp bình luận theo phim x ngày (30/10/2026) - Social Topic (insights) và Social Buzz của cinemark đọc bảng này
+"""Bảng tổng hợp bình luận theo phim x ngày - Social Topic (insights) và Social Buzz của cinemark đọc bảng này
 thay vì đếm lại hàng triệu bình luận mỗi lần tính cache (17-44 giây, 1-5 triệu dòng mỗi câu, ~4 giờ D1 bận mỗi ngày - D1
 chạy các câu của một database gần như lần lượt, nên request của người dùng xếp hàng sau).
 
@@ -14,7 +14,7 @@ chạy các câu của một database gần như lần lượt, nên request c�
 movie_comment_group_daily là số của "Bình luận đã thu thập theo chủ đề" trên Social Topic (cinemark api/lib/topicComments.ts):
 chỉ bình luận gốc có chữ; grp = 'total' / 'icon' (bình luận gắn nhãn 'rule') / 'trend' (bài hưởng ứng trend) / 'none' (chưa có
 chủ đề) / nhãn chủ đề như 'dien_vien:+'. after_premiere = bài đăng từ ngày chiếu sớm (hoặc ngày khởi chiếu) của phim trở đi,
-cho giai đoạn Chiếu sớm / Chính thức. Đếm trực tiếp trên bình luận mất tới 107 giây với khoảng ngày rộng (09/11/2026).
+cho giai đoạn Chiếu sớm / Chính thức. Đếm trực tiếp trên bình luận mất tới 107 giây với khoảng ngày rộng.
 
 Tính lại theo NGUYÊN NGÀY (app/services/stats/comment_rollup.py): upsert số mới của ngày rồi xoá các dòng của ngày đó
 không còn xuất hiện (đánh dấu bằng `run`) - không có lúc nào ngày đó trống. Đọc một ngày đi qua index comments(posted_at)

@@ -1,4 +1,4 @@
-"""Lịch crawl Facebook theo hai phần hạn mức (27/10/2026) - thay lịch "lượt đầu quét sâu, lượt sau 'gần đây' sâu".
+"""Lịch crawl Facebook theo hai phần hạn mức - thay lịch "lượt đầu quét sâu, lượt sau 'gần đây' sâu".
 
 Đo 25-27/10/2026: lượt 05:30 (quét 4/60 ngày) dùng hết hạn mức request của tài khoản (spider-hub
 services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài mới nhưng chỉ 3 bài dưới 6 giờ tuổi; lượt "gần đây"
@@ -10,7 +10,7 @@ services/search_budget.py) cho phần lớn là bài cũ đã thấy - 765 bài 
 - "deep" (đào bài cũ): mỗi giờ trong settings.facebook_deep_hours xếp số job theo số tài khoản dùng được (deep_jobs_this_hour); spider-hub
   (services/deep_cursor.py) đào tiếp từ con trỏ của từ khoá lùi về ngày chiếu - 12 tháng. Không xếp khi Threads đang
   có job chạy / chờ (cùng cổng proxy). Ưu tiên phim ra rạp tháng
-  này / tháng sau (30/10/2026), rồi đang chiếu, sắp chiếu, phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
+  này / tháng sau, rồi đang chiếu, sắp chiếu, phim cũ; trong cùng nhóm, từ khoá lâu chưa được xếp nhất trước.
 Trần request mỗi giờ của tài khoản (spider-hub FACEBOOK_HOURLY_REQUEST_CAP) rải cả hai phần ra cả ngày.
 """
 
@@ -46,7 +46,7 @@ _DEEP_FIRED_KEY = f"{REDIS_KEY_PREFIX}scheduler:deep_fired:{{hour}}"
 DEEP_TICK_MINUTE = 20
 
 
-# Số trang tối đa mỗi job Facebook theo giai đoạn phim (28/10/2026, người vận hành chọn): phim chưa chiếu ít bài hơn
+# Số trang tối đa mỗi job Facebook theo giai đoạn phim (người vận hành chọn): phim chưa chiếu ít bài hơn
 # hẳn nên 50 trang là đủ; đã chiếu (hoặc chưa có ngày chiếu) 100. Spider vẫn dừng sớm sau 10 trang liên tiếp không có bài
 # mới (spider-hub FACEBOOK_NO_NEW_PAGES).
 UPCOMING_MAX_PAGES = 50
@@ -54,7 +54,7 @@ RELEASED_MAX_PAGES = 100
 
 
 def focus_window(today: date) -> tuple[date, date]:
-    """[ngày 1 tháng này, ngày cuối tháng sau] - phim ra rạp trong khoảng này được ưu tiên (30/10/2026, người vận hành
+    """[ngày 1 tháng này, ngày cuối tháng sau] - phim ra rạp trong khoảng này được ưu tiên (người vận hành
     chọn): lượt bài mới cào chúng ở MỌI lượt và xếp trước, lượt đào xếp chúng đầu hàng."""
     start = today.replace(day=1)
     after_next = date(start.year + (start.month + 1) // 12, (start.month + 1) % 12 + 1, 1)
@@ -141,7 +141,7 @@ async def run_deep_tick(now: datetime) -> int:
         return 0
     if now.minute < DEEP_TICK_MINUTE or not _in_deep_hours(now):
         return 0
-    # Threads đang có job chạy / chờ (02/11/2026): tài khoản FB và Threads dùng chung cổng proxy webtui (#12, #13) -
+    # Threads đang có job chạy / chờ: tài khoản FB và Threads dùng chung cổng proxy webtui (#12, #13) -
     # đào bài cũ lúc đó chỉ tranh cổng. Kiểm tra TRƯỚC khi đánh dấu giờ đã chạy, nên Threads xong là nhịp của giờ
     # này vẫn chạy (lượt 30 giây kế tiếp).
     if await _threads_busy():

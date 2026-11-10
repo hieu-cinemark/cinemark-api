@@ -56,8 +56,15 @@ def save_assignments(conn: sqlite3.Connection, rows: list[dict], vectors: np.nda
         """INSERT INTO comment_topics VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(comment_id) DO UPDATE SET topic_id = excluded.topic_id, similarity = excluded.similarity""",
         [
-            (r["id"], r["movie_id"], r["topic_id"], r["similarity"], r.get("sentiment"), r["first_seen_at"],
-             v.astype(np.float16).tobytes())
+            (
+                r["id"],
+                r["movie_id"],
+                r["topic_id"],
+                r["similarity"],
+                r.get("sentiment"),
+                r["first_seen_at"],
+                v.astype(np.float16).tobytes(),
+            )
             for r, v in zip(rows, vectors, strict=True)
         ],
     )

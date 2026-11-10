@@ -1,4 +1,4 @@
-"""Kênh ưu tiên (từ 20/10/2026): kênh trong danh sách booking (trang "Xuất thông tin theo kênh" › Nghiệm thu booking của
+"""Kênh ưu tiên: kênh trong danh sách booking (trang "Xuất thông tin theo kênh" › Nghiệm thu booking của
 cinemark) mà D1 chưa có bài nào - Worker ghi vào bảng D1 priority_channels (api/lib/bookingReport.ts), bên này:
 
 - crawl ngay (mỗi vòng scheduler, tối đa BATCH kênh) kênh TikTok: video của kênh qua Omar /posts (chỉ giữ video nhắc tới
@@ -99,7 +99,11 @@ async def process_pending() -> dict[str, int]:
                 "UPDATE priority_channels SET crawled_at = ?, result = ? WHERE platform = ? AND handle = ?",
                 [now, json.dumps(result, ensure_ascii=False)[:500], platform, handle],
             )
-        logger.info("priority_channels_processed", channels=len(results), by_platform={k: len(v) for k, v in by_platform.items()})
+        logger.info(
+            "priority_channels_processed",
+            channels=len(results),
+            by_platform={k: len(v) for k, v in by_platform.items()},
+        )
         return {"processed": len(results)}
     except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; vòng sau thử lại
         logger.error("priority_channels_failed", error=str(exc)[:300])

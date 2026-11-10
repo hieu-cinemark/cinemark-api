@@ -57,7 +57,7 @@ class CinemaFrameClassifier:
         self.device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         if self.device == "cpu":
             # VPS (máy ảo): Conv2d cắt ô ảnh của SigLIP đi qua oneDNN, mà oneDNN đọc kích thước cache CPU của máy ảo ra 0
-            # rồi chia cho 0 -> tiến trình chết vì SIGFPE (20/10/2026). Tắt oneDNN: chỉ một lớp conv nhỏ, gần như không chậm.
+            # rồi chia cho 0 -> tiến trình chết vì SIGFPE. Tắt oneDNN: chỉ một lớp conv nhỏ, gần như không chậm.
             torch.backends.mkldnn.enabled = False
         self.batch_size = batch_size
         self.classes: list[str] = probe["classes"]

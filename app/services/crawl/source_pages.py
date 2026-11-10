@@ -1,4 +1,4 @@
-"""Trang nguồn Facebook - cào theo nguồn (2026-10-16), tự động hoàn toàn.
+"""Trang nguồn Facebook - cào theo nguồn, tự động hoàn toàn.
 
 Mỗi dòng source_pages là một Page/Profile Facebook, hai loại:
 - movie_id có giá trị: trang CỦA một phim (fanpage chính thức) - mọi bài là về phim đó, ingest lưu là liên quan;
@@ -45,7 +45,7 @@ SINCE_DAYS = 60
 FILM_INTERVAL_HOURS = 6
 SHARED_INTERVAL_HOURS = 24
 MAX_BACKOFF = 8
-# 29/10/2026: chỉ còn 2 tài khoản FB, mà tìm kiếm theo từ khoá phim vẫn phải đi trước - trang nguồn chỉ được lấp chỗ
+# chỉ còn 2 tài khoản FB, mà tìm kiếm theo từ khoá phim vẫn phải đi trước - trang nguồn chỉ được lấp chỗ
 # trống: mỗi lượt xếp tối đa MAX_QUEUE_PER_ROUND trang (trang của phim / trang hay có bài trước), và bỏ hẳn lượt khi còn
 # từ MAX_PENDING_PAGE_FEED job page_feed của lượt trước chưa chạy (hàng đợi đang dồn).
 MAX_QUEUE_PER_ROUND = 40
@@ -274,7 +274,7 @@ async def queue_enabled_sources() -> int:
         await _update_quiet_runs(row)
         if _due(row, now):
             due.append(row)
-    # 24/10/2026: hạn mức request FB/ngày - trang hay có bài mới (quiet_runs thấp) và trang của phim xếp trước.
+    # hạn mức request FB/ngày - trang hay có bài mới (quiet_runs thấp) và trang của phim xếp trước.
     due.sort(key=lambda row: (int(row.get("quiet_runs") or 0), 0 if row.get("movie_id") else 1))
     pending = [item for item in await list_pending("facebook") if item.get("type") == "page_feed"]
     if len(pending) >= MAX_PENDING_PAGE_FEED:
@@ -287,7 +287,7 @@ async def queue_enabled_sources() -> int:
     return queued
 
 
-# Đọc page không đăng nhập (03/11/2026): chạy liên tục kể cả khi không có tài khoản (spider-hub job public_page, worker song song).
+# Đọc page không đăng nhập: chạy liên tục kể cả khi không có tài khoản (spider-hub job public_page, worker song song).
 _PUBLIC_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_public_pages:facebook"
 _PUBLIC_PAUSED_KEY = f"{REDIS_KEY_PREFIX}facebook:public_pages:paused"  # spider-hub đặt khi hết proxy dùng được
 _PUBLIC_PLAN_REFRESH = timedelta(minutes=10)

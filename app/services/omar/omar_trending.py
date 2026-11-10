@@ -1,4 +1,4 @@
-"""Video đang nổi - tốc độ tăng tương tác của video TikTok từng phim, đo qua Omar API (từ 2026-10-13).
+"""Video đang nổi - tốc độ tăng tương tác của video TikTok từng phim, đo qua Omar API.
 
 Mỗi settings.omar_trending_interval_hours giờ (scheduler._omar_trending_tick), refresh_top_videos lấy cho mỗi phim đang
 bật settings.omar_trending_per_movie video TikTok liên quan đăng trong settings.omar_trending_days ngày qua, tương tác cao

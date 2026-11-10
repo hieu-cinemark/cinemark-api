@@ -1,4 +1,4 @@
-"""Tìm bài TikTok theo TỪ KHOÁ qua Omar API (search_videos + search_photos, từ 2026-10-12) - chạy song song trong mỗi
+"""Tìm bài TikTok theo TỪ KHOÁ qua Omar API (search_videos + search_photos,) - chạy song song trong mỗi
 lượt Omar (omar_tiktok.run_omar_round), mỗi câu tìm một lần mỗi ngày.
 
 Cào hashtag bỏ sót bài không gắn hashtag phim hoặc gắn sai ("#Trại Buôn Người" có dấu cách không thành hashtag) và cả bài

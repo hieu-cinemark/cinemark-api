@@ -1,4 +1,4 @@
-"""Bài "hưởng ứng trend" của một phim (2026-11-05): người xem gắn hashtag phim vào nội dung của mình, vd. "Ngày mẹ đồng ý
+"""Bài "hưởng ứng trend" của một phim: người xem gắn hashtag phim vào nội dung của mình, vd. "Ngày mẹ đồng ý
 #bosuabay" kèm ảnh cưới bố mẹ. Bình luận dưới các bài này nói về chuyện khác ("mẹ tui siêu đẹp"), nên không tính vào các chủ đề
 của phim mà gom vào nhóm riêng: vẫn là tín hiệu lan toả.
 

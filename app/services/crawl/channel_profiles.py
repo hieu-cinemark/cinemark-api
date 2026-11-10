@@ -1,4 +1,4 @@
-"""Follower của kênh TikTok/Threads cho trang "Xuất thông tin theo kênh" (cinemark, file Social Booking) - từ 20/10/2026.
+"""Follower của kênh TikTok/Threads cho trang "Xuất thông tin theo kênh" (cinemark, file Social Booking).
 
 Kênh cần hỏi = đúng các kênh trang xuất hiển thị với mặc định "Số bài tối thiểu" = CHANNEL_MIN_POSTS: kênh có từ
 CHANNEL_MIN_POSTS bài liên quan cho CÙNG một phim trong LOOKBACK_DAYS ngày, chưa có follower hoặc số đã cũ hơn
@@ -76,6 +76,7 @@ async def _ensure_table() -> None:
     for column in _EXTRA_COLUMNS:
         if column.split(" ")[0] not in have:
             await d1_query(f"ALTER TABLE channel_profiles ADD COLUMN {column}")
+
 
 # Handle trong link bài: https://www.tiktok.com/@<handle>/video/..., https://www.threads.com/@<handle>/post/...
 _HANDLE_SQL = "lower(substr(p.url, instr(p.url, '@') + 1, instr(substr(p.url, instr(p.url, '@') + 1) || '/', '/') - 1))"
@@ -190,7 +191,13 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
                     logger.warning("channel_profile_failed", handle=handle, error=str(exc)[:200])
                     return
                 # Không tìm thấy: vẫn ghi followers_at để không hỏi lại tới lượt REFRESH_DAYS sau.
-                rows.append({"handle": handle, "followers": (profile or {}).get("followers"), "name": (profile or {}).get("name")})
+                rows.append(
+                    {
+                        "handle": handle,
+                        "followers": (profile or {}).get("followers"),
+                        "name": (profile or {}).get("name"),
+                    }
+                )
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             await asyncio.gather(*(one(client, str(row["handle"])) for row in candidates))
@@ -274,6 +281,8 @@ async def refresh_tiktok_handles(handles: list[str]) -> int:
             except httpx.HTTPError as exc:
                 logger.warning("channel_profile_failed", handle=handle, error=str(exc)[:200])
                 continue
-            rows.append({"handle": handle, "followers": (profile or {}).get("followers"), "name": (profile or {}).get("name")})
+            rows.append(
+                {"handle": handle, "followers": (profile or {}).get("followers"), "name": (profile or {}).get("name")}
+            )
     await _upsert("tiktok", rows, datetime.now(tz=UTC).isoformat())
     return sum(1 for row in rows if row["followers"] is not None)

@@ -1,25 +1,16 @@
-"""AI tự tìm thêm hashtag TikTok cho từng phim đang theo dõi (từ 2026-10-09) - TikTok chỉ tìm được bài qua hashtag
-(crawl_request_consumer bỏ qua từ khoá không có "#"), mà mỗi phim có rất nhiều cách viết: đo 2026-10-09, "#phim<tên>"
-thường đem về nhiều bài hơn chính hashtag gốc (#phimchuyendinhodoi 260 bài/14 ngày so với #ChuyenDiNhoDoi 138), và 12
-phim chỉ có đúng một hashtag.
+"""AI tìm thêm hashtag TikTok cho từng phim đang theo dõi (TikTok chỉ tìm bài được qua hashtag).
 
-Mỗi ngày một lượt (scheduler._hashtag_tick, hoặc scripts.jobs.discover_hashtags):
-1. Ứng viên của mỗi phim: biến thể tự sinh từ tên phim (variant_hashtags) + các hashtag đi kèm mà lượt crawl TikTok
-   đã gom và Kira đã loại tag chung chung (luồng BFS, Redis tiktok:related_hashtags:{keyword_id}).
-2. Luật cứng trước khi tốn lời gọi AI: bỏ tag đã là từ khoá của phim (kể cả đang TẮT - người vận hành đã tắt thì không
-   bao giờ thêm lại), tag đã quyết trước đó, tag chung chung (_GENERIC), tag chứa tên một phim khác đang theo dõi.
-3. Kira đọc thông tin phim (movie_context_block) và chấm từng tag: "film" chỉ khi tag gọi đích danh phim này.
-4. Ràng buộc khi thêm: verdict "film" + confidence >= MIN_CONFIDENCE, tối đa settings.hashtag_discovery_max_per_movie
-   mỗi phim mỗi lượt và settings.hashtag_discovery_max_per_run cả lượt; thêm thành từ khoá TikTok đang bật và xếp crawl ngay.
+Mỗi ngày một lượt (và sau mỗi lượt Omar):
 
-BFS (từ 2026-10-12): hashtag đi kèm do spider TikTok và Omar đếm được (d1.related_hashtags_for_keywords - cùng nguồn với chip
-duyệt trên dashboard) là ứng viên "related"; Kira duyệt như mọi ứng viên, duyệt xong thành từ khoá mới của CÙNG phim (ghi
-parent_keyword_id + depth) và Omar/spider cào nó ở lượt sau. Từ khoá mới lại góp ứng viên của nó, tới BFS_MAX_DEPTH tầng.
-Ngoài lượt buổi sáng, scheduler chạy thêm một lượt duyệt sau mỗi lượt Omar.
-5. Tự dọn: tag AI đã thêm mà sau PRUNE_AFTER_DAYS ngày không đem về bài nào thì tắt (status "pruned").
+1. Ứng viên: biến thể tự sinh từ tên phim + hashtag đi kèm mà lượt cào đã gom.
+2. Luật trước khi gọi AI: bỏ tag đã là từ khoá (kể cả đã tắt), tag đã quyết, tag chung chung, tag chứa tên phim khác.
+3. AI đọc thông tin phim và chấm từng tag; chỉ thêm khi gọi đích danh phim này với độ tự tin đủ, có trần mỗi phim và
+   mỗi lượt.
+4. Tag mới lại góp ứng viên (BFS tới `BFS_MAX_DEPTH` tầng).
+5. Tag AI thêm mà sau `PRUNE_AFTER_DAYS` ngày không đem về bài nào thì tắt.
 
-Mọi quyết định (thêm/bỏ/dọn, kèm lý do và độ tự tin) nằm trong bảng hashtag_ai_decisions (D1 scraper) - tag bị bỏ
-được xét lại sau RECHECK_REJECTED_DAYS ngày (số bài đã khác)."""
+Mọi quyết định ghi bảng `hashtag_ai_decisions`; tag bị bỏ được xét lại sau `RECHECK_REJECTED_DAYS` ngày.
+"""
 
 from __future__ import annotations
 
@@ -170,7 +161,7 @@ async def _ensure_table() -> None:
         )""",
         quiet=True,
     )
-    # Cột BFS (từ 2026-10-12): tag được sinh từ từ khoá nào và ở tầng mấy. ALTER lỗi khi cột đã có - bỏ qua.
+    # Cột BFS: tag được sinh từ từ khoá nào và ở tầng mấy. ALTER lỗi khi cột đã có - bỏ qua.
     for column in ("parent_keyword_id TEXT", "depth INTEGER NOT NULL DEFAULT 0"):
         await d1_query(f"ALTER TABLE hashtag_ai_decisions ADD COLUMN {column}", quiet=True)
 
@@ -330,7 +321,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             and (movie["id"], tag) not in decided
             and not any(other in tag for other in other_tags)
         }
-        # Biến thể tự sinh (HoLinhTrangSiMovie, ChiChiEmEm32026...) phần lớn KHÔNG có trên TikTok (đo 12/10/2026) - kiểm tra
+        # Biến thể tự sinh (HoLinhTrangSiMovie, ChiChiEmEm32026...) phần lớn KHÔNG có trên TikTok - kiểm tra
         # qua Omar trước khi hỏi Kira; không có thì ghi "rejected" (xét lại sau RECHECK_REJECTED_DAYS ngày). Hashtag đi kèm
         # lấy từ video thật nên không cần kiểm tra.
         for tag, cand in list(cands.items()):

@@ -98,7 +98,7 @@ class Settings(BaseSettings):
     # cảm xúc comment và report topic/narrative (Beeknoee chỉ là tuỳ chọn cho report).
     kira_enabled: bool = False
     # Việc PHÂN LOẠI - gán nhãn comment (cảm xúc, khía cạnh, giai đoạn), độ liên quan của bài, giá trị comment của bài:
-    # "jev" = model quyết định của Bee (app/ai/providers/decisions.py, từ 21/10/2026 thay cho gọi thẳng TypeSafe), chạy SAU luật và
+    # "jev" = model quyết định của Bee (app/ai/providers/decisions.py, thay cho gọi thẳng TypeSafe), chạy SAU luật và
     # ViSoBERT - chỉ ca khó; "llm" = chat Bee như trước. Bình luận dùng bee_comment_model, bài viết dùng bee_post_model.
     classifier: str = "jev"
     bee_comment_model: str = "typesafe/jev-1.14"
@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     visobert_min_confidence: float = 0.7
     visobert_model_dir: str = "models/visobert-cinemark"
     visobert_batch_size: int = 32
-    # Bình luận KHÔNG gọi AI (23/10/2026, yêu cầu người dùng): luật -> cache -> ViSoBERT gắn nhãn MỌI câu (bỏ ngưỡng
+    # Bình luận KHÔNG gọi AI (yêu cầu người dùng): luật -> cache -> ViSoBERT gắn nhãn MỌI câu (bỏ ngưỡng
     # visobert_min_confidence), không Jev/Bee/Kira, không lượt AI bổ sung khía cạnh/giai đoạn. Cảm xúc nội dung bài
     # (kind="post") vẫn như cũ. Bật lại = True.
     comment_ai_enabled: bool = False
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     # Service giữ 2; script backfill (scripts/kira_label_comments.py --concurrency) nâng lên trong tiến trình của nó.
     ai_provider_concurrency: int = 2
     # Model Bee RIÊNG cho việc viết report Social Topic (app/ai/tasks/report.py) - mọi lời gọi Bee khác dùng model của dòng
-    # "bee" trong ai_providers (Admin › AI). Rỗng = dùng model đó cho cả report. Từ 20/10/2026.
+    # "bee" trong ai_providers (Admin › AI). Rỗng = dùng model đó cho cả report.
     bee_report_model: str = ""
     # Dưới ngưỡng tự tin: cảm xúc -> neutral, giai đoạn -> khac, khía cạnh -> không gắn.
     jev_min_confidence: float = 0.6
@@ -134,7 +134,7 @@ class Settings(BaseSettings):
 
     # Kira là bộ phân loại độ liên quan của bài lúc ingest (app/ai/tasks/post_relevance.py):
     # tối đa chừng này bài mỗi ngày UTC. Gom lô nên mỗi bài tốn khoảng 330 token (đo
-    # 2026-10-05: ~2.000 token vào + ~435 token ra cho mỗi lô ~7 bài) - cùng tài khoản Kira còn
+    # ~2.000 token vào + ~435 token ra cho mỗi lô ~7 bài) - cùng tài khoản Kira còn
     # chạy cảm xúc comment (app/ai/tasks/sentiment.py), nên giữ chỗ cho task đó. Vượt hạn mức
     # thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 là tắt Kira cho bài.
     kira_post_relevance_daily_cap: int = 30000
@@ -148,7 +148,7 @@ class Settings(BaseSettings):
     # khớp tên phim / viết tắt / từ khoá thì liên quan, phần chữ không có dấu tiếng Việt thì loại thẳng.
     # scripts/jobs/relabel_post_relevance.py khi đó tạm dừng phần Kira; --rules áp luật cho bài đang chờ.
     # Bài chỉ nhắc phim qua hashtag nhét cuối caption (relevance_rules.hashtag_only_mention) -> lưu nhưng ẩn. Tắt mặc định
-    # tới khi độ chính xác đủ (dry-run 13/10/2026: ~50%).
+    # tới khi độ chính xác đủ (dry-run ~50%).
     hashtag_only_filter: bool = False
     relevance_rules_only: bool = False
 
@@ -171,7 +171,7 @@ class Settings(BaseSettings):
     facebook_deep_jobs_per_account_hour: float = 2.0
     facebook_deep_jobs_max_per_hour: int = 60
     facebook_deep_hours: str = "06-22"
-    # Đọc trang nguồn không đăng nhập (03/11/2026): hàng đợi vơi là nạp thêm, spider-hub giới hạn số job song song mỗi proxy.
+    # Đọc trang nguồn không đăng nhập: hàng đợi vơi là nạp thêm, spider-hub giới hạn số job song song mỗi proxy.
     facebook_public_pages_enabled: bool = True
     facebook_public_pages_queue_target: int = 6
     facebook_public_pages_min_gap_minutes: int = 60
@@ -189,7 +189,7 @@ class Settings(BaseSettings):
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
     # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.
     # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
-    # 30/10/2026: thêm cong-tru-nhan-chia - ViSoBERT gán "related" (độ tự tin ~1.0) cho mọi bài có cụm "cộng trừ nhân chia"
+    # thêm cong-tru-nhan-chia - ViSoBERT gán "related" (độ tự tin ~1.0) cho mọi bài có cụm "cộng trừ nhân chia"
     # (bảng cửu chương, sách toán, nhạc chế); 1.245 bài như vậy đã được ẩn tay (danh sách ở ~/cinemark-ml/relabel_ctnc).
     strict_relevance_movie_slugs: str = "nguoi-duoc-chon,cong-tru-nhan-chia"
     # Phim có tên là cụm từ thông dụng ("cộng, trừ, nhân, chia", "người mẹ xấu xa"): bài "uncertain" KHÔNG được nâng thành
@@ -221,7 +221,7 @@ class Settings(BaseSettings):
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_tiktok._claim_unseen.
     omar_republish_hours: float = 48
     omar_recrawl_days: int = 7
-    # Bình luận TikTok qua Omar (app/services/omar/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", từ 20/10/2026 khi
+    # Bình luận TikTok qua Omar (app/services/omar/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", khi
     # gói lên 50.000 request/ngày) hoặc mỗi tuần vào thứ omar_comments_weekday (0 = thứ Hai), lúc omar_comments_time giờ VN,
     # mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm
     # trả lời nếu omar_comments_replies). Hàng đợi chạy sau phần video mới của mỗi lượt Omar (ưu tiên video). Chạy mỗi ngày thì chỉ lấy video
@@ -271,7 +271,7 @@ class Settings(BaseSettings):
     # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab Omar) - chừa phần còn lại cho lượt đang chạy.
     omar_manual_requests_per_minute: int = 30
     # Hashtag đã cào xong chỉ được cào lại từ đầu bằng ngân sách dư sau chừng này giờ - cào lại mỗi giờ làm ingest tồn
-    # hàng chục nghìn bài cập nhật (12/10/2026).
+    # hàng chục nghìn bài cập nhật.
     omar_recrawl_min_hours: float = 24
     # Số request D1 (REST API) đồng thời mỗi tiến trình - xem app/clients/d1.py.
     d1_max_concurrency: int = 8
@@ -326,7 +326,7 @@ class Settings(BaseSettings):
     # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói Omar / chi phí Jev mỗi ngày một lần.
     ops_alerts_enabled: bool = True
     # Bộ lập lịch (app/services/crawl/scheduler.py) + bộ lấy mẫu ops chạy TRONG tiến trình web (mặc định, như trước) hay
-    # trong service riêng `python -m app.workers.scheduler.main` (30/10/2026: một tác vụ nặng của scheduler không còn làm
+    # trong service riêng `python -m app.workers.scheduler.main` (một tác vụ nặng của scheduler không còn làm
     # chậm dashboard). Bật service riêng thì đặt SCHEDULER_IN_WEB=false - không bao giờ chạy cả hai cùng lúc.
     scheduler_in_web: bool = True
     ops_alerts_interval_minutes: int = 15

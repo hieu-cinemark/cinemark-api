@@ -1,31 +1,12 @@
-"""Cấu hình structlog cho cinemark-api.
+"""Cấu hình structlog, theo hợp đồng log dùng chung với spider-hub.
 
-Hợp đồng log dùng chung với spider-hub (social_crawler/logger.py bên đó cài đặt
-cùng hợp đồng này - giữ hai bên đồng bộ):
+- Mỗi dòng có `timestamp` (UTC), `level`, `event`, `service`, `logger` và context đã bind (`request_id`, `run_id`).
+- `event` là tên snake_case cố định; dữ liệu thay đổi đặt vào trường key=value.
+- Lỗi dùng `error`, `error_type`, `error_code`; truyền exception vào `error=` tự điền hai trường đầu.
+- `LOG_FORMAT=console|json`, `LOG_LEVEL` lọc mức log; chỉ có màu khi ghi ra terminal.
 
-  - Mọi dòng đều có: timestamp (ISO 8601, UTC), level, event, service, logger (tên
-    module), cộng với mọi context đã bind (request_id ở đây qua
-    bind_request_context, run_id ở spider-hub).
-  - event là một tên tiếng Anh dạng snake_case cố định ("proxy_settings_updated"),
-    không bao giờ là một câu được ghép chuỗi - phần thay đổi đặt vào các trường
-    key=value.
-  - Lỗi dùng cùng các key ở mọi nơi: error (nội dung thông báo), error_type (tên
-    class exception), error_code (mã cấp app, ví dụ AppError.code). Truyền chính
-    object exception vào error= sẽ tự điền cả error lẫn error_type (xem
-    _normalize_error_fields); các alias cũ exc=/err= cũng được gộp vào error= theo
-    cách đó.
-  - LOG_FORMAT=console (mặc định) in mỗi event một dòng dễ đọc; LOG_FORMAT=json in
-    mỗi dòng một object JSON để chuyển log đi nơi khác. Chỉ có màu khi ghi ra
-    terminal thật - file log không bao giờ có mã escape ANSI.
-  - LOG_LEVEL (mặc định INFO) lọc bỏ các mức thấp hơn.
-
-`enable_file_logging(path)` cho một tiến trình ghi thêm mọi dòng log ra file (vẫn in ra
-terminal như cũ) - ingest_consumer dùng nó để trang Nhật ký của dashboard đọc được
-(xem settings.ingest_consumer_log_path và routes/logs.py).
-
-`bind_request_context()` / `clear_request_context()` được middleware log request
-dùng để gắn request_id vào mọi dòng log phát ra trong lúc xử lý một request, mà
-không phải truyền nó qua từng lời gọi.
+`enable_file_logging(path)` ghi thêm ra file (trang Nhật ký đọc). `bind_request_context` / `clear_request_context`
+gắn `request_id` cho mọi dòng trong một request.
 """
 
 from __future__ import annotations

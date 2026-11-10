@@ -285,7 +285,7 @@ async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, A
     set_clause = ", ".join(f"{c} = %s" for c in columns)
     values = [fields[c] for c in columns] + [account_id]
     # spider-hub coi updated_at mới hơn lần kiểm tra là "đã có cookie mới" và bỏ trạng thái dead. Sửa mật khẩu hay email không
-    # cứu được phiên đã bị từ chối nên chỉ đổi cookie mới được chạm vào nó (04/11/2026).
+    # cứu được phiên đã bị từ chối nên chỉ đổi cookie mới được chạm vào nó.
     touch = ", updated_at = now()" if "cookie" in columns else ""
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
@@ -308,7 +308,7 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         # Kiểm tra này thụ động, không biết gì về phiên: nó từng ghi đè 'dead' mỗi 6 giờ, nên cookie vừa bị Facebook từ chối lại
-        # được dùng tiếp (04/11/2026). 'dead' chỉ mất khi có cookie mới, cùng quy ước với spider-hub.
+        # được dùng tiếp. 'dead' chỉ mất khi có cookie mới, cùng quy ước với spider-hub.
         await cur.execute(
             "UPDATE platform_accounts SET last_checked_at = now(), last_check_status = %s "
             "WHERE id = %s AND NOT (last_check_status IS NOT DISTINCT FROM 'dead' "
@@ -326,7 +326,7 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
 
 
 async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
-    """Bật/tắt tay một tài khoản từ dashboard (27/10/2026). Tắt: chỉ enabled = false. Bật: như reactivate_account của
+    """Bật/tắt tay một tài khoản từ dashboard. Tắt: chỉ enabled = false. Bật: như reactivate_account của
     spider-hub (db/accounts.py) - gỡ cả status 'checkpoint', cooldown và chuỗi lỗi, vì pool (get_accounts) bỏ qua tài
     khoản checkpoint/cooldown dù enabled = true; chỉ bật enabled thì tài khoản vẫn nằm ngoài pool."""
     await _ensure_pool_columns()
@@ -770,7 +770,7 @@ async def _ensure_ai_settings_table() -> None:
         await cur.execute(
             "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_report_provider text NOT NULL DEFAULT 'kira'"
         )
-        # Nhà cung cấp đang dùng cho MỌI lời gọi AI (2026-10-22): "bee" hoặc "kira" - chọn ở tab AI của dashboard
+        # Nhà cung cấp đang dùng cho MỌI lời gọi AI: "bee" hoặc "kira" - chọn ở tab AI của dashboard
         # spider-hub; cinemark-api, spider-hub và Worker cinemark (qua bảng ai_runtime của D1) đều theo.
         await cur.execute(
             "ALTER TABLE ai_settings ADD COLUMN IF NOT EXISTS active_provider text NOT NULL DEFAULT 'bee'"
@@ -848,7 +848,7 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_r
 AI_PROVIDER_COLUMNS = (
     "key, base_url, api_key, model, chat_path, image_model, decisions_path, comment_model, post_model, updated_at"
 )
-# Cột cấu hình theo nhà cung cấp (2026-10-22), sửa ở tab AI của dashboard spider-hub:
+# Cột cấu hình theo nhà cung cấp, sửa ở tab AI của dashboard spider-hub:
 #   chat_path       đường gọi chat nối sau base_url (mặc định /chat/completions)
 #   model           model chat - lọc, tóm tắt, viết report... (Kira: qwen3.8-flash)
 #   image_model     model đọc ảnh (Box Office AI) - Kira: agnes-image-2.1-flash, Bee: gemini-3.5-flash
@@ -1187,7 +1187,7 @@ async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
 # --- ai_accuracy_runs --------------------------------------------------------------------------------------
 # Mỗi lần chấm độ chính xác của máy (scripts/ml/accuracy_sample.py score --save) so với nhãn người làm một dòng: độ
 # chính xác cảm xúc, F1 từng nhãn, F1 khía cạnh, độ chính xác giai đoạn khán giả. Report Social Topic gắn lần mới
-# nhất vào dashboard_data["accuracy"] để người đọc biết nên tin các con số tới đâu (2026-10-07, học từ Kompa).
+# nhất vào dashboard_data["accuracy"] để người đọc biết nên tin các con số tới đâu (học từ Kompa).
 
 _accuracy_runs_ready = False
 

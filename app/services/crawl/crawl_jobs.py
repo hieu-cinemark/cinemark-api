@@ -54,8 +54,7 @@ async def _running_keys(client: Any, platform: str) -> list[str]:
 
 
 async def get_running_jobs(platform: str) -> list[dict[str, Any]]:
-    """Mọi job đang chạy của nền tảng: crawl_job:<platform> cộng các key làn crawl_job:<platform>:lane<N> (25/10/2026,
-    Facebook chạy song song nhiều làn - mỗi làn một job, xem crawl_job_key của spider-hub)."""
+    """Mọi job đang chạy của nền tảng: crawl_job:<platform> cộng các key làn crawl_job:<platform>:lane<N> (Facebook chạy song song nhiều làn - mỗi làn một job, xem crawl_job_key của spider-hub)."""
     client = get_redis_client()
     keys = await _running_keys(client, platform)
     jobs = []

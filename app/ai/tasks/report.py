@@ -59,7 +59,7 @@ async def _generate(
 
 
 def _first_json_object(response: str) -> Any:
-    """Như parse_json_response, nhưng model viết thêm chữ / một object thứ hai sau JSON (26/10/2026: "Extra data")
+    """Như parse_json_response, nhưng model viết thêm chữ / một object thứ hai sau JSON ("Extra data")
     thì vẫn lấy object đầu tiên."""
     try:
         return parse_json_response(response)

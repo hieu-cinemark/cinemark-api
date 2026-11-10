@@ -1,32 +1,10 @@
-"""Bộ theo dõi trong bộ nhớ (không bao giờ lưu xuống đâu - restart tiến trình là mất
-hết, theo thiết kế) cho một lần refresh token kích hoạt từ dashboard, theo từng nền
-tảng. spider-hub không có tín hiệu trực tiếp nào báo khi refresh xong - request chỉ
-đi qua Kafka và một tiến trình riêng (crawl_request_consumer.py) nhận lấy - nên bộ
-này hoạt động giống GET /logs/spider-hub: đọc dần consumer.log của spider-hub trên
-đĩa, bắt đầu từ offset ngay lúc refresh được kích hoạt.
+"""Theo dõi trong bộ nhớ một lần refresh token kích hoạt từ dashboard, theo từng nền tảng.
 
-Lọc theo run_id, không chỉ theo nền tảng: crawl_request_consumer.py chạy song song
-mỗi nền tảng *một* asyncio task (xem
-`asyncio.create_task(_run_platform_consumer(platform, ...))` bên đó), không phải một
-vòng lặp tuần tự toàn cục cho mọi nền tảng - nên một lần refresh Facebook và một lượt
-crawl Threads thật sự có thể cùng ghi vào consumer.log dùng chung một lúc. Chỉ khớp
-dòng theo platform=<x> (một phiên bản cũ của docstring này giả định một hàng đợi toàn
-cục duy nhất và cho rằng làm vậy an toàn mà không cần truyền run_id - không đúng nữa
-khi có chạy song song theo nền tảng) đã để các dòng log của một nền tảng *khác* đang
-chạy cùng lúc lẫn vào panel của nền tảng nào đang mở. run_id được sinh một lần cho mỗi
-lần refresh được kích hoạt (publish_cookie_import_request trong app/clients/kafka.py -
-nút kích hoạt duy nhất còn lại, xem docstring của app/api/routes/token_refresh.py để
-biết vì sao không còn nút "refresh now" riêng nữa) và được truyền đi suốt: chuyển cho
-tiến trình con của spider-hub qua --run-id, bind vào context structlog của tiến trình
-đó (xem auth/bootstrap.py của facebook/threads bên spider-hub), nên mọi dòng nó log -
-bất kể module nào của nó log - đều mang `run_id=<x>` và chỉ những dòng đó được hiển
-thị ở đây.
-
-Mọi subscriber (một WebSocket đang mở của dashboard) nhận cùng một bản phát - trước
-tiên là "snapshot" của những gì đã biết (trạng thái + các dòng đã đệm tới lúc đó),
-rồi tới các message "line"/"status" trực tiếp khi chúng xảy ra. Snapshot là thứ làm
-cho việc tải lại trang an toàn: kết nối lại giữa lúc refresh sẽ phát lại mọi thứ đã
-thấy thay vì mất đi."""
+spider-hub không báo trực tiếp khi refresh xong, nên module đọc dần `consumer.log` của spider-hub từ lúc kích hoạt và chỉ
+lấy các dòng mang đúng `run_id` (consumer chạy song song mỗi nền tảng nên phải lọc theo `run_id`, không theo nền tảng).
+Mỗi WebSocket nhận một snapshot (trạng thái + các dòng đã đệm) rồi tới dòng mới, nên tải lại trang không mất tiến độ.
+Trạng thái mất khi restart tiến trình (có chủ đích).
+"""
 
 from __future__ import annotations
 

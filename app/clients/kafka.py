@@ -114,7 +114,7 @@ async def publish_crawl_request(
     clear_stop=True chỉ dành cho lần bấm Chạy của người vận hành. run_id ổn định (lượt theo lịch thử lại) để spider-hub bỏ
     qua bản trùng của job đã chạy xong; không truyền thì sinh mới."""
     if platform == "threads" and keyword.strip().startswith("#"):
-        # Threads không cào hashtag (2026-10-15, ~1% liên quan - xem app/api/routes/keywords.py) - kể cả từ khoá cũ còn bật.
+        # Threads không cào hashtag (~1% liên quan - xem app/api/routes/keywords.py) - kể cả từ khoá cũ còn bật.
         logger.info("crawl_request_skipped_threads_hashtag", keyword=keyword, keyword_id=keyword_id)
         return False
     if _producer is None:
@@ -122,7 +122,7 @@ async def publish_crawl_request(
         return False
     # Một lần bấm Dừng trước đó bật platform_drain khoảng 15 phút để bỏ qua hàng tồn. Một
     # lần kích hoạt có chủ đích mới phải gỡ cờ đó, nếu không lượt crawl được publish xong
-    # sẽ bị log ngay là request_skipped_drain. Lịch và job nền không được gỡ (02/11/2026): trước đó mọi publish đều gỡ, nên
+    # sẽ bị log ngay là request_skipped_drain. Lịch và job nền không được gỡ: trước đó mọi publish đều gỡ, nên
     # lượt theo lịch kế tiếp âm thầm xoá ý định Dừng; hàng tồn cũ nay bị chặn riêng bằng published_at so với mốc Dừng.
     if clear_stop:
         await clear_drain(platform)
@@ -171,7 +171,7 @@ async def publish_crawl_request(
     if platform in ("facebook", "threads") and (terms := await _match_terms_for_keyword(keyword_id)):
         value["match_terms"] = terms
     # Spider hashtag của TikTok hỏi Kira hashtag nào đi cùng là của phim (BFS) - kèm thông tin phim để nó nhận ra tên
-    # diễn viên/nhân vật (2026-10-07: "#nadechkugimiya", diễn viên chính Quỷ Ăn Tạng 4, bị chấm "generic").
+    # diễn viên/nhân vật ("#nadechkugimiya", diễn viên chính Quỷ Ăn Tạng 4, bị chấm "generic").
     if platform == "tiktok" and (movie_context := await _movie_context_for_keyword(keyword_id)):
         value["movie_context"] = movie_context
     try:
@@ -258,7 +258,7 @@ async def publish_comments_crawl_request(
     (_trigger_comments_platform trong app/services/crawl/scheduler.py) và backfill hàng loạt
     bằng tay - thì truyền
     bypass_drain=False, để chính hàng tồn đó là thứ nút Dừng của nền tảng huỷ được. Đã
-    xác nhận thực tế 2026-09-24: khi mọi request comment đều bị gán cứng
+    xác nhận thực tế khi mọi request comment đều bị gán cứng
     bypass_drain=True, một hàng tồn comment tiktok bị kẹt/chậm (sâu hơn 500) hoàn toàn
     không có cách nào huỷ qua app - Dừng có bật cờ drain nhưng mọi message đang xếp hàng
     đều bỏ qua cờ đó theo thiết kế."""

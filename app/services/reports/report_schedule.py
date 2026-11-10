@@ -1,4 +1,4 @@
-"""Ngày hẹn tạo report Social Topic (22/10/2026): người xem trang Social Topic của cinemark chọn "ngày muốn nhận báo cáo
+"""Ngày hẹn tạo report Social Topic: người xem trang Social Topic của cinemark chọn "ngày muốn nhận báo cáo
 tiếp theo" + giờ (Worker ghi D1 bảng report_schedules - cinemark api/lib/reportSchedule.ts). Scheduler (app/services/crawl/scheduler.py)
 mỗi REPORT_SCHEDULE_CHECK_SECONDS kiểm tra: tới ngày hẹn và đã qua giờ hẹn (giờ VN, mặc định DEFAULT_REPORT_TIME) thì tạo report cho phim
 đó (cùng generate_report_for_movie với nút "Tạo report" / cron), ghi last_run_for / last_run_at / last_result và xoá

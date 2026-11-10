@@ -124,11 +124,17 @@ async def purge_irrelevant_posts(
         "ORDER BY p.id LIMIT ?",
         [grace, BATCH_SIZE * MAX_BATCHES],
     )
-    # 30/10/2026: bài nhắc tên diễn viên/đạo diễn của chính phim đó thì KHÔNG xoá dù bộ phân loại nói không liên quan -
+    # bài nhắc tên diễn viên/đạo diễn của chính phim đó thì KHÔNG xoá dù bộ phân loại nói không liên quan -
     # chuyển về 'uncertain' (vẫn ẩn, gán lại được) để không bị chọn lại mỗi đêm.
-    named = [row["id"] for row in candidates if film_context_reason(row.get("content"), row, allow_title_hashtag=False) in ("cast", "director")]
+    named = [
+        row["id"]
+        for row in candidates
+        if film_context_reason(row.get("content"), row, allow_title_hashtag=False) in ("cast", "director")
+    ]
     if named:
-        await _run(f"UPDATE posts SET relevance_label = 'uncertain', keyword_match = 0 WHERE id IN ({_id_list(named)})", [])
+        await _run(
+            f"UPDATE posts SET relevance_label = 'uncertain', keyword_match = 0 WHERE id IN ({_id_list(named)})", []
+        )
     ids = [row["id"] for row in candidates if row["id"] not in set(named)]
     totals: dict[str, Any] = {"posts": 0, "comments": 0, "snapshots": 0, "batches": 0, "kept_named": len(named)}
     if ids and not lake_configured():

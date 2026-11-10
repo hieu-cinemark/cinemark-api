@@ -1,25 +1,13 @@
-"""Các quy tắc độ liên quan có tính tất định, áp dụng lúc ingest, trước (và bất kể) lối
-tắt chuỗi con theo từ khoá và bộ phân loại Kira.
+"""Luật độ liên quan tất định, áp dụng lúc ingest trước luật từ khoá và trước AI.
 
-Vì sao dùng quy tắc, không chỉ dùng model: đo ngày 2026-09-28, pipeline ingest nhận
-mọi bài có nội dung chứa từ khoá mà không có model nào xem qua - nên video nước ngoài
-dùng chung một hashtag không dấu (#memin: 17% số bài không phải tiếng Việt, phần lớn
-là bài tiếng Tây Ban Nha về truyện tranh Mexico Memín) đi thẳng lên dashboard. Còn
-PhoBERT (huấn luyện trên nhãn keyword_match) tự tin đánh dấu related cho các bài về
-một phim *khác* cũng đang theo dõi (ví dụ "Lan Trinh trong Án Mạng Xém Hoàn Hảo" bị
-gán cho Án Mạng Karaoke). Cả hai đều có tín hiệu rẻ, kiểm tra được:
+Luật bắt các lỗi rẻ mà model hay bỏ sót:
 
-  foreign_language_reason() - chính phần chữ của bài (đã bỏ hashtag, mention, URL và
-      emoji) rõ ràng không phải tiếng Việt, hoặc textLanguage của TikTok nói vậy. Cố
-      ý thận trọng: text ngắn/mơ hồ trả về None (không phán quyết) thay vì đoán.
-  mentions_other_film() - bài hoàn toàn không nhắc tới phim mục tiêu nhưng lại nêu
-      tên một phim khác đang theo dõi.
+- `foreign_language_reason()`: phần chữ của bài (bỏ hashtag, mention, URL, emoji) rõ ràng không phải tiếng Việt. Thận
+  trọng: chữ ngắn / mơ hồ thì không kết luận.
+- `mentions_other_film()`: bài không nhắc phim đích nhưng nêu tên một phim khác đang theo dõi.
+- Các luật quanh ngày công chiếu, tên rút gọn, gắn hashtag ké (xem từng hàm).
 
-Mọi phim đang theo dõi đều là phim Việt; trên thực tế bài liên quan tới một phim đều
-viết bằng tiếng Việt (có dấu hoặc không dấu). Bài bị loại được lưu trữ qua topic
-Kafka ingest_decisions (-> lake writer, dưới bronze/entity=decisions/), nên một lần
-loại nhầm ở đây vẫn phát lại được từ các file NDJSON trong lake thay vì từ một bảng
-D1 giờ đã bị xoá.
+Bài bị loại vẫn được lưu qua topic Kafka `ingest_decisions` (lake), nên loại nhầm vẫn phát lại được.
 """
 
 from __future__ import annotations
@@ -365,7 +353,7 @@ _SEQUEL_DIGIT_RE = re.compile(r"(?<!\d)\d(?!\d)")
 
 def _film_specific_keyword_hashtag(tags: set[str], movie: dict) -> bool:
     """Bài mang một hashtag trùng từ khoá đang bật của phim (movie["keywords"]) mà từ khoá đó chỉ trỏ tới ĐÚNG
-    phim này. Đo trên bài đang bị ẩn 14/10/2026: #TraiBuonNguoiMovie, #holinhtrangsibianmovuadinh, #CCEE3,
+    phim này. Đo trên bài đang bị ẩn #TraiBuonNguoiMovie, #holinhtrangsibianmovuadinh, #CCEE3,
     #TeeYod4, #ThamTuKien2 là tín hiệu gần như chắc chắn mà Jev vẫn trả "uncertain" (caption chỉ có hashtag).
     Bỏ qua từ khoá mơ hồ - chính chúng kéo về phần lớn bài ẩn đúng:
       - phim có số phần mà từ khoá không có số (#PhimUtLan, #teeyod, #ThamTuKien -> bài của phần trước);
@@ -497,7 +485,7 @@ def full_title_variants(title: str | None) -> list[str]:
     """Các dạng tên phim đủ đặc trưng để quy tắc full_title chấp nhận (đã bỏ dấu, viết liền):
     - cả tên, khi từ FULL_TITLE_MIN_WORDS chữ trở lên;
     - phần trước dấu ":" / "(" khi phần đó có số phần phim - bài thường chỉ ghi "Quỷ Ăn Tạng 4" cho "QUỶ ĂN TẠNG 4: HỔ
-      TINH (Tee Yod)" (17/10/2026: hàng trăm bài như "Xem QUỶ ĂN TẠNG 4 chỉ từ 40.000Đ/vé" bị ẩn). Phần trước dấu ":"
+      TINH (Tee Yod)" (hàng trăm bài như "Xem QUỶ ĂN TẠNG 4 chỉ từ 40.000Đ/vé" bị ẩn). Phần trước dấu ":"
       KHÔNG có số ("Thám Tử Kiên", "Shaun the Sheep") là tên loạt phim - bài phần cũ - nên không tính."""
     raw = str(title or "")
     variants: list[str] = []
@@ -551,7 +539,7 @@ HASHTAG_ONLY_MIN_CONFIDENCE = 0.9
 # Bài nhắc TÊN LOẠT PHIM (tên bỏ số phần / phần trước ":" / tên trong ngoặc: "Út Lan", "Shaun the Sheep", "Tee Yod", "Lên
 # Hương") kèm từ ngữ rạp chiếu, đăng trong khoảng quanh ngày công chiếu, là về phim đang chiếu - kể cả khi tên là cụm từ
 # thường ngày hay trùng tên phần trước. Bài phần cũ trong danh sách hashtag phần lớn là video đăng từ năm trước nên ngày đăng
-# tách được chúng. Đo trên bài ẩn 17/10/2026: chỉ dùng ngày đăng thì nâng 1.695 bài lẫn nhiều rác; ngày + tên loạt + từ rạp
+# tách được chúng. Đo trên bài ẩn chỉ dùng ngày đăng thì nâng 1.695 bài lẫn nhiều rác; ngày + tên loạt + từ rạp
 # còn khoảng 190 bài, phần lớn đúng ("SHAUN THE SHEEP hôm nay ra mắt... suất sớm", "#lenhuong đi coi về").
 RELEASE_WINDOW_BEFORE_DAYS = 7
 RELEASE_WINDOW_AFTER_DAYS = 60
@@ -705,7 +693,7 @@ def resolve_relevance(
     if context:
         return True, "related" if label == "uncertain" else label, context
     if not strict and full_title_rule and mentions_full_title(content, movie.get("title")):
-        # Đủ tên phim dài (từ 3 chữ) là tín hiệu đủ mạnh (đo 16/10/2026: ~85% bài "uncertain" có đủ tên 3+ chữ thật sự
+        # Đủ tên phim dài (từ 3 chữ) là tín hiệu đủ mạnh (đo ~85% bài "uncertain" có đủ tên 3+ chữ thật sự
         # là về phim - "t vừa coi suất chiều Bóng Ma Nhà Hát", "spotlight của Út Lan 2..."); phim tên là cụm từ thông
         # dụng thì bên gọi truyền full_title_rule=False (settings.ambiguous_title_movie_slugs).
         return True, "related", "full_title"
@@ -718,7 +706,7 @@ def resolve_relevance(
     return None, label, None
 
 
-# --- Chế độ lọc thủ công (settings.relevance_rules_only, từ 2026-10-09) ---
+# --- Chế độ lọc thủ công (settings.relevance_rules_only) ---
 # Bỏ hẳn AI ở bước lọc bài để ingest nhanh: bài liên quan = chứa tên phim (mọi dạng dấu/hoa thường/viết liền như
 # #HoLinhTrangSi), tên viết tắt (HLTS) hoặc từ khoá của phim; phần chữ (đã bỏ hashtag/mention/link) dài mà không có
 # dấu tiếng Việt nào thì coi là tiếng nước ngoài và loại thẳng. Hashtag-only ("#HoLinhTrangSi #fyp") không bị luật dấu
@@ -749,7 +737,7 @@ def no_diacritics_reason(text: str | None) -> str | None:
     return "no_diacritics" if letters >= _MIN_LETTERS else None
 
 
-# --- Bài "gắn hashtag ké" (từ 2026-10-13) ---
+# --- Bài "gắn hashtag ké" ---
 # Bài chỉ nối với phim đích bằng hashtag tên phim nhét vào cuối một nội dung không liên quan ("Khi có đủ yêu thương thì
 # người bình thường cũng hoá anh hùng💕 #traibuonnguoi #fyp #trend", "U50 mà cô nét cỡ này đó #cookingshowbiz
 # #HoangHauCuoiCung") qua được cổng từ khoá, và Jev hay gán "related". Kira từng loại các bài này.
@@ -781,12 +769,12 @@ _HASHTAG_ONLY_CONTEXT_PHRASES = frozenset(
 # "chiếu"/"chiều" trùng nhau.
 _HASHTAG_ONLY_ACCENTED_WORDS = frozenset(["rạp", "vé", "cảnh", "diễn", "chiếu"])
 # Hashtag có các chuỗi con này (đã bỏ dấu, viết liền) là hashtag ngữ cảnh phim: #phimquytuvuotgiau, #reviewphim,
-# #tiktoksoiphim, #phimchieurap, #trailer..., #CinestarMoviesStation. Dry run 2026-10-13: bỏ qua chúng thì gần 60% số
+# #tiktoksoiphim, #phimchieurap, #trailer..., #CinestarMoviesStation. Dry run bỏ qua chúng thì gần 60% số
 # bài bị gắn hashtag-only thực ra là clip phim thật (caption TikTok chỉ có hashtag, nội dung nằm trong video).
 _FILM_CONTEXT_HASHTAG_PARTS = (
     "phim",
     # Viết kiểu teen (#fimrap, #fim2026) và chuỗi rạp (#CGV, #lottecinema, #galaxycinema, #cinestar, #bhd, #betacinemas)
-    # - đo 13/10/2026: bị đánh dấu nhầm là "chỉ nhét hashtag" trong mẫu dry-run.
+    # - đo bị đánh dấu nhầm là "chỉ nhét hashtag" trong mẫu dry-run.
     "fim",
     "cgv",
     "lotte",

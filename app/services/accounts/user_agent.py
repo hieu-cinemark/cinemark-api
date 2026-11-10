@@ -1,4 +1,4 @@
-"""User-Agent của trình duyệt đã tạo cookie một tài khoản Facebook/Threads (30/10/2026).
+"""User-Agent của trình duyệt đã tạo cookie một tài khoản Facebook/Threads.
 
 spider-hub đọc nó từ một cookie giả `useragent=<base64>` nằm trong cột platform_accounts.cookie (spider-hub
 spiders/facebook/auth/cookies.extract_user_agent) - quy ước có sẵn của các chợ bán tài khoản. Dashboard có ô User-Agent

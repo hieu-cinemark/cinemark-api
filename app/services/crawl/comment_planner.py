@@ -1,30 +1,14 @@
-"""Chọn bài để crawl comment - chạy MỖI GIỜ (scheduler._comments_tick), thay cho lượt "top 100 theo tương tác
-của từng từ khoá, mỗi bài một lần duy nhất" chạy mỗi ngày một lần trước 2026-10-08.
+"""Chọn bài để cào bình luận, chạy mỗi giờ theo từng phim đang theo dõi.
 
-Cách cũ có hai lỗi (đo trên D1 ngày 08/10/2026): chỉ ~4% bài liên quan có comment (TikTok 1,6%), và mỗi bài chỉ
-được chụp một lần nên mọi comment đến sau lần quét đầu bị mất - đường xu hướng chỉ phản ánh lịch crawl. Nó cũng
-chỉ nhìn bài tương tác cao nhất, phần lớn là clip quảng bá - không phải tiếng nói chung của khán giả.
+1. Bài nóng: bài 72 giờ gần đây xếp theo tốc độ tương tác, lấy `hot_per_movie` bài mỗi phim. Bài chưa quét thì quét
+   `HOT_FIRST_PAGES` trang; bài đã quét được quét lại theo nhịp giảm dần khi số bình luận tăng đáng kể.
+2. Mẫu phân tầng (2 lượt/ngày): chia bài 24 giờ theo khung 6 giờ x loại nguồn, lấy ngẫu nhiên `SAMPLE_PER_CELL` bài
+   mỗi ô, để phần "khán giả nói gì" không bị bài quảng bá chi phối.
+3. AI chọn: bài nhiều bình luận được chấm điểm (`comment_value`); điểm cao thì quét sâu, điểm thấp (minigame, quảng cáo)
+   bị loại khỏi hai lớp trên.
 
-Giờ chia hai lớp, theo TỪNG PHIM đang theo dõi (không theo từ khoá):
-
-1. Theo dõi bài nóng (mỗi giờ): trong bài 72 giờ gần đây, xếp theo TỐC ĐỘ tương tác (tương tác / số giờ từ lúc
-   đăng) và lấy `hot_per_movie` bài đầu của mỗi phim. Bài chưa quét thì quét (HOT_FIRST_PAGES trang); bài đã quét
-   thì quét lại theo nhịp giảm dần (REFRESH_EVERY theo tuổi bài) khi số comment nền tảng báo đã tăng đáng kể - mỗi
-   lần chỉ vài trang (HOT_REFRESH_PAGES), comment đã có bị spider bỏ qua nhờ dedupe.
-2. Mẫu phân tầng (2 lượt mỗi ngày, ở run_time và run_time + 12 giờ): từ TOÀN BỘ bài 24 giờ của phim, chia ô theo
-   khung 6 giờ x loại nguồn (chính chủ / trang tin / cá nhân) và lấy ngẫu nhiên SAMPLE_PER_CELL bài chưa quét mỗi
-   ô - để phần "khán giả nói gì" không bị bài quảng bá chi phối. Phía hiển thị cân lại theo tỷ trọng thật.
-
-3. AI chọn (mỗi giờ, từ 2026-10-10): Kira chấm nội dung các bài nhiều comment trong 7 ngày (app/services/crawl/comment_value.py).
-   Bài điểm >= VALUE_PICK_SCORE (review, tranh luận, hỏi đáp về phim) chưa quét thì quét sâu (VALUE_PAGES trang), tối
-   đa VALUE_PER_MOVIE bài mỗi phim mỗi giờ; bài điểm < VALUE_SKIP_SCORE (minigame tag bạn bè, quảng cáo đặt vé) bị bỏ khỏi
-   cả lớp 1 và 2 để không tốn lượt quét vào comment rác. Kira tắt/lỗi thì bài không có điểm và mọi thứ chạy như cũ.
-
-MAX_PUBLISH_PER_ROUND giới hạn số request mỗi nền tảng mỗi giờ để không vắt kiệt pool tài khoản/proxy.
-
-Trạng thái (02/11/2026): trước khi publish chỉ ghi lease comments_queued_at (kèm run_id) chống xếp trùng; comments_crawled_at được ghi khi spider-hub
-báo job xong (apply_comment_completions). Trước đó ghi ngay lúc publish, nên job bị Dừng/bỏ qua/lỗi phiên trông như đã quét:
-bài không tăng comment thì không được quét lại, lớp mẫu (chỉ lấy bài chưa có timestamp) không bao giờ thử lại.
+`MAX_PUBLISH_PER_ROUND` giới hạn số request mỗi nền tảng mỗi giờ. Trước khi đẩy job chỉ ghi lease
+`comments_queued_at`; `comments_crawled_at` chỉ ghi khi spider-hub báo job xong, để job hỏng được thử lại.
 """
 
 from __future__ import annotations
@@ -73,7 +57,7 @@ VALUE_PICK_SCORE = 70
 VALUE_SKIP_SCORE = 20
 VALUE_PER_MOVIE = 8
 VALUE_PAGES = 5
-# Nhân số trang theo nền tảng (2026-10-15): Facebook Comet ~10 comment/trang, Threads cũng ít - cùng số trang với TikTok
+# Nhân số trang theo nền tảng: Facebook Comet ~10 comment/trang, Threads cũng ít - cùng số trang với TikTok
 # (20-50 comment/trang) thì bài FB/Threads chỉ được vài chục comment. Vừa phải vì tài khoản Facebook còn ít.
 PAGE_MULTIPLIER = {"facebook": 2, "threads": 2}
 # Lease xếp hàng: job thường báo kết thúc rồi nhả; chỉ khi mất luôn tín hiệu đó (consumer chết, message mất) mới phải chờ hết

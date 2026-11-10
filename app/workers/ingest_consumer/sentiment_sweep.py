@@ -70,7 +70,7 @@ async def _save(labels: dict[str, CommentLabel], *, insights_only: bool = False,
         sets.append("sentiment_classified_at = CURRENT_TIMESTAMP")
     ids = list(labels)
     # Dấu "+" chặn SQLite dùng index trên sentiment: có index (sentiment, scraped_at) là planner bỏ khoá chính, quét
-    # mọi dòng sentiment IS NULL (~470k comment, đo 19/10/2026: 32 giây mỗi câu) - D1 nghẽn, ingest ghi lỗi 7429.
+    # mọi dòng sentiment IS NULL (~470k comment, đo 32 giây mỗi câu) - D1 nghẽn, ingest ghi lỗi 7429.
     guard = "+insights_classified_at IS NULL" if insights_only else "+sentiment IS NULL"
     result = await d1_query(
         f"UPDATE {table} SET {', '.join(sets)} WHERE id IN ({','.join('?' * len(ids))}) AND {guard}",
@@ -166,7 +166,7 @@ async def classify_pending(
 # Nội dung bài thường dài (caption + hashtag) - cắt bớt trước khi gửi Kira; phần đầu là phần cảm nhận.
 POST_TEXT_LIMIT = 1200
 SWEEP_MAX_POSTS = 100
-# 10/11/2026: bài quét mỗi 10 phút thay vì mỗi phút. Câu chọn bài chưa có nhãn duyệt cả 48 giờ bài (~10 nghìn dòng) dù
+# bài quét mỗi 10 phút thay vì mỗi phút. Câu chọn bài chưa có nhãn duyệt cả 48 giờ bài (~10 nghìn dòng) dù
 # chẳng còn bài nào chờ - 1.093 lượt/ngày đọc 10,6 triệu dòng D1. Bài về chậm hơn bình luận nhiều, chờ 10 phút không sao.
 POST_SWEEP_EVERY_SECONDS = 600
 

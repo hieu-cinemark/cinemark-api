@@ -1,26 +1,14 @@
-"""Bộ ba refresh-token dùng chung cho mọi nền tảng chạy qua spider-hub có session đã
-lưu để khôi phục hoặc cookie do người dán vào (facebook, threads, tiktok):
+"""Route quản lý phiên đăng nhập dùng chung cho facebook, threads, tiktok:
 
-  GET  /<platform>/token-status         trạng thái session hiện tại
-                                        (FB/Threads: TTL cache GraphQL trong Redis;
-                                         TikTok: tài khoản đang bật + sessionid)
-  WS   /<platform>/refresh-token/ws     tiến độ trực tiếp của lần refresh vừa kích hoạt
-  POST /<platform>/import-cookies      nhận session do người xuất ra, rồi refresh
-                                        (token GraphQL, hoặc device_id/odin_id của
-                                        TikTok)
-  POST /<platform>/restore-session     dùng lại storage_state trong Redis / cột cookie
-                                        của một tài khoản, rồi refresh
+- `GET  /<platform>/token-status`: trạng thái phiên hiện tại.
+- `WS   /<platform>/refresh-token/ws`: tiến độ lần refresh vừa kích hoạt.
+- `POST /<platform>/import-cookies`: nhận cookie người dùng xuất từ trình duyệt rồi refresh.
+- `POST /<platform>/restore-session`: dùng lại phiên đã lưu (Redis / cột cookie) rồi refresh.
 
-Không có nút "refresh now" nào gõ mật khẩu từ dashboard. (Lưu ý: bootstrap.py của
-spider-hub giờ tự đăng nhập qua proxy đã ghim khi tài khoản không còn session - xem
-spiders/<platform>/auth/bootstrap.py bên đó.) Cache token GraphQL hết hạn *không*
-giống với việc Facebook đăng xuất tài khoản: cookie trong Redis (hoặc cột cookie
-của tài khoản) có thể vẫn còn sống. restore-session là nút dành cho trường hợp đó.
-import-cookies chỉ dùng khi các cookie đã lưu thực sự đã chết và một người đã đăng
-nhập từ trình duyệt thật.
-
-File nền tảng chỉ cần gọi build_token_refresh_routes(router, "<platform>") - cùng
-dạng với platform_scraper.build_run_route."""
+Không có nút gõ mật khẩu từ dashboard. Cache token hết hạn không có nghĩa là tài khoản bị đăng xuất: thử
+`restore-session` trước, chỉ `import-cookies` khi cookie đã chết. Nền tảng đăng ký bằng
+`build_token_refresh_routes(router, "<platform>")`.
+"""
 
 from __future__ import annotations
 

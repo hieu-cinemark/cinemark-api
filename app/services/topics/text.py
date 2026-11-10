@@ -1,5 +1,5 @@
 """Làm sạch comment trước khi tính embedding: bỏ những thứ khiến máy gom theo HÌNH THỨC (link, tag người, sticker,
-emoji, từ cười) thay vì NỘI DUNG. Probe 26/10/2026: sau làm sạch + bỏ câu < 30 ký tự còn ~50% comment, và tỉ lệ cụm
+emoji, từ cười) thay vì NỘI DUNG. Probe sau làm sạch + bỏ câu < 30 ký tự còn ~50% comment, và tỉ lệ cụm
 rõ nghĩa tăng từ 40% lên 55%."""
 
 from __future__ import annotations
