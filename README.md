@@ -1,217 +1,58 @@
 # cinemark-api
 
-## Tin sau công chiếu (Google Search + News Light, lưu D1)
+Service Python (FastAPI) chạy trên VPS, nối spider-hub (cào dữ liệu) với cinemark (dashboard trên Cloudflare Worker):
 
-Cấu hình `SERPAPI_API_KEY` trong env hoặc `.env` rồi restart web/scheduler.
-`SERPAPI_TIMEOUT_SECONDS` mặc định 120 giây. Không cần SDK mới.
+- **Kích hoạt cào:** đọc phim / từ khoá đang bật từ D1 `cinemark-scraper`, đẩy yêu cầu cào lên Kafka `crawl_requests`.
+- **Nhận kết quả:** đọc bài và bình luận spider-hub đẩy lên Kafka, phân loại (liên quan, cảm xúc, khía cạnh) rồi ghi D1.
+- **Chạy nền:** lịch cào, tổng hợp số liệu, job AI (nhãn tác giả, niche kênh, Review Angles), báo cáo, cảnh báo.
+- **API cho dashboard spider-hub:** tài khoản, proxy, từ khoá, phim, thống kê, log, hàng đợi.
 
-- `POST /research/google-search`: tìm trực tiếp, body `{"q":"phim Út Lan 2 đánh giá","gl":"vn","hl":"vi"}`.
-  Dùng engine `google`, trả `organic_results` và `top_stories` nếu có.
-  Endpoint `/research/google-news` cũ vẫn giữ Google News Light cho client cũ.
-- `GET /research/movies/{movie_id}/news`: chỉ đọc bản đã lưu từ D1, trả null khi chưa có.
-  Không gọi SerpApi hay Bee khi đọc.
-- `POST /research/movies/{movie_id}/news/refresh`: lấy tin đến hạn và lưu D1; không gọi Bee.
+Service không có database riêng: dữ liệu nằm ở Cloudflare D1 (gọi qua HTTP API), cấu hình tài khoản/AI ở Postgres
+(Supabase), trạng thái ngắn hạn ở Redis, dữ liệu thô ở R2.
 
-Scheduler kiểm tra mỗi giờ và lấy tin cho các phim đang theo dõi, đã khởi chiếu (giờ
-Việt Nam), mỗi 72 giờ kể từ lần thành công. Tác vụ chạy nền, không chặn lịch crawl.
-Dữ liệu lưu tại bảng `movie_press_reviews` trong D1 dùng chung với Cinemark; mỗi phim
-một snapshot hiện tại, có ngày lấy tin/lịch lấy tiếp và trường phân tích Cinemark AI.
-Mỗi lượt cập nhật gọi hai engine: Google Search cho organic_results và Google News
-Light cho news_results. Giữ đầy đủ một trang mỗi nguồn cho hiển thị; sources chứa
-tất cả nguồn duy nhất. analysis_sources chọn riêng tối đa 10 nguồn cân bằng giữa
-hai nhóm cho trích xuất và AI. Không dùng top_stories cho tab báo chí.
-Tin mới xoá phân tích của snapshot trước. Lỗi lấy tin giữ dữ liệu cũ, giãn retry 1 giờ;
-Redis chỉ giữ khoá/cooldown, không còn chứa bản tin. Không tự theo trang kế tiếp. Hiển thị không cắt số bài trong trang API trả về; trafilatura trích nội dung, tác giả và
-ngày xuất bản gốc, chuẩn bị sẵn analysis_input trong JSON trước khi gửi Bee. Nội dung
-được giới hạn độ dài và đánh dấu fallback khi chỉ có snippet.
-
-Cinemark Worker đọc D1 trực tiếp và gọi Bee từ cấu hình AI của Cinemark khi người dùng
-bấm phân tích; cinemark-api không còn endpoint phân tích Bee cho tính năng này.
-Bản tin/AI đã lưu không cần URL, key API VPS hoặc SerpApi để xem.
-
-Chạy `cinemark-scheduler` trên VPS (hoặc cấu hình `scheduler_in_web` hiện có). API tự
-`CREATE TABLE IF NOT EXISTS`; migration tương ứng ở repo Cinemark:
-`scripts/migrations/20261102_movie_press_reviews.sql`.
-
-Cấu hình lần đầu trên VPS:
-
-```sh
-cd /opt/cinemark-api
-sudo nano .env
-# Thêm SERPAPI_API_KEY=<key của bạn>, không có dấu ngoặc nhọn.
-sudo systemctl restart cinemark-api-web cinemark-scheduler
-```
-
-Nếu chưa có key, đọc bản tin vẫn hoạt động; chưa có dữ liệu thì giao diện báo chờ lần
-thu thập đầu tiên. Không commit key vào git.
-
-Tài liệu provider: [Google News Light API](https://serpapi.com/google-news-light-api).
-
-Kafka⇄D1 bridge for spider-hub's social-media crawls. Triggers crawls
-(reads which movies/keywords to search for from cinemark-scraper's D1
-database, publishes them to Kafka) and ingests the results (consumes
-scraped posts off Kafka, writes them back into that same D1 database).
-
-No database of its own - this service has no Postgres/SQL store. Every
-piece of state it needs (movies, keywords, posts) already lives in
-cinemark-scraper's Cloudflare D1 database; this service reads and writes it
-over [D1's HTTP query API](https://developers.cloudflare.com/d1/best-practices/query-d1/#d1-http-api)
-(`app/repositories/d1/store.py`) since D1 bindings only exist inside a Cloudflare
-Worker, not a plain Python process.
-
-## How this fits together
+## Luồng chính
 
 ```
-                    cinemark-api                            spider-hub
-POST /facebook/run ─────►  reads enabled facebook keywords     
-(manual, or                from D1 (cinemark-scraper's         
-scripts/trigger_            movies/keywords tables)             
-scheduled_crawl.sh,        │                                    
-every 6h)                  ▼ Kafka "crawl_requests"             
-                            ──────────────────────────────► crawl_request_consumer.py
-                                                              runs `scrapy crawl facebook_search`
-                                                                  │
-                            ingest_consumer                       ▼ Kafka "raw_posts"
-                            (separate long-running          ◄──────────────────────────────
-                            process) consumes this,
-                            resolves keyword_id -> movie_id
-                            via D1, writes the post into
-                            D1's `posts` table
+dashboard / scheduler --POST /<nền tảng>/run--> cinemark-api --Kafka crawl_requests--> spider-hub (cào)
+                                                                                            |
+D1 cinemark-scraper <--ghi bài, bình luận-- ingest_consumer <--Kafka raw_posts / raw_comments-+
+        |
+        +--> Worker cinemark đọc trực tiếp để hiển thị
 ```
 
-See spider-hub's own README for the other half of this picture.
-
-## Adding a platform
-
-Everything platform-specific (how to map spider-hub's raw Kafka payload
-into cinemark-scraper's D1 schema) lives in one place:
-`app/services/crawl/platforms.py`. To add a platform spider-hub already knows how
-to crawl (its own `SPIDER_BY_PLATFORM`):
-
-1. Add a mapper function to `PLATFORM_POST_MAPPERS` in `platforms.py`.
-2. Create `app/api/routes/<platform>.py`, same shape as `facebook.py`:
-   `build_run_route(router, "<platform>")` plus whatever platform-specific
-   extras it needs (Facebook's are `/refresh-token` and `/token-status`,
-   for its Redis-cached login session - most platforms won't need
-   anything like that).
-3. Register the new router in `app/main.py`.
-4. Add the platform to `PLATFORMS=()` in `scripts/trigger_scheduled_crawl.sh`.
-
-Nothing else - `app/repositories/d1/store.py`, `app/api/routes/platform_scraper.py`,
-`app/workers/ingest_consumer/` - needs to change; they're all already
-platform-agnostic, driven by the registry.
-
-## Setup
+## Cài đặt và chạy
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in the values you need, see below
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt            # thêm requirements-ml.txt nếu chạy model tại chỗ
+cp .env.example .env                       # điền Kafka, CLOUDFLARE_*, Redis, Supabase...
+
+uvicorn app.main:app --reload              # API
+python -m app.workers.ingest_consumer.main # nhận bài/bình luận từ Kafka
+python -m app.workers.scheduler.main       # lịch cào và job nền
+pytest                                      # test
 ```
 
-See `.env.example` for the full list of settings. Only `KAFKA_BOOTSTRAP_SERVERS`
-and the three `CLOUDFLARE_*` vars matter for this service to actually do
-anything - everything else has a working default or is optional
-(`REDIS_*` just backs the Facebook token-status endpoint).
+Biến môi trường đầy đủ ở `.env.example` và `app/core/config.py`.
 
-Cloudflare API tokens can't be scoped to a single D1 database (only to "D1:
-Edit" for the whole account) - if that's a concern, restrict the token by
-client IP instead when creating it.
+## Triển khai
 
-## Running
+Push lên `main` thì GitHub Actions deploy lên VPS (`deploy/vps/deploy-repo.sh`). Các service systemd ở `deploy/systemd/`.
 
-Two separate long-running processes, same codebase:
+## Cấu trúc
 
-```bash
-# Web (trigger endpoints)
-uvicorn app.main:app --reload
+| Thư mục | Nội dung |
+|---|---|
+| `app/api/` | Route HTTP |
+| `app/core/` | Cấu hình, xác thực, log, middleware |
+| `app/clients/` | Client mỏng: D1, Kafka, Redis, R2, Telegram |
+| `app/repositories/` | Truy vấn SQL theo bảng (D1) và SQLite tại máy |
+| `app/services/` | Nghiệp vụ: cào, job AI, báo cáo, thống kê, vận hành |
+| `app/ai/` | Mọi thứ về LLM/model: provider, prompt, task, model tại chỗ, RAG |
+| `app/workers/` | Tiến trình chạy lâu: ingest, scheduler, lake writer |
+| `app/vision/` | Model đọc ảnh tại chỗ |
+| `scripts/` | Job chạy định kỳ, script train model, công cụ chạy tay |
+| `deploy/` | systemd và script deploy |
+| `tests/` | Test (pytest) |
 
-# Ingest worker (Kafka raw_posts -> D1)
-python -m app.workers.ingest_consumer.main
-```
-
-`deploy/systemd/cinemark-ingest-consumer.service` runs the ingest worker as
-a service in production (`deploy/systemd/install.sh` installs it). The web
-process isn't in `deploy/` yet - run it behind whatever you're already using
-(reverse proxy, another systemd unit, etc.).
-
-### Docker
-
-```bash
-docker build -t cinemark-api .
-docker run -p 8000:8000 --env-file .env cinemark-api                                # web
-docker run --env-file .env cinemark-api python -m app.workers.ingest_consumer.main   # worker
-```
-
-One image, two roles, picked by the command the container runs with - see
-the `Dockerfile`'s own comment. No `.env` is baked into the image; pass real
-config via `--env-file`/`-e`/your orchestrator's secrets at run time.
-
-If Kafka is also running in Docker (see the root `docker-compose.yml`),
-containers reach it via `KAFKA_BOOTSTRAP_SERVERS=kafka:29092` on the same
-compose network - `localhost:9092` (used from the host, or from a container
-run standalone like the examples above) only resolves to *that* container
-itself, not the broker.
-
-## Scheduled crawls
-
-`scripts/trigger_scheduled_crawl.sh` calls `POST /<platform>/run` with an
-empty body for every registered platform, currently every 6h (same cadence
-cinemark-scraper's own Facebook cron ran at before spider-hub took over as
-the primary source - see cinemark-scraper's `src/index.ts`). Install via:
-
-```bash
-crontab -e
-# 0 */6 * * * /path/to/cinemark-api/scripts/trigger_scheduled_crawl.sh >> /path/to/cinemark-api/scripts/trigger_scheduled_crawl.log 2>&1
-```
-
-Every enabled keyword gets the same fixed cadence for now - per-keyword
-frequency is a planned upgrade, not implemented yet.
-
-## API
-
-- `POST /<platform>/run` - trigger a crawl. Body (all fields optional):
-  `{keyword_id?, movie_id?, max_pages?, start_date?, end_date?}`. No fields
-  = every enabled keyword for that platform (the cron's case). `keyword_id`
-  alone = just that keyword. `movie_id` alone = every enabled keyword for
-  that movie.
-- `POST /facebook/refresh-token` - manually trigger the Facebook session
-  refresh spider-hub's own cron already runs every 4h.
-- `GET /facebook/token-status` - whether spider-hub's cached Facebook
-  session (Redis) is still valid, and how long until it expires.
-- `GET /health` - liveness check, no dependencies.
-
-## Testing
-
-`tests/` is currently an empty placeholder - no test suite yet.
-
-## Project structure
-
-```
-app/
-  main.py                FastAPI app
-  api/routes/            HTTP routes
-  core/                  config, auth, logging, middleware
-  clients/               thin clients: D1 transport, Kafka, Redis, R2 lake, Telegram
-  repositories/d1/       D1 SQL: store.py (movies/keywords/reports/stats), posts.py, comments.py, comment_rollup.py, topics.py
-  repositories/local/    SQLite on the job host (Social Topic assignment state)
-  services/
-    crawl/               scheduler, crawl jobs/lanes, task queue, platform registry, tracked posts, comment value
-    discovery/           AI hashtag/query discovery
-    omar/                Omar API crawling (TikTok hashtags, channels, comments, trending)
-    accounts/            account health, platform accounts/proxies (Supabase), tokens
-    relevance/           relevance rules, cleanup
-    reports/             social topic AI reports, report queue/schedule
-    stats/               daily stats rollup + comment rollup per movie x day (read by dashboard / cinemark)
-    topics/              Social Topic clustering (WIP)
-    ops/                 alerts, metrics, AI runtime sync
-  ai/                    LLM clients + tasks (relevance, sentiment, report)
-    local/               models run on this machine: ViSoBERT (sentiment, relevance), e5 embeddings
-  workers/               ingest_consumer, lake_writer (raw Kafka -> R2), scheduler (python -m app.workers.<name>.main)
-  vision/                cinema frame / scene classifiers
-scripts/
-  jobs/                  run on a schedule (systemd timers / cron): python -m scripts.jobs.<name>
-  ml/                    model training + labelling datasets
-  tools/                 run by hand: probes, local DB pull, one-off cleanups
-```
+Mỗi thư mục có README riêng.
