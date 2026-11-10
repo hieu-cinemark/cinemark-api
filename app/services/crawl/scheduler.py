@@ -834,7 +834,7 @@ async def _stats_reconcile_tick() -> None:
     if now.hour == comment_rollup.NIGHTLY_HOUR and slot == 3:
         _spawn(comment_rollup.refresh_nightly())
     else:
-        _spawn(comment_rollup.refresh_recent())
+        _spawn(comment_rollup.refresh_recent(include_yesterday=slot == _STATS_RECONCILE_FULL_SLOT))
 
 
 async def _loop() -> None:

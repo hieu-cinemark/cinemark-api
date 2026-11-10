@@ -50,8 +50,10 @@ async def rebuild_days(days: list[str]) -> dict[str, int]:
         return {"done": done, "failed": failed}
 
 
-async def refresh_recent() -> dict[str, int]:
-    return await rebuild_days(vn_days(RECENT_DAYS))
+async def refresh_recent(include_yesterday: bool = True) -> dict[str, int]:
+    """Hôm nay mỗi lượt; hôm qua chỉ khi `include_yesterday` (scheduler: mỗi giờ một lần - 10/11/2026, trước đó mỗi 10 phút
+    tính lại cả 2 ngày, phần lớn trong 31,8 triệu dòng đọc/ngày của câu rollup chủ đề)."""
+    return await rebuild_days(vn_days(RECENT_DAYS if include_yesterday else 1))
 
 
 async def refresh_nightly() -> dict[str, int]:

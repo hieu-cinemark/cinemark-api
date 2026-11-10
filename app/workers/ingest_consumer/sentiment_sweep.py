@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -165,6 +166,9 @@ async def classify_pending(
 # Nội dung bài thường dài (caption + hashtag) - cắt bớt trước khi gửi Kira; phần đầu là phần cảm nhận.
 POST_TEXT_LIMIT = 1200
 SWEEP_MAX_POSTS = 100
+# 10/11/2026: bài quét mỗi 10 phút thay vì mỗi phút. Câu chọn bài chưa có nhãn duyệt cả 48 giờ bài (~10 nghìn dòng) dù
+# chẳng còn bài nào chờ - 1.093 lượt/ngày đọc 10,6 triệu dòng D1. Bài về chậm hơn bình luận nhiều, chờ 10 phút không sao.
+POST_SWEEP_EVERY_SECONDS = 600
 
 
 async def classify_pending_posts(
@@ -230,6 +234,7 @@ async def sweep_forever() -> None:
     """Không bao giờ trả về; mọi lỗi đều được log và thử lại ở vòng sau."""
     attempts: Counter[str] = Counter()
     post_attempts: Counter[str] = Counter()
+    last_post_sweep = 0.0
     while True:
         full_batch = False
         try:
@@ -240,7 +245,11 @@ async def sweep_forever() -> None:
                         limit=SWEEP_MAX_ROWS, since=datetime.now(tz=UTC) - SWEEP_WINDOW, exclude=exclude
                     )
                     # Bài chỉ chạy khi comment không còn tồn (comment mới vẫn ưu tiên có nhãn trong một hai phút).
-                    if result["selected"] < SWEEP_MAX_ROWS:
+                    if (
+                        result["selected"] < SWEEP_MAX_ROWS
+                        and time.monotonic() - last_post_sweep >= POST_SWEEP_EVERY_SECONDS
+                    ):
+                        last_post_sweep = time.monotonic()
                         post_result = await classify_pending_posts(
                             limit=SWEEP_MAX_POSTS,
                             since=datetime.now(tz=UTC) - SWEEP_WINDOW,
