@@ -31,7 +31,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.ai.accuracy import compute_metrics, parse_human_aspects, parse_human_sentiment, parse_human_yes_no
+from app.ai.domain.accuracy import compute_metrics, parse_human_aspects, parse_human_sentiment, parse_human_yes_no
 from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.repositories.d1.comments import ensure_comment_insight_columns
 from app.repositories.d1.store import RELEVANT_POST_SQL, d1_query

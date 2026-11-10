@@ -1,6 +1,6 @@
-from app.ai import jev
-from app.ai.aspects import aspect_prompt_lines, parse_aspects
-from app.ai.cinema_visit import cinema_visit_aspect
+from app.ai.domain.aspects import aspect_prompt_lines, parse_aspects
+from app.ai.domain.cinema_visit import cinema_visit_aspect
+from app.ai.providers import jev
 from app.ai.tasks.sentiment import _label, _user_prompt, _with_cinema_visits
 
 

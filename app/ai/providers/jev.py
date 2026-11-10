@@ -14,8 +14,8 @@ from typing import Any
 
 import httpx
 
-from app.ai.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, parse_aspects
-from app.ai.decisions import COMMENT, POST, decide, usage_totals
+from app.ai.domain.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, parse_aspects
+from app.ai.providers.decisions import COMMENT, POST, decide, usage_totals
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -179,7 +179,7 @@ async def classify_post_relevance_jev(
 ) -> dict[str, Any] | None:
     """{"label": related|not_related|uncertain, "confidence", "reason"} như classify_post_relevance_kira, hoặc None
     khi lỗi (bên gọi giữ bài lại)."""
-    from app.ai.movie_context import movie_context_block
+    from app.ai.domain.movie_context import movie_context_block
 
     others = ", ".join(title for title in other_titles if title and title != movie.get("title"))
     state = (

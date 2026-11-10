@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from app.ai.client import load_provider
+from app.ai.providers.client import load_provider
 from app.core.config import settings
 from app.services.ops import ops_alerts
 

@@ -31,11 +31,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from app.ai.decisions import decisions_supported
-from app.ai.jev import classify_post_relevance_jev, use_jev
+from app.ai.domain.movie_context import movie_context_block
 from app.ai.local import visobert_relevance
-from app.ai.movie_context import movie_context_block
 from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
+from app.ai.providers.decisions import decisions_supported
+from app.ai.providers.jev import classify_post_relevance_jev, use_jev
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.config import settings
 from app.core.logging import get_logger

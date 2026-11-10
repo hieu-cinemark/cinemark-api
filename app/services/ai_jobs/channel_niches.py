@@ -9,9 +9,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.ai.prompts.channel_niches import CHANNEL_NICHES_SYSTEM, DEFAULT_NICHES
+from app.ai.runtime import call_llm_json
 from app.clients.d1 import d1_query
 from app.core.logging import get_logger
-from app.services.ai_jobs.ai import ask_json
 from app.services.ai_jobs.channels import RELEVANT_POST_FILTER, channel_of_post
 
 logger = get_logger(__name__)
@@ -24,21 +25,6 @@ MIN_POSTS = 2
 RECHECK_DAYS = 30
 MIN_CONFIDENCE = 50
 CAPTIONS_PER_CHANNEL = 4
-
-DEFAULT_NICHES = [
-    {"key": "review_phim", "label": "Review phim"},
-    {"key": "tin_showbiz", "label": "Tin tức showbiz"},
-    {"key": "hai_giai_tri", "label": "Hài / giải trí"},
-    {"key": "me_be_gia_dinh", "label": "Mẹ & bé / gia đình"},
-    {"key": "sinh_vien_gioi_tre", "label": "Sinh viên / giới trẻ"},
-    {"key": "fanclub", "label": "Fanclub diễn viên"},
-    {"key": "rap_chieu", "label": "Rạp chiếu"},
-    {"key": "khac", "label": "Khác"},
-]
-
-SYSTEM = """Bạn phân loại KÊNH mạng xã hội (Facebook page/group, TikTok, Threads) ở Việt Nam theo TỆP KHÁN GIẢ / kiểu nội dung chính của kênh, để bên truyền thông phim chọn kênh booking.
-Mỗi kênh có tên, nền tảng và vài bài gần đây về phim. Chọn ĐÚNG MỘT key trong danh sách tệp được cho - dựa vào kiểu nội dung chung của kênh (tên kênh, giọng văn, chủ đề), không chỉ dựa vào việc bài nói về phim.
-Trả JSON: {"results":[{"i":1,"niche":"<key>","confidence":0-100,"reason":"<= 12 từ"}]}. Không chắc thì confidence thấp."""
 
 
 def _iso(value: datetime) -> str:
@@ -122,7 +108,9 @@ async def process_channel_niches() -> dict[str, Any]:
             },
             ensure_ascii=False,
         )
-        parsed, _ = await ask_json(system=SYSTEM, user=user, max_tokens=3000, task="channel_niches")
+        parsed, _ = await call_llm_json(
+            system_prompt=CHANNEL_NICHES_SYSTEM, user_prompt=user, max_tokens=3000, task="channel_niches"
+        )
         results = parsed.get("results") if isinstance(parsed, dict) else None
         rows = []
         for i, channel in enumerate(batch):

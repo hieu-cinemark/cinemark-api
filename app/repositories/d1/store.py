@@ -37,7 +37,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.ai.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
+from app.ai.domain.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
 from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.clients.d1 import _configured, d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client

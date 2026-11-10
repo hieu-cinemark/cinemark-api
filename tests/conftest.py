@@ -28,7 +28,7 @@ def _no_visobert(monkeypatch):
 @pytest.fixture(autouse=True)
 def _fake_bee_decisions(monkeypatch):
     """Model quyết định của Bee (app/ai/decisions.py): không đọc ai_providers trên Supabase - test mock HTTP."""
-    from app.ai import decisions
+    from app.ai.providers import decisions
 
     async def endpoint():
         return (

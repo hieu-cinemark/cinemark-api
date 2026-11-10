@@ -16,7 +16,7 @@ spider-hub. Nếu sau này API chạy nhiều worker/replica, phần này phải
 (cùng dạng với crawl_jobs.py) - nếu không, một lần GET trạng thái rơi vào "nhầm"
 worker sẽ thấy trạng thái cũ/thiếu.
 
-Không có giới hạn đồng thời riêng ở đây - semaphore theo provider của app.ai.client
+Không có giới hạn đồng thời riêng ở đây - semaphore theo provider của app.ai.providers.client
 (asyncio.Semaphore(2), xem call_ai) vốn đã giới hạn số lời gọi Bee/Kira chạy cùng
 lúc; đưa vào hàng đợi nhiều phim hơn mức đó chỉ có nghĩa là các phim dư nằm chờ
 semaphore đó bên trong generate_report_for_movie, đúng cùng hành vi xếp hàng, chỉ là

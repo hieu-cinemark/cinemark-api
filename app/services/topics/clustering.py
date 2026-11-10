@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.ai.bee import call_bee
+from app.ai.providers.bee import call_bee
 from app.ai.runtime import parse_json_response
 
 # e5-small: hai câu bất kỳ đã có cosine ~0,80-0,87, nên ngưỡng gán phải cao. Giá trị khởi đầu - đo lại bằng calibrate().

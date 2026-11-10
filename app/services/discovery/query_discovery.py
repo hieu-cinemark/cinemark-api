@@ -25,7 +25,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.ai.movie_context import cast_list, movie_context_block
+from app.ai.domain.movie_context import cast_list, movie_context_block
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL

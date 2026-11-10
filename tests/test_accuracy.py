@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.ai.accuracy import compute_metrics, parse_human_aspects, parse_human_sentiment, parse_human_yes_no
+from app.ai.domain.accuracy import compute_metrics, parse_human_aspects, parse_human_sentiment, parse_human_yes_no
 
 
 def _pair(

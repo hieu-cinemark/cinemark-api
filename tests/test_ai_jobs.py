@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.ai.tasks import review_angles as tasks
 from app.services.ai_jobs import review_angles
 from app.services.ai_jobs.channels import channel_of_post, channel_url, extract_handle
 
@@ -34,14 +35,14 @@ def test_channel_of_post_groups_and_urls():
 
 
 def test_fold_and_angle_id_match_worker():
-    assert review_angles.fold("  Đạo   DIỄN ") == "dao dien"
+    assert tasks.fold("  Đạo   DIỄN ") == "dao dien"
     # Giá trị tính bằng bản TS (sha256(JSON.stringify({aspect, name: fold(name)})).slice(0, 24)).
-    assert review_angles.angle_id_of("dien_xuat", "Diễn xuất  Đỉnh của Thu Trang") == "37cf08dff64b0747db06f15d"
+    assert tasks.angle_id_of("dien_xuat", "Diễn xuất  Đỉnh của Thu Trang") == "37cf08dff64b0747db06f15d"
 
 
 def test_has_text_and_premiere_start():
-    assert not review_angles.has_text("https://x.com #CCEE3 @abc 🔥🔥")
-    assert review_angles.has_text("Phim hay #CCEE3")
+    assert not tasks.has_text("https://x.com #CCEE3 @abc 🔥🔥")
+    assert tasks.has_text("Phim hay #CCEE3")
     assert review_angles.premiere_start("2026-11-03") == "2026-11-02T17:00:00+00:00"
 
 
@@ -62,18 +63,18 @@ def _angle(**extra):
 
 
 def test_parse_batch_rules():
-    ok = review_angles.parse_batch({"summary": " Tóm tắt. ", "angles": [_angle()]}, POSTS, [])
+    ok = tasks.parse_batch({"summary": " Tóm tắt. ", "angles": [_angle()]}, POSTS, [])
     assert ok["summary"] == "Tóm tắt." and ok["angles"][0]["evidence"][0]["postId"] == "p1"
     invented = _angle(evidence=[{"postId": "p1", "quote": "Diễn xuất đỉnh nhất năm nay"}])
-    assert review_angles.parse_batch({"summary": "x", "angles": [invented]}, POSTS, []) is None
-    assert review_angles.parse_batch({"summary": "x", "angles": [_angle(aspect="doanh_thu")]}, POSTS, []) is None
+    assert tasks.parse_batch({"summary": "x", "angles": [invented]}, POSTS, []) is None
+    assert tasks.parse_batch({"summary": "x", "angles": [_angle(aspect="doanh_thu")]}, POSTS, []) is None
     quote = {"postId": "p2", "quote": "Kịch bản đoạn giữa hơi lê thê"}
     three = [_angle(name=f"Góc {n}", aspect="kich_ban", evidence=[quote]) for n in "abc"]
-    assert review_angles.parse_batch({"summary": "x", "angles": three}, POSTS, []) is None
+    assert tasks.parse_batch({"summary": "x", "angles": three}, POSTS, []) is None
     catalog = [{"id": "abc", "name": "Diễn xuất tự nhiên", "aspect": "dien_xuat"}]
-    reused = review_angles.parse_batch({"summary": "x", "angles": [_angle(name="diễn xuất  TỰ NHIÊN")]}, POSTS, catalog)
+    reused = tasks.parse_batch({"summary": "x", "angles": [_angle(name="diễn xuất  TỰ NHIÊN")]}, POSTS, catalog)
     assert reused["angles"][0]["id"] == "abc"
-    assert review_angles.parse_batch({"summary": "x", "angles": [_angle(id="zzz")]}, POSTS, catalog) is None
+    assert tasks.parse_batch({"summary": "x", "angles": [_angle(id="zzz")]}, POSTS, catalog) is None
 
 
 class FakeRedis:
@@ -144,7 +145,7 @@ def world(monkeypatch):
 
     async def fake_ai(**kwargs):
         calls.append(kwargs)
-        posts = json.loads(kwargs["user"])["posts"]
+        posts = json.loads(kwargs["user_prompt"])["posts"]
         first = next(p for p in posts if "Diễn xuất" in p["caption"])
         return {
             "summary": "Ok.",
@@ -162,7 +163,7 @@ def world(monkeypatch):
     monkeypatch.setattr(review_angles, "d1_query", fake_d1)
     monkeypatch.setattr(review_angles.lake, "get_object", get_object)
     monkeypatch.setattr(review_angles.lake, "put_object", put_object)
-    monkeypatch.setattr(review_angles, "ask_json", fake_ai)
+    monkeypatch.setattr(review_angles, "call_llm_json", fake_ai)
     monkeypatch.setattr(review_angles, "vn_day", lambda at=None: "2026-11-10")
     review_angles._movies.clear()
     return redis, lake, calls
@@ -176,12 +177,12 @@ async def test_batch_writes_state_in_worker_format_and_advances(world):
     assert state["version"] == 2 and state["cursor"] == "2026-11-03T04:00:00+00:00"
     assert sum(state["analyzed"].values()) == 4
     angle = state["angles"][0]
-    assert angle["id"] == review_angles.angle_id_of("dien_xuat", "Diễn xuất tự nhiên")
+    assert angle["id"] == tasks.angle_id_of("dien_xuat", "Diễn xuất tự nhiên")
     assert set(angle["refs"][0]) == {"id", "page", "platform", "source", "interactions", "views", "quote"}
     page = json.loads(lake["analysis/review-angles/v2/m1/page-0.json"])
     assert {p["id"] for p in page} == {"p1", "p2", "p4"}  # p3 chỉ có hashtag/emoji: đã đọc, không gửi AI
     assert page[0]["imageUrl"].startswith("/api/social-topic/review-angles/image?movieId=m1&postId=")
-    assert "p3" not in json.loads(calls[0]["user"])["posts"].__repr__()
+    assert "p3" not in json.loads(calls[0]["user_prompt"])["posts"].__repr__()
     again = await review_angles.analyze_next_batch("m1")
     assert again["read"] == 0 and len(calls) == 1  # hết bài mới, không gọi AI lại
     assert await redis.get("social_crawler:review_angles:lock:m1") is None
@@ -204,7 +205,7 @@ async def test_unparsed_answer_retries_then_skips(world, monkeypatch):
             ],
         }, "{}"
 
-    monkeypatch.setattr(review_angles, "ask_json", bad_ai)
+    monkeypatch.setattr(review_angles, "call_llm_json", bad_ai)
     for _ in range(2):
         result = await review_angles.analyze_next_batch("m1")
         assert result["reason"] == "ai_unparsed" and result["read"] == 0
@@ -221,3 +222,11 @@ async def test_focus_mode_runs_until_done_and_clears_key(world):
     assert result["stopped"] == "done" and result["read"] == 4
     assert not await redis.exists(review_angles.REVIEW_FOCUS_KEY)
     assert int(await redis.get("social_crawler:review_angles:tokens:m1")) > 0
+
+
+def test_build_context_numbers_documents_and_respects_limit():
+    from app.ai.retrieval import Document, ScoredDocument, build_context
+
+    docs = [ScoredDocument(Document(id=str(i), text=f"Đoạn {i} " + "x" * 40), 1.0 - i / 10) for i in range(5)]
+    context = build_context(docs, max_chars=120)
+    assert context.startswith("[1] Đoạn 0") and "[2] Đoạn 1" in context and "[3]" not in context

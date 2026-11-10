@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from app.ai.aspects import parse_aspects
+from app.ai.domain.aspects import parse_aspects
 from app.clients.d1 import d1_query
 
 DATA_DIR = Path.home() / "cinemark-ml" / "aspects"

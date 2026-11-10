@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from app.ai.client import load_provider
+from app.ai.providers.client import load_provider
 from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
 from app.core.config import settings
 from app.core.logging import get_logger

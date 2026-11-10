@@ -26,13 +26,13 @@ from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 from zoneinfo import ZoneInfo
 
-from app.ai.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
-from app.ai.cinema_visit import cinema_visit_aspect
-from app.ai.decisions import POST, decisions_supported
-from app.ai.jev import classify_comments_jev, use_jev
+from app.ai.domain.aspects import aspect_prompt_lines, parse_aspects, parse_stage, stage_prompt_lines
+from app.ai.domain.cinema_visit import cinema_visit_aspect
+from app.ai.domain.movie_context import movie_context_block
 from app.ai.local import visobert
-from app.ai.movie_context import movie_context_block
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
+from app.ai.providers.decisions import POST, decisions_supported
+from app.ai.providers.jev import classify_comments_jev, use_jev
 from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
 from app.ai.tasks.sentiment_rules import cached_comment_labels, is_tag_or_icon, remember_comment_labels, rule_sentiment
 from app.core.config import settings
@@ -49,7 +49,7 @@ VALID_SENTIMENTS = {"positive", "negative", "neutral"}
 class CommentLabel(TypedDict):
     sentiment: str
     aspects: list[str]  # "key:+" / "key:-", thêm "di_rap:0" cho chuyện đi rạp trung tính
-    stage: str  # key trong app.ai.aspects.STAGES
+    stage: str  # key trong app.ai.domain.aspects.STAGES
     source: NotRequired[str]  # "rule": gán bằng rule_sentiment (comment không có nội dung) - ghi vào sentiment_source
 
 

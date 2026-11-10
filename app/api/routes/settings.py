@@ -457,8 +457,8 @@ async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) ->
 
 
 async def _ai_settings_out(row: dict) -> AiSettingsOut:
-    from app.ai.client import active_provider_key
-    from app.ai.defaults import AI_PROMPT_TASKS, default_system_prompts
+    from app.ai.prompts.defaults import AI_PROMPT_TASKS, default_system_prompts
+    from app.ai.providers.client import active_provider_key
 
     active = await active_provider_key()
     provider = await db.get_ai_provider(active)
@@ -495,8 +495,8 @@ async def get_ai_settings() -> AiSettingsOut:
 
 @router.put("/ai", response_model=AiSettingsOut)
 async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
-    from app.ai.client import active_provider_key, invalidate_provider_cache
-    from app.ai.defaults import AI_PROMPT_TASKS
+    from app.ai.prompts.defaults import AI_PROMPT_TASKS
+    from app.ai.providers.client import active_provider_key, invalidate_provider_cache
     from app.ai.runtime import invalidate_ai_runtime_cache
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
@@ -543,7 +543,7 @@ def _ai_provider_out(row: dict) -> AiProviderOut:
 async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsOut:
     """Chọn nhà cung cấp cho MỌI lời gọi AI (Bee / Kira) - cinemark-api, spider-hub (đọc Supabase) và Worker cinemark
     (qua ai_runtime của D1) đều theo trong vòng một phút."""
-    from app.ai.client import invalidate_provider_cache
+    from app.ai.providers.client import invalidate_provider_cache
     from app.ai.runtime import invalidate_ai_runtime_cache
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
@@ -570,7 +570,7 @@ async def list_ai_providers() -> list[AiProviderOut]:
 async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     """Upsert - `key` không cần có sẵn, nên có thể thêm provider mới từ đây mà không phải
     sửa code/schema. Bỏ trống hoặc không gửi api_key thì giữ nguyên secret đã lưu."""
-    from app.ai.client import invalidate_provider_cache
+    from app.ai.providers.client import invalidate_provider_cache
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None

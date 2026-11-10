@@ -1,10 +1,10 @@
-"""Lớp mỏng call_bee bọc app.ai.client.call_ai(provider="bee", ...) - HTTP client, retry/backoff và giới hạn đồng thời
+"""Lớp mỏng call_bee bọc app.ai.providers.client.call_ai(provider="bee", ...) - HTTP client, retry/backoff và giới hạn đồng thời
 đều nằm ở đó. Dùng cho report (chọn model riêng); các task khác đi qua app/ai/runtime.call_llm (cũng là Bee, thêm nút
 bật/tắt và prompt ghi đè). Kira đã bỏ từ 2026-10-21."""
 
 from __future__ import annotations
 
-from app.ai.client import call_ai, is_provider_configured, parse_json_response
+from app.ai.providers.client import call_ai, is_provider_configured, parse_json_response
 
 __all__ = ["bee_is_configured", "call_bee", "parse_json_response"]
 

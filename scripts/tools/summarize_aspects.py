@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from app.ai.aspects import ASPECTS
+from app.ai.domain.aspects import ASPECTS
 from app.ai.runtime import call_llm
 from app.ai.tasks.sentiment_rules import strip_placeholders
 from app.repositories.d1.store import d1_query

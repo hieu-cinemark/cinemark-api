@@ -35,7 +35,7 @@ from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 from redis.exceptions import RedisError
 
-from app.ai.jev import use_jev
+from app.ai.providers.jev import use_jev
 from app.ai.tasks.post_relevance import classify_post_relevance_kira
 from app.clients.d1 import D1Unavailable, d1_strict
 from app.clients.kafka import publish_dead_letter, publish_ingest_decision, start_kafka_producer, stop_kafka_producer

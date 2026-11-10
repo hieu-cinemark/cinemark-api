@@ -1,4 +1,4 @@
-"""Lớp chính sách theo task cho mọi lời gọi AI, nằm trên app.ai.client dùng chung: bật/tắt + system prompt ghi đè theo
+"""Lớp chính sách theo task cho mọi lời gọi AI, nằm trên app.ai.providers.client dùng chung: bật/tắt + system prompt ghi đè theo
 task (bảng ai_settings trên Supabase). Mọi lời gọi đi qua Bee (ai_providers key="bee") - Kira đã bỏ hẳn từ 2026-10-21
 (chậm, hay 429/504). Mọi bộ phân loại trong app/ai/ đều đi qua call_llm() để dùng chung một lần đọc enabled/prompts và
 một ngân sách retry."""
@@ -8,8 +8,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from app.ai.client import call_ai, invalidate_provider_cache, parse_json_response
-from app.ai.defaults import default_system_prompts
+from app.ai.prompts.defaults import default_system_prompts
+from app.ai.providers.client import call_ai, invalidate_provider_cache, parse_json_response
 from app.core.logging import get_logger
 
 __all__ = [
@@ -45,7 +45,7 @@ def _normalize_prompts(raw: object) -> dict[str, str]:
 async def load_ai_runtime() -> dict[str, Any]:
     """enabled + prompt ghi đè theo task từ dòng ai_settings trên Supabase, mặc định là
     tắt/không ghi đè nếu bảng chưa có. Thông tin provider/model là chuyện riêng - xem
-    app.ai.client.load_provider()."""
+    app.ai.providers.client.load_provider()."""
     global _ai_cfg_cache
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
@@ -95,7 +95,7 @@ async def call_llm(
     task: str = "chat",
     platform: str | None = None,
 ) -> str:
-    """Chạy một lần chat completion (Bee) qua app.ai.client.call_ai(). force=True dành
+    """Chạy một lần chat completion (Bee) qua app.ai.providers.client.call_ai(). force=True dành
     cho import Settings do người vận hành bấm (vẫn chạy khi các bộ phân loại ingest
     đang tắt). Raise khi bị tắt, cấu hình sai hoặc provider lỗi - mọi bên gọi ở đây đều
     đã bắt rộng và fail open (xem ví dụ app/ai/tasks/post_relevance.py)."""
@@ -112,3 +112,30 @@ async def call_llm(
         max_tokens=max_tokens,
         platform=platform,
     )
+
+
+async def call_llm_json(
+    *, system_prompt: str, user_prompt: str, max_tokens: int, task: str, temperature: float = 0.1
+) -> tuple[Any, str]:
+    """Gọi LLM và parse JSON. Trả (dữ liệu hoặc None, nội dung thô); không raise.
+
+    Dùng cho job nền (app/services/ai_jobs): lỗi provider hay JSON hỏng đều coi là một lượt hỏng để bên gọi tự xử lý.
+    Chạy cả khi bộ phân loại ingest đang tắt AI (force=True).
+    """
+    try:
+        content = await call_llm(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            force=True,
+            task=task,
+        )
+    except Exception as exc:  # noqa: BLE001 - provider lỗi: coi là lượt hỏng
+        logger.warning("llm_json_call_failed", task=task, error=str(exc)[:300])
+        return None, ""
+    try:
+        return parse_json_response(content), content
+    except ValueError:
+        logger.warning("llm_json_unparsed", task=task, preview=content[:200])
+        return None, content

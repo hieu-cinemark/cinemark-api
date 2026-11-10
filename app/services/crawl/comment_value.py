@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from app.ai.jev import judge_comment_value_jev, use_jev
+from app.ai.providers.jev import judge_comment_value_jev, use_jev
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 from app.repositories.d1.store import d1_query

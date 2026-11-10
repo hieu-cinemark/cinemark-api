@@ -18,7 +18,7 @@ from collections import Counter
 from itertools import chain, zip_longest
 from typing import Any
 
-from app.ai.aspects import aspect_prompt_lines, parse_aspects
+from app.ai.domain.aspects import aspect_prompt_lines, parse_aspects
 from app.core.config import settings
 from app.repositories.d1.store import d1_query
 from app.services.topics.text import normalize

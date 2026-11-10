@@ -207,7 +207,7 @@ async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
 async def _movie_context_for_keyword(keyword_id: str) -> str | None:
     """Khối thông tin phim (app/ai/movie_context.py) của phim sở hữu từ khoá này, hoặc None khi không tra được -
     thiếu nó thì spider vẫn chạy, chỉ là Kira chấm hashtag kém hơn."""
-    from app.ai.movie_context import movie_context_block
+    from app.ai.domain.movie_context import movie_context_block
     from app.repositories.d1.store import d1_query
 
     try:

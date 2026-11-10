@@ -10,7 +10,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from app.ai.aspects import ASPECTS, parse_aspects, parse_stage
+from app.ai.domain.aspects import ASPECTS, parse_aspects, parse_stage
 
 SENTIMENTS = ("positive", "negative", "neutral")
 _SENTIMENT_ALIASES = {

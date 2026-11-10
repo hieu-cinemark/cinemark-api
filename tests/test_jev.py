@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from app.ai import jev
+from app.ai.providers import jev
 from app.ai.tasks import sentiment
 from app.core.config import settings
 

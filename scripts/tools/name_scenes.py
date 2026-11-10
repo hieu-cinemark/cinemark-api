@@ -17,7 +17,7 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from app.ai.client import _client_for, load_provider
+from app.ai.providers.client import _client_for, load_provider
 from app.clients.lake import get_object
 from app.repositories.d1.store import d1_query
 

@@ -15,9 +15,7 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeVar
 
-from app.ai.bee import call_bee
-from app.ai.client import JSON_FENCE_RE
-from app.ai.movie_context import movie_context_block
+from app.ai.domain.movie_context import movie_context_block
 from app.ai.prompts.report import (
     MERGE_DATA_PROMPT,
     MERGE_SYSTEM_PROMPT,
@@ -27,6 +25,8 @@ from app.ai.prompts.report import (
     TOPICS_DATA_PROMPT,
     TOPICS_SYSTEM_PROMPT,
 )
+from app.ai.providers.bee import call_bee
+from app.ai.providers.client import JSON_FENCE_RE
 from app.ai.runtime import parse_json_response
 from app.core.config import settings
 from app.core.logging import get_logger

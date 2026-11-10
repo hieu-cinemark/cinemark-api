@@ -300,7 +300,7 @@ async def _drought_alerts(now: datetime) -> list[Alert]:
 
 
 async def _ai_alerts(now: datetime) -> list[Alert]:
-    from app.ai.jev import USD_PER_M_INPUT
+    from app.ai.providers.jev import USD_PER_M_INPUT
 
     redis = get_redis_client()
     alerts: list[Alert] = []

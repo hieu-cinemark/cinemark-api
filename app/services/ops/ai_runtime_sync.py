@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.ai.client import active_provider_key
+from app.ai.providers.client import active_provider_key
 from app.core.logging import get_logger
 from app.repositories.d1.store import d1_query
 from app.services.accounts import platform_config_db as db
