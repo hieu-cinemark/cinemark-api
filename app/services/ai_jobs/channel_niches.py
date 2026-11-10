@@ -1,7 +1,8 @@
-"""Gắn tệp khán giả (niche) cho kênh bằng AI - bản Python của processChannelNicheQueue (cinemark
-api/services/channelExport/channelNiches.ts, chuyển sang 10/11/2026). Mỗi giờ một lượt: lấy mẫu bài 14 ngày, các kênh có từ 2
-bài chưa có niche (hoặc quá 30 ngày, trừ niche gắn tay), hỏi AI theo lô 15 kênh, ghi channel_profiles (cinemark-scraper).
-Danh sách niche lấy từ settings `audience_niches` (cinemark-config-db)."""
+"""Gắn tệp khán giả (niche) cho kênh bằng AI.
+
+Mỗi giờ: lấy mẫu bài 14 ngày, chọn kênh có từ 2 bài chưa có niche (hoặc niche cũ hơn 30 ngày, trừ niche gắn tay), hỏi
+AI theo lô 15 kênh và ghi `channel_profiles`. Danh sách niche lấy từ setting `audience_niches`.
+"""
 
 from __future__ import annotations
 

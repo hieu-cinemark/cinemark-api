@@ -1,4 +1,4 @@
-"""app/ai/accuracy.py - chấm nhãn máy so với nhãn người (scripts/ml/accuracy_sample.py score)."""
+"""app/ai/domain/accuracy.py - chấm nhãn máy so với nhãn người (scripts/ml/accuracy_sample.py score)."""
 
 from __future__ import annotations
 

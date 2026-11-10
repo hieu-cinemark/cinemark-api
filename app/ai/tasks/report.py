@@ -1,12 +1,8 @@
-"""Các lời gọi LLM đứng sau scripts/jobs/generate_social_topic_reports.py - cùng cách tách
-hai lời gọi và cùng prompt dù chạy trên provider nào (xem docstring module của
-app/ai/prompts/report.py để biết vì sao tách hai lời gọi). Cả hai đều fail open
-(trả về None khi có bất kỳ lỗi nào), cùng quy ước với mọi bộ phân loại trong
-codebase - bên gọi tự quyết "lần này không có report" nghĩa là gì.
+"""Các lời gọi LLM sinh report Social Topic (chủ đề + trích dẫn, gộp phần, tổng kết).
 
-Bee viết report (Kira đã bỏ từ 2026-10-21). Lời gọi lỗi hoặc trả về thứ không dùng được (JSON bị cắt hoặc sai cấu
-trúc) thì thử lại Bee một lần với temperature lệch đi một chút - Beeknoee cache theo (model, messages, temperature), giữ
-nguyên temperature thì lần thử lại chỉ nhận lại đúng câu trả lời hỏng đã cache."""
+Mọi hàm fail open: lỗi thì trả None. Lời gọi hỏng được thử lại một lần với temperature khác để tránh cache câu trả lời
+hỏng của gateway.
+"""
 
 from __future__ import annotations
 
@@ -78,7 +74,7 @@ def _parse_topics(response: str) -> dict[str, Any]:
     parsed = _first_json_object(response)
     if not isinstance(parsed, dict) or not isinstance(parsed.get("top_10_topics"), list) or not parsed["top_10_topics"]:
         raise ValueError(f"unexpected topics shape: {json.dumps(parsed)[:200]!r}")
-    # Thiếu verbatim (một phần của mẫu lớn, 26/10/2026) vẫn dùng được chủ đề; lời gọi gộp chọn verbatim từ các phần khác.
+    # Thiếu trích dẫn (một phần của mẫu lớn) vẫn dùng được chủ đề; lời gọi gộp chọn trích dẫn từ phần khác.
     if not isinstance(parsed.get("top_10_verbatims"), list):
         parsed["top_10_verbatims"] = []
     return parsed
@@ -92,11 +88,9 @@ def _parse_narrative(response: str) -> str:
     return analysis.strip()
 
 
-# Comment dài hơn bấy nhiêu ký tự được cắt bớt trong prompt (dashboard vẫn hiện bản đầy đủ - xem
-# hydrate_report_comments) - vài comment dài cả nghìn chữ không được chiếm chỗ của hàng chục comment khác.
+# Cắt bình luận dài trong prompt (dashboard vẫn hiện đủ) để không chiếm chỗ của bình luận khác.
 _COMMENT_TEXT_CHARS = 500
-# Bài chỉ có mặt vì chứa comment trong mẫu (không thuộc mẫu bài của khán giả): đủ để biết comment đang trả lời bài gì.
-# Mẫu 2.000 comment kéo theo ~420 bài như vậy - để 400 ký tự thì riêng chúng chiếm ~40% prompt (đo 20/10/2026).
+# Bài chỉ có mặt vì chứa bình luận trong mẫu: giữ ngắn, đủ biết bình luận đang trả lời bài gì.
 _CONTEXT_POST_TEXT_CHARS = 160
 
 
@@ -177,9 +171,7 @@ def _restore_ids(parsed: dict[str, Any], aliases: dict[str, tuple[str, str]]) ->
     return {**parsed, "top_10_topics": topics, "top_10_verbatims": verbatims}
 
 
-# Mẫu lớn chia phần: mỗi phần tối đa TOPICS_BATCH_COMMENTS comment một lời gọi, rồi một lời gọi gộp. Đo 26/10/2026
-# với Trại Buôn Người: gửi cả 2.000 comment + ~570 bài trong một lời gọi thì Bee (claude-haiku-5-5) trả về dở dang
-# (690 token, JSON thiếu top_10_verbatims) hoặc lỗi "temperature is deprecated" (bị chuyển sang backend khác).
+# Mẫu lớn chia phần (TOPICS_BATCH_COMMENTS bình luận mỗi lời gọi) rồi gộp: gửi cả mẫu một lần thì model trả JSON dở dang.
 TOPICS_BATCH_COMMENTS = 500
 _BATCH_CONCURRENCY = 2
 _BATCH_TOPICS = 8
@@ -208,8 +200,7 @@ async def _topics_for_part(
         posts_json=json.dumps(posts_payload, ensure_ascii=False),
         comments_json=json.dumps(comments_payload, ensure_ascii=False),
     )
-    # max_tokens 150000 / temperature 0.3: xem lịch sử ở git blame (Sonnet 5 bị cắt ở 8000; Beeknoee cache theo
-    # (model, messages, temperature) nên temperature khác 0 tránh cache vĩnh viễn một câu trả lời hỏng).
+    # temperature khác 0 để gateway không cache vĩnh viễn một câu trả lời hỏng; max_tokens lớn vì reasoning token.
     parsed, _provider = await _generate(
         task="topics",
         system_prompt=TOPICS_SYSTEM_PROMPT,
@@ -406,10 +397,7 @@ async def generate_narrative(
         stage_lines=stage_lines,
     )
     try:
-        # Cùng lý do temperature=0.3 như lời gọi của generate_topics_and_verbatims phía trên
-        # (tránh cache vĩnh viễn một câu trả lời hỏng/bị cắt ở temperature=0). max_tokens
-        # được nâng so với ngân sách cũ cũng vì lý do reasoning token ăn mất ngân sách,
-        # dù prompt ngắn này chưa từng thấy cần tới.
+        # Cùng lý do temperature/max_tokens như generate_topics_and_verbatims.
         analysis, _provider = await _generate(
             task="narrative",
             system_prompt=NARRATIVE_SYSTEM_PROMPT,

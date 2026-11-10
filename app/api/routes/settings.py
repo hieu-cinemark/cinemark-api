@@ -561,7 +561,7 @@ async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsO
 @router.get("/ai/providers", response_model=list[AiProviderOut])
 async def list_ai_providers() -> list[AiProviderOut]:
     """Mọi LLM provider đã cấu hình ({key, base_url, model} - không bao giờ trả về
-    api_key, chỉ cho biết đã đặt hay chưa). Xem app/ai/client.py."""
+    api_key, chỉ cho biết đã đặt hay chưa). Xem app/ai/providers/client.py."""
     rows = await db.list_ai_providers()
     return [_ai_provider_out(row) for row in rows]
 

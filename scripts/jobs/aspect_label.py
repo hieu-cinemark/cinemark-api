@@ -1,4 +1,4 @@
-"""Gán khía cạnh (cột aspects, dạng ["key:+", "key:-"] - app/ai/aspects.py) cho comment bằng model ViSoBERT nhiều nhãn
+"""Gán khía cạnh (cột aspects, dạng ["key:+", "key:-"] - app/ai/domain/aspects.py) cho comment bằng model ViSoBERT nhiều nhãn
 đã fine-tune (scripts/ml/aspect_finetune.py) - dữ liệu cho Review Angles: xếp hạng các góc được nhắc tới của phim.
 
 Từ 23/10/2026 comment không còn qua AI nên gần như không comment mới nào có khía cạnh. Model này thay phần đó, chạy ở máy

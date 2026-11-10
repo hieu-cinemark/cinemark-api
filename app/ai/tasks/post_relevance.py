@@ -1,26 +1,7 @@
-"""Kira là bộ phân loại độ liên quan của bài viết ở bước ingest. Ingest consumer hỏi
-Kira về mọi bài đã qua được các luật cố định (app/services/relevance/relevance_rules.py);
-việc kiểm tra từ khoá theo chuỗi con chỉ là dự phòng khi Kira không đưa ra kết
-luận (đang tắt, vượt giới hạn ngày, lỗi). Kira được biết thông tin của phim đích
-(đạo diễn/diễn viên/nhà phát hành/ngày ra rạp) cùng tên các phim khác đang theo
-dõi - nhờ vậy mới phân biệt được "bài nói về ĐÚNG phim này" với bài nói về một phim
-trùng tên, hay bài nước ngoài dùng chung một hashtag không dấu.
+"""Phân loại độ liên quan của bài viết với phim ở bước ingest.
 
-Theo lô: classify_post_relevance_kira() vẫn nhận từng bài, nhưng một bộ gom lô nhỏ
-gom các bài mà ingest consumer đang xử lý cùng lúc (tối đa BATCH_SIZE, chờ tối đa
-BATCH_WINDOW_S) thành MỘT lời gọi Kira. Mỗi lời gọi một bài khiến ingest chậm hơn
-khoảng 0,8 bài/giây so với giới hạn 2 lời gọi đồng thời của Kira, và lặp lại
-system prompt cho từng bài.
-
-Prompt: task "post_relevance" (sửa được ở tab AI của Settings trên dashboard;
-POST_RELEVANCE_SYSTEM_PROMPT là giá trị mặc định) chứa tiêu chí gán nhãn. Khung
-JSON theo lô nằm trong user prompt dựng ở đây, nên system prompt bị sửa cũng không
-làm hỏng việc parse.
-
-Kiểm soát chi phí: tuân theo nút bật/tắt Kira trên dashboard (call_llm không có
-force) và giới hạn số bài mỗi ngày (settings.kira_post_relevance_daily_cap, đếm
-trong Redis). Fail open: bài nào gặp bất kỳ vấn đề gì sẽ nhận None, và bên gọi khi
-đó giữ bài lại thay vì loại.
+Thứ tự: luật cố định, model tại chỗ (ViSoBERT), rồi AI theo lô. AI được biết thông tin phim đích và tên các phim khác
+đang theo dõi để phân biệt phim trùng tên. AI không kết luận được thì dùng luật từ khoá.
 """
 
 from __future__ import annotations
@@ -46,8 +27,7 @@ TASK = "post_relevance"
 MAX_CONTENT_CHARS = 1500
 BATCH_SIZE = 10
 BATCH_WINDOW_S = 1.5
-# Số lô được chờ Kira cùng lúc; semaphore của Kira (app/ai/client.py) chạy 2 lô, lô
-# thứ ba để sẵn lô kế tiếp.
+# Số lô chờ AI cùng lúc: provider chạy 2 lô song song, lô thứ ba để sẵn.
 MAX_BATCHES_IN_FLIGHT = 3
 _LABELS = {"relevant": "related", "irrelevant": "not_related", "uncertain": "uncertain"}
 
@@ -235,7 +215,7 @@ async def classify_post_relevance_kira(
         verdict = await classify_post_relevance_jev(
             content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles
         )
-        # Nhà cung cấp không có /decisions (dòng bee tạm trỏ sang Kira): bài này đi tiếp đường chat bên dưới.
+        # Provider không có /decisions: đi tiếp đường chat bên dưới.
         if verdict is not None or decisions_supported():
             return verdict
     if not await _within_daily_cap():

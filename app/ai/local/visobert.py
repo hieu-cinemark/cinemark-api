@@ -1,9 +1,8 @@
-"""Model nhà trồng: ViSoBERT fine-tune bằng nhãn bình luận phim (scripts/ml/visobert_finetune.py) - cảm xúc khen/chê/trung lập,
-chạy ngay trong tiến trình (CPU trên VPS, MPS/CUDA nếu có), không tốn tiền. Chạy TRƯỚC Bee: câu đủ chắc
-(settings.visobert_min_confidence) lấy luôn, chỉ phần còn lại mới gọi model quyết định của Bee (app/ai/decisions.py).
+"""Model cảm xúc bình luận chạy tại chỗ (ViSoBERT fine-tune: khen / chê / trung lập).
 
-Cần torch + transformers (requirements-ml.txt - VPS cài bản CPU) và thư mục model (settings.visobert_model_dir, nằm ngoài
-git). Thiếu thứ nào thì available() = False và bên gọi đi thẳng sang Bee như trước.
+Chạy trước AI trả phí: câu đủ chắc (`settings.visobert_min_confidence`) lấy luôn, phần còn lại mới gọi model quyết định.
+Cần `torch` + `transformers` (requirements-ml.txt) và thư mục model (`settings.visobert_model_dir`); thiếu thì
+`available()` trả False và bên gọi bỏ qua bước này.
 """
 
 from __future__ import annotations

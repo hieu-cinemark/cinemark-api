@@ -1,5 +1,5 @@
 """Fine-tune ViSoBERT nhận diện khía cạnh khen/chê của comment (Review Angles) - nhiều nhãn, mỗi comment 0..n nhãn
-"key:+/-" (app/ai/aspects.py).
+"key:+/-" (app/ai/domain/aspects.py).
 
 scripts/tools/aspect_probe.py (embedding cố định + một lớp tuyến tính) chỉ đạt micro F1 0,33-0,39; ở đây train CẢ model. Dữ
 liệu: ~/cinemark-ml/aspects/comments.jsonl do aspect_probe tải (nhãn do AI gán; chấm tay 26/10: ~68-72% nhãn dương

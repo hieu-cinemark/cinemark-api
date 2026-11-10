@@ -1,13 +1,7 @@
-"""Model nhà trồng cho ĐỘ LIÊN QUAN của bài viết (2026-10-22): ViSoBERT fine-tune bằng nhãn AI, gồm 21k bài "uncertain" được
-Haiku gán lại (scripts/ml/relevance_relabel_haiku.py + scripts/ml/visobert_relevance_finetune.py --two-class --relabel). Đầu vào
-là cặp ("tên phim | từ khoá", nội dung bài) giống lúc huấn luyện; ra related / not_related kèm độ tự tin.
+"""Model độ liên quan của bài viết chạy tại chỗ (ViSoBERT fine-tune: related / not_related).
 
-Chạy TRƯỚC AI trong classify_post_relevance_kira(): đủ chắc thì lấy luôn (nhanh ~20 ms/bài trên CPU, không tốn lời gọi),
-còn lại mới gọi AI. Đo trên 8 phim giữ riêng: khi model nói related thì ~94% khớp AI; not_related ở ngưỡng 0,95 chỉ ~72%
-nên ngưỡng not_related đặt cao hơn (người dùng chấp nhận sai số ban đầu để lấy tốc độ). not_related chỉ ẩn bài, không xoá.
-
-Cần torch + transformers (requirements-ml.txt) và thư mục model (settings.visobert_relevance_model_dir, ngoài git). Thiếu
-thì available() = False và mọi bài đi thẳng sang AI như trước.
+Đầu vào là cặp ("tên phim | từ khoá", nội dung bài). Chạy trước AI trong bước phân loại độ liên quan: kết quả đủ chắc
+thì lấy luôn (~20 ms/bài trên CPU), còn lại mới gọi AI.
 """
 
 from __future__ import annotations

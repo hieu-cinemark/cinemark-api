@@ -1,9 +1,8 @@
-"""Khối "thông tin phim" đưa cho AI ở cả bước thu thập (phân loại độ liên quan của bài lúc ingest) lẫn bước phân
-tích (gán cảm xúc/khía cạnh cho comment, report Social Topic) - để AI nhận ra tên đạo diễn, diễn viên, nhân vật trong
-logline, và biết phim đã ra rạp hay chưa (bình luận về một phim chưa chiếu thì không thể là "đã xem").
+"""Khối "thông tin phim" chèn vào prompt (đạo diễn, diễn viên, nhà phát hành, logline, ngày ra rạp).
 
-Lấy từ các cột có sẵn của bảng movies (D1): director, `cast`, distributor, description (logline), released_at.
-`cast` thường là mảng JSON (Worker cinemark ghi như vậy) nhưng dữ liệu cũ còn chuỗi "A, B" - cast_list đọc cả hai."""
+Giúp AI nhận ra tên người, nhân vật và biết phim đã chiếu hay chưa. Cột `cast` có thể là mảng JSON hoặc chuỗi "A, B";
+`cast_list` đọc được cả hai.
+"""
 
 from __future__ import annotations
 

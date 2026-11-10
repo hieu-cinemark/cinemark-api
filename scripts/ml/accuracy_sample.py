@@ -11,7 +11,7 @@
      nguoi_cam_xuc    positive / negative / neutral   (hoặc tich_cuc / tieu_cuc / trung_lap)
      nguoi_khia_canh  vd "dien_xuat:+, kich_ban:-" - để trống nếu không nhắc khía cạnh nào. Key hợp lệ:
                       dien_xuat, dien_vien, kich_ban, cam_xuc, hinh_anh, am_thanh, thong_diep, san_phim,
-                      quang_ba, rap_ve (xem app/ai/aspects.py)
+                      quang_ba, rap_ve (xem app/ai/domain/aspects.py)
      nguoi_giai_doan  hong (chưa xem) / da_xem / khac
    Dòng để trống nguoi_cam_xuc bị bỏ qua khi chấm.
 

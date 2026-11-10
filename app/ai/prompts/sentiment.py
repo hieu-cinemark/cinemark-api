@@ -1,3 +1,8 @@
+"""Prompt gán cảm xúc, khía cạnh và giai đoạn khán giả cho bình luận theo lô.
+
+Định dạng đầu ra được lặp lại trong user prompt vì system prompt có thể bị ghi đè từ dashboard.
+"""
+
 SENTIMENT_SYSTEM_PROMPT = """
 You are an AI sentiment classifier for a social listening pipeline that tracks
 audience reaction to movies on Vietnamese social media (Facebook, TikTok,
@@ -81,10 +86,7 @@ FIELD RULES:
 other value, no combination, no explanation text mixed in.
 """
 
-# Định dạng đầu ra (và danh sách khía cạnh/giai đoạn) được lặp lại ở đây, trong user prompt, là cố ý: system
-# prompt có thể bị thay từ dashboard (ai_settings prompts), và một bản ghi đè viết cho định dạng cũ (mỗi lời gọi
-# một comment, hoặc chỉ có sentiment) không được làm hỏng bộ parse theo lô. {aspects}/{stages} được điền từ
-# app/ai/aspects.py.
+# Định dạng đầu ra lặp lại trong user prompt vì system prompt có thể bị ghi đè. {aspects}/{stages} lấy từ app.ai.domain.aspects.
 SENTIMENT_DATA_PROMPT = """
 Classify each of the following {count} comments, left under movie-related posts.
 

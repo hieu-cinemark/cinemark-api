@@ -1,6 +1,4 @@
-"""Lớp mỏng call_bee bọc app.ai.providers.client.call_ai(provider="bee", ...) - HTTP client, retry/backoff và giới hạn đồng thời
-đều nằm ở đó. Dùng cho report (chọn model riêng); các task khác đi qua app/ai/runtime.call_llm (cũng là Bee, thêm nút
-bật/tắt và prompt ghi đè). Kira đã bỏ từ 2026-10-21."""
+"""`call_bee`: gọi Bee qua client dùng chung với model chọn riêng (report). Các task khác đi qua `app.ai.runtime`."""
 
 from __future__ import annotations
 

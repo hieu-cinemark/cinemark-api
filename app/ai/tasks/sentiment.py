@@ -1,22 +1,7 @@
-"""Phân loại cảm xúc comment - dùng Kira (xem app/ai/kira.py; Beeknoee chỉ viết
-report). Cùng lời gọi đó còn gán khía cạnh được khen/chê và giai đoạn khán giả
-(hóng/đã xem) theo bộ cố định trong app/ai/aspects.py (2026-10-07) - thêm vài chục token
-đầu ra mỗi comment, không thêm lời gọi nào.
+"""Gán cảm xúc, khía cạnh và giai đoạn khán giả cho bình luận.
 
-Theo lô: mỗi lời gọi Kira phân loại tối đa BATCH_SIZE comment. Với mỗi comment, chi
-phí cố định của một lời gọi (system prompt, độ trễ, một suất đồng thời) lớn hơn hẳn
-bản thân comment, nên mỗi lời gọi một comment không theo kịp một ngày crawl bận
-(khoảng 22 nghìn comment). Đi qua task "sentiment" của call_llm, nên nút bật/tắt
-Kira và prompt ghi đè trên dashboard đều có hiệu lực.
-
-Được gọi từ vòng sweep chạy nền của ingest consumer
-(app/workers/ingest_consumer/sentiment_sweep.py) và
-scripts/jobs/backfill_comment_sentiment.py - không bao giờ gọi trực tiếp cho từng
-comment.
-(Độ liên quan của bài là việc của Kira - app/ai/tasks/post_relevance.py.)
-
-Fail open: lời gọi lỗi thì kết quả của cả lô là None, và comment đơn giản là chưa
-được phân loại cho tới lần sweep sau.
+Thứ tự xử lý mỗi bình luận: luật (emoji, quá ngắn, chỉ tag) -> cache nhãn theo nội dung -> model tại chỗ (ViSoBERT) ->
+model quyết định -> chat LLM theo lô. Bước sau chỉ chạy cho phần bước trước chưa kết luận.
 """
 
 from __future__ import annotations
@@ -53,8 +38,7 @@ class CommentLabel(TypedDict):
     source: NotRequired[str]  # "rule": gán bằng rule_sentiment (comment không có nội dung) - ghi vào sentiment_source
 
 
-# 10 thay vì 25 (2026-10-06): khi Kira tải cao, một lô 25 comment mất ~170-180s (model suy luận ẩn) và gateway
-# của Kira cắt ở ~180s -> 504, mất trắng cả lô. Lô 10 xong khoảng 1 phút; đổi lại tốn thêm token system prompt.
+# Lô nhỏ để mỗi lời gọi xong trong ~1 phút, không bị gateway cắt (lô 25 hay quá 180 giây).
 BATCH_SIZE = 10
 MAX_MESSAGE_CHARS = 600
 MAX_TOKENS = 6000
@@ -117,8 +101,7 @@ async def _classify_batch(
             task="sentiment",
             system_prompt=SENTIMENT_SYSTEM_PROMPT,
             user_prompt=_user_prompt(messages, films),
-            # Để dư: model có reasoning tốn token ẩn trước khi ra JSON (một lô 25 comment tốn
-            # 1.700 token trong khi đầu ra chỉ khoảng 250 token).
+            # Để dư cho reasoning token ẩn trước khi ra JSON.
             max_tokens=MAX_TOKENS,
         )
         parsed = parse_json_response(response)
@@ -135,8 +118,7 @@ async def _classify_batch(
             continue
         index, label = entry.get("i"), _label(entry)
         if index is None and len(results) == len(messages):
-            # Model bỏ mất số thứ tự nhưng vẫn trả lời đủ mọi comment theo đúng thứ tự - đã gặp
-            # thực tế khi system prompt cũ (mỗi lần một comment) còn được lưu.
+            # Model bỏ số thứ tự nhưng vẫn trả đủ, đúng thứ tự: chấp nhận.
             index = position
         if isinstance(index, int) and 1 <= index <= len(messages) and label is not None:
             labels[index - 1] = label
@@ -160,7 +142,7 @@ async def classify_comments(
     todo = [(i, m.strip()) for i, m in enumerate(messages) if m is not None and _classifiable(m)]
     routed: Counter[str] = Counter()
 
-    # 1. Luật (chỉ emoji, quá ngắn, chỉ tag bạn bè) - chạy cả khi Kira tắt. Không có nội dung nên không có khía cạnh.
+    # 1. Luật (chỉ emoji, quá ngắn, chỉ tag bạn bè) - chạy cả khi AI tắt; không có khía cạnh.
     rest = []
     for i, m in todo:
         if (sentiment := rule_sentiment(m)) is not None:
@@ -169,7 +151,7 @@ async def classify_comments(
             routed["rule"] += 1
         else:
             rest.append((i, m))
-    # 2. Nhãn Kira đã gắn cho đúng nội dung này trước đó (Redis).
+    # 2. Nhãn AI đã gắn cho đúng nội dung này trước đó (cache Redis).
     if rest:
         for (i, _), hit in zip(rest, await cached_comment_labels([m for _, m in rest]), strict=True):
             if hit is not None and (label := _label(hit)) is not None:
@@ -197,7 +179,7 @@ async def classify_comments(
             logger.info("sentiment_routed", **routed)
         return _with_cinema_visits(messages, labels, kind)
 
-    # 4. Ca khó -> model quyết định của Bee (settings.classifier = "jev"): bình luận jev-1.14, nội dung bài OpenAI.
+    # 4. Ca khó -> model quyết định (settings.classifier = "jev").
     jev_mode = use_jev()
     if rest and jev_mode:
         jev_labels = await classify_comments_jev(
@@ -213,8 +195,7 @@ async def classify_comments(
         routed["jev"] = len(done)
         rest = [(i, m) for i, m in rest if labels[i] is None]
 
-    # 5. Chat Bee: khi không dùng model quyết định, hoặc Jev lỗi và bật settings.jev_kira_fallback. Ghi nhãn vào cache cho lần gặp lại.
-    # Cả khi nhà cung cấp không có /decisions (dòng bee tạm trỏ sang Kira): ca khó dùng chat (vd. qwen3.8-flash).
+    # 5. Chat LLM: khi không dùng model quyết định, provider không có /decisions, hoặc Jev lỗi và bật jev_kira_fallback.
     if rest and (not jev_mode or settings.jev_kira_fallback or not decisions_supported()) and await ai_is_enabled():
         for start in range(0, len(rest), BATCH_SIZE):
             chunk = rest[start : start + BATCH_SIZE]

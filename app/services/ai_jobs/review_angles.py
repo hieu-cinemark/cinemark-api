@@ -1,10 +1,11 @@
-"""Review Angles tự gom - bản Python của runReviewAnglesTick (cinemark api/services/reviewAngles/filmReviewAngles.ts, chuyển sang
-10/11/2026). Worker vẫn đọc kết quả: state.json + page-N.json trên R2 (`analysis/review-angles/v2/<movieId>/`) phải giữ đúng
-định dạng cũ (khoá camelCase).
+"""Review Angles: đọc dần bài đăng từ Premiere và gom thành các góc nhìn về phim.
 
-Mỗi lượt đọc một lô 24 bài đăng từ Premiere của một phim, AI gom vào góc đã có hoặc tạo góc mới. Con trỏ theo posted_at; mỗi
-giờ quét lại 48 giờ trước con trỏ để nhặt bài cào về muộn. Phim ưu tiên (Redis REVIEW_FOCUS_KEY) đọc liên tục, không tính trần
-ngày; còn lại xoay vòng các phim đã qua Premiere trong 60 ngày, trần DAILY_BATCH_CAP lô AI/ngày.
+Mỗi lượt đọc một lô 24 bài của một phim; AI gom vào góc đã có hoặc tạo góc mới. Con trỏ theo `posted_at`, mỗi giờ
+quét lại 48 giờ trước con trỏ để nhặt bài về muộn. Phim ưu tiên (Redis `REVIEW_FOCUS_KEY`) đọc liên tục; còn lại xoay
+vòng các phim đã qua Premiere trong 60 ngày, tối đa `DAILY_BATCH_CAP` lô/ngày.
+
+Kết quả ghi R2 `analysis/review-angles/v2/<movieId>/state.json` và `page-N.json` (khoá camelCase vì Worker đọc trực
+tiếp).
 """
 
 from __future__ import annotations
@@ -46,7 +47,7 @@ _PREFIX = f"{REDIS_KEY_PREFIX}review_angles:"
 REVIEW_FOCUS_KEY = f"{_PREFIX}focus"
 
 
-# --- hàm thuần (giống filmReviewParse.ts) ------------------------------------------------------------------------
+# --- hàm thuần ---
 
 
 def vn_day(at: datetime | None = None) -> str:
@@ -67,7 +68,7 @@ def _valid_day(value: Any) -> str | None:
         return None
 
 
-# --- lưu trữ ---------------------------------------------------------------------------------------------------
+# --- lưu trữ ---
 
 
 def _root(movie_id: str) -> str:
@@ -129,7 +130,7 @@ def _available(movie: dict[str, Any] | None) -> bool:
     return bool(movie and movie["premiereDate"] and movie["premiereDate"] <= vn_day())
 
 
-# --- một lô ---------------------------------------------------------------------------------------------------
+# --- một lô ---
 
 
 def _iso_utc(at: datetime) -> str:
@@ -363,7 +364,7 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
         await redis.delete(lock_key)
 
 
-# --- lượt chạy ------------------------------------------------------------------------------------------------
+# --- lượt chạy ---
 
 
 async def _add_tokens(movie_id: str, tokens: int) -> int:

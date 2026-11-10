@@ -1,19 +1,7 @@
-"""Import hàng loạt có AI hỗ trợ cho platform_accounts/platform_proxies - phục vụ
-POST /settings/import/parse trong app/api/routes/settings.py. Cho phép người vận
-hành dán một loạt dữ liệu tài khoản/proxy thô ở *bất kỳ* dạng nào (file xuất từ
-bảng tính, file text lấy từ nơi mua tài khoản, mỗi dòng một tài khoản với các
-trường theo thứ tự/ký tự phân cách tuỳ ý) kèm mô tả bằng lời về dạng đó, rồi nhận
-lại các dòng có cấu trúc.
+"""Đọc dữ liệu tài khoản / proxy dán thô (bất kỳ định dạng nào) thành các dòng có cấu trúc, phục vụ
+`POST /settings/import/parse`.
 
-Cố ý làm hai bước, không bao giờ dán thẳng vào DB: parse_import() chỉ trả về các
-dòng ứng viên để dashboard hiển thị thành bản xem trước sửa được - việc ghi thật
-(platform_config_db.create_account/create_proxy) chỉ xảy ra khi người vận hành xác
-nhận qua POST /settings/import/commit. Nếu không, một lỗi parse ở đây có thể âm
-thầm ghi mật khẩu thật vào sai cột.
-
-FORMAT nào vốn đã là dòng tiêu đề cột (ID|PASS|MAIL|COOKIE) sẽ được tách ngay tại
-chỗ và không phải chờ Kira. Mô tả tự do vẫn gửi cho Kira (force=True để import ở
-Settings vẫn chạy khi các bộ phân loại ingest đang tắt).
+Chỉ trả bản xem trước để người vận hành sửa; việc ghi vào DB làm ở bước lưu riêng.
 """
 
 from __future__ import annotations
@@ -209,8 +197,7 @@ def parse_delimited(target: ImportTarget, format_hint: str, content: str) -> lis
         cells = line.split(sep)
         if len(cells) < 2:
             continue
-        # Dòng có nhiều trường hơn FORMAT: trước 26/10/2026 cột cuối nuốt hết phần thừa (2 tài khoản FB bị ghi
-        # "token|email|mật khẩu mail|||tên" vào ô email). Báo cho người nhập thêm tên cột thay vì đoán.
+        # Dòng có nhiều trường hơn FORMAT: báo người nhập thêm tên cột thay vì dồn phần thừa vào cột cuối.
         extra = [cell for cell in cells[width:] if cell.strip()]
         if extra:
             raise ValueError(

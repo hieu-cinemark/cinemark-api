@@ -1,13 +1,9 @@
-"""Client LLM tương thích OpenAI dùng chung cho mọi provider (hiện chỉ bee). Thông
-tin của provider (base_url/api_key/model) là các dòng trong bảng ai_providers trên
-Supabase (xem app/services/accounts/platform_config_db.py) - được nạp và cache ở đây thay vì
-dùng biến môi trường, nên có thể đổi key hay thêm provider mới từ dashboard mà
-không cần deploy lại.
+"""Client LLM tương thích OpenAI dùng chung cho mọi provider.
 
-app/ai/runtime.py và app/ai/bee.py là các lớp mỏng bọc call_ai() bên dưới (runtime.py
-thêm nút bật/tắt và prompt ghi đè theo task trong ai_settings). Module này gom - tạo
-OpenAI client, retry/backoff khi gặp 429, mỗi provider một giới hạn đồng thời, và
-một định dạng log thống nhất cho mỗi lời gọi."""
+Thông tin provider (base_url, api_key, model) đọc từ bảng `ai_providers` và cache, nên đổi khoá hay thêm provider không
+cần deploy. Module lo: tạo client, retry/backoff khi 429, giới hạn số lời gọi đồng thời mỗi provider, stream để tránh
+gateway cắt request dài, ghi log token và parse JSON.
+"""
 
 from __future__ import annotations
 
@@ -36,14 +32,10 @@ _PROMPT_LOG_CHARS = 2000
 _CONTENT_LOG_CHARS = 4000
 _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
-# Cùng đánh đổi như _AI_CFG_TTL_SECONDS của app/ai/runtime.py (mỗi lần đọc Supabase
-# mất khoảng 3 giây).
+# Đọc ai_providers tốn ~3 giây nên cache 60 giây.
 _PROVIDER_CACHE_TTL_SECONDS = 60.0
 
-# Lượng token của lần call_ai() gần nhất trong asyncio task hiện tại - bên gọi đọc
-# ngay sau khi await call_ai() nếu cần tính chi phí theo ngân sách (ví dụ một script
-# gán nhãn hàng loạt). Dùng ContextVar để các task chạy song song mỗi task thấy
-# lượng dùng của chính lời gọi của nó.
+# Token của lần call_ai() gần nhất trong task asyncio hiện tại (ContextVar), để bên gọi tính chi phí.
 last_call_usage: contextvars.ContextVar[AIUsage | None] = contextvars.ContextVar("last_call_usage", default=None)
 
 
@@ -75,8 +67,7 @@ class ProviderConfig:
         return f"{self.base_url.rstrip('/')}{prefix.rstrip('/')}"
 
 
-# Khoá "bee" ở các chỗ gọi (call_bee, AI_PROVIDER của app/ai/runtime.py) nghĩa là "nhà cung cấp đang chọn" - Bee
-# (dòng beeknoee) hoặc Kira, chọn ở tab AI của dashboard spider-hub (ai_settings.active_provider, 2026-10-22).
+# "bee" nghĩa là provider đang chọn (ai_settings.active_provider), ánh xạ sang dòng ai_providers thật.
 ACTIVE_PROVIDER_ALIAS = "bee"
 _ACTIVE_ALIASES = {"bee": "beeknoee"}
 _active_cache: tuple[float, str] | None = None
@@ -232,8 +223,7 @@ def _invoke(
     if max_tokens is not None:
         params["max_tokens"] = max_tokens
 
-    # Stream rồi ghép lại: gateway của Kira (nginx) cắt request im lặng quá 60 giây (504) - một lô sentiment với qwen
-    # mất khoảng 120 giây nên không-stream thì lô nào cũng 504. Stream thì token về liên tục, gateway không cắt.
+    # Stream rồi ghép lại: gateway cắt request im lặng quá 60 giây, stream giữ kết nối có dữ liệu.
     def consume(params: dict[str, Any]) -> tuple[list[str], Any, Any]:
         content: list[str] = []
         finish_reason = None
@@ -252,9 +242,7 @@ def _invoke(
     try:
         content, finish_reason, usage = consume(params)
     except Exception as exc:  # noqa: BLE001 - lớp lỗi tuỳ cổng (SSE error event), chỉ xử lý lỗi nói về temperature
-        # Vài model không nhận temperature (Bee claude-haiku-5-5, 26/10/2026: "[400]: `temperature` is deprecated for
-        # this model", không phải lần nào cũng bị; lỗi tới trong stream chứ không phải lúc mở request) - gọi lại từ
-        # đầu một lần, không kèm temperature.
+        # Vài model từ chối temperature (lỗi tới giữa stream): gọi lại một lần không kèm temperature.
         if "temperature" not in str(exc).lower() or "temperature" not in params:
             raise
         params = {k: v for k, v in params.items() if k != "temperature"}
@@ -366,7 +354,7 @@ async def call_ai(
                 )
                 await asyncio.sleep(delay)
             except Exception as exc:
-                # Ví hết tiền (402 vnd_balance_exhausted): ghi mốc cho cảnh báo Telegram (app/services/ops/ops_alerts.py).
+                # Ví hết tiền (402): ghi mốc cho cảnh báo Telegram (app.services.ops.ops_alerts).
                 await note_ai_wallet_error(provider, exc)
                 logger.error(
                     "ai_call_failed",

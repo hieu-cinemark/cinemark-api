@@ -6,7 +6,7 @@ lô qua Kira (app/ai/tasks/sentiment.py), để một comment có nhãn trong v�
 phút thay vì làm nghẽn việc ingest Kafka bằng mỗi comment một lời gọi LLM.
 
 Lời gọi Kira chạy từng lô một, nên lượt quét không bao giờ chiếm quá một chỗ trong
-giới hạn song song của Kira (app/ai/client.py) so với phân loại độ liên quan của bài
+giới hạn song song của Kira (app/ai/providers/client.py) so với phân loại độ liên quan của bài
 lúc ingest. Một khoá Redis ngăn hai consumer đang chạy cùng phân loại một dòng.
 
 scripts/jobs/backfill_comment_sentiment.py dùng lại classify_pending() cho hàng tồn cũ

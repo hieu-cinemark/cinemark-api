@@ -1,7 +1,7 @@
 """Thử nhận diện khía cạnh (Review Angles) bằng embedding + lớp phân loại tuyến tính, không gọi AI cho từng comment.
 
 Từ 23/10/2026 comment không còn qua AI (chỉ ViSoBERT gán cảm xúc) nên gần như không comment mới nào có khía cạnh. Dữ
-liệu huấn luyện: các comment đã được AI gán khía cạnh trước đó (cột aspects "key:+/-", app/ai/aspects.py) - mẫu âm là
+liệu huấn luyện: các comment đã được AI gán khía cạnh trước đó (cột aspects "key:+/-", app/ai/domain/aspects.py) - mẫu âm là
 comment AI đã xử lý mà không thấy khía cạnh nào (aspects = '[]').
 
 Các bước (mỗi bước cache ra ~/cinemark-ml/aspects/, chạy lại chỉ làm phần còn thiếu):

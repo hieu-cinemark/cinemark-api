@@ -128,7 +128,7 @@ async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, A
 
 
 async def main(args: argparse.Namespace) -> None:
-    settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/client.py đọc lúc gọi đầu tiên
+    settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/providers/client.py đọc lúc gọi đầu tiên
     movies = await _load_movies()
     missing = set(FRANCHISES) - {m["slug"] for m in movies.values()}
     if missing:

@@ -6,7 +6,7 @@ settings.ops_alerts_interval_minutes phút:
   2. Omar: tỉ lệ request lỗi của lượt đang chạy / vừa xong trong 1 giờ qua > ops_omar_error_rate_alert (đủ
      ops_omar_error_min_attempts lần gọi).
   3. Nguồn cạn: không có bài TikTok / comment mới (MAX(scraped_at) trên D1) trong ops_post/comment_drought_hours giờ.
-  4. Ví AI: Kira (app/ai/client.py) / Jev (app/ai/jev.py) trả 402 hoặc lỗi hết số dư - đường gọi AI ghi mốc vào Redis qua
+  4. Ví AI: Kira (app/ai/providers/client.py) / Jev (app/ai/providers/jev.py) trả 402 hoặc lỗi hết số dư - đường gọi AI ghi mốc vào Redis qua
      note_ai_wallet_error / note_jev_response, ở đây chỉ đọc mốc. Chi phí Jev hôm nay (note_jev_tokens cộng dồn token đầu
      vào theo ngày giờ VN) vượt ops_jev_daily_usd_alert.
 
@@ -14,7 +14,7 @@ Mỗi cảnh báo chống lặp bằng một khoá Redis SET NX có TTL: lặp l
 Omar / chi phí Jev thì khoá theo ngày (mỗi ngày một lần). Gửi thẳng send_telegram_message: field telegram=True của log
 trong service này chỉ là một field, không có gì đọc nó để gửi Telegram.
 
-Module này chỉ import nhẹ ở đầu (Redis, Telegram, config) vì app/ai/client.py và app/ai/jev.py import nó; phần nặng
+Module này chỉ import nhẹ ở đầu (Redis, Telegram, config) vì app/ai/providers/client.py và app/ai/providers/jev.py import nó; phần nặng
 (Omar, D1, Supabase) import trong hàm."""
 
 from __future__ import annotations
@@ -218,7 +218,7 @@ async def _record_wallet_error(provider: str, detail: str) -> None:
 
 
 async def note_ai_wallet_error(provider: str, exc: BaseException) -> None:
-    """Gọi trong except của app/ai/client.call_ai."""
+    """Gọi trong except của app.ai.providers.client.call_ai."""
     if settings.ops_alerts_enabled and is_kira_wallet_error(exc):
         await _record_wallet_error(provider, f"{getattr(exc, 'status_code', '')} {exc}".strip())
 

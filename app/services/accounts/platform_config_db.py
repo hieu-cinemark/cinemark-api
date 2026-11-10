@@ -840,7 +840,7 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str], active_r
 # --- Thông tin đăng nhập AI provider ------------------------------------
 # Mỗi LLM provider một dòng (key = "kira", "bee", ... - thêm provider mới bằng cách
 # chèn một dòng mới, không cần đổi schema): base_url/api_key/model dùng để dựng client
-# tương thích OpenAI của provider đó (xem app/ai/client.py). Trước đây là các biến env
+# tương thích OpenAI của provider đó (xem app/ai/providers/client.py). Trước đây là các biến env
 # KIRA_API_KEY/KIRA_BASE_URL/BEEKNOEE_API_KEY/BEEKNOEE_BASE_URL - chuyển về đây (migrate một lần,
 # 2026-10) để xoay key hoặc thêm provider mới được
 # từ dashboard mà không cần deploy lại.

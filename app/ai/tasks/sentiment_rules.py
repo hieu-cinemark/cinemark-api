@@ -1,5 +1,4 @@
-"""Gán nhãn cảm xúc không cần Kira (bình luận chỉ emoji / quá ngắn / chỉ tag bạn bè) và cache nhãn Kira
-theo nội dung - xem classify_comments trong app/ai/tasks/sentiment.py."""
+"""Gán nhãn cảm xúc không cần AI (emoji, quá ngắn, chỉ tag bạn bè, tiếng lóng khen) và cache nhãn AI theo nội dung."""
 
 from __future__ import annotations
 
@@ -159,8 +158,7 @@ def is_tag_or_icon(message: str | None) -> bool:
 CACHE_TTL = 30 * 24 * 3600
 
 
-# Nhãn đầy đủ (sentiment + aspects + stage) từ 2026-10-07 - key riêng, vì cache cũ ở trên chỉ có sentiment: dùng nó
-# thì comment trùng nội dung sẽ không bao giờ có khía cạnh.
+# Cache nhãn đầy đủ (sentiment + aspects + stage) ở key riêng: cache cũ chỉ có sentiment.
 def _label_cache_key(message: str) -> str:
     normalized = " ".join(message.lower().split())
     return f"{REDIS_KEY_PREFIX}comment_label_cache:{hashlib.sha1(normalized.encode()).hexdigest()}"
@@ -191,8 +189,7 @@ async def remember_comment_labels(pairs: list[tuple[str, dict[str, Any]]]) -> No
         logger.warning("comment_label_cache_write_failed", error=exc)
 
 
-# Tiếng lóng khen (09/11/2026): "t gãy khúc này rồi" kèm ảnh diễn viên là mê đẹp, nhưng model cảm xúc và model khía cạnh đọc
-# thành chê. Chữ "gãy" cũng có nghĩa chê khi đi với nhịp / mạch / kịch bản ("phim gãy nhịp") nên loại các cụm đó.
+# Tiếng lóng khen ("t gãy khúc này rồi" = mê đẹp); loại các cụm "gãy nhịp / gãy mạch / gãy kịch bản" vốn là chê.
 _SLANG_POSITIVE = re.compile(
     r"(?<!\w)(gãy|gục ngã|đổ gục|đổ rầm|u mê|xỉu ngang|xỉu up xỉu down|rụng tim|chết mê|mê mẩn|ngất ngây|cưng xỉu|mlem|slay)(?!\w)",
     re.IGNORECASE,

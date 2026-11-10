@@ -1,7 +1,6 @@
-"""Nhận diện câu nói rõ về việc đi rạp; không đổi cảm xúc chung hoặc gọi AI.
+"""Nhận diện câu nói rõ về việc đi rạp (khía cạnh `di_rap`), bằng luật, không gọi AI.
 
-Giữ phạm vi hẹp: câu review chỉ nói "xem rồi" và thông tin giá vé/lịch phát hành
-không đủ để kết luận người viết đang bàn việc đi rạp.
+Phạm vi hẹp có chủ đích: "xem rồi", giá vé hay lịch chiếu đơn thuần không tính là bàn chuyện đi rạp.
 """
 
 import re

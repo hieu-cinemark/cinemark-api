@@ -1,10 +1,7 @@
-"""Câu hỏi + chấm nhãn bằng model quyết định của Bee (app/ai/decisions.py - từ 21/10/2026 thay cho gọi thẳng TypeSafe):
-cảm xúc / giai đoạn / khía cạnh của bình luận và giá trị bình luận dùng typesafe/jev-1.14 (decisions.comment_model), độ
-liên quan và cảm xúc NỘI DUNG BÀI dùng openai/gpt-6-luna-decisions (decisions.post_model).
+"""Bộ câu hỏi và chấm nhãn trên model quyết định (`app.ai.providers.decisions`).
 
-Chỉ là CA KHÓ: luật (sentiment_rules / relevance_rules) và ViSoBERT (app/ai/local/visobert.py) chạy trước. Model quyết định đọc
-một đoạn văn bản (`state`) và trả lời các câu `choice` (kèm xác suất và độ tự tin); một request = một bình luận/bài, mọi câu
-hỏi cùng lúc. Câu trả lời dưới ngưỡng tự tin rơi về nhãn an toàn (neutral / khac / không gắn khía cạnh).
+Bình luận: cảm xúc, giai đoạn, khía cạnh, giá trị bình luận. Bài viết: độ liên quan, cảm xúc nội dung. Một request là
+một bình luận hoặc một bài, mọi câu hỏi hỏi cùng lúc.
 """
 
 from __future__ import annotations
@@ -75,12 +72,12 @@ def _questions() -> dict[str, dict[str, Any]]:
 
 _QUESTIONS = _questions()
 
-# Giá Jev (2026-10): $0,042 / 1 triệu token đầu vào, đầu ra miễn phí - để ước chi phí trong log (jev_usage).
+# Giá đầu vào (USD / 1 triệu token, đầu ra miễn phí) để ước chi phí trong log.
 USD_PER_M_INPUT = 0.042
 
 
 def jev_is_configured() -> bool:
-    # Bee được kiểm tra lúc gọi (app/ai/decisions.bee_endpoint) - chưa cấu hình thì lời gọi lỗi và bên gọi fail open.
+    # Bee được kiểm tra lúc gọi; chưa cấu hình thì lời gọi lỗi và bên gọi fail open.
     return True
 
 
@@ -161,7 +158,7 @@ async def ask(
     return await decide(kind, state, questions, client=client)
 
 
-# --- Độ liên quan của bài (thay Kira ở app/ai/tasks/post_relevance.py khi settings.classifier = "jev") -----------------
+# --- Độ liên quan của bài (settings.classifier = "jev") ---
 _RELEVANCE = {
     "related": "Bài nói về ĐÚNG phim đích với tư cách một bộ phim: trailer, poster, nội dung, ngày chiếu, suất chiếu, rạp, "
     "vé, doanh thu, review/cảm nhận sau khi xem, hậu trường, diễn viên/đoàn phim quảng bá hoặc bàn về phim, clip/edit "
@@ -204,14 +201,13 @@ async def classify_post_relevance_jev(
     if label not in _RELEVANCE:
         return None
     confidence = float(answer.get("confidence") or 0)
-    # Không đủ tự tin thì "uncertain": resolve_relevance xử lý như Kira không kết luận (giữ bài theo luật từ khoá).
+    # Không đủ tự tin thì "uncertain": giữ bài theo luật từ khoá.
     if label != "uncertain" and confidence < settings.jev_min_confidence:
         label = "uncertain"
     return {"label": label, "confidence": confidence, "reason": f"jev {answer.get('choice')} {confidence:.2f}"}
 
 
-# --- Giá trị comment của bài (thay Kira ở app/services/crawl/comment_value.py) -------------------------------------------
-# Loại bài -> điểm 0-100 "có đáng cào comment không"; điểm = trung bình theo xác suất từng loại.
+# --- Giá trị bình luận của bài: điểm 0-100 "có đáng cào bình luận không", trung bình theo xác suất từng loại ---
 COMMENT_VALUE_KINDS: dict[str, tuple[int, str]] = {
     "review": (90, "Review, cảm nhận về phim - người xem sẽ vào bàn luận khen chê"),
     "discussion": (85, "Đặt câu hỏi, tranh luận, so sánh, tin gây tranh cãi về phim hoặc diễn viên"),

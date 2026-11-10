@@ -1,6 +1,8 @@
-"""Tách nguồn (kênh) của một bài - bản Python của extractHandle (cinemark api/services/heat/heatEngine.ts) và
-channelOfPost / channelUrl (api/services/channelExport/bookingChannels.ts). Phải cho cùng kết quả với bản TS vì nhãn tác giả
-và channel_profiles được tra theo handle này ở cả hai phía."""
+"""Tách nguồn (kênh) của một bài: handle, loại kênh và link kênh.
+
+Phải cho cùng kết quả với bản TS ở Worker (`extractHandle`, `channelOfPost`) vì nhãn tác giả và `channel_profiles`
+được tra theo handle này ở cả hai phía.
+"""
 
 from __future__ import annotations
 

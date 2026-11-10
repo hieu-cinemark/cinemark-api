@@ -1,3 +1,5 @@
+"""Prompt phân loại độ liên quan của bài (system prompt + khung dữ liệu theo lô)."""
+
 SYSTEM_PROMPT = """
 You are an AI data relevance classifier for a web scraping and data mining pipeline.
 

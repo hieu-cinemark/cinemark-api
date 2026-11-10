@@ -1,4 +1,4 @@
-"""app/ai/client.py _invoke: model từ chối temperature (Bee claude-haiku-5-5, 26/10/2026) -> gọi lại không temperature."""
+"""app/ai/providers/client.py _invoke: model từ chối temperature (Bee claude-haiku-5-5, 26/10/2026) -> gọi lại không temperature."""
 
 from __future__ import annotations
 

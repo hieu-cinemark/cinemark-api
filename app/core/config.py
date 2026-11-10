@@ -93,12 +93,12 @@ class Settings(BaseSettings):
     # tab AI trong Settings của dashboard (bảng ai_settings trên Supabase) - biến môi
     # trường này chỉ cung cấp giá trị enabled ban đầu khi dòng đó được tạo lần đầu. Thông
     # tin đăng nhập (base_url/api_key) và model, của Kira và mọi provider khác (ví dụ
-    # Beeknoee), nằm trong bảng ai_providers trên Supabase - xem app/ai/client.py và
+    # Beeknoee), nằm trong bảng ai_providers trên Supabase - xem app/ai/providers/client.py và
     # app/services/accounts/platform_config_db.py. Công dụng chính hiện nay: phân loại liên quan,
     # cảm xúc comment và report topic/narrative (Beeknoee chỉ là tuỳ chọn cho report).
     kira_enabled: bool = False
     # Việc PHÂN LOẠI - gán nhãn comment (cảm xúc, khía cạnh, giai đoạn), độ liên quan của bài, giá trị comment của bài:
-    # "jev" = model quyết định của Bee (app/ai/decisions.py, từ 21/10/2026 thay cho gọi thẳng TypeSafe), chạy SAU luật và
+    # "jev" = model quyết định của Bee (app/ai/providers/decisions.py, từ 21/10/2026 thay cho gọi thẳng TypeSafe), chạy SAU luật và
     # ViSoBERT - chỉ ca khó; "llm" = chat Bee như trước. Bình luận dùng bee_comment_model, bài viết dùng bee_post_model.
     classifier: str = "jev"
     bee_comment_model: str = "typesafe/jev-1.14"
@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     # Comment Jev lỗi thì thử Kira (tắt mặc định: Kira chỉ còn duyệt BFS).
     jev_kira_fallback: bool = False
     jev_concurrency: int = 16
-    # Số lời gọi song song tối đa tới MỖI nhà cung cấp AI (Kira, Bee...) trong một tiến trình - xem app/ai/client.py.
+    # Số lời gọi song song tối đa tới MỖI nhà cung cấp AI (Kira, Bee...) trong một tiến trình - xem app/ai/providers/client.py.
     # Service giữ 2; script backfill (scripts/kira_label_comments.py --concurrency) nâng lên trong tiến trình của nó.
     ai_provider_concurrency: int = 2
     # Model Bee RIÊNG cho việc viết report Social Topic (app/ai/tasks/report.py) - mọi lời gọi Bee khác dùng model của dòng

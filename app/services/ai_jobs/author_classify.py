@@ -1,10 +1,8 @@
-"""Tự gắn nhãn tác giả chưa phân loại bằng AI - bản Python của processAuthorAutoClassifyQueue (cinemark
-api/services/authors/autoClassify.ts, chuyển sang 10/11/2026).
+"""Tự gắn tầng cho tác giả chưa phân loại bằng AI.
 
-Mỗi lượt nhận một phim đến hạn (author_ai_state.next_at cũ nhất, nhận bằng UPDATE có điều kiện), lấy các tác giả chưa có
-nhãn ảnh hưởng nhất 60 ngày qua mà AI chưa xem, nhờ AI gợi ý tầng và LƯU nhãn đủ tự tin vào author_classifications (không
-bao giờ ghi đè nhãn đã có - nhãn tay luôn thắng). Mọi gợi ý nằm trong author_ai_review để không hỏi lại. Bảng nằm ở
-cinemark-db (database="app"); bài đọc từ cinemark-scraper.
+Mỗi lượt nhận một phim đến hạn (`author_ai_state.next_at`), lấy các tác giả chưa có nhãn ảnh hưởng nhất 60 ngày qua,
+hỏi AI và lưu nhãn đủ tự tin vào `author_classifications` (không ghi đè nhãn có sẵn). Mọi gợi ý ghi vào
+`author_ai_review` để không hỏi lại. Bảng nhãn ở cinemark-db (`database="app"`), bài ở cinemark-scraper.
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ BATCHES_PER_RUN = 2
 RECHECK_AFTER = timedelta(hours=6)
 CONTINUE_AFTER = timedelta(minutes=10)
 REASK_AFTER = timedelta(days=14)
-# Bảng nhãn ~56 nghìn dòng: đọc lại mỗi lượt là ~40 triệu dòng/ngày trên cinemark-db - giữ trong bộ nhớ 10 phút.
+# Bảng nhãn ~56 nghìn dòng: cache 10 phút thay vì đọc lại mỗi lượt.
 _CACHE_SECONDS = 600
 TIERS = ("owned", "pro", "media", "outsider")
 

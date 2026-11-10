@@ -109,7 +109,7 @@ async def _label_batch(rows: list[dict[str, Any]], context: dict[str, dict[str, 
 
 
 async def main(args: argparse.Namespace) -> None:
-    settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/client.py đọc lúc gọi đầu tiên
+    settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/providers/client.py đọc lúc gọi đầu tiên
     rows = _load_rows()
     done = set()
     if OUT_FILE.exists():

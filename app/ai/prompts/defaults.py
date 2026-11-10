@@ -1,8 +1,8 @@
-"""System prompt mặc định trong code cho từng task (tên model chỉ nằm trong các dòng
-ai_providers trên Supabase). Settings có thể ghi đè các prompt này (xem dòng
-ai_settings trong app/services/accounts/platform_config_db.py); prompt lưu mà rỗng thì quay
-về giá trị ở đây, để một ô textarea bị xoá trắng không bao giờ gửi đi system
-message rỗng."""
+"""System prompt mặc định của từng task.
+
+Người vận hành có thể ghi đè trong `ai_settings.prompts`; bản ghi đè rỗng thì dùng bản ở đây, để không bao giờ gửi
+system message trống.
+"""
 
 from __future__ import annotations
 
@@ -45,8 +45,7 @@ If NONE of the entries plausibly match the GOAL at all, respond with
 exactly: none
 """.strip()
 
-# Các key task cố định, lưu trong JSON ai_settings.prompts và được ghi vào log của
-# mọi KiraResponse. Các task phía crawl dùng cùng key này bên spider-hub.
+# Key task cố định: lưu trong ai_settings.prompts, ghi vào log mỗi lời gọi; spider-hub dùng cùng key.
 AI_PROMPT_TASKS: tuple[str, ...] = (
     "relevance",
     "post_relevance",

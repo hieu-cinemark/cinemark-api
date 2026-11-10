@@ -1,8 +1,8 @@
-# Hai cặp prompt dùng bởi scripts/jobs/generate_social_topic_reports.py, tách thành hai
-# lời gọi Kira riêng cho mỗi phim mỗi lần chạy thay vì gộp một lời gọi - xem
-# docstring module của script đó để biết lý do (đầu ra có cấu trúc lớn dễ bị cắt trên
-# model có reasoning; tách riêng lời gọi narrative nhỏ giúp narrative lỗi không làm
-# phí công phần topics/verbatims).
+"""Prompt sinh report Social Topic: chủ đề + trích dẫn, gộp nhiều phần, và đoạn tổng kết.
+
+Tách thành nhiều lời gọi vì đầu ra có cấu trúc lớn dễ bị cắt; lời gọi tổng kết nhỏ lỗi thì phần chủ đề vẫn dùng được.
+Các quy tắc bắt buộc được lặp lại trong user prompt vì system prompt có thể bị ghi đè từ dashboard.
+"""
 
 TOPICS_SYSTEM_PROMPT = """
 You are an AI social-listening analyst summarizing what audiences say about a
@@ -101,10 +101,7 @@ Use exactly this structure:
 }
 """
 
-# Các quy tắc bắt buộc (bài "channel" không phải ý kiến, chỉ tính ý kiến về phim, định dạng đầu ra có "source")
-# được lặp lại ở đây, trong user prompt, là cố ý: system prompt có thể bị thay từ Admin › AI (ai_settings.prompts),
-# và 2026-10-07 dòng "topics" ở đó đang là bản sao nguyên văn của prompt mặc định CŨ (chỉ có comment) - nó sẽ âm
-# thầm thắng prompt mới ở trên. Cùng lý do với SENTIMENT_DATA_PROMPT.
+# Quy tắc bắt buộc lặp lại trong user prompt vì system prompt có thể bị ghi đè từ dashboard.
 TOPICS_DATA_PROMPT = """
 MOVIE (use the cast, characters and story below to recognize who and what people talk about):
 {movie_info}
@@ -132,8 +129,7 @@ Return ONLY valid JSON in exactly this structure. Every evidence item and verbat
   "top_10_verbatims": [{{"source": "post", "id": "p3", "text": "...", "likes": 340, "why_it_matters": "..."}}]}}
 """
 
-# Phim lớn: mẫu được chia thành nhiều phần, mỗi phần một lời gọi TOPICS (thêm dòng dưới vào cuối user prompt), rồi
-# một lời gọi MERGE gộp lại thành top 10 - xem generate_topics_and_verbatims.
+# Phim lớn: chia mẫu thành nhiều phần, mỗi phần một lời gọi TOPICS (thêm dòng dưới), rồi một lời gọi MERGE.
 TOPICS_BATCH_NOTE = """
 This is part {part} of {parts} of the sample (other parts are analysed separately and merged later). Return at most
 {max_topics} topics and {max_verbatims} verbatims for THIS part, each topic with 2-3 evidence items.

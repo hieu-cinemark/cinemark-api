@@ -1,5 +1,4 @@
-"""Job AI chuyển từ Worker cinemark sang (10/11/2026): gắn nhãn tác giả, niche kênh, Review Angles.
+"""Job AI chạy nền: gắn nhãn tác giả, gắn niche kênh, gom góc Review Angles.
 
-Worker chỉ còn đọc kết quả (nhãn trong cinemark-db, channel_profiles trong cinemark-scraper, state.json của Review Angles trên
-R2); việc gọi AI chạy ở đây cùng Bee client và ngân sách AI của cinemark-api. Logic giữ đúng như bản TS cũ.
+Phần gọi AI dùng `app.ai`; module ở đây chỉ điều phối đọc/ghi D1, R2 và Redis. Worker cinemark chỉ đọc kết quả.
 """

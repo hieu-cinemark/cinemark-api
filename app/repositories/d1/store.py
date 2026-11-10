@@ -696,7 +696,7 @@ def _pick_quotes(rows: list[dict[str, Any]], posts: dict[str, dict[str, Any]]) -
 
 async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
     """Số liệu khía cạnh + giai đoạn khán giả của phim, đếm thẳng trên MỌI comment đã được gán khía cạnh (không
-    phải mẫu) dưới các bài qua cổng liên quan (_report_posts) - xem app/ai/aspects.py. Bỏ comment không mang nội
+    phải mẫu) dưới các bài qua cổng liên quan (_report_posts) - xem app/ai/domain/aspects.py. Bỏ comment không mang nội
     dung (rule_sentiment) khỏi mẫu số để "tỉ trọng nhắc tới" không bị loãng bởi comment chỉ tag bạn bè.
 
     - aspects: mỗi khía cạnh có mentions, mention_share (% comment có nhắc), positive/negative (% khen/chê trong

@@ -93,7 +93,7 @@ async def _ensure_comments_parent_column() -> None:
 
 _comment_insight_columns_ready = False
 _comment_insight_columns_lock = asyncio.Lock()
-# Khía cạnh khen/chê (JSON list "key:+"), giai đoạn khán giả và thời điểm gán - xem app/ai/aspects.py. Thêm 2026-10-07.
+# Khía cạnh khen/chê (JSON list "key:+"), giai đoạn khán giả và thời điểm gán - xem app/ai/domain/aspects.py. Thêm 2026-10-07.
 # first_seen_at: lần đầu comment vào D1 (scraped_at bị ghi đè mỗi lần quét lại) - thêm 2026-10-28.
 # Khoá raw_json của comment còn được đọc: tệp đính kèm hiện trên dashboard. Bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer).
 COMMENT_RAW_KEEP = ("sticker_url", "gif", "image", "video")

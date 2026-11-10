@@ -1,6 +1,8 @@
-"""Embedding câu cho gom chủ đề (Social Topic bước 4): intfloat/multilingual-e5-small, mean-pooling + chuẩn hoá,
-nên tích vô hướng = cosine. Đo 26/10/2026: ~206 câu/giây trên 2 luồng CPU (cỡ VPS), ~470 MB tải về lần đầu
-(cache ở ~/.cache/huggingface). Model nạp lười, một lần mỗi tiến trình."""
+"""Embedding câu bằng `intfloat/multilingual-e5-small` (384 chiều, đã chuẩn hoá: tích vô hướng = cosine).
+
+Model nạp lười, một lần mỗi tiến trình; khoảng 200 câu/giây trên 2 luồng CPU. Dùng cho gom chủ đề bình luận và là
+lựa chọn mặc định cho `Embedder` của RAG.
+"""
 
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ Cách dùng:
     python -m scripts.jobs.backfill_comment_sentiment --limit 50 --dry-run
     python -m scripts.jobs.backfill_comment_sentiment --older-than-hours 48   # chỉ phần lượt quét không tới
 
---insights: thay vào đó gán khía cạnh khen/chê + giai đoạn khán giả (app/ai/aspects.py) cho comment ĐÃ có
+--insights: thay vào đó gán khía cạnh khen/chê + giai đoạn khán giả (app/ai/domain/aspects.py) cho comment ĐÃ có
 sentiment từ trước 2026-10-07 - giữ nguyên nhãn cảm xúc cũ, chỉ ghi aspects/audience_stage. Nên chạy theo phim
 (--movie-id) cho phim sắp làm report thay vì cả kho:
     python -m scripts.jobs.backfill_comment_sentiment --insights --movie-id movie_... --limit 2000

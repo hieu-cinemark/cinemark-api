@@ -70,7 +70,7 @@ async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, A
 
 
 async def main(args: argparse.Namespace) -> None:
-    settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/client.py đọc lúc gọi đầu tiên
+    settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/providers/client.py đọc lúc gọi đầu tiên
     rows = [json.loads(line) for line in DATA_FILE.read_text(encoding="utf-8").split("\n") if line]
     done = set()
     if OUT_FILE.exists():

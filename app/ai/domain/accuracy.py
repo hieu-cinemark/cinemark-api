@@ -1,8 +1,8 @@
-"""Chấm độ chính xác của máy (nhãn cảm xúc + khía cạnh + giai đoạn khán giả, xem app/ai/aspects.py) so với nhãn
-người làm - phần tính toán thuần của scripts/ml/accuracy_sample.py, tách riêng để test được.
+"""Đo độ chính xác nhãn máy (cảm xúc, khía cạnh, giai đoạn) so với nhãn người.
 
-Nhãn người được nhập tay trong file CSV nên chấp nhận vài cách viết: cảm xúc "positive"/"tich_cuc"/"khen"/"+",
-khía cạnh "dien_xuat:+, kich_ban:-", về phim "co"/"khong"."""
+Nhãn người nhập tay trong CSV nên chấp nhận nhiều cách viết: cảm xúc `positive`/`tich_cuc`/`khen`/`+`, khía cạnh
+`dien_xuat:+, kich_ban:-`, về phim `co`/`khong`. Dùng bởi `scripts/ml/accuracy_sample.py`.
+"""
 
 from __future__ import annotations
 

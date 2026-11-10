@@ -1,10 +1,9 @@
-"""System prompt mặc định cho task "post_relevance" (xem
-app/ai/tasks/post_relevance.py). Tách ra module riêng để app/ai/defaults.py import
-được mà không phải import app/ai/kira.py (tránh import vòng)."""
+"""System prompt mặc định của task `post_relevance` (độ liên quan của bài với phim).
 
-# Chỉ chứa tiêu chí - phần khung JSON nằm trong user prompt (do code quản lý), xem
-# app/ai/tasks/post_relevance.py, nên bản prompt bị sửa trên dashboard không thể làm
-# hỏng định dạng trả lời theo lô.
+Chỉ chứa tiêu chí; khung JSON đầu ra nằm trong user prompt do code quản lý, nên bản ghi đè trên dashboard không làm
+hỏng bộ parse.
+"""
+
 POST_RELEVANCE_SYSTEM_PROMPT = """
 You label social-media posts for a Vietnamese film-marketing dashboard. The
 dashboard only tracks cinema: the TARGET FILM, its release and screenings, and

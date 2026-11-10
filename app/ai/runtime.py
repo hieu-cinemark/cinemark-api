@@ -1,7 +1,8 @@
-"""Lớp chính sách theo task cho mọi lời gọi AI, nằm trên app.ai.providers.client dùng chung: bật/tắt + system prompt ghi đè theo
-task (bảng ai_settings trên Supabase). Mọi lời gọi đi qua Bee (ai_providers key="bee") - Kira đã bỏ hẳn từ 2026-10-21
-(chậm, hay 429/504). Mọi bộ phân loại trong app/ai/ đều đi qua call_llm() để dùng chung một lần đọc enabled/prompts và
-một ngân sách retry."""
+"""Lớp chính sách cho mọi lời gọi LLM.
+
+Đọc cấu hình theo task (bật/tắt, system prompt ghi đè) từ bảng `ai_settings`, rồi gọi provider qua
+`app.ai.providers.client`. Mọi task trong `app.ai` đi qua `call_llm` / `call_llm_json` để dùng chung cấu hình và retry.
+"""
 
 from __future__ import annotations
 
@@ -26,9 +27,7 @@ AI_PROVIDER = "bee"
 logger = get_logger(__name__)
 
 _ai_cfg_cache: tuple[float, dict[str, Any]] | None = None
-# Mỗi lần đọc phải mở kết nối Supabase mới (khoảng 3 giây), nên TTL ngắn làm gần như
-# mọi lời gọi AI đều phải chờ. Tiến trình API tự xoá cache này khi lưu; các
-# tiến trình khác (ingest consumer) nhận thay đổi trong vòng một phút.
+# Đọc ai_settings tốn ~3 giây (kết nối Supabase mới) nên giữ 60 giây; API tự xoá cache khi lưu cấu hình.
 _AI_CFG_TTL_SECONDS = 60.0
 
 
@@ -43,9 +42,7 @@ def _normalize_prompts(raw: object) -> dict[str, str]:
 
 
 async def load_ai_runtime() -> dict[str, Any]:
-    """enabled + prompt ghi đè theo task từ dòng ai_settings trên Supabase, mặc định là
-    tắt/không ghi đè nếu bảng chưa có. Thông tin provider/model là chuyện riêng - xem
-    app.ai.providers.client.load_provider()."""
+    """Cấu hình AI theo task: `{"enabled", "prompts", "updated_at"}`. Bảng chưa có thì tắt, không ghi đè."""
     global _ai_cfg_cache
     now = time.monotonic()
     if _ai_cfg_cache is not None and now - _ai_cfg_cache[0] < _AI_CFG_TTL_SECONDS:
@@ -95,10 +92,11 @@ async def call_llm(
     task: str = "chat",
     platform: str | None = None,
 ) -> str:
-    """Chạy một lần chat completion (Bee) qua app.ai.providers.client.call_ai(). force=True dành
-    cho import Settings do người vận hành bấm (vẫn chạy khi các bộ phân loại ingest
-    đang tắt). Raise khi bị tắt, cấu hình sai hoặc provider lỗi - mọi bên gọi ở đây đều
-    đã bắt rộng và fail open (xem ví dụ app/ai/tasks/post_relevance.py)."""
+    """Một lần chat completion, trả nội dung trả lời.
+
+    `force=True` chạy cả khi AI đang tắt (thao tác người vận hành bấm, job nền). Raise khi AI tắt, cấu hình sai hoặc
+    provider lỗi; bên gọi tự bắt và fail open.
+    """
     cfg = await load_ai_runtime()
     if not cfg["enabled"] and not force:
         raise RuntimeError("ai_temporarily_disabled")
