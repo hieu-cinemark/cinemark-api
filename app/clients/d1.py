@@ -192,9 +192,11 @@ async def d1_query(
     lại bị giới hạn khoảng 60s tổng thời gian sleep để một request dashboard không bị
     treo vì một database hỏng hẳn; nếu lần thử nào cũng 429 thì hàm vẫn trả về None kèm
     một log cảnh báo cuối cùng để chỗ gọi tự quyết định làm gì."""
-    database_id = _database_id(database)
-    if not _configured() or not database_id:
+    if not _configured():
         return _unavailable("d1_not_configured")
+    database_id = _database_id(database)
+    if database != "scraper" and not database_id:
+        return _unavailable(f"d1_{database}_not_configured")
 
     global _logged_db_target
     if not _logged_db_target:
