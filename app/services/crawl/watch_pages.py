@@ -1,39 +1,39 @@
 """Quét lại page Facebook của phim đang chiếu (2026-11-05), để mục "Đang nổi" của Social Topic có tốc độ tăng tương tác.
 
-Đọc page không đăng nhập hay bị chặn theo IP, nên lượt này đi qua tài khoản: mỗi settings.facebook_watch_pages_interval_hours
-giờ xếp job page_feed cho page của phim đang chiếu, rồi tới page chung (CGV, Moveek...) hay có bài. Mỗi page chỉ đọc trang
-bảng tin mới nhất và gửi lại cả bài đã thấy (dedupe=false): một request cập nhật số của nhiều bài, ingest ghi
-post_engagement_snapshots khi số đổi, cinemark đọc bảng đó để tính tốc độ (api/lib/trendingPosts.ts).
+Mỗi settings.facebook_watch_pages_interval_hours giờ xếp job đọc page cho page của phim đang chiếu, rồi tới page chung (CGV,
+Moveek...) hay có bài. Mỗi page chỉ đọc trang bảng tin mới nhất và gửi lại cả bài đã thấy (dedupe=false): một request cập
+nhật số của nhiều bài, ingest ghi post_engagement_snapshots khi số đổi, cinemark đọc bảng đó để tính tốc độ
+(api/lib/trendingPosts.ts).
+
+10/11/2026: chuyển sang luồng KHÔNG đăng nhập (job public_page của spider-hub, proxy riêng không gán tài khoản - người vận
+hành quyết định) thay cho page_feed qua tài khoản: tài khoản Facebook chỉ còn vài cái, để dành hạn mức cho tìm kiếm. Không
+còn cần tài khoản sẵn sàng hay tránh giờ yên lặng của Meta; proxy bị chặn thì spider-hub tự cho nghỉ.
 
 Phim đang chiếu: từ ngày chiếu sớm (movie_measure_settings.premiere_date, không có thì ngày công chiếu) tới
-SHOWING_DAYS_AFTER_RELEASE ngày sau công chiếu. Không có tài khoản Facebook sẵn sàng thì không xếp gì.
+SHOWING_DAYS_AFTER_RELEASE ngày sau công chiếu.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, time
+import json
+import uuid
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
-from app.services.accounts import platform_config_db
-from app.services.crawl.source_pages import MAX_PENDING_PAGE_FEED, queue_source
-from app.services.crawl.task_queue import list_pending
+from app.repositories.d1.store import d1_query, get_or_create_keyword
+from app.services.crawl.source_pages import _PUBLIC_QUEUE_KEY as PUBLIC_QUEUE_KEY
+from app.services.crawl.task_queue import enqueue_published
 
 logger = get_logger(__name__)
 
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 SHOWING_DAYS_AFTER_RELEASE = 30
-# Giờ yên lặng của Meta (spider-hub META_QUIET_HOURS): job xếp lúc này chỉ nằm chờ.
-QUIET_START = time(23, 30)
-QUIET_END = time(5, 30)
-
-
-def in_quiet_hours(now: datetime) -> bool:
-    current = now.astimezone(TIMEZONE).time()
-    return current >= QUIET_START or current < QUIET_END
+# Hàng đợi public_page còn chừng này job thì lượt này không xếp thêm (spider-hub đọc chậm / proxy đang bị chặn).
+MAX_PENDING_PUBLIC_PAGES = 20
 
 
 def pick_pages(rows: list[dict[str, Any]], showing_ids: set[str], limit: int) -> list[dict[str, Any]]:
@@ -56,27 +56,44 @@ async def showing_movie_ids(now: datetime) -> set[str]:
     return {row["id"] for row in rows or []}
 
 
+async def queue_public_page(row: dict[str, Any], now: datetime) -> bool:
+    """Một job public_page cho page: chỉ trang bảng tin mới nhất, gửi lại cả bài đã thấy (spider-hub jobs/public_page.py)."""
+    keyword_id = None
+    if row.get("movie_id"):
+        movie = await d1_query("SELECT title FROM movies WHERE id = ?", [row["movie_id"]], quiet=True)
+        keyword = await get_or_create_keyword(row["movie_id"], "facebook", movie[0]["title"]) if movie else None
+        if keyword is None:
+            return False
+        keyword_id = keyword["id"]
+    request: dict[str, Any] = {
+        "type": "public_page",
+        "platform": "facebook",
+        "page_url": row["url"],
+        "keyword_id": keyword_id,
+        "max_pages": settings.facebook_watch_pages_max_pages,
+        "since_days": max(1, round(settings.facebook_watch_pages_since_days)),
+        "dedupe": "false",
+        "run_id": str(uuid.uuid4()),
+        "published_at": now.timestamp(),
+    }
+    await enqueue_published(request)  # hiện trên trang Hàng đợi
+    await get_redis_client().lpush(PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
+    return True
+
+
 async def queue_round(now: datetime) -> int:
-    if in_quiet_hours(now) or not await platform_config_db.count_crawl_ready_accounts("facebook"):
-        return 0
-    pending = [item for item in await list_pending("facebook") if item.get("type") == "page_feed"]
-    if len(pending) >= MAX_PENDING_PAGE_FEED:
-        logger.info("watch_pages_skipped_backlog", pending_page_feed=len(pending))
+    pending = await get_redis_client().llen(PUBLIC_QUEUE_KEY)
+    if pending >= MAX_PENDING_PUBLIC_PAGES:
+        logger.info("watch_pages_skipped_backlog", pending_public_pages=pending)
         return 0
     showing = await showing_movie_ids(now)
     if not showing:
         return 0
     rows = await d1_query("SELECT * FROM source_pages WHERE enabled = 1 AND platform = 'facebook'", quiet=True)
     picked = pick_pages(rows or [], showing, settings.facebook_watch_pages_per_round)
-    options = {
-        "max_pages": settings.facebook_watch_pages_max_pages,
-        "since_days": settings.facebook_watch_pages_since_days,
-        "dedupe": "false",
-        "reels": "false",
-    }
     queued = 0
     for row in picked:
-        if await queue_source(row, overrides=options):
+        if await queue_public_page(row, now):
             queued += 1
     logger.info("watch_pages_queued", queued=queued, picked=len(picked), showing=len(showing))
     return queued
