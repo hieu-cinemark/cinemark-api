@@ -11,6 +11,14 @@ sạch). Chia train/val/test THEO BÀI giống aspect_probe để so sánh đư�
     python -m scripts.ml.aspect_finetune --calibrate        # chỉ chọn lại ngưỡng theo số đếm cho model đã train
     python -m scripts.ml.aspect_finetune --haiku --min-support 100 --out ~/cinemark-ml/aspects/visobert-aspects-haiku
                                                             # học từ nhãn Haiku (scripts/ml/aspect_label_haiku.py)
+    python -m scripts.ml.aspect_finetune --haiku --min-support 100 --extra-vimovie final_dataset.csv \
+        --out ~/cinemark-ml/aspects/visobert-aspects-vimovie
+                                                            # thêm ViMovieABSA (CC BY 4.0) vào phần train
+
+ViMovieABSA (github.com/AlyThien/ViMovieABSA-...): 10.797 bình luận phim, 6 khía cạnh x khen/chê/trung lập/none. Chỉ 4 khía
+cạnh khớp bộ của mình (plot->kich_ban, acting->dien_xuat, music->am_thanh, visual->hinh_anh); dòng của họ chỉ tính loss trên
+các cột đó (các khía cạnh khác họ không gán, không được coi là "không có"), bỏ nhãn trung lập, "lồng tiếng" về am_thanh.
+Chỉ đưa vào train; 20% để riêng (VIMOVIE_HOLDOUT) đo phát hiện khía cạnh sau khi train. Tập val/test của mình giữ nguyên.
 """
 
 from __future__ import annotations
@@ -33,6 +41,34 @@ OUT_DIR = DATA_DIR / "visobert-aspects"
 HAIKU_FILE = DATA_DIR / "haiku_labels.jsonl"
 MAX_TOKENS = 128
 MIN_CHARS = 10
+VIMOVIE_MAP = {"plot": "kich_ban", "acting": "dien_xuat", "music": "am_thanh", "visual": "hinh_anh"}
+VIMOVIE_HOLDOUT = 0.2
+
+
+def load_vimovie(path: Path) -> tuple[list[dict], list[dict]]:
+    """(train, holdout) từ final_dataset.csv của ViMovieABSA. Mỗi dòng: text (bỏ tách từ "_"), labels "key:+/-",
+    known: các khía cạnh của mình mà dòng này có nhãn (để che loss các khía cạnh còn lại)."""
+    import csv
+
+    out = []
+    for row in csv.DictReader(path.open(encoding="utf-8")):
+        text = row["text"].replace("_", " ").strip()
+        if len(normalize(text)) < MIN_CHARS:
+            continue
+        labels, known = [], set()
+        for theirs, ours in VIMOVIE_MAP.items():
+            value = row[theirs].strip().replace("negavitve", "negative")
+            if theirs == "acting" and "lồng tiếng" in text.lower():
+                ours = "am_thanh"
+            if value == "neutral":
+                continue
+            known.add(ours)
+            if value in ("positive", "negative"):
+                labels.append(f"{ours}:{'+' if value == 'positive' else '-'}")
+        out.append({"id": "vimovie_" + row["comment_id"], "text": text, "labels": labels, "known": known, "gold": row})
+    random.Random(SEED).shuffle(out)
+    cut = int(len(out) * VIMOVIE_HOLDOUT)
+    return out[cut:], out[:cut]
 
 
 def prf(pred: np.ndarray, gold: np.ndarray) -> tuple[float, float, float]:
@@ -136,6 +172,7 @@ def main() -> None:
     parser.add_argument(
         "--calibrate", action="store_true", help="không train: chọn lại ngưỡng theo số đếm cho model đã lưu"
     )
+    parser.add_argument("--extra-vimovie", type=Path, help="final_dataset.csv của ViMovieABSA: thêm vào phần train")
     args = parser.parse_args()
 
     from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast
@@ -160,6 +197,26 @@ def main() -> None:
     train_idx = [i for i in range(len(rows)) if split[i] == 0]
     val_idx = [i for i in range(len(rows)) if split[i] == 1]
     test_idx = [i for i in range(len(rows)) if split[i] == 2]
+    # Mặt nạ loss: 1 = cột có nhãn tin được. Dòng của mình biết mọi cột; dòng ViMovie chỉ biết 4 khía cạnh khớp.
+    mask = np.ones_like(y)
+    vimovie_holdout: list[dict] = []
+    if args.extra_vimovie:
+        extra, vimovie_holdout = load_vimovie(args.extra_vimovie)
+        y_extra = np.zeros((len(extra), len(labels)), dtype=np.float32)
+        m_extra = np.zeros_like(y_extra)
+        for i, r in enumerate(extra):
+            for label in r["labels"]:
+                if label in index:
+                    y_extra[i, index[label]] = 1
+            for j, label in enumerate(labels):
+                if label.split(":")[0] in r["known"]:
+                    m_extra[i, j] = 1
+        start = len(rows)
+        rows = rows + extra
+        y = np.concatenate([y, y_extra])
+        mask = np.concatenate([mask, m_extra])
+        train_idx += list(range(start, len(rows)))
+        print(f"+ ViMovieABSA: {len(extra)} dòng vào train, {len(vimovie_holdout)} dòng để riêng")
     print(
         f"{len(rows)} comment ({len(pos)} có khía cạnh) · {len(labels)} nhãn · train {len(train_idx)} / val {len(val_idx)} / test {len(test_idx)}"
     )
@@ -176,7 +233,7 @@ def main() -> None:
 
     pos_count = torch.tensor(y[train_idx].sum(0))
     pos_weight = ((len(train_idx) - pos_count) / pos_count.clamp(min=1)).clamp(max=20).to(device)
-    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight, reduction="none")
 
     def encode(idx: list[int]):
         return tokenizer(
@@ -237,7 +294,8 @@ def main() -> None:
         for start in range(0, len(train_idx), args.batch_size):
             batch = train_idx[start : start + args.batch_size]
             logits = model(**encode(batch)).logits
-            loss = loss_fn(logits, torch.tensor(y[batch], device=device))
+            m = torch.tensor(mask[batch], device=device)
+            loss = (loss_fn(logits, torch.tensor(y[batch], device=device)) * m).sum() / m.sum().clamp(min=1)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -251,6 +309,13 @@ def main() -> None:
                     flush=True,
                 )
         results.append(evaluate(f"sau epoch {epoch + 1}"))
+    if vimovie_holdout:
+        results[-1]["vimovie_holdout"] = evaluate_vimovie(
+            vimovie_holdout,
+            labels,
+            predict_texts=lambda texts: _predict_texts(model, tokenizer, texts, device),
+            thresholds=results[-1]["thresholds"],
+        )
     args.out.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(args.out)
     tokenizer.save_pretrained(args.out)
@@ -258,6 +323,48 @@ def main() -> None:
         json.dumps({"labels": labels, "results": results}, ensure_ascii=False, indent=1)
     )
     print(f"\nđã lưu {args.out} · tổng {(time.monotonic() - started) / 60:.0f} phút")
+
+
+def _predict_texts(model, tokenizer, texts: list[str], device: str) -> np.ndarray:
+    model.eval()
+    out = []
+    with torch.inference_mode():
+        for start in range(0, len(texts), 128):
+            enc = tokenizer(
+                texts[start : start + 128], padding=True, truncation=True, max_length=MAX_TOKENS, return_tensors="pt"
+            ).to(device)
+            out.append(torch.sigmoid(model(**enc).logits).float().cpu().numpy())
+    return np.concatenate(out)
+
+
+def evaluate_vimovie(holdout: list[dict], labels: list[str], predict_texts, thresholds: dict[str, float]) -> dict:
+    """Phát hiện khía cạnh (có nhắc hay không) và đúng chiều khen/chê trên phần ViMovie để riêng, 4 khía cạnh khớp."""
+    probs = predict_texts([r["text"] for r in holdout])
+    th = np.array([thresholds[label] for label in labels])
+    hits = probs >= th
+    report = {}
+    print(f"\n=== ViMovieABSA để riêng: {len(holdout)} dòng ===")
+    print(f"{'khía cạnh':22s} {'họ':>5s} {'mình':>5s} {'P':>6s} {'R':>6s} {'F1':>6s} {'đúng chiều':>11s}")
+    for theirs, ours in VIMOVIE_MAP.items():
+        cols = [j for j, label in enumerate(labels) if label.startswith(ours + ":")]
+        tp = fp = fn = ok = n = 0
+        for r, h in zip(holdout, hits, strict=True):
+            gold = r["gold"][theirs].strip().replace("negavitve", "negative")
+            got = {labels[j].split(":")[1] for j in cols if h[j]}
+            g_on, p_on = gold != "none", bool(got)
+            tp += g_on and p_on
+            fp += p_on and not g_on
+            fn += g_on and not p_on
+            if g_on and p_on and gold in ("positive", "negative") and len(got) == 1:
+                n += 1
+                ok += (gold == "positive") == ("+" in got)
+        p, rc = tp / max(tp + fp, 1), tp / max(tp + fn, 1)
+        f = 2 * p * rc / (p + rc) if p + rc else 0.0
+        report[ours] = {"p": round(p, 3), "r": round(rc, 3), "f1": round(f, 3), "polarity": round(ok / max(n, 1), 3)}
+        print(
+            f"{theirs + '->' + ours:22s} {tp + fn:5d} {tp + fp:5d} {p:6.2f} {rc:6.2f} {f:6.2f} {ok}/{n} ({ok / max(n, 1):.0%})"
+        )
+    return report
 
 
 if __name__ == "__main__":

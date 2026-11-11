@@ -41,3 +41,4 @@ def test_aspect_job_replaces_ai_labels_only_when_asked():
 
     assert pending_sql("c", False) == "+c.aspects IS NULL"
     assert "aspects_source IS NULL" in pending_sql("c", True)
+    assert "aspects_source = 'model'" in pending_sql("c", "model")

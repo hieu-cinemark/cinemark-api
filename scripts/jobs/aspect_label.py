@@ -15,6 +15,7 @@ Cách dùng:
     python -m scripts.jobs.aspect_label --days 0.25              # comment thu trong 6 giờ qua (timer)
     python -m scripts.jobs.aspect_label --table posts --days 30  # nội dung bài liên quan tới phim
     python -m scripts.jobs.aspect_label --days 30 --reprocess-ai  # cả comment mang nhãn AI cũ hoặc [] chưa qua model
+    python -m scripts.jobs.aspect_label --days 30 --relabel-model # gán lại cả dòng model cũ đã gán (sau khi thay model)
 """
 
 from __future__ import annotations
@@ -27,10 +28,15 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import and_, func, or_, select, text
+
 from app.ai.tasks.sentiment_rules import rule_sentiment, slang_positive, with_parent_context
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 logger = get_logger(__name__)
 
@@ -82,10 +88,12 @@ async def _ensure_columns(table: str) -> None:
         logger.info("aspect_column_added", table=table, column="aspects_source")
 
 
-def pending_sql(alias: str, reprocess_empty: bool) -> str:
+def pending_sql(alias: str, reprocess_empty: bool | str) -> str:
     """Dòng cần gán. reprocess_empty: mọi dòng chưa qua model (05/11/2026: ~80% comment của Chị Chị Em Em 3 mang [] từ lượt AI cũ nên
     chưa có chủ đề; nhãn AI cũ cũng sai nhiều, vd. khen ngoại hình diễn viên thành "thông điệp"). Dấu "+" chặn planner dùng index
-    trên aspects, xem _save."""
+    trên aspects, xem _save. reprocess_empty="model": cả dòng model cũ đã gán (sau khi thay model)."""
+    if reprocess_empty == "model":
+        return f"(+{alias}.aspects IS NULL OR +{alias}.aspects_source IS NULL OR +{alias}.aspects_source = '{SOURCE}')"
     if not reprocess_empty:
         return f"+{alias}.aspects IS NULL"
     return f"(+{alias}.aspects IS NULL OR +{alias}.aspects_source IS NULL)"
@@ -96,32 +104,44 @@ async def _select(
     limit: int,
     cursor: tuple[str, str] | None,
     since: str | None,
-    reprocess_empty: bool = False,
+    reprocess_empty: bool | str = False,
 ) -> list[dict[str, Any]]:
     """Một trang dòng chưa có khía cạnh, mới nhất trước, sau con trỏ (scraped_at, id) của trang trước."""
     if table == "posts":
-        sql = (
-            f"SELECT p.id, p.scraped_at, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message FROM posts p "
-            f"WHERE {pending_sql('p', reprocess_empty)} AND {RELEVANT_POST_SQL}"
-        )
-        alias = "p"
+        p = posts_table.alias("p")
+        stmt = select(
+            p.c.id,
+            p.c.scraped_at,
+            func.substr(p.c.content, 1, POST_TEXT_LIMIT).label("message"),
+        ).where(text(pending_sql("p", reprocess_empty)), relevant_post(p))
+        alias = p
     else:
-        sql = (
-            "SELECT c.id, c.scraped_at, c.message, par.message AS parent_message FROM comments c "
-            "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
-            f"WHERE {pending_sql('c', reprocess_empty)}"
+        c = comments_table.alias("c")
+        par = comments_table.alias("par")
+        stmt = (
+            select(
+                c.c.id,
+                c.c.scraped_at,
+                c.c.message,
+                par.c.message.label("parent_message"),
+            )
+            .select_from(
+                c.outerjoin(par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id))
+            )
+            .where(text(pending_sql("c", reprocess_empty)))
         )
-        alias = "c"
-    params: list[Any] = []
+        alias = c
     if cursor:
-        sql += f" AND ({alias}.scraped_at < ? OR ({alias}.scraped_at = ? AND {alias}.id < ?))"
-        params.extend([cursor[0], cursor[0], cursor[1]])
+        stmt = stmt.where(
+            or_(
+                alias.c.scraped_at < cursor[0],
+                and_(alias.c.scraped_at == cursor[0], alias.c.id < cursor[1]),
+            )
+        )
     if since:
-        sql += f" AND {alias}.scraped_at >= ?"
-        params.append(since)
-    sql += f" ORDER BY {alias}.scraped_at DESC, {alias}.id DESC LIMIT ?"
-    params.append(limit)
-    rows = await d1_query(sql, params, timeout=90.0)
+        stmt = stmt.where(alias.c.scraped_at >= since)
+    stmt = stmt.order_by(alias.c.scraped_at.desc(), alias.c.id.desc()).limit(limit)
+    rows = await d1_exec(stmt, timeout=90.0)
     if rows is None:
         raise RuntimeError("aspect_select_failed")
     return rows
@@ -130,35 +150,45 @@ async def _select(
 MOVIE_POST_CHUNK = 40
 
 
-async def _movie_pages(table: str, movie_id: str, reprocess_empty: bool):
+async def _movie_pages(table: str, movie_id: str, reprocess_empty: bool | str):
     """--movie-id: đọc theo từng nhóm bài của phim qua index post_id (09/11/2026). Bản đầu lọc `post_id IN (bài của phim)` rồi
     sắp theo scraped_at - mỗi trang đọc và sắp lại cả trăm nghìn bình luận của phim, D1 báo quá tải từ trang thứ hai."""
-    posts = await d1_query("SELECT id FROM posts WHERE movie_id = ?", [movie_id], timeout=90.0)
-    if posts is None:
+    post_rows = await d1_exec(select(posts_table.c.id).where(posts_table.c.movie_id == movie_id), timeout=90.0)
+    if post_rows is None:
         raise RuntimeError("aspect_select_failed")
-    post_ids = [row["id"] for row in posts]
+    post_ids = [row["id"] for row in post_rows]
     for i in range(0, len(post_ids), MOVIE_POST_CHUNK):
         chunk = post_ids[i : i + MOVIE_POST_CHUNK]
-        marks = ",".join("?" * len(chunk))
         if table == "posts":
-            sql = (
-                f"SELECT p.id, p.scraped_at, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message FROM posts p "
-                f"WHERE p.id IN ({marks}) AND {pending_sql('p', reprocess_empty)} AND {RELEVANT_POST_SQL}"
-            )
+            p = posts_table.alias("p")
+            stmt = select(
+                p.c.id,
+                p.c.scraped_at,
+                func.substr(p.c.content, 1, POST_TEXT_LIMIT).label("message"),
+            ).where(p.c.id.in_(chunk), text(pending_sql("p", reprocess_empty)), relevant_post(p))
         else:
-            sql = (
-                "SELECT c.id, c.scraped_at, c.message, par.message AS parent_message FROM comments c "
-                "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
-                f"WHERE c.post_id IN ({marks}) AND {pending_sql('c', reprocess_empty)}"
+            c = comments_table.alias("c")
+            par = comments_table.alias("par")
+            stmt = (
+                select(
+                    c.c.id,
+                    c.c.scraped_at,
+                    c.c.message,
+                    par.c.message.label("parent_message"),
+                )
+                .select_from(
+                    c.outerjoin(par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id))
+                )
+                .where(c.c.post_id.in_(chunk), text(pending_sql("c", reprocess_empty)))
             )
-        rows = await d1_query(sql, chunk, timeout=90.0)
+        rows = await d1_exec(stmt, timeout=90.0)
         if rows is None:
             raise RuntimeError("aspect_select_failed")
         if rows:
             yield rows
 
 
-async def _save(table: str, aspects: dict[str, list[str]], reprocess_empty: bool = False) -> int:
+async def _save(table: str, aspects: dict[str, list[str]], reprocess_empty: bool | str = False) -> int:
     """Một câu UPDATE cho cả khối qua json_each, tra theo khoá chính. Dấu "+" chặn planner dùng index trên aspects (cùng
     bẫy với sentiment 19/10/2026: điều kiện IS NULL có index làm câu UPDATE quét mọi dòng chưa có nhãn)."""
     if not aspects:
@@ -278,6 +308,13 @@ if __name__ == "__main__":
         dest="reprocess_empty",
         action="store_true",
         help="gán lại mọi dòng chưa qua model (nhãn AI cũ, [] cũ), nên kèm --days",
+    )
+    parser.add_argument(
+        "--relabel-model",
+        dest="reprocess_empty",
+        action="store_const",
+        const="model",
+        help="như --reprocess-ai và gán lại cả dòng model đã gán (sau khi thay model), nên kèm --days hoặc --movie-id",
     )
     parser.add_argument("--movie-id", help="chỉ bình luận / bài của một phim")
     parser.add_argument("--dry-run", action="store_true", help="gán một trang và in ra, không ghi")
