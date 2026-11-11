@@ -15,10 +15,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.schema import CreateTable
+
 from app.ai.providers.jev import judge_comment_value_jev, use_jev
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values
+from app.repositories.d1.tables import post_comment_value
 
 logger = get_logger(__name__)
 
@@ -40,37 +44,30 @@ Trả về JSON hợp lệ, không bọc code block:
 {"results":[{"i":<số thứ tự>,"score":0-100,"kind":"review|discussion|promo_content|announcement|giveaway|ad|off_topic","reason":"vài chữ tiếng Việt"}]}"""
 
 _table_ready = False
+# Điểm "đáng cào bình luận" AI chấm cho từng bài - bảng khai ở app/repositories/d1/tables.py
+# (dùng chung với module dọn bài không liên quan).
+comment_value = post_comment_value
 
 
 async def _ensure_table() -> None:
     global _table_ready
     if _table_ready:
         return
-    await d1_query(
-        """CREATE TABLE IF NOT EXISTS post_comment_value (
-            post_id TEXT PRIMARY KEY,
-            score INTEGER NOT NULL,
-            kind TEXT,
-            reason TEXT,
-            judged_at TEXT NOT NULL
-        )""",
-        quiet=True,
-    )
+    await d1_exec(CreateTable(comment_value, if_not_exists=True), quiet=True)
     _table_ready = True
 
 
 async def load_scores(post_ids: list[str]) -> dict[str, int]:
     await _ensure_table()
-    scores: dict[str, int] = {}
-    for start in range(0, len(post_ids), 90):  # D1: tối đa 100 tham số mỗi câu
-        chunk = post_ids[start : start + 90]
-        rows = await d1_query(
-            f"SELECT post_id, score FROM post_comment_value WHERE post_id IN ({','.join('?' * len(chunk))})",
-            chunk,
-            quiet=True,
-        )
-        scores.update({row["post_id"]: int(row["score"]) for row in rows or []})
-    return scores
+    if not post_ids:
+        return {}
+    rows = await d1_exec(
+        select(comment_value.c.post_id, comment_value.c.score).where(
+            comment_value.c.post_id.in_(json_values(post_ids))
+        ),
+        quiet=True,
+    )
+    return {row["post_id"]: int(row["score"]) for row in rows or []}
 
 
 async def _judge_movie(title: str, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -127,9 +124,10 @@ async def judge_new_posts(rows: list[dict[str, Any]], scores: dict[str, int]) ->
                 break
             now = datetime.now(tz=UTC).isoformat()
             for post_id, verdict in judged.items():
-                await d1_query(
-                    "INSERT OR REPLACE INTO post_comment_value (post_id, score, kind, reason, judged_at) VALUES (?, ?, ?, ?, ?)",
-                    [post_id, verdict["score"], verdict["kind"], verdict["reason"], now],
+                await d1_insert_many(
+                    comment_value,
+                    [{"post_id": post_id, **{k: verdict[k] for k in ("score", "kind", "reason")}, "judged_at": now}],
+                    conflict=["post_id"],
                     quiet=True,
                 )
                 fresh[post_id] = verdict["score"]

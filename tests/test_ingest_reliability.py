@@ -10,6 +10,7 @@ from aiokafka.errors import KafkaError
 
 from app.clients import kafka
 from app.clients.d1 import D1Unavailable, d1_strict
+from app.repositories.d1 import sql as d1_sql
 from app.workers.ingest_consumer import main
 
 
@@ -191,7 +192,7 @@ def test_tracked_movies_outage_raises_without_cache_and_uses_stale_cache(monkeyp
     async def down(sql, params=None, **kwargs):
         raise D1Unavailable("down")
 
-    monkeypatch.setattr(main, "d1_query", down)
+    monkeypatch.setattr(d1_sql, "d1_query", down)
     monkeypatch.setattr(main, "_tracked_movies_cache", None)
     with pytest.raises(D1Unavailable):
         asyncio.run(main._tracked_movies())

@@ -23,18 +23,22 @@ from __future__ import annotations
 import json
 from typing import Literal
 
+from sqlalchemy import select
+
 from app.ai.providers.client import load_provider
 from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import (
     MIN_COMMENTS_FOR_REPORT,
-    d1_query,
+    MOVIE_CONTEXT_FIELDS,
     get_movie_aspect_stats,
     get_movie_sentiment_counts,
     get_report_sample_for_movie,
     upsert_social_topic_report,
 )
+from app.repositories.d1.tables import movies
 
 logger = get_logger(__name__)
 
@@ -150,8 +154,8 @@ async def _latest_accuracy() -> dict | None:
 
 
 async def get_movie_for_report(movie_id: str) -> dict | None:
-    rows = await d1_query(
-        "SELECT id, title, director, `cast`, distributor, released_at, description FROM movies WHERE id = ?", [movie_id]
+    rows = await d1_exec(
+        select(movies.c.id, *(movies.c[f] for f in MOVIE_CONTEXT_FIELDS)).where(movies.c.id == movie_id)
     )
     return rows[0] if rows else None
 

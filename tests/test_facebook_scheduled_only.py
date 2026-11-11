@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import scheduler, tracked_posts
 
 
@@ -70,14 +71,14 @@ def test_tracked_posts_keep_logged_out_metrics_without_background_accounts(monke
     updates = []
 
     async def d1(sql, params=None, **kwargs):
-        if sql.startswith("SELECT external_id"):
+        if sql.startswith("SELECT posts.external_id"):
             return [{"external_id": "e1", "url": "https://www.facebook.com/a23/posts/1"}]
         updates.append((sql, params))
         return []
 
     redis = SimpleNamespace(lpush=AsyncMock())
     monkeypatch.setattr(tracked_posts, "_active_rows", AsyncMock(return_value=rows))
-    monkeypatch.setattr(tracked_posts, "d1_query", d1)
+    monkeypatch.setattr(d1_sql, "d1_query", d1)
     monkeypatch.setattr(tracked_posts, "get_redis_client", lambda: redis)
     monkeypatch.setattr(tracked_posts.settings, "tracked_facebook_logged_out", True)
 
@@ -91,7 +92,7 @@ def test_tracked_posts_keep_logged_out_metrics_without_background_accounts(monke
     assert job["fallback_page_feeds"] == {}  # page_feed dự phòng sẽ dùng tài khoản
     assert stats["facebook_deferred"] == 1
     assert len(updates) == 1
-    assert updates[0][1][1:] == ["known"]  # bài chưa được xếp lượt nào không ghi last_queued_at
+    assert json.loads(updates[0][1][1]) == ["known"]  # bài chưa được xếp lượt nào không ghi last_queued_at
 
 
 class AtSlot(scheduler.datetime):

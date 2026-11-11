@@ -20,18 +20,30 @@ from __future__ import annotations
 
 import os
 import re
-import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, select
+
 from app.ai.domain.movie_context import cast_list, movie_context_block
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.store import add_keyword, enable_keyword
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts
 from app.services.crawl.keyword_yield import keyword_yields
-from app.services.discovery.hashtag_discovery import RECHECK_REJECTED_DAYS, _ensure_table, _record
+from app.services.discovery.hashtag_discovery import (
+    ALL_KEYWORDS,
+    ENABLED_MOVIES,
+    RECHECK_REJECTED_DAYS,
+    _ensure_table,
+    _record,
+    decisions_table,
+)
 from app.services.relevance.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
@@ -108,13 +120,16 @@ Trả về JSON hợp lệ, không bọc code block: {"queries": ["...", "..."]}
 async def _sample_posts(movie_id: str) -> list[str]:
     """Bài liên quan nhiều tương tác nhất của phim gần đây (mọi nền tảng) - gợi ý cho AI các cách khán giả gọi phim."""
     since = (datetime.now(tz=UTC) - timedelta(days=SAMPLE_DAYS)).isoformat()
+    p = posts.alias("p")
+    score = (
+        func.coalesce(p.c.like_count, 0) + 3 * func.coalesce(p.c.reply_count, 0) + func.coalesce(p.c.repost_count, 0)
+    )
     rows = (
-        await d1_query(
-            f"""SELECT substr(p.content, 1, 240) AS content FROM posts p
-            WHERE p.movie_id = ? AND p.posted_at >= ? AND {RELEVANT_POST_SQL} AND length(p.content) >= 30
-            ORDER BY COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0) + COALESCE(p.repost_count, 0) DESC
-            LIMIT ?""",
-            [movie_id, since, SAMPLE_POSTS],
+        await d1_exec(
+            select(func.substr(p.c.content, 1, 240).label("content"))
+            .where(p.c.movie_id == movie_id, p.c.posted_at >= since, relevant_post(p), func.length(p.c.content) >= 30)
+            .order_by(score.desc())
+            .limit(SAMPLE_POSTS),
             quiet=True,
             timeout=60.0,
         )
@@ -200,12 +215,15 @@ async def _prune(dry_run: bool) -> int:
     now = datetime.now(tz=UTC)
     full_cutoff = (now - timedelta(days=PRUNE_AFTER_DAYS)).isoformat()
     cutoff = (now - timedelta(days=EARLY_PRUNE_DAYS)).isoformat()
-    rows = await d1_query(
-        "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, d.decided_at, "
-        "(SELECT count(*) FROM posts p WHERE p.keyword_id = d.keyword_id) AS found, "
-        "(SELECT m.released_at FROM movies m WHERE m.id = d.movie_id) AS released_at "
-        "FROM hashtag_ai_decisions d WHERE d.source = 'query' AND d.status = 'added' AND d.decided_at < ? AND d.keyword_id IS NOT NULL",
-        [cutoff],
+    d = decisions_table.c
+    found = select(func.count()).where(posts.c.keyword_id == d.keyword_id).scalar_subquery()
+    released = select(movies_table.c.released_at).where(movies_table.c.id == d.movie_id).scalar_subquery()
+    rows = await d1_exec(
+        select(
+            *(d[name] for name in ("movie_id", "tag", "display", "source", "seen", "keyword_id", "decided_at")),
+            found.label("found"),
+            released.label("released_at"),
+        ).where(d.source == "query", d.status == "added", d.decided_at < cutoff, d.keyword_id.is_not(None))
     )
     yields: dict[str, dict[str, Any]] = {}
     for platform in PLATFORMS:
@@ -239,7 +257,7 @@ async def _prune(dry_run: bool) -> int:
         )
         if dry_run:
             continue
-        await d1_query("UPDATE keywords SET enabled = 0 WHERE id = ?", [row["keyword_id"]])
+        await enable_keyword(row["keyword_id"], False)
         reason = (
             f"tỉ lệ bài liên quan chỉ {round(stats['ratio'] * 100)}% trên {stats['sample']} bài"
             if junk
@@ -255,11 +273,11 @@ async def _revive_upcoming(dry_run: bool) -> int:
     """Bật lại câu mà lượt dọn đã tắt (status 'pruned') của phim CHƯA CHIẾU - trước 20/10/2026 câu của phim sắp chiếu bị tắt
     sau 1 ngày vì chưa có bài. Câu người vận hành tắt không có quyết định 'pruned' nên không bị đụng tới."""
     today = datetime.now(tz=UTC).date().isoformat()
-    rows = await d1_query(
-        "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, m.title FROM hashtag_ai_decisions d "
-        "JOIN movies m ON m.id = d.movie_id JOIN keywords k ON k.id = d.keyword_id "
-        "WHERE d.source = 'query' AND d.status = 'pruned' AND m.enabled = 1 AND m.released_at > ? AND k.enabled = 0",
-        [today],
+    d, m, k = decisions_table.c, movies_table.c, keywords_table.c
+    rows = await d1_exec(
+        select(d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id, m.title)
+        .select_from(decisions_table.join(movies_table, m.id == d.movie_id).join(keywords_table, k.id == d.keyword_id))
+        .where(d.source == "query", d.status == "pruned", m.enabled == 1, m.released_at > today, k.enabled == 0)
     )
     revived = 0
     for row in rows or []:
@@ -272,7 +290,7 @@ async def _revive_upcoming(dry_run: bool) -> int:
         logger.info("query_ai_revived", movie_id=row["movie_id"], query=row["display"], dry_run=dry_run)
         if dry_run:
             continue
-        await d1_query("UPDATE keywords SET enabled = 1 WHERE id = ?", [row["keyword_id"]])
+        await enable_keyword(row["keyword_id"], True)
         await _record(row["movie_id"], row, {"reason": "bật lại: phim chưa chiếu"}, "added", row["keyword_id"])
     return revived
 
@@ -331,11 +349,7 @@ async def _backfill_threads_templates(
             logger.info("query_threads_backfill", movie=movie["title"], query=decision["display"], dry_run=dry_run)
             if dry_run:
                 continue
-            keyword_id = f"kw_{uuid.uuid4()}"
-            await d1_query(
-                "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at, related_keywords) VALUES (?, ?, 'threads', ?, 1, ?, '[]')",
-                [keyword_id, movie["id"], decision["display"], now.isoformat()],
-            )
+            keyword_id = await add_keyword(movie["id"], "threads", decision["display"])
             cand = {"tag": f"threads:{key}", "display": decision["display"], "source": "query", "seen": 0}
             verdict = {
                 "verdict": "film",
@@ -351,22 +365,11 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
     pruned = await _prune(dry_run)
     revived = await _revive_upcoming(dry_run)
     now = datetime.now(tz=UTC)
-    movies = (
-        await d1_query(
-            'SELECT id, title, director, "cast", distributor, released_at, description FROM movies WHERE enabled = 1',
-            quiet=True,
-        )
-        or []
-    )
-    keywords = await d1_query("SELECT id, movie_id, platform, keyword, enabled FROM keywords", quiet=True) or []
-    decisions = (
-        await d1_query(
-            "SELECT movie_id, tag, display, status, verdict, confidence, decided_at FROM hashtag_ai_decisions "
-            "WHERE source = 'query'",
-            quiet=True,
-        )
-        or []
-    )
+    movies = await d1_exec(ENABLED_MOVIES, quiet=True) or []
+    keywords = await d1_exec(ALL_KEYWORDS, quiet=True) or []
+    d = decisions_table.c
+    columns = ("movie_id", "tag", "display", "status", "verdict", "confidence", "decided_at")
+    decisions = await d1_exec(select(*(d[c] for c in columns)).where(d.source == "query"), quiet=True) or []
     recheck_before = (now - timedelta(days=RECHECK_REJECTED_DAYS)).isoformat()
     decided = {
         (d["movie_id"], d["tag"].split(":", 1)[-1])
@@ -463,11 +466,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
                 cand = {"tag": f"{platform}:{_key(query)}", "display": query, "source": "query", "seen": 0}
                 keyword_id = None
                 if accept:
-                    keyword_id = f"kw_{uuid.uuid4()}"
-                    await d1_query(
-                        "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at, related_keywords) VALUES (?, ?, ?, ?, 1, ?, '[]')",
-                        [keyword_id, movie["id"], platform, query, datetime.now(tz=UTC).isoformat()],
-                    )
+                    keyword_id = await add_keyword(movie["id"], platform, query)
                 await _record(movie["id"], cand, verdict, "added" if accept else "rejected", keyword_id)
     logger.info("query_ai_discovery_finished", dry_run=dry_run, telegram=bool(stats["added"]) and not dry_run, **stats)
     return stats

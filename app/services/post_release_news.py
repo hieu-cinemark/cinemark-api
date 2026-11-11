@@ -5,12 +5,16 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app.clients.d1 import d1_query, d1_strict
+from sqlalchemy import select
+
+from app.clients.d1 import d1_strict
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.errors import ConflictError, NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1 import press_reviews
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import movies
 from app.schemas.research import GoogleNewsRequest
 from app.services import google_news, news_articles, press_groups
 
@@ -33,7 +37,11 @@ def released(value: str | None) -> bool:
 
 async def movie_for_news(movie_id: str) -> dict:
     with d1_strict():
-        rows = await d1_query("SELECT id, title, released_at, enabled FROM movies WHERE id = ? LIMIT 1", [movie_id])
+        rows = await d1_exec(
+            select(movies.c.id, movies.c.title, movies.c.released_at, movies.c.enabled)
+            .where(movies.c.id == movie_id)
+            .limit(1)
+        )
     if not rows:
         raise NotFoundError("Không tìm thấy phim.")
     movie = rows[0]
@@ -132,8 +140,10 @@ async def tick() -> None:
     if not await cache.set(PREFIX + "schedule_scan:hybrid_full_page:v3", "1", nx=True, ex=3600):
         return
     with d1_strict():
-        movies = await d1_query("SELECT id, released_at FROM movies WHERE enabled = 1 AND released_at IS NOT NULL")
-    for movie in movies or []:
+        rows = await d1_exec(
+            select(movies.c.id, movies.c.released_at).where(movies.c.enabled == 1, movies.c.released_at.is_not(None))
+        )
+    for movie in rows or []:
         if not released(movie.get("released_at")):
             continue
         try:

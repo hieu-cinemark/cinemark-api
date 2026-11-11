@@ -19,8 +19,13 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query
+from sqlalchemy import func, select, update
+
+from app.clients.d1 import d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec, json_values
+from app.repositories.d1.tables import movie_measure_settings, movies
+from app.repositories.d1.tables import posts as posts_table
 
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 SHOWING_DAYS_AFTER_RELEASE = 30
@@ -106,12 +111,17 @@ async def ensure_column() -> None:
 
 async def showing_movies(now: datetime) -> list[dict[str, Any]]:
     today = now.astimezone(TIMEZONE).date().isoformat()
-    rows = await d1_query(
-        'SELECT m.id, m.title, m."cast" AS cast_json FROM movies m LEFT JOIN movie_measure_settings s ON s.movie_id = m.id '
-        "WHERE m.enabled = 1 AND m.released_at IS NOT NULL "
-        "AND date(COALESCE(NULLIF(s.premiere_date, ''), m.released_at), '-120 day') <= date(?) "
-        f"AND date(m.released_at, '+{SHOWING_DAYS_AFTER_RELEASE} day') >= date(?)",
-        [today, today],
+    m, s = movies.alias("m"), movie_measure_settings.alias("s")
+    opening = func.coalesce(func.nullif(s.c.premiere_date, ""), m.c.released_at)
+    rows = await d1_exec(
+        select(m.c.id, m.c.title, m.c.cast.label("cast_json"))
+        .select_from(m.outerjoin(s, s.c.movie_id == m.c.id))
+        .where(
+            m.c.enabled == 1,
+            m.c.released_at.is_not(None),
+            func.date(opening, "-120 day") <= func.date(today),
+            func.date(m.c.released_at, f"+{SHOWING_DAYS_AFTER_RELEASE} day") >= func.date(today),
+        ),
         quiet=True,
     )
     return rows or []
@@ -123,13 +133,12 @@ async def mark_movie(movie: dict[str, Any], *, dry_run: bool = False) -> dict[st
         await ensure_column()
     cols = await d1_query("PRAGMA table_info(posts)", quiet=True)
     has_column = "trend_post" in {row.get("name") for row in cols or []}
-    current = ", p.trend_post" if has_column else ""
-    posts = await d1_query(
-        f"SELECT p.id, p.author, substr(p.content, 1, 400) AS content{current} FROM posts p "
-        f"WHERE p.movie_id = ? AND {RELEVANT_POST_SQL}",
-        [movie["id"]],
-        timeout=60.0,
-        quiet=True,
+    p = posts_table.alias("p")
+    columns = [p.c.id, p.c.author, func.substr(p.c.content, 1, 400).label("content")]
+    if has_column:
+        columns.append(p.c.trend_post)
+    posts = await d1_exec(
+        select(*columns).where(p.c.movie_id == movie["id"], relevant_post(p)), timeout=60.0, quiet=True
     )
     if posts is None:
         raise RuntimeError("trend_posts_read_failed")
@@ -144,9 +153,8 @@ async def mark_movie(movie: dict[str, Any], *, dry_run: bool = False) -> dict[st
         for value, ids in changes.items():
             for i in range(0, len(ids), UPDATE_CHUNK):
                 chunk = ids[i : i + UPDATE_CHUNK]
-                await d1_query(
-                    f"UPDATE posts SET trend_post = {value} WHERE id IN ({','.join('?' * len(chunk))})",
-                    chunk,
+                await d1_exec(
+                    update(posts_table).where(posts_table.c.id.in_(json_values(chunk))).values(trend_post=value),
                     timeout=60.0,
                     quiet=True,
                 )

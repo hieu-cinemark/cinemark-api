@@ -25,12 +25,16 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, select, update
+
 from app.ai.tasks.sentiment import BATCH_SIZE, CommentLabel, classify_comments
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.comments import ensure_comment_insight_columns
-from app.repositories.d1.posts import RELEVANT_POST_SQL, ensure_post_voice_columns
+from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import MIN_CONTENT_LENGTH, d1_query
+from app.repositories.d1.tables import comments, movies, posts
 
 logger = get_logger(__name__)
 
@@ -83,17 +87,15 @@ async def _save(labels: dict[str, CommentLabel], *, insights_only: bool = False,
     # lệ cảm xúc. Câu riêng, chỉ vài id, để câu UPDATE chính không vượt 100 tham số của D1.
     rule_ids = [cid for cid, label in labels.items() if label.get("source") == "rule"]
     if rule_ids and not insights_only and table == "comments":
-        await d1_query(
-            f"UPDATE comments SET sentiment_source = 'rule' WHERE id IN ({','.join('?' * len(rule_ids))})", rule_ids
-        )
+        await d1_exec(update(comments).where(comments.c.id.in_(rule_ids)).values(sentiment_source="rule"))
     # Nhãn ViSoBERT chỉ có cảm xúc: ghi nguồn và để insights_classified_at NULL - lượt bổ sung khía cạnh/giai đoạn
     # (classify_pending(insights_only=True), model quyết định của Bee) còn lấy được các dòng này.
     viso_ids = [cid for cid, label in labels.items() if label.get("source") == "visobert"]
     if viso_ids and not insights_only and table == "comments":
-        await d1_query(
-            "UPDATE comments SET sentiment_source = 'visobert', insights_classified_at = NULL "
-            f"WHERE id IN ({','.join('?' * len(viso_ids))})",
-            viso_ids,
+        await d1_exec(
+            update(comments)
+            .where(comments.c.id.in_(viso_ids))
+            .values(sentiment_source="visobert", insights_classified_at=None)
         )
     return len(ids)
 
@@ -118,29 +120,29 @@ async def classify_pending(
     (insights_classified_at NULL - mọi comment trước 2026-10-07) và chỉ ghi khía cạnh/giai đoạn - xem
     scripts/backfill_comment_insights.py. movie_id giới hạn vào comment dưới bài của một phim."""
     await ensure_comment_insight_columns()
-    pending = "c.sentiment IS NOT NULL AND c.insights_classified_at IS NULL" if insights_only else "c.sentiment IS NULL"
-    # Kèm thông tin phim của bài cha để AI nhận ra diễn viên/nhân vật và biết phim đã ra rạp chưa.
-    sql = (
-        "SELECT c.id, c.message, m.title, m.director, m.`cast` AS `cast`, m.distributor, m.released_at, m.description "
-        "FROM comments c LEFT JOIN posts p ON p.id = c.post_id LEFT JOIN movies m ON m.id = p.movie_id "
-        f"WHERE {pending} AND length(trim(c.message)) >= {MIN_CONTENT_LENGTH}"
+    c, p, m = comments.alias("c"), posts.alias("p"), movies.alias("m")
+    pending = (
+        (c.c.sentiment.is_not(None), c.c.insights_classified_at.is_(None))
+        if insights_only
+        else (c.c.sentiment.is_(None),)
     )
-    params: list[str | int] = []
+    # Kèm thông tin phim của bài cha để AI nhận ra diễn viên/nhân vật và biết phim đã ra rạp chưa.
+    query = (
+        select(c.c.id, c.c.message, *(m.c[name] for name in _FILM_FIELDS))
+        .select_from(c.outerjoin(p, p.c.id == c.c.post_id).outerjoin(m, m.c.id == p.c.movie_id))
+        .where(*pending, func.length(func.trim(c.c.message)) >= MIN_CONTENT_LENGTH)
+        .order_by(c.c.scraped_at.desc())
+        .limit(limit + len(exclude))
+    )
     if movie_id:
-        sql += " AND c.post_id IN (SELECT id FROM posts WHERE movie_id = ?)"
-        params.append(movie_id)
+        query = query.where(c.c.post_id.in_(select(posts.c.id).where(posts.c.movie_id == movie_id)))
     if since is not None:
-        sql += " AND c.scraped_at >= ?"
-        params.append(since.astimezone(UTC).isoformat())  # scraped_at là ISO-8601 UTC
+        query = query.where(c.c.scraped_at >= since.astimezone(UTC).isoformat())  # scraped_at là ISO-8601 UTC
     if before is not None:
-        sql += " AND c.scraped_at < ?"
-        params.append(before.astimezone(UTC).isoformat())
+        query = query.where(c.c.scraped_at < before.astimezone(UTC).isoformat())
     if platform:
-        sql += " AND c.platform = ?"
-        params.append(platform)
-    sql += " ORDER BY c.scraped_at DESC LIMIT ?"
-    params.append(limit + len(exclude))
-    rows = await d1_query(sql, params)
+        query = query.where(c.c.platform == platform)
+    rows = await d1_exec(query)
     if rows is None:
         raise RuntimeError("comment_sentiment_select_failed")
     rows = [row for row in rows if row["id"] not in exclude][:limit]
@@ -182,22 +184,21 @@ async def classify_pending_posts(
     """Như classify_pending nhưng cho NỘI DUNG BÀI liên quan tới phim (RELEVANT_POST_SQL) chưa có nhãn - cùng bộ
     phân loại, cùng nhãn (sentiment/khía cạnh/giai đoạn), ghi vào các cột tương ứng của bảng posts."""
     await ensure_post_voice_columns()
-    sql = (
-        f"SELECT p.id, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message, m.title, m.director, m.`cast` AS `cast`, "
-        "m.distributor, m.released_at, m.description "
-        "FROM posts p LEFT JOIN movies m ON m.id = p.movie_id "
-        f"WHERE p.sentiment IS NULL AND {RELEVANT_POST_SQL} AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
+    p, m = posts.alias("p"), movies.alias("m")
+    query = (
+        select(
+            p.c.id, func.substr(p.c.content, 1, POST_TEXT_LIMIT).label("message"), *(m.c[name] for name in _FILM_FIELDS)
+        )
+        .select_from(p.outerjoin(m, m.c.id == p.c.movie_id))
+        .where(p.c.sentiment.is_(None), relevant_post(p), func.length(func.trim(p.c.content)) >= MIN_CONTENT_LENGTH)
+        .order_by(p.c.scraped_at.desc())
+        .limit(limit + len(exclude))
     )
-    params: list[str | int] = []
     if movie_id:
-        sql += " AND p.movie_id = ?"
-        params.append(movie_id)
+        query = query.where(p.c.movie_id == movie_id)
     if since is not None:
-        sql += " AND p.scraped_at >= ?"
-        params.append(since.astimezone(UTC).isoformat())
-    sql += " ORDER BY p.scraped_at DESC LIMIT ?"
-    params.append(limit + len(exclude))
-    rows = await d1_query(sql, params)
+        query = query.where(p.c.scraped_at >= since.astimezone(UTC).isoformat())
+    rows = await d1_exec(query)
     if rows is None:
         raise RuntimeError("post_sentiment_select_failed")
     rows = [row for row in rows if row["id"] not in exclude][:limit]

@@ -26,10 +26,15 @@ import zlib
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import case, func, select
+
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.store import enable_keyword
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import posts
 
 logger = get_logger(__name__)
 
@@ -69,22 +74,24 @@ async def _spider_counts(keyword_ids: list[str]) -> dict[str, tuple[int, int]]:
 async def keyword_yields(platform: str) -> dict[str, dict[str, Any]]:
     """keyword_id -> {stored, relevant, matched, dropped, sample, ratio} cho các từ khoá của nền tảng (cả từ khoá đã tắt)."""
     since = (datetime.now(tz=UTC) - timedelta(days=WINDOW_DAYS)).isoformat()
+    p = posts.alias("p")
     rows = (
-        await d1_query(
-            f"""
-            SELECT p.keyword_id AS keyword_id, COUNT(*) AS stored,
-                   SUM(CASE WHEN {RELEVANT_POST_SQL} THEN 1 ELSE 0 END) AS relevant
-            FROM posts p
-            WHERE p.platform = ? AND p.scraped_at >= ? AND p.keyword_id IS NOT NULL
-            GROUP BY p.keyword_id
-            """,
-            [platform, since],
+        await d1_exec(
+            select(
+                p.c.keyword_id,
+                func.count().label("stored"),
+                func.sum(case((relevant_post(p), 1), else_=0)).label("relevant"),
+            )
+            .where(p.c.platform == platform, p.c.scraped_at >= since, p.c.keyword_id.is_not(None))
+            .group_by(p.c.keyword_id),
             quiet=True,
             timeout=60.0,
         )
         or []
     )
-    keyword_rows = await d1_query("SELECT id FROM keywords WHERE platform = ?", [platform], quiet=True) or []
+    keyword_rows = (
+        await d1_exec(select(keywords_table.c.id).where(keywords_table.c.platform == platform), quiet=True) or []
+    )
     ids = [str(row["id"]) for row in keyword_rows]
     spider = await _spider_counts(ids)
     stored = {str(row["keyword_id"]): (int(row["stored"] or 0), int(row["relevant"] or 0)) for row in rows}
@@ -132,8 +139,11 @@ async def plan_crawl(
         yields = await keyword_yields(platform)
         created = {
             str(row["id"]): str(row.get("created_at") or "")
-            for row in await d1_query(
-                "SELECT id, created_at FROM keywords WHERE platform = ? AND enabled = 1", [platform], quiet=True
+            for row in await d1_exec(
+                select(keywords_table.c.id, keywords_table.c.created_at).where(
+                    keywords_table.c.platform == platform, keywords_table.c.enabled == 1
+                ),
+                quiet=True,
             )
             or []
         }
@@ -177,7 +187,7 @@ async def plan_crawl(
             per_movie[keyword["movie_id"]] -= 1
             entry = {"keyword": keyword["keyword"], "platform": platform, "at": now.isoformat(), **stats}
             if not dry_run:
-                await d1_query("UPDATE keywords SET enabled = 0 WHERE id = ?", [keyword["id"]], quiet=True)
+                await enable_keyword(keyword["id"], False)
                 await redis.hset(PAUSED_KEY, str(keyword["id"]), json.dumps(entry))
             logger.info("keyword_auto_paused", telegram=not dry_run, dry_run=dry_run, keyword_id=keyword["id"], **entry)
             continue

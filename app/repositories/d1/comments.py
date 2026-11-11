@@ -10,7 +10,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import and_, func, insert, or_, select, update
+
 from app.clients.d1 import _configured, d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments, keywords, movies, posts
 from app.services.crawl.platforms import CommentDraft
 
 # Quá số dòng này thì list_comments không trả thêm - đây là danh sách để admin xem
@@ -125,6 +129,63 @@ async def ensure_comment_insight_columns() -> None:
         _comment_insight_columns_ready = True
 
 
+# Comment + comment cha (reply) + bài + phim + từ khoá, cho các danh sách trên dashboard.
+_C, _PARENT = comments.alias("c"), comments.alias("parent")
+_P, _M, _K = posts.alias("p"), movies.alias("m"), keywords.alias("k")
+_WITH_PARENT = _C.outerjoin(
+    _PARENT, and_(_PARENT.c.post_id == _C.c.post_id, _PARENT.c.external_id == _C.c.parent_external_id)
+)
+_COMMENT_FIELDS = [
+    "id",
+    "post_id",
+    "platform",
+    "external_id",
+    "message",
+    "author_name",
+    "author_id",
+    "author_url",
+    "author_profile_picture",
+    "reactions_count",
+    "replies_count",
+    "posted_at",
+    "scraped_at",
+    "parent_external_id",
+]
+_COMMENT_COLUMNS = (
+    *(_C.c[name] for name in _COMMENT_FIELDS),
+    _PARENT.c.message.label("parent_message"),
+    _PARENT.c.author_name.label("parent_author_name"),
+)
+_FEED_FROM = (
+    _WITH_PARENT.outerjoin(_P, _P.c.id == _C.c.post_id)
+    .outerjoin(_M, _M.c.id == _P.c.movie_id)
+    .outerjoin(_K, _K.c.id == _P.c.keyword_id)
+)
+_FEED_COLUMNS = (
+    *_COMMENT_COLUMNS,
+    _C.c.sentiment,
+    _P.c.content.label("post_content"),
+    _P.c.url.label("post_url"),
+    _P.c.author.label("post_author"),
+    _M.c.title.label("movie_title"),
+    _K.c.keyword,
+)
+
+
+def _feed_filters(platform: str | None, movie_id: str | None, keyword_id: str | None, sentiment: str | None) -> list:
+    """Bộ lọc không bắt buộc, cộng dồn, của list_all_comments / list_all_comments_cursor."""
+    filters = []
+    if platform:
+        filters.append(_C.c.platform == platform)
+    if movie_id:
+        filters.append(_P.c.movie_id == movie_id)
+    if keyword_id:
+        filters.append(_P.c.keyword_id == keyword_id)
+    if sentiment:
+        filters.append(_C.c.sentiment == sentiment)
+    return filters
+
+
 class CommentRepository:
     """Giữ mọi query trên `comments`. Một instance cho cả tiến trình (`comment_repo` bên
     dưới), cùng dạng với PostRepository."""
@@ -134,20 +195,12 @@ class CommentRepository:
         nhất trước - phục vụ GET /stats/posts/{post_id}/comments."""
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
-        rows = await d1_query(
-            """
-            SELECT c.id, c.post_id, c.platform, c.external_id, c.message, c.author_name, c.author_id, c.author_url,
-                   c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
-                   c.parent_external_id,
-                   parent.message AS parent_message, parent.author_name AS parent_author_name
-            FROM comments c
-            LEFT JOIN comments parent
-                ON parent.post_id = c.post_id AND parent.external_id = c.parent_external_id
-            WHERE c.post_id = ?
-            ORDER BY c.scraped_at DESC
-            LIMIT ?
-            """,
-            [post_id, MAX_COMMENTS_PER_POST],
+        rows = await d1_exec(
+            select(*_COMMENT_COLUMNS)
+            .select_from(_WITH_PARENT)
+            .where(_C.c.post_id == post_id)
+            .order_by(_C.c.scraped_at.desc())
+            .limit(MAX_COMMENTS_PER_POST)
         )
         rows = rows or []
         print(f"list_comments({post_id}): {len(rows)} rows")
@@ -168,42 +221,14 @@ class CommentRepository:
         PostRepository.list_posts ở trên. Mọi bộ lọc đều không bắt buộc và cộng dồn."""
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
-        where = []
-        params: list[Any] = []
-        if platform:
-            where.append("c.platform = ?")
-            params.append(platform)
-        if movie_id:
-            where.append("p.movie_id = ?")
-            params.append(movie_id)
-        if keyword_id:
-            where.append("p.keyword_id = ?")
-            params.append(keyword_id)
-        if sentiment:
-            where.append("c.sentiment = ?")
-            params.append(sentiment)
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-
-        rows = await d1_query(
-            f"""
-            SELECT
-                c.id, c.post_id, c.platform, c.external_id, c.message, c.author_name, c.author_id, c.author_url,
-                c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
-                c.parent_external_id, c.sentiment,
-                parent.message AS parent_message, parent.author_name AS parent_author_name,
-                p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title,
-                k.keyword AS keyword
-            FROM comments c
-            LEFT JOIN comments parent
-                ON parent.post_id = c.post_id AND parent.external_id = c.parent_external_id
-            LEFT JOIN posts p ON p.id = c.post_id
-            LEFT JOIN movies m ON m.id = p.movie_id
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            {where_sql}
-            ORDER BY c.scraped_at DESC
-            LIMIT ? OFFSET ?
-            """,
-            [*params, limit, offset],
+        filters = _feed_filters(platform, movie_id, keyword_id, sentiment)
+        rows = await d1_exec(
+            select(*_FEED_COLUMNS)
+            .select_from(_FEED_FROM)
+            .where(*filters)
+            .order_by(_C.c.scraped_at.desc())
+            .limit(limit)
+            .offset(offset),
             timeout=20.0 if sentiment else 10.0,
         )
         items = rows or []
@@ -211,8 +236,10 @@ class CommentRepository:
             n = len(items)
             total = offset + n + (limit if n == limit else 0)
         else:
-            count_rows = await d1_query(
-                f"SELECT COUNT(*) AS total FROM comments c LEFT JOIN posts p ON p.id = c.post_id {where_sql}", params
+            count_rows = await d1_exec(
+                select(func.count().label("total"))
+                .select_from(_C.outerjoin(_P, _P.c.id == _C.c.post_id))
+                .where(*filters)
             )
             total = (count_rows[0]["total"] if count_rows else 0) or 0
         return items, total
@@ -235,46 +262,21 @@ class CommentRepository:
         đích, không phải thiếu sót."""
         await _ensure_comments_parent_column()
         await _ensure_comment_indexes()
-        where = []
-        params: list[Any] = []
-        if platform:
-            where.append("c.platform = ?")
-            params.append(platform)
-        if movie_id:
-            where.append("p.movie_id = ?")
-            params.append(movie_id)
-        if keyword_id:
-            where.append("p.keyword_id = ?")
-            params.append(keyword_id)
-        if sentiment:
-            where.append("c.sentiment = ?")
-            params.append(sentiment)
+        filters = _feed_filters(platform, movie_id, keyword_id, sentiment)
         if cursor:
             cursor_scraped_at, _, cursor_id = cursor.partition("|")
-            where.append("(c.scraped_at < ? OR (c.scraped_at = ? AND c.id < ?))")
-            params += [cursor_scraped_at, cursor_scraped_at, cursor_id]
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-
-        rows = await d1_query(
-            f"""
-            SELECT
-                c.id, c.post_id, c.platform, c.external_id, c.message, c.author_name, c.author_id, c.author_url,
-                c.author_profile_picture, c.reactions_count, c.replies_count, c.posted_at, c.scraped_at,
-                c.parent_external_id, c.sentiment,
-                parent.message AS parent_message, parent.author_name AS parent_author_name,
-                p.content AS post_content, p.url AS post_url, p.author AS post_author, m.title AS movie_title,
-                k.keyword AS keyword
-            FROM comments c
-            LEFT JOIN comments parent
-                ON parent.post_id = c.post_id AND parent.external_id = c.parent_external_id
-            LEFT JOIN posts p ON p.id = c.post_id
-            LEFT JOIN movies m ON m.id = p.movie_id
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            {where_sql}
-            ORDER BY c.scraped_at DESC, c.id DESC
-            LIMIT ?
-            """,
-            [*params, limit],
+            filters.append(
+                or_(
+                    _C.c.scraped_at < cursor_scraped_at,
+                    and_(_C.c.scraped_at == cursor_scraped_at, _C.c.id < cursor_id),
+                )
+            )
+        rows = await d1_exec(
+            select(*_FEED_COLUMNS)
+            .select_from(_FEED_FROM)
+            .where(*filters)
+            .order_by(_C.c.scraped_at.desc(), _C.c.id.desc())
+            .limit(limit),
             timeout=20.0 if sentiment else 10.0,
         )
         items = rows or []
@@ -308,85 +310,58 @@ class CommentRepository:
         raw_json = json.dumps(kept_raw) if kept_raw else None
         sentiment_classified_at = scraped_at if sentiment is not None else None
 
-        existing_rows = await d1_query(
-            "SELECT id FROM comments WHERE platform = ? AND external_id = ?", [platform, external_id]
+        fields = {
+            "message": draft.get("message"),
+            "author_name": draft.get("author_name"),
+            "author_id": draft.get("author_id"),
+            "author_url": draft.get("author_url"),
+            "author_profile_picture": draft.get("author_profile_picture"),
+            "reactions_count": draft.get("reactions_count") or 0,
+            "replies_count": draft.get("replies_count") or 0,
+            "posted_at": draft.get("posted_at"),
+            "scraped_at": scraped_at,
+            "raw_json": raw_json,
+        }
+        existing_rows = await d1_exec(
+            select(comments.c.id).where(comments.c.platform == platform, comments.c.external_id == external_id)
         )
         if existing_rows:
-            updated = await d1_query(
-                """
-                UPDATE comments SET
-                    message = ?, author_name = ?, author_id = ?, author_url = ?, author_profile_picture = ?,
-                    reactions_count = ?, replies_count = ?, parent_external_id = COALESCE(?, parent_external_id),
-                    posted_at = ?, scraped_at = ?, raw_json = ?,
-                    sentiment = COALESCE(?, sentiment), sentiment_classified_at = COALESCE(?, sentiment_classified_at)
-                WHERE id = ?
-                """,
-                [
-                    draft.get("message"),
-                    draft.get("author_name"),
-                    draft.get("author_id"),
-                    draft.get("author_url"),
-                    draft.get("author_profile_picture"),
-                    draft.get("reactions_count") or 0,
-                    draft.get("replies_count") or 0,
-                    draft.get("parent_external_id"),
-                    draft.get("posted_at"),
-                    scraped_at,
-                    raw_json,
-                    sentiment,
-                    sentiment_classified_at,
-                    existing_rows[0]["id"],
-                ],
+            # Giữ giá trị đã có khi lần quét này không mang theo (COALESCE).
+            written = await d1_exec(
+                update(comments)
+                .where(comments.c.id == existing_rows[0]["id"])
+                .values(
+                    **fields,
+                    parent_external_id=func.coalesce(draft.get("parent_external_id"), comments.c.parent_external_id),
+                    sentiment=func.coalesce(sentiment, comments.c.sentiment),
+                    sentiment_classified_at=func.coalesce(sentiment_classified_at, comments.c.sentiment_classified_at),
+                )
             )
-            if updated is None:
-                return False
-            keyword_id: str | None = None
-            parent = await d1_query("SELECT keyword_id FROM posts WHERE id = ?", [post_id])
-            if parent:
-                keyword_id = parent[0].get("keyword_id")
-            from app.services.stats.stats_summary import record_comment
-
-            await record_comment(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
-            return True
-
-        inserted = await d1_query(
-            """
-            INSERT INTO comments (
-                id, post_id, platform, external_id, message, author_name, author_id, author_url,
-                author_profile_picture, reactions_count, replies_count, parent_external_id, posted_at, first_seen_at, scraped_at, raw_json,
-                sentiment, sentiment_classified_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                f"comment_{uuid.uuid4()}",
-                post_id,
-                platform,
-                external_id,
-                draft.get("message"),
-                draft.get("author_name"),
-                draft.get("author_id"),
-                draft.get("author_url"),
-                draft.get("author_profile_picture"),
-                draft.get("reactions_count") or 0,
-                draft.get("replies_count") or 0,
-                draft.get("parent_external_id"),
-                draft.get("posted_at"),
-                scraped_at,  # first_seen_at: chỉ ghi lúc INSERT, các UPDATE không đụng tới
-                scraped_at,
-                raw_json,
-                sentiment,
-                sentiment_classified_at,
-            ],
-        )
-        if inserted is None:
+        else:
+            written = await d1_exec(
+                insert(comments).values(
+                    id=f"comment_{uuid.uuid4()}",
+                    post_id=post_id,
+                    platform=platform,
+                    external_id=external_id,
+                    parent_external_id=draft.get("parent_external_id"),
+                    first_seen_at=scraped_at,  # chỉ ghi lúc INSERT, các UPDATE không đụng tới
+                    sentiment=sentiment,
+                    sentiment_classified_at=sentiment_classified_at,
+                    **fields,
+                )
+            )
+        if written is None:
             return False
-        keyword_id: str | None = None
-        parent = await d1_query("SELECT keyword_id FROM posts WHERE id = ?", [post_id])
-        if parent:
-            keyword_id = parent[0].get("keyword_id")
+        parent = await d1_exec(select(posts.c.keyword_id).where(posts.c.id == post_id))
         from app.services.stats.stats_summary import record_comment
 
-        await record_comment(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
+        await record_comment(
+            platform=platform,
+            keyword_id=parent[0].get("keyword_id") if parent else None,
+            scraped_at=scraped_at,
+            is_new=not existing_rows,
+        )
         return True
 
 

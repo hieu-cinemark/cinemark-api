@@ -21,11 +21,15 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import httpx
+from sqlalchemy import Column, Table, Text, delete, insert, select
+from sqlalchemy.schema import CreateTable
 
+from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec, metadata
+from app.repositories.d1.tables import keywords, movies
 from app.services.omar import omar_yield
 from app.services.relevance.relevance_rules import normalize_title
 
@@ -63,17 +67,25 @@ def search_modes() -> list[dict[str, str]]:
     return modes or [{}]
 
 
+custom_queries = Table(
+    "omar_search_queries",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("movie_id", Text, nullable=False),
+    Column("query", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+    # custom (người dùng thêm) | suggest (tự sinh từ gợi ý tìm kiếm / xu hướng của TikTok). Cột thêm sau.
+    Column("source", Text),
+)
+
+
 async def _ensure_custom_table() -> None:
     """Câu tìm người dùng tự thêm ở tab Omar (ngoài tên phim và câu tìm Facebook/Threads)."""
     global _CUSTOM_TABLE_READY
     if _CUSTOM_TABLE_READY:
         return
-    await d1_query(
-        "CREATE TABLE IF NOT EXISTS omar_search_queries (id TEXT PRIMARY KEY, movie_id TEXT NOT NULL, query TEXT NOT NULL, "
-        "created_at TEXT NOT NULL)",
-        quiet=True,
-    )
-    # source: custom (người dùng thêm) | suggest (tự sinh từ gợi ý tìm kiếm / xu hướng của TikTok). Cột thêm sau.
+    await d1_exec(CreateTable(custom_queries, if_not_exists=True), quiet=True)
+    # Bảng tạo trước khi có cột source: thêm cột (đã có thì lỗi, bỏ qua).
     await d1_query("ALTER TABLE omar_search_queries ADD COLUMN source TEXT DEFAULT 'custom'", quiet=True)
     _CUSTOM_TABLE_READY = True
 
@@ -81,16 +93,17 @@ async def _ensure_custom_table() -> None:
 async def add_custom_query(movie_id: str, query: str, source: str = "custom") -> dict[str, Any]:
     await _ensure_custom_table()
     row = {"id": f"oq_{uuid.uuid4().hex[:16]}", "movie_id": movie_id, "query": query.strip()}
-    await d1_query(
-        "INSERT INTO omar_search_queries (id, movie_id, query, created_at, source) VALUES (?, ?, ?, ?, ?)",
-        [row["id"], movie_id, row["query"], datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).isoformat(), source],
+    await d1_exec(
+        insert(custom_queries).values(
+            **row, created_at=datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).isoformat(), source=source
+        )
     )
     return row
 
 
 async def delete_custom_query(query_id: str) -> None:
     await _ensure_custom_table()
-    await d1_query("DELETE FROM omar_search_queries WHERE id = ?", [query_id])
+    await d1_exec(delete(custom_queries).where(custom_queries.c.id == query_id))
 
 
 async def build_queries() -> list[dict[str, Any]]:
@@ -98,13 +111,11 @@ async def build_queries() -> list[dict[str, Any]]:
     source: title (tên phim) | title_plain (không dấu) | social (câu tìm Facebook/Threads) | custom (tự thêm ở tab Omar) |
     suggest (tự sinh từ gợi ý tìm kiếm / xu hướng TikTok - discover_queries)."""
     rows = (
-        await d1_query(
-            """
-            SELECT k.id, k.movie_id, k.platform, k.keyword, m.title
-            FROM keywords k JOIN movies m ON m.id = k.movie_id
-            WHERE k.enabled = 1 AND m.enabled = 1
-            ORDER BY k.created_at
-            """,
+        await d1_exec(
+            select(keywords.c.id, keywords.c.movie_id, keywords.c.platform, keywords.c.keyword, movies.c.title)
+            .select_from(keywords.join(movies, movies.c.id == keywords.c.movie_id))
+            .where(keywords.c.enabled == 1, movies.c.enabled == 1)
+            .order_by(keywords.c.created_at),
             quiet=True,
         )
         or []
@@ -137,8 +148,11 @@ async def build_queries() -> list[dict[str, Any]]:
         )
 
     await _ensure_custom_table()
-    custom = await d1_query(
-        "SELECT id, movie_id, query, source FROM omar_search_queries ORDER BY created_at", quiet=True
+    custom = await d1_exec(
+        select(
+            custom_queries.c.id, custom_queries.c.movie_id, custom_queries.c.query, custom_queries.c.source
+        ).order_by(custom_queries.c.created_at),
+        quiet=True,
     )
     for row in custom or []:
         add(str(row["query"]), row["movie_id"], row.get("source") or "custom", row["id"])

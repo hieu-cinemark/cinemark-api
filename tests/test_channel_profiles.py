@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Any
 
+from app.repositories.d1 import sql as sql_module
 from app.services.crawl import channel_profiles as cp
 
 
@@ -34,7 +35,7 @@ class FakeRedis:
 def _patch(monkeypatch, redis: FakeRedis, calls: list[tuple[str, list[Any]]], candidates: list[dict] | None = None):
     async def fake_d1(sql: str, params: list[Any] | None = None, **_kw: Any):
         calls.append((sql, params or []))
-        if "FROM posts p" in sql:
+        if "FROM posts AS p" in sql:
             return candidates or []
         return []
 
@@ -47,6 +48,9 @@ def _patch(monkeypatch, redis: FakeRedis, calls: list[tuple[str, list[Any]]], ca
     async def fake_ensure() -> None:
         return None
 
+    # Câu dựng bằng SQLAlchemy đi qua app.repositories.d1.sql.d1_query; SQL thuần (upsert json_each) đi qua
+    # d1_query của riêng module này.
+    monkeypatch.setattr(sql_module, "d1_query", fake_d1)
     monkeypatch.setattr(cp, "d1_query", fake_d1)
     monkeypatch.setattr(cp, "get_redis_client", lambda: redis)
     monkeypatch.setattr(cp, "publish_threads_profiles_request", fake_publish)
@@ -59,9 +63,16 @@ def test_candidates_group_by_movie_and_platform(monkeypatch) -> None:
     _patch(monkeypatch, FakeRedis(), calls)
     asyncio.run(cp._candidates("threads", 50))
     sql, params = calls[0]
-    assert "GROUP BY p.movie_id, handle HAVING COUNT(*) >= ?3" in sql
+    # Nhóm theo (phim, handle) rồi HAVING đủ số bài tối thiểu; LEFT JOIN hồ sơ kênh để bỏ kênh đã có
+    # follower tay ('manual') hoặc follower còn mới.
+    assert "GROUP BY p.movie_id, lower(substr" in sql
+    assert "HAVING count(*) >= ?" in sql
+    assert "LEFT OUTER JOIN channel_profiles AS cp" in sql
     assert "followers_source" in sql
-    assert params[0] == "threads" and params[2] == cp.CHANNEL_MIN_POSTS and params[4] == 50
+    assert params[0] == "threads"
+    assert cp.CHANNEL_MIN_POSTS in params
+    assert 50 in params
+    assert len(params) <= 12  # dưới giới hạn 100 tham số của D1, dù danh sách id dài
 
 
 def test_enqueue_threads_adds_handles_and_publishes(monkeypatch) -> None:
@@ -99,7 +110,8 @@ def test_enqueue_threads_daily_fill_adds_to_pending_queue(monkeypatch) -> None:
     published = _patch(monkeypatch, redis, calls, [{"handle": "new", "posts": 9}, {"handle": "left", "posts": 3}])
     result = asyncio.run(cp.enqueue_threads_profiles(True, 200))
     assert result["added"] == 1 and published == [200]
-    assert calls[0][1][4] == cp.THREADS_FILL_LIMIT
+    # LIMIT được bind thành tham số cuối (SQLite render thêm OFFSET 0).
+    assert calls[0][1][-2] == cp.THREADS_FILL_LIMIT
     assert redis.sets[cp.THREADS_QUEUE_KEY] == {"left", "new"}
 
 

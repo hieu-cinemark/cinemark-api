@@ -26,18 +26,63 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
+from sqlalchemy import Column, Integer, Table, Text, delete, func, select, update
+from sqlalchemy.dialects.sqlite import insert
+
 from app.ai.runtime import call_llm, parse_json_response
 from app.clients.kafka import publish_action_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec, metadata
 from app.repositories.d1.store import d1_query, get_or_create_keyword
+from app.repositories.d1.tables import movies
+from app.repositories.d1.tables import posts as posts_table
 from app.services.crawl.task_queue import enqueue_published, list_pending
 from app.services.relevance.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
+
+# Schema tạo/bổ sung ở _ensure_table.
+source_pages = Table(
+    "source_pages",
+    metadata,
+    Column("id", Text, primary_key=True),
+    *(Column(name, Text) for name in ("platform", "url", "page_id", "name", "movie_id")),
+    Column("enabled", Integer),
+    *(Column(name, Text) for name in ("last_queued_at", "created_at", "added_by", "ai_reason")),
+    Column("quiet_runs", Integer),
+)
+decisions = Table(
+    "source_page_decisions",
+    metadata,
+    Column("url", Text, primary_key=True),
+    *(Column(name, Text) for name in ("verdict", "movie_id")),
+    Column("confidence", Integer),
+    *(Column(name, Text) for name in ("reason", "decided_at")),
+)
+_ENABLED_SOURCES = (
+    select(source_pages)
+    .select_from(source_pages.outerjoin(movies, movies.c.id == source_pages.c.movie_id))
+    .where(source_pages.c.enabled == 1, (source_pages.c.movie_id.is_(None)) | (movies.c.enabled == 1))
+)
+
+
+async def _set_source(source_id: str, *, quiet: bool = False, **values: Any) -> None:
+    await d1_exec(update(source_pages).where(source_pages.c.id == source_id).values(**values), quiet=quiet)
+
+
+async def _get_source(source_id: str) -> dict[str, Any] | None:
+    rows = await d1_exec(select(source_pages).where(source_pages.c.id == source_id))
+    return rows[0] if rows else None
+
+
+async def _movie_title(movie_id: str) -> str | None:
+    rows = await d1_exec(select(movies.c.title).where(movies.c.id == movie_id), quiet=True)
+    return rows[0]["title"] if rows else None
+
 
 # Mỗi trang bảng tin xin 10 bài (spider) - 50 trang ~ 500 bài; dừng sớm ở bài đã có nên lượt sau chỉ tốn vài trang.
 MAX_PAGES = 50
@@ -126,9 +171,10 @@ def normalize_page_url(url: str) -> str:
 
 async def list_sources() -> list[dict[str, Any]]:
     await _ensure_table()
-    rows = await d1_query(
-        "SELECT s.*, m.title AS movie_title FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
-        "ORDER BY m.title, s.created_at",
+    rows = await d1_exec(
+        select(source_pages, movies.c.title.label("movie_title"))
+        .select_from(source_pages.outerjoin(movies, movies.c.id == source_pages.c.movie_id))
+        .order_by(movies.c.title, source_pages.c.created_at),
         quiet=True,
     )
     return rows or []
@@ -146,43 +192,46 @@ async def add_source(
     await _ensure_table()
     page_url = normalize_page_url(url)
     movie_id = (movie_id or "").strip() or None
-    if movie_id and not await d1_query("SELECT id FROM movies WHERE id = ?", [movie_id], quiet=True):
+    if movie_id and await _movie_title(movie_id) is None:
         raise NotFoundError("Không tìm thấy phim")
-    existing = await d1_query(
-        "SELECT id FROM source_pages WHERE platform = 'facebook' AND url = ? AND COALESCE(movie_id, '') = ?",
-        [page_url, movie_id or ""],
+    existing = await d1_exec(
+        select(source_pages.c.id).where(
+            source_pages.c.platform == "facebook",
+            source_pages.c.url == page_url,
+            func.coalesce(source_pages.c.movie_id, "") == (movie_id or ""),
+        )
     )
     if existing:
         raise ValidationError("Trang này đã có trong danh sách")
     source_id = f"src_{uuid.uuid4()}"
-    await d1_query(
-        "INSERT INTO source_pages (id, platform, url, name, movie_id, enabled, created_at, added_by, ai_reason) "
-        "VALUES (?, 'facebook', ?, ?, ?, 1, ?, ?, ?)",
-        [
-            source_id,
-            page_url,
-            (name or "").strip() or None,
-            movie_id,
-            datetime.now(tz=UTC).isoformat(),
-            added_by,
-            reason,
-        ],
+    await d1_exec(
+        insert(source_pages).values(
+            id=source_id,
+            platform="facebook",
+            url=page_url,
+            name=(name or "").strip() or None,
+            movie_id=movie_id,
+            enabled=1,
+            created_at=datetime.now(tz=UTC).isoformat(),
+            added_by=added_by,
+            ai_reason=reason,
+        )
     )
     logger.info("source_page_added", url=page_url, movie_id=movie_id)
-    rows = await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id])
-    if not rows:
+    row = await _get_source(source_id)
+    if not row:
         raise NotFoundError(f"Source page {source_id} not found after insert")
-    return rows[0]
+    return row
 
 
 async def set_enabled(source_id: str, enabled: bool) -> None:
     await _ensure_table()
-    await d1_query("UPDATE source_pages SET enabled = ? WHERE id = ?", [1 if enabled else 0, source_id])
+    await _set_source(source_id, enabled=1 if enabled else 0)
 
 
 async def delete_source(source_id: str) -> None:
     await _ensure_table()
-    await d1_query("DELETE FROM source_pages WHERE id = ?", [source_id])
+    await d1_exec(delete(source_pages).where(source_pages.c.id == source_id))
 
 
 async def queue_source(
@@ -192,10 +241,10 @@ async def queue_source(
     chỗ gọi, vd. lượt quét lại chỉ đọc trang mới nhất (app/services/crawl/watch_pages.py)."""
     keyword_id = None
     if source.get("movie_id"):
-        movie = await d1_query("SELECT title FROM movies WHERE id = ?", [source["movie_id"]], quiet=True)
-        if not movie:
+        title = await _movie_title(source["movie_id"])
+        if title is None:
             return False
-        keyword = await get_or_create_keyword(source["movie_id"], "facebook", movie[0]["title"])
+        keyword = await get_or_create_keyword(source["movie_id"], "facebook", title)
         if keyword is None:
             return False
         keyword_id = keyword["id"]
@@ -215,9 +264,7 @@ async def queue_source(
         bypass_drain=bypass_drain,
     )
     if ok:
-        await d1_query(
-            "UPDATE source_pages SET last_queued_at = ? WHERE id = ?", [datetime.now(tz=UTC).isoformat(), source["id"]]
-        )
+        await _set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat())
     return ok
 
 
@@ -249,24 +296,18 @@ async def _update_quiet_runs(source: dict[str, Any]) -> None:
     last = json.loads(raw)
     if last.get("page_id") and not source.get("page_id"):
         # Spider đã dò ra id của trang - lưu lại để các lượt sau không tốn request dò lại.
-        await d1_query(
-            "UPDATE source_pages SET page_id = ? WHERE id = ?", [str(last["page_id"]), source["id"]], quiet=True
-        )
+        await _set_source(source["id"], page_id=str(last["page_id"]), quiet=True)
         source["page_id"] = str(last["page_id"])
     quiet = 0 if int(last.get("new") or 0) > 0 else int(source.get("quiet_runs") or 0) + 1
     if quiet != int(source.get("quiet_runs") or 0):
-        await d1_query("UPDATE source_pages SET quiet_runs = ? WHERE id = ?", [quiet, source["id"]], quiet=True)
+        await _set_source(source["id"], quiet_runs=quiet, quiet=True)
         source["quiet_runs"] = quiet
 
 
 async def queue_enabled_sources() -> int:
     """Gọi từ mỗi lượt cào Facebook theo lịch: xếp các trang đang bật đã tới hạn (xem docstring module)."""
     await _ensure_table()
-    rows = await d1_query(
-        "SELECT s.* FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
-        "WHERE s.enabled = 1 AND (s.movie_id IS NULL OR m.enabled = 1)",
-        quiet=True,
-    )
+    rows = await d1_exec(_ENABLED_SOURCES, quiet=True)
     now = datetime.now(tz=UTC)
     queued = 0
     due = []
@@ -302,11 +343,7 @@ async def _refresh_public_plan(now: datetime) -> None:
     if _public_plan or (_public_plan_at and now - _public_plan_at < _PUBLIC_PLAN_REFRESH):
         return
     await _ensure_table()
-    rows = await d1_query(
-        "SELECT s.* FROM source_pages s LEFT JOIN movies m ON m.id = s.movie_id "
-        "WHERE s.enabled = 1 AND (s.movie_id IS NULL OR m.enabled = 1)",
-        quiet=True,
-    )
+    rows = await d1_exec(_ENABLED_SOURCES, quiet=True)
     min_gap = timedelta(minutes=settings.facebook_public_pages_min_gap_minutes)
     plan = []
     for row in rows or []:
@@ -364,8 +401,8 @@ async def fill_public_pages_queue(now: datetime | None = None) -> int:
         source = _public_plan.pop(0)
         keyword_id = None
         if source.get("movie_id"):
-            movie = await d1_query("SELECT title FROM movies WHERE id = ?", [source["movie_id"]], quiet=True)
-            keyword = await get_or_create_keyword(source["movie_id"], "facebook", movie[0]["title"]) if movie else None
+            title = await _movie_title(source["movie_id"])
+            keyword = await get_or_create_keyword(source["movie_id"], "facebook", title) if title else None
             if keyword is None:
                 continue
             keyword_id = keyword["id"]
@@ -382,19 +419,17 @@ async def fill_public_pages_queue(now: datetime | None = None) -> int:
             request["since_days"] = since_days
         await enqueue_published(request)  # hiện trên trang Hàng đợi
         await redis.lpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
-        await d1_query(
-            "UPDATE source_pages SET last_queued_at = ? WHERE id = ?", [now.isoformat(), source["id"]], quiet=True
-        )
+        await _set_source(source["id"], last_queued_at=now.isoformat(), quiet=True)
         queued += 1
     return queued
 
 
 async def run_source(source_id: str) -> bool:
     await _ensure_table()
-    rows = await d1_query("SELECT * FROM source_pages WHERE id = ?", [source_id])
-    if not rows:
+    source = await _get_source(source_id)
+    if not source:
         raise NotFoundError("Không tìm thấy trang nguồn")
-    return await queue_source(rows[0], bypass_drain=True)
+    return await queue_source(source, bypass_drain=True)
 
 
 def _page_from_post_url(url: str | None) -> str | None:
@@ -410,15 +445,33 @@ async def suggestions() -> list[dict[str, Any]]:
     """Trang Facebook có nhiều bài liên quan nhất của từng phim trong SUGGEST_WINDOW_DAYS ngày, chưa có trong danh sách."""
     await _ensure_table()
     since = (datetime.now(tz=UTC) - timedelta(days=SUGGEST_WINDOW_DAYS)).isoformat()
+    p, count = posts_table.alias("p"), func.count()
     rows = (
-        await d1_query(
-            f"""SELECT p.movie_id, m.title AS movie_title, p.author, p.url, COUNT(*) AS posts,
-                   SUM(COALESCE(p.like_count, 0) + COALESCE(p.reply_count, 0) + COALESCE(p.repost_count, 0)) AS engagement
-            FROM posts p JOIN movies m ON m.id = p.movie_id
-            WHERE p.platform = 'facebook' AND m.enabled = 1 AND p.posted_at >= ? AND {RELEVANT_POST_SQL}
-              AND p.author IS NOT NULL AND p.author != ''
-            GROUP BY p.movie_id, p.author HAVING posts >= ? ORDER BY p.movie_id, posts DESC""",
-            [since, SUGGEST_MIN_POSTS],
+        await d1_exec(
+            select(
+                p.c.movie_id,
+                movies.c.title.label("movie_title"),
+                p.c.author,
+                p.c.url,
+                count.label("posts"),
+                func.sum(
+                    func.coalesce(p.c.like_count, 0)
+                    + func.coalesce(p.c.reply_count, 0)
+                    + func.coalesce(p.c.repost_count, 0)
+                ).label("engagement"),
+            )
+            .select_from(p.join(movies, movies.c.id == p.c.movie_id))
+            .where(
+                p.c.platform == "facebook",
+                movies.c.enabled == 1,
+                p.c.posted_at >= since,
+                relevant_post(p),
+                p.c.author.is_not(None),
+                p.c.author != "",
+            )
+            .group_by(p.c.movie_id, p.c.author)
+            .having(count >= SUGGEST_MIN_POSTS)
+            .order_by(p.c.movie_id, count.desc()),
             quiet=True,
             timeout=60.0,
         )
@@ -497,10 +550,15 @@ Không chắc thì "reject". Trả JSON hợp lệ, không bọc code block:
 
 async def _sample_posts(name: str) -> list[str]:
     rows = (
-        await d1_query(
-            "SELECT substr(content, 1, 220) AS content FROM posts WHERE platform = 'facebook' AND author = ? "
-            "AND length(content) >= 20 ORDER BY posted_at DESC LIMIT ?",
-            [name, SAMPLE_POSTS_PER_PAGE],
+        await d1_exec(
+            select(func.substr(posts_table.c.content, 1, 220).label("content"))
+            .where(
+                posts_table.c.platform == "facebook",
+                posts_table.c.author == name,
+                func.length(posts_table.c.content) >= 20,
+            )
+            .order_by(posts_table.c.posted_at.desc())
+            .limit(SAMPLE_POSTS_PER_PAGE),
             quiet=True,
         )
         or []
@@ -510,7 +568,7 @@ async def _sample_posts(name: str) -> list[str]:
 
 async def _decided_urls() -> set[str]:
     recheck = (datetime.now(tz=UTC) - timedelta(days=RECHECK_REJECTED_DAYS)).isoformat()
-    rows = await d1_query("SELECT url, verdict, decided_at FROM source_page_decisions", quiet=True) or []
+    rows = await d1_exec(select(decisions.c.url, decisions.c.verdict, decisions.c.decided_at), quiet=True) or []
     return {row["url"] for row in rows if row["verdict"] != "reject" or str(row["decided_at"]) >= recheck}
 
 
@@ -529,7 +587,7 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
     stats = {"candidates": len(candidates), "asked": 0, "added": 0, "rejected": 0, "failed": 0}
     titles = {
         normalize_title(row["title"]): row["id"]
-        for row in await d1_query("SELECT id, title FROM movies WHERE enabled = 1", quiet=True) or []
+        for row in await d1_exec(select(movies.c.id, movies.c.title).where(movies.c.enabled == 1), quiet=True) or []
     }
     for start in range(0, len(candidates), REVIEW_BATCH):
         if stats["added"] >= MAX_ADDS_PER_RUN:
@@ -585,18 +643,19 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
             if dry_run:
                 stats["added" if accept else "rejected"] += 1
                 continue
-            await d1_query(
-                "INSERT INTO source_page_decisions (url, verdict, movie_id, confidence, reason, decided_at) VALUES (?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(url) DO UPDATE SET verdict = excluded.verdict, movie_id = excluded.movie_id, "
-                "confidence = excluded.confidence, reason = excluded.reason, decided_at = excluded.decided_at",
-                [
-                    cand["url"],
-                    kind if accept else "reject",
-                    movie_id,
-                    confidence,
-                    reason,
-                    datetime.now(tz=UTC).isoformat(),
-                ],
+            stmt = insert(decisions).values(
+                url=cand["url"],
+                verdict=kind if accept else "reject",
+                movie_id=movie_id,
+                confidence=confidence,
+                reason=reason,
+                decided_at=datetime.now(tz=UTC).isoformat(),
+            )
+            await d1_exec(
+                stmt.on_conflict_do_update(
+                    index_elements=[decisions.c.url],
+                    set_={c.name: stmt.excluded[c.name] for c in decisions.columns if c.name != "url"},
+                ),
                 quiet=True,
             )
             if not accept or stats["added"] >= MAX_ADDS_PER_RUN:

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.ai.tasks import review_angles as tasks
+from app.repositories.d1 import sql as d1_sql
 from app.services.ai_jobs import review_angles
 from app.services.ai_jobs.channels import channel_of_post, channel_url, extract_handle
 
@@ -124,13 +125,14 @@ def world(monkeypatch):
     ]
 
     async def fake_d1(sql, params=None, **kwargs):
-        if "FROM movies m" in sql and "LIMIT 1" in sql:
+        if "FROM movies AS m" in sql and "LIMIT" in sql:
             return [{"title": "Phim", "released_at": "2026-11-06", "premiere_date": "2026-11-03"}]
         if "json_each" in sql:
             wanted = set(json.loads(params[0]))
             return [r for r in rows if r["id"] in wanted]
         if "p.posted_at >= ?" in sql:
-            return [{k: r[k] for k in ("id", "platform", "posted_at")} for r in rows if r["posted_at"] >= params[1]]
+            since = next(v for v in params if isinstance(v, str) and v[:4].isdigit())
+            return [{k: r[k] for k in ("id", "platform", "posted_at")} for r in rows if r["posted_at"] >= since]
         return []
 
     async def get_object(key):
@@ -160,7 +162,7 @@ def world(monkeypatch):
         }, "{}"
 
     monkeypatch.setattr(review_angles, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(review_angles, "d1_query", fake_d1)
+    monkeypatch.setattr(d1_sql, "d1_query", fake_d1)
     monkeypatch.setattr(review_angles.lake, "get_object", get_object)
     monkeypatch.setattr(review_angles.lake, "put_object", put_object)
     monkeypatch.setattr(review_angles, "call_llm_json", fake_ai)

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 
 from app.ai.tasks.sentiment import CommentLabel
+from app.repositories.d1 import sql as d1_sql
 from app.workers.ingest_consumer import sentiment_sweep
 
 
@@ -23,6 +24,7 @@ def d1(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, list]]:
         return None
 
     monkeypatch.setattr(sentiment_sweep, "d1_query", fake_d1_query)
+    monkeypatch.setattr(d1_sql, "d1_query", fake_d1_query)
     monkeypatch.setattr(sentiment_sweep, "ensure_comment_insight_columns", columns_ready)
     return calls
 
@@ -45,8 +47,8 @@ async def test_classifies_and_saves_one_update_per_batch(monkeypatch, d1) -> Non
     result = await sentiment_sweep.classify_pending(limit=10, since=since, exclude={"c9"})
 
     select_sql, select_params = d1[0]
-    assert "sentiment IS NULL" in select_sql and "scraped_at >= ?" in select_sql
-    assert select_params == ["2026-09-26T08:00:00+00:00", 11]  # limit + len(exclude)
+    assert "c.sentiment IS NULL" in select_sql and "c.scraped_at >= ?" in select_sql
+    assert "2026-09-26T08:00:00+00:00" in select_params and 11 in select_params  # limit + len(exclude)
     assert len(d1) == 2  # 1 SELECT + 1 UPDATE cho cả lô
     update_sql, update_params = d1[1]
     assert "AND +sentiment IS NULL" in update_sql  # không bao giờ ghi đè; "+" = không dùng index sentiment
@@ -76,6 +78,7 @@ async def test_select_failure_raises(monkeypatch) -> None:
         return None
 
     monkeypatch.setattr(sentiment_sweep, "d1_query", failing)
+    monkeypatch.setattr(d1_sql, "d1_query", failing)
     with pytest.raises(RuntimeError):
         await sentiment_sweep.classify_pending(limit=10)
 
@@ -86,7 +89,8 @@ async def test_insights_only_keeps_existing_sentiment(monkeypatch, d1) -> None:
 
     select_sql, select_params = d1[0]
     assert "c.sentiment IS NOT NULL AND c.insights_classified_at IS NULL" in select_sql
-    assert "post_id IN (SELECT id FROM posts WHERE movie_id = ?)" in select_sql and select_params[0] == "movie_1"
+    assert "c.post_id IN (SELECT posts.id" in select_sql and "posts.movie_id = ?" in select_sql
+    assert "movie_1" in select_params
     update_sql, _ = d1[1]
     assert "sentiment = CASE" not in update_sql and "sentiment_classified_at" not in update_sql
     assert "AND +insights_classified_at IS NULL" in update_sql
@@ -101,7 +105,7 @@ async def test_rule_labels_marked_with_rule_source(monkeypatch, d1) -> None:
     assert await sentiment_sweep._save(labels) == 2
     assert len(d1) == 2
     rule_sql, rule_params = d1[1]
-    assert "sentiment_source = 'rule'" in rule_sql and rule_params == ["c0"]
+    assert "SET sentiment_source=?" in rule_sql and rule_params == ["rule", "c0"]
 
 
 async def test_no_rule_update_without_rule_labels(monkeypatch, d1) -> None:

@@ -278,6 +278,7 @@ async def test_report_sample_is_random_audience_first_and_caps_each_post() -> No
 
     with (
         patch("app.repositories.d1.store.d1_query", fake_query),
+        patch("app.repositories.d1.sql.d1_query", fake_query),
         patch("app.repositories.d1.store.reputable_authors", AsyncMock(return_value=set())),
         patch("app.repositories.d1.store.ensure_author_reputation_table", AsyncMock()),
     ):
@@ -346,6 +347,7 @@ async def test_aspect_stats_counts_all_tagged_comments_with_min_n_and_trend() ->
 
     with (
         patch("app.repositories.d1.store.d1_query", fake_query),
+        patch("app.repositories.d1.sql.d1_query", fake_query),
         patch("app.repositories.d1.store.reputable_authors", AsyncMock(return_value=set())),
         patch("app.repositories.d1.store.ensure_author_reputation_table", AsyncMock()),
         patch("app.repositories.d1.store.ensure_comment_insight_columns", AsyncMock()),

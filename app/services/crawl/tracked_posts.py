@@ -31,16 +31,30 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
+from sqlalchemy import Column, Integer, Table, Text, select, update
 
 from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query, get_or_create_keyword
+from app.repositories.d1.sql import d1_exec, json_values, metadata
+from app.repositories.d1.store import get_or_create_keyword
+from app.repositories.d1.tables import movies, posts
 from app.services.accounts.platform_config_db import get_omar_api_settings
 from app.services.omar.omar_tiktok import OmarStop, _Pacer, map_aweme, omar_get
 
 logger = get_logger(__name__)
+
+# Bài theo dõi nhập từ sheet booking (cinemark tạo bảng).
+tracked = Table(
+    "tracked_posts",
+    metadata,
+    Column("id", Text, primary_key=True),
+    *(Column(name, Text) for name in ("movie_id", "sheet_url", "platform", "url", "url_key", "page", "posted_date")),
+    *(Column(name, Text) for name in ("phase", "grp")),
+    *(Column(name, Integer) for name in ("sheet_reacts", "sheet_comments", "sheet_shares", "sheet_views", "crawlable")),
+    *(Column(name, Text) for name in ("external_id", "match_kind", "status", "created_at", "last_queued_at")),
+)
 
 TRACK_DAYS_AFTER_RELEASE = 30
 PRIORITY_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_priority:facebook"
@@ -76,9 +90,10 @@ def is_running() -> bool:
 
 async def _active_rows() -> list[dict[str, Any]]:
     try:
-        rows = await d1_query(
-            "SELECT t.*, m.title AS movie_title, m.released_at FROM tracked_posts t JOIN movies m ON m.id = t.movie_id "
-            "WHERE t.status = 'active'",
+        rows = await d1_exec(
+            select(tracked, movies.c.title.label("movie_title"), movies.c.released_at)
+            .select_from(tracked.join(movies, movies.c.id == tracked.c.movie_id))
+            .where(tracked.c.status == "active"),
             quiet=True,
         )
     except Exception:  # noqa: BLE001 - bảng chưa có (chưa ai nhập sheet)
@@ -178,11 +193,11 @@ async def _queue_facebook(
     chưa được xếp lượt nào để không ghi last_queued_at cho chúng."""
     matched_urls: dict[str, str] = {}
     ids = [row["external_id"] for row in rows if row.get("external_id")]
-    for start in range(0, len(ids), 80):
-        chunk = ids[start : start + 80]
-        found = await d1_query(
-            f"SELECT external_id, url FROM posts WHERE platform = 'facebook' AND external_id IN ({','.join('?' * len(chunk))})",
-            chunk,
+    if ids:
+        found = await d1_exec(
+            select(posts.c.external_id, posts.c.url).where(
+                posts.c.platform == "facebook", posts.c.external_id.in_(json_values(ids))
+            ),
             quiet=True,
         )
         matched_urls.update({r["external_id"]: r["url"] for r in found or []})
@@ -269,20 +284,15 @@ async def run_daily(*, include_authenticated_facebook: bool = True) -> dict[str,
             await _refresh_tiktok(by_platform["tiktok"], stats)
         queued_at = datetime.now(tz=UTC).isoformat(timespec="seconds")
         if rows and not deferred:
-            await d1_query(
-                "UPDATE tracked_posts SET last_queued_at = ? WHERE status = 'active'",
-                [queued_at],
-                quiet=True,
+            await d1_exec(
+                update(tracked).where(tracked.c.status == "active").values(last_queued_at=queued_at), quiet=True
             )
         elif rows:
             queued_ids = [row["id"] for row in rows if row["id"] not in deferred]
-            for start in range(0, len(queued_ids), 80):
-                chunk = queued_ids[start : start + 80]
-                await d1_query(
-                    f"UPDATE tracked_posts SET last_queued_at = ? WHERE id IN ({','.join('?' * len(chunk))})",
-                    [queued_at, *chunk],
-                    quiet=True,
-                )
+            await d1_exec(
+                update(tracked).where(tracked.c.id.in_(json_values(queued_ids))).values(last_queued_at=queued_at),
+                quiet=True,
+            )
         logger.info("tracked_posts_refreshed", **stats)
         return stats
     finally:

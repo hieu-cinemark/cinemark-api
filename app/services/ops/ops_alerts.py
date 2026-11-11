@@ -281,15 +281,23 @@ async def _omar_alerts(now: datetime) -> list[Alert]:
 
 
 async def _drought_alerts(now: datetime) -> list[Alert]:
-    from app.repositories.d1.store import d1_query
+    from sqlalchemy import func, select
+
+    from app.repositories.d1.sql import d1_exec
+    from app.repositories.d1.tables import comments, posts
 
     alerts: list[Alert] = []
     checks = (
-        ("posts_tiktok", "bài TikTok", "SELECT MAX(scraped_at) AS last FROM posts WHERE platform = 'tiktok'", "post"),
-        ("comments", "comment", "SELECT MAX(scraped_at) AS last FROM comments", "comment"),
+        (
+            "posts_tiktok",
+            "bài TikTok",
+            select(func.max(posts.c.scraped_at).label("last")).where(posts.c.platform == "tiktok"),
+            "post",
+        ),
+        ("comments", "comment", select(func.max(comments.c.scraped_at).label("last")), "comment"),
     )
-    for kind, label, sql, which in checks:
-        rows = await d1_query(sql)
+    for kind, label, query, which in checks:
+        rows = await d1_exec(query)
         if rows is None:  # D1 chưa cấu hình / lỗi: không kết luận được
             continue
         hours = settings.ops_post_drought_hours if which == "post" else settings.ops_comment_drought_hours

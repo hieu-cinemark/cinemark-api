@@ -18,14 +18,15 @@ def _run(monkeypatch, yields, keywords, created="2026-09-01T00:00:00+00:00"):
     async def fake_yields(_platform):
         return yields
 
-    async def fake_d1(sql, params=None, **_):
-        if sql.startswith("SELECT id, created_at"):
-            return [{"id": k["id"], "created_at": created} for k in keywords]
-        writes.append(params[0])
-        return []
+    async def fake_select(_stmt, **_):
+        return [{"id": k["id"], "created_at": created} for k in keywords]
+
+    async def fake_enable(keyword_id, enabled):
+        writes.append(keyword_id)
 
     monkeypatch.setattr(ky, "keyword_yields", fake_yields)
-    monkeypatch.setattr(ky, "d1_query", fake_d1)
+    monkeypatch.setattr(ky, "d1_exec", fake_select)
+    monkeypatch.setattr(ky, "enable_keyword", fake_enable)
     monkeypatch.setattr(ky, "get_redis_client", lambda: redis)
     keep, pages = asyncio.run(ky.plan_crawl("threads", keywords))
     return keep, pages, writes, redis
@@ -60,7 +61,10 @@ def test_new_keywords_are_not_judged(monkeypatch):
     from datetime import UTC, datetime
 
     keep, pages, writes, _ = _run(
-        monkeypatch, {"new": {"sample": 900, "ratio": 0.0}}, [_kw("new"), _kw("x")], created=datetime.now(tz=UTC).isoformat()
+        monkeypatch,
+        {"new": {"sample": 900, "ratio": 0.0}},
+        [_kw("new"), _kw("x")],
+        created=datetime.now(tz=UTC).isoformat(),
     )
     assert len(keep) == 2 and writes == [] and pages == {}
 

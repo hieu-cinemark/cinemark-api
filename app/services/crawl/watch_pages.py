@@ -21,11 +21,16 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import func, select
+
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query, get_or_create_keyword
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.store import get_or_create_keyword
+from app.repositories.d1.tables import movie_measure_settings, movies
 from app.services.crawl.source_pages import _PUBLIC_QUEUE_KEY as PUBLIC_QUEUE_KEY
+from app.services.crawl.source_pages import _movie_title, source_pages
 from app.services.crawl.task_queue import enqueue_published
 
 logger = get_logger(__name__)
@@ -45,12 +50,17 @@ def pick_pages(rows: list[dict[str, Any]], showing_ids: set[str], limit: int) ->
 
 async def showing_movie_ids(now: datetime) -> set[str]:
     today = now.astimezone(TIMEZONE).date().isoformat()
-    rows = await d1_query(
-        "SELECT m.id FROM movies m LEFT JOIN movie_measure_settings s ON s.movie_id = m.id "
-        "WHERE m.enabled = 1 AND m.released_at IS NOT NULL "
-        "AND date(COALESCE(NULLIF(s.premiere_date, ''), m.released_at)) <= date(?) "
-        f"AND date(m.released_at, '+{SHOWING_DAYS_AFTER_RELEASE} day') >= date(?)",
-        [today, today],
+    m, s = movies.alias("m"), movie_measure_settings.alias("s")
+    opening = func.coalesce(func.nullif(s.c.premiere_date, ""), m.c.released_at)
+    rows = await d1_exec(
+        select(m.c.id)
+        .select_from(m.outerjoin(s, s.c.movie_id == m.c.id))
+        .where(
+            m.c.enabled == 1,
+            m.c.released_at.is_not(None),
+            func.date(opening) <= func.date(today),
+            func.date(m.c.released_at, f"+{SHOWING_DAYS_AFTER_RELEASE} day") >= func.date(today),
+        ),
         quiet=True,
     )
     return {row["id"] for row in rows or []}
@@ -60,8 +70,8 @@ async def queue_public_page(row: dict[str, Any], now: datetime) -> bool:
     """Một job public_page cho page: chỉ trang bảng tin mới nhất, gửi lại cả bài đã thấy (spider-hub jobs/public_page.py)."""
     keyword_id = None
     if row.get("movie_id"):
-        movie = await d1_query("SELECT title FROM movies WHERE id = ?", [row["movie_id"]], quiet=True)
-        keyword = await get_or_create_keyword(row["movie_id"], "facebook", movie[0]["title"]) if movie else None
+        title = await _movie_title(row["movie_id"])
+        keyword = await get_or_create_keyword(row["movie_id"], "facebook", title) if title else None
         if keyword is None:
             return False
         keyword_id = keyword["id"]
@@ -89,7 +99,9 @@ async def queue_round(now: datetime) -> int:
     showing = await showing_movie_ids(now)
     if not showing:
         return 0
-    rows = await d1_query("SELECT * FROM source_pages WHERE enabled = 1 AND platform = 'facebook'", quiet=True)
+    rows = await d1_exec(
+        select(source_pages).where(source_pages.c.enabled == 1, source_pages.c.platform == "facebook"), quiet=True
+    )
     picked = pick_pages(rows or [], showing, settings.facebook_watch_pages_per_round)
     queued = 0
     for row in picked:

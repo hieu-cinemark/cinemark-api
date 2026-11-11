@@ -119,10 +119,10 @@ async def test_fire_dedupes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_run_checks_drought_with_mocked_d1(monkeypatch):
-    from app.repositories.d1 import store as d1
+    from app.repositories.d1 import sql as d1_sql
 
     stale = (datetime.now(tz=UTC) - timedelta(hours=8)).isoformat()
-    monkeypatch.setattr(d1, "d1_query", AsyncMock(return_value=[{"last": stale}]))
+    monkeypatch.setattr(d1_sql, "d1_query", AsyncMock(return_value=[{"last": stale}]))
     alerts = await ops_alerts._drought_alerts(datetime.now(tz=UTC))
     assert [a.key for a in alerts] == ["drought:posts_tiktok", "drought:comments"]
 

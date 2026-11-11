@@ -19,6 +19,7 @@ import orjson
 from aiokafka import AIOKafkaConsumer, TopicPartition
 from aiokafka.errors import KafkaError
 from redis.exceptions import RedisError
+from sqlalchemy import select
 
 from app.ai.providers.jev import use_jev
 from app.ai.tasks.post_relevance import classify_post_relevance_kira
@@ -28,9 +29,10 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.telegram import send_telegram_message
 from app.core.config import settings
 from app.core.logging import enable_file_logging, get_logger
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import (
+    MOVIE_CONTEXT_FIELDS,
     contains_keyword,
-    d1_query,
     get_keyword,
     get_post_by_external_id,
     persist_comment,
@@ -38,6 +40,8 @@ from app.repositories.d1.store import (
     update_post_engagement,
     update_post_views,
 )
+from app.repositories.d1.tables import keywords
+from app.repositories.d1.tables import movies as movies_table
 from app.services.crawl.platforms import get_comment_mapper, get_post_mapper
 from app.services.crawl.tracked_posts import tracked_keyword_for
 from app.services.relevance.relevance_rules import (
@@ -139,11 +143,13 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
     # Chưa từng nạp được mà D1 lỗi thì để lỗi lan ra (message được thử lại): chạy tiếp với danh sách phim rỗng sẽ loại nhầm mọi
     # bài trang nguồn là source_page_no_film. Trước đây còn cache luôn danh sách rỗng đó 5 phút.
     try:
-        rows = await d1_query(
-            'SELECT id, title, slug, director, "cast", distributor, released_at, description FROM movies',
+        rows = await d1_exec(
+            select(movies_table.c.id, movies_table.c.slug, *(movies_table.c[f] for f in MOVIE_CONTEXT_FIELDS)),
             quiet=True,
         )
-        keyword_rows = await d1_query("SELECT movie_id, keyword FROM keywords WHERE enabled = 1", quiet=True)
+        keyword_rows = await d1_exec(
+            select(keywords.c.movie_id, keywords.c.keyword).where(keywords.c.enabled == 1), quiet=True
+        )
     except D1Unavailable as exc:
         logger.warning("tracked_movies_load_failed", error=exc)
         if _tracked_movies_cache:
@@ -179,10 +185,12 @@ async def _route_shared_page_post(content: str | None, posted_at: object = None)
         return None
     movie = max(matches, key=lambda m: len(str(m.get("title") or "")))
     if movie["id"] not in _film_keyword_cache:
-        rows = await d1_query(
-            "SELECT id FROM keywords WHERE movie_id = ? AND platform = 'facebook' AND enabled = 1 "
-            "ORDER BY (keyword = ?) DESC LIMIT 1",
-            [movie["id"], movie.get("title")],
+        k = keywords.c
+        rows = await d1_exec(
+            select(k.id)
+            .where(k.movie_id == movie["id"], k.platform == "facebook", k.enabled == 1)
+            .order_by((k.keyword == movie.get("title")).desc())  # từ khoá đúng tên phim trước
+            .limit(1),
             quiet=True,
         )
         _film_keyword_cache[movie["id"]] = rows[0]["id"] if rows else None

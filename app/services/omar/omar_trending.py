@@ -23,11 +23,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from sqlalchemy import Column, Index, Integer, Table, Text, and_, func, select
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metadata
+from app.repositories.d1.tables import movies, posts
 from app.services.accounts.platform_config_db import get_omar_api_settings
 from app.services.omar import omar_comments
 from app.services.omar.omar_tiktok import Budget, OmarStop, _Pacer, fetch_usage, map_aweme, omar_get
@@ -44,28 +47,26 @@ _INSERT_CHUNK = 14
 _table_ready = False
 _running = False
 
+video_stats = Table(
+    "omar_video_stats",
+    metadata,
+    Column("video_id", Text, nullable=False),
+    Column("movie_id", Text),
+    Column("at", Text, nullable=False),
+    *(Column(name, Integer) for name in ("views", "likes", "comments", "shares")),
+    Index("idx_omar_video_stats_video_at", "video_id", "at"),
+    Index("idx_omar_video_stats_at", "at", "movie_id"),  # trending() lọc theo thời gian (và phim)
+)
+STAT_COLUMNS = tuple(c.name for c in video_stats.columns)
+
 
 async def _ensure_table() -> None:
     global _table_ready
     if _table_ready:
         return
-    await d1_query(
-        """CREATE TABLE IF NOT EXISTS omar_video_stats (
-            video_id TEXT NOT NULL,
-            movie_id TEXT,
-            at TEXT NOT NULL,
-            views INTEGER,
-            likes INTEGER,
-            comments INTEGER,
-            shares INTEGER
-        )""",
-        quiet=True,
-    )
-    await d1_query(
-        "CREATE INDEX IF NOT EXISTS idx_omar_video_stats_video_at ON omar_video_stats (video_id, at)", quiet=True
-    )
-    # trending() lọc theo thời gian (và phim).
-    await d1_query("CREATE INDEX IF NOT EXISTS idx_omar_video_stats_at ON omar_video_stats (at, movie_id)", quiet=True)
+    await d1_exec(CreateTable(video_stats, if_not_exists=True), quiet=True)
+    for index in video_stats.indexes:
+        await d1_exec(CreateIndex(index, if_not_exists=True), quiet=True)
     _table_ready = True
 
 
@@ -128,37 +129,24 @@ def mark_hot(
 async def _candidates(since: str, per_movie: int) -> list[dict[str, Any]]:
     """Top `per_movie` video TikTok liên quan của mỗi phim đang bật, đăng từ `since`, theo tương tác (cùng công thức với
     hàng đợi bình luận tuần)."""
-    return (
-        await d1_query(
-            f"""
-            SELECT external_id, movie_id FROM (
-                SELECT p.external_id, p.movie_id,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY p.movie_id
-                           ORDER BY COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0)
-                                    + COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) DESC
-                       ) AS rn
-                FROM posts p JOIN movies m ON m.id = p.movie_id AND m.enabled = 1
-                WHERE p.platform = 'tiktok' AND p.posted_at >= ? AND {RELEVANT_POST_SQL}
-            ) WHERE rn <= ?
-            """,
-            [since, per_movie],
-            quiet=True,
-        )
-        or []
+    p, m = posts.alias("p"), movies.alias("m")
+    rn = func.row_number().over(partition_by=p.c.movie_id, order_by=omar_comments.video_score(p).desc()).label("rn")
+    ranked = (
+        select(p.c.external_id, p.c.movie_id, rn)
+        .select_from(p.join(m, and_(m.c.id == p.c.movie_id, m.c.enabled == 1)))
+        .where(p.c.platform == "tiktok", p.c.posted_at >= since, relevant_post(p))
+        .subquery()
     )
+    query = select(ranked.c.external_id, ranked.c.movie_id).where(ranked.c.rn <= per_movie)
+    return await d1_exec(query, quiet=True) or []
 
 
 async def _insert_snapshots(rows: list[tuple[Any, ...]]) -> int:
     saved = 0
     for start in range(0, len(rows), _INSERT_CHUNK):
         chunk = rows[start : start + _INSERT_CHUNK]
-        result = await d1_query(
-            "INSERT INTO omar_video_stats (video_id, movie_id, at, views, likes, comments, shares) VALUES "
-            + ",".join("(?, ?, ?, ?, ?, ?, ?)" for _ in chunk),
-            [value for row in chunk for value in row],
-        )
-        if result is not None:
+        result = await d1_insert_many(video_stats, [dict(zip(STAT_COLUMNS, row, strict=True)) for row in chunk])
+        if result:
             saved += len(chunk)
     return saved
 
@@ -270,14 +258,7 @@ async def _velocities(hours: float, movie_id: str | None = None) -> list[dict[st
     top 10% tính trên MỌI phim, nên lọc theo phim không làm đổi cờ hot."""
     await _ensure_table()
     since = (datetime.now(tz=UTC) - timedelta(hours=hours)).isoformat(timespec="seconds")
-    snaps = (
-        await d1_query(
-            "SELECT video_id, movie_id, at, views, likes, comments, shares FROM omar_video_stats WHERE at >= ?",
-            [since],
-            quiet=True,
-        )
-        or []
-    )
+    snaps = await d1_exec(select(video_stats).where(video_stats.c.at >= since), quiet=True) or []
     by_video: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for snap in snaps:
         by_video[snap["video_id"]].append(snap)
@@ -306,20 +287,15 @@ async def _velocities(hours: float, movie_id: str | None = None) -> list[dict[st
 
 
 async def _post_info(video_ids: list[str]) -> dict[str, dict[str, Any]]:
-    info: dict[str, dict[str, Any]] = {}
-    for start in range(0, len(video_ids), 90):  # D1: tối đa 100 tham số mỗi câu
-        chunk = video_ids[start : start + 90]
-        for row in (
-            await d1_query(
-                "SELECT id, external_id, url, author, content, reply_count, comments_crawled_at FROM posts "
-                f"WHERE platform = 'tiktok' AND external_id IN ({','.join('?' * len(chunk))})",
-                chunk,
-                quiet=True,
-            )
-            or []
-        ):
-            info[str(row["external_id"])] = row
-    return info
+    if not video_ids:
+        return {}
+    rows = await d1_exec(
+        select(*(posts.c[name] for name in ("id", "external_id", "url", "author", "content", "reply_count")))
+        .add_columns(posts.c.comments_crawled_at)
+        .where(posts.c.platform == "tiktok", posts.c.external_id.in_(json_values(video_ids))),
+        quiet=True,
+    )
+    return {str(row["external_id"]): row for row in rows or []}
 
 
 async def trending(movie_id: str | None = None, hours: float = 24, limit: int = 30) -> dict[str, Any]:
@@ -328,7 +304,7 @@ async def trending(movie_id: str | None = None, hours: float = 24, limit: int = 
     posts = await _post_info([item["video_id"] for item in items])
     titles = {
         row["id"]: row["title"]
-        for row in await d1_query("SELECT id, title FROM movies WHERE enabled = 1", quiet=True) or []
+        for row in await d1_exec(select(movies.c.id, movies.c.title).where(movies.c.enabled == 1), quiet=True) or []
     }
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
@@ -342,14 +318,14 @@ async def trending(movie_id: str | None = None, hours: float = 24, limit: int = 
                 "desc": post.get("content"),
             }
         )
-    movies = []
+    groups = []
     for mid, videos in grouped.items():
         videos.sort(key=lambda video: video["velocity"]["views_per_hour"], reverse=True)
-        movies.append(
+        groups.append(
             {"movie_id": mid, "title": titles.get(mid), "hot": sum(v["hot"] for v in videos), "videos": videos[:limit]}
         )
-    movies.sort(key=lambda movie: (movie["hot"], movie["videos"][0]["velocity"]["views_per_hour"]), reverse=True)
-    return {"hours": hours, "movies": movies}
+    groups.sort(key=lambda movie: (movie["hot"], movie["videos"][0]["velocity"]["views_per_hour"]), reverse=True)
+    return {"hours": hours, "movies": groups}
 
 
 async def rising_video_ids(limit: int) -> list[dict[str, Any]]:

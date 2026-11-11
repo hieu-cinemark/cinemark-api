@@ -9,14 +9,26 @@ def test_purge_backs_up_before_delete_and_keeps_posts_naming_cast(monkeypatch):
 
     async def fake_run(sql, params):
         calls.append(sql)
-        if sql.startswith("SELECT p.id"):
+        if "FROM posts AS p" in sql:  # câu chọn ứng viên
             return [
-                {"id": "a", "content": "bảng cửu chương cộng trừ nhân chia", "title": "Cộng Trừ Nhân Chia", "director": "", "cast": ""},
-                {"id": "b", "content": "Anh Thư đóng vai này hay quá", "title": "Cộng Trừ Nhân Chia", "director": "", "cast": '["Anh Thư"]'},
+                {
+                    "id": "a",
+                    "content": "bảng cửu chương cộng trừ nhân chia",
+                    "title": "Cộng Trừ Nhân Chia",
+                    "director": "",
+                    "cast": "",
+                },
+                {
+                    "id": "b",
+                    "content": "Anh Thư đóng vai này hay quá",
+                    "title": "Cộng Trừ Nhân Chia",
+                    "director": "",
+                    "cast": '["Anh Thư"]',
+                },
             ]
-        if sql.startswith("SELECT * FROM posts"):
+        if sql.startswith(("SELECT * FROM posts", "SELECT * \nFROM posts")):
             return [{"id": "a", "platform": "tiktok", "first_seen_at": "2026-10-20T01:00:00", "keyword_id": "k1"}]
-        if sql.startswith("SELECT * FROM comments"):
+        if sql.startswith(("SELECT * FROM comments", "SELECT * \nFROM comments")):
             return [{"id": "c1", "post_id": "a", "platform": "tiktok", "scraped_at": "2026-10-21T01:00:00"}]
         if sql.startswith("SELECT"):
             return [{"n": 0}] if "count" in sql else []
@@ -43,15 +55,21 @@ def test_purge_backs_up_before_delete_and_keeps_posts_naming_cast(monkeypatch):
     assert any(c.startswith("UPDATE") for c in calls)
     assert len(uploads) == len(cleanup._BACKUP_TABLES)  # một file mỗi bảng cho lô duy nhất
     first_delete = next(i for i, c in enumerate(calls) if c.startswith("DELETE"))
-    last_backup = max(i for i, c in enumerate(calls) if c.startswith("SELECT * FROM"))
-    assert last_backup < first_delete  # sao lưu xong mọi bảng của lô rồi mới xoá
+    # Sao lưu: một câu SELECT * cho mỗi bảng trong _BACKUP_TABLES, đều trước câu DELETE đầu tiên.
+    backups = [i for i, c in enumerate(calls) if c.startswith(("SELECT * FROM", "SELECT * \nFROM"))]
+    assert len(backups) == len(cleanup._BACKUP_TABLES)
+    assert max(backups) < first_delete  # sao lưu xong mọi bảng của lô rồi mới xoá
     assert subtracted == [(1, 1)]
     assert totals["backup"].startswith("backups/purge/")
+    # Danh sách id dài đi qua json_each (một tham số) chứ không nhúng literal vào SQL.
+    deletes = [c for c in calls if c.startswith("DELETE")]
+    assert all("json_each" in c for c in deletes)
+    assert "'" not in "".join(deletes)
 
 
 def test_purge_refuses_without_backup_storage(monkeypatch):
     async def fake_run(sql, params):
-        if sql.startswith("SELECT p.id"):
+        if "FROM posts AS p" in sql:
             return [{"id": "a", "content": "rác", "title": "X", "director": "", "cast": ""}]
         return []
 

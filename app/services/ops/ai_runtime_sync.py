@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import Column, Integer, Table, Text, delete, text
+from sqlalchemy.schema import CreateTable
+
 from app.ai.providers.client import active_provider_key
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec, d1_insert_many, metadata
 from app.services.accounts import platform_config_db as db
 
 logger = get_logger(__name__)
@@ -20,19 +23,18 @@ logger = get_logger(__name__)
 # Dòng "bee" cũ không còn là một nhà cung cấp thật - không chép.
 _SKIP = {"bee"}
 
-_TABLE_SQL = """CREATE TABLE IF NOT EXISTS ai_runtime (
-  key TEXT PRIMARY KEY,
-  base_url TEXT NOT NULL,
-  chat_path TEXT NOT NULL,
-  api_key TEXT NOT NULL,
-  model TEXT NOT NULL,
-  image_model TEXT NOT NULL,
-  decisions_path TEXT NOT NULL,
-  comment_model TEXT NOT NULL,
-  post_model TEXT NOT NULL,
-  active INTEGER NOT NULL DEFAULT 0,
-  updated_at TEXT NOT NULL
-)"""
+_TEXT_COLUMNS = (
+    "base_url", "chat_path", "api_key", "model", "image_model", "decisions_path", "comment_model", "post_model",
+)  # fmt: skip
+ai_runtime = Table(
+    "ai_runtime",
+    metadata,
+    Column("key", Text, primary_key=True),
+    *(Column(name, Text, nullable=False) for name in _TEXT_COLUMNS),
+    Column("active", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", Text, nullable=False),
+)
+_DEFAULTS = {"chat_path": "/chat/completions"}
 
 
 async def sync_ai_runtime() -> int:
@@ -40,34 +42,25 @@ async def sync_ai_runtime() -> int:
     try:
         active = await active_provider_key()
         rows = [row for row in await db.list_ai_providers() if row["key"] not in _SKIP and row.get("base_url")]
-        if await d1_query(_TABLE_SQL, quiet=True) is None:
+        if await d1_exec(CreateTable(ai_runtime, if_not_exists=True), quiet=True) is None:
             raise RuntimeError("ai_runtime_create_failed")
         now = datetime.now(tz=UTC).isoformat(timespec="seconds")
-        for row in rows:
-            await d1_query(
-                "INSERT INTO ai_runtime (key, base_url, chat_path, api_key, model, image_model, decisions_path, "
-                "comment_model, post_model, active, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (key) DO UPDATE SET base_url = excluded.base_url, chat_path = excluded.chat_path, "
-                "api_key = excluded.api_key, model = excluded.model, image_model = excluded.image_model, "
-                "decisions_path = excluded.decisions_path, comment_model = excluded.comment_model, "
-                "post_model = excluded.post_model, active = excluded.active, updated_at = excluded.updated_at",
-                [
-                    row["key"],
-                    row["base_url"],
-                    row.get("chat_path") or "/chat/completions",
-                    row.get("api_key") or "",
-                    row.get("model") or "",
-                    row.get("image_model") or "",
-                    row.get("decisions_path") or "",
-                    row.get("comment_model") or "",
-                    row.get("post_model") or "",
-                    int(row["key"] == active),
-                    now,
-                ],
-            )
+        await d1_insert_many(
+            ai_runtime,
+            [
+                {
+                    "key": row["key"],
+                    **{name: row.get(name) or _DEFAULTS.get(name, "") for name in _TEXT_COLUMNS},
+                    "active": int(row["key"] == active),
+                    "updated_at": now,
+                }
+                for row in rows
+            ],
+            conflict=["key"],
+        )
         keys = [row["key"] for row in rows]
         if keys:
-            await d1_query(f"DELETE FROM ai_runtime WHERE key NOT IN ({','.join('?' * len(keys))})", keys, quiet=True)
+            await d1_exec(delete(ai_runtime).where(ai_runtime.c.key.not_in(keys)), quiet=True)
         logger.info("ai_runtime_synced", active=active, providers=keys)
         return len(rows)
     except Exception as exc:  # noqa: BLE001 - lần sau (lưu / scheduler) chép lại

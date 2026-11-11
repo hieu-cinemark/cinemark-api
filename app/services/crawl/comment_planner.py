@@ -22,11 +22,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import case, func, select, update
+
 from app.clients.kafka import publish_comments_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL, ensure_post_voice_columns, reputable_authors
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post, reputable_authors
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import movies, posts
 from app.services.crawl.comment_value import judge_new_posts, load_scores
 
 logger = get_logger(__name__)
@@ -250,23 +253,31 @@ async def _candidates(platform: str, window: timedelta, now: datetime) -> list[d
     """Bài liên quan, có URL, của các phim đang theo dõi, đăng trong `window`."""
     await ensure_post_voice_columns()
     today = now.date()
-    rows = await d1_query(
-        f"""
-        SELECT p.id, p.external_id, p.url, p.platform, p.movie_id, p.author, p.posted_at,
-               p.like_count, p.reply_count,
-               COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) + COALESCE(p.quote_count, 0) AS shares,
-               p.comments_crawled_at, p.comments_crawled_replies, p.comments_queued_at, m.title AS movie_title,
-               substr(p.content, 1, 400) AS content
-        FROM posts p JOIN movies m ON m.id = p.movie_id
-        WHERE p.platform = ? AND m.enabled = 1 AND m.released_at BETWEEN ? AND ?
-          AND p.posted_at >= ? AND p.url IS NOT NULL AND {RELEVANT_POST_SQL}
-        """,
-        [
-            platform,
-            (today - SHOWING_BEFORE).isoformat(),
-            (today + SHOWING_AFTER).isoformat(),
-            (now - window).isoformat(),
-        ],
+    p = posts.alias("p")
+    shares = (
+        func.coalesce(p.c.repost_count, 0) + func.coalesce(p.c.reshare_count, 0) + func.coalesce(p.c.quote_count, 0)
+    )
+    rows = await d1_exec(
+        select(
+            *(p.c[name] for name in ("id", "external_id", "url", "platform", "movie_id", "author", "posted_at")),
+            p.c.like_count,
+            p.c.reply_count,
+            shares.label("shares"),
+            p.c.comments_crawled_at,
+            p.c.comments_crawled_replies,
+            p.c.comments_queued_at,
+            movies.c.title.label("movie_title"),
+            func.substr(p.c.content, 1, 400).label("content"),
+        )
+        .select_from(p.join(movies, movies.c.id == p.c.movie_id))
+        .where(
+            p.c.platform == platform,
+            movies.c.enabled == 1,
+            movies.c.released_at.between((today - SHOWING_BEFORE).isoformat(), (today + SHOWING_AFTER).isoformat()),
+            p.c.posted_at >= (now - window).isoformat(),
+            p.c.url.is_not(None),
+            relevant_post(p),
+        )
     )
     if rows is None:
         raise RuntimeError("comment_planner_select_failed")
@@ -276,20 +287,26 @@ async def _candidates(platform: str, window: timedelta, now: datetime) -> list[d
 async def _mark_queued(pick: CrawlPick, now: datetime, run_id: str) -> bool:
     """Ghi lease TRƯỚC khi publish: job chạy nhanh có thể xong trước khi bước ghi này chạy, và ghi sau sẽ đè lên tín hiệu xong -
     bài đã quét lại mang lease 24 giờ. False khi D1 lỗi (không publish: không có lease thì lượt sau xếp trùng)."""
-    result = await d1_query(
-        "UPDATE posts SET comments_queued_at = ?, comments_queued_replies = ?, comments_queued_run_id = ?, "
-        "comments_crawl_reason = ? WHERE id = ?",
-        [now.isoformat(), pick.reply_count, run_id, pick.reason, pick.post_id],
+    result = await d1_exec(
+        update(posts)
+        .where(posts.c.id == pick.post_id)
+        .values(
+            comments_queued_at=now.isoformat(),
+            comments_queued_replies=pick.reply_count,
+            comments_queued_run_id=run_id,
+            comments_crawl_reason=pick.reason,
+        ),
         quiet=True,
     )
     return result is not None
 
 
+_NO_LEASE = {"comments_queued_at": None, "comments_queued_replies": None, "comments_queued_run_id": None}
+
+
 async def _release_queued(pick: CrawlPick, run_id: str) -> None:
-    await d1_query(
-        "UPDATE posts SET comments_queued_at = NULL, comments_queued_replies = NULL, comments_queued_run_id = NULL "
-        "WHERE id = ? AND comments_queued_run_id = ?",
-        [pick.post_id, run_id],
+    await d1_exec(
+        update(posts).where(posts.c.id == pick.post_id, posts.c.comments_queued_run_id == run_id).values(**_NO_LEASE),
         quiet=True,
     )
 
@@ -298,26 +315,29 @@ async def _apply_completion(item: dict[str, Any]) -> bool:
     """Job xong thì luôn ghi lần quét; bị bỏ qua / lỗi thì không. Lease chỉ nhả khi đúng run_id: tín hiệu muộn của job cũ, hay của
     một lần bấm tay trên dashboard, không được xoá lease của job khác còn đang xếp hàng. False khi D1 lỗi."""
     run_id = item.get("run_id")
-    where = [item["platform"], item["post_id"]]
+    target = (posts.c.platform == item["platform"], posts.c.external_id == item["post_id"])
     if item.get("status") == "done":
-        finished = datetime.fromtimestamp(float(item["finished_at"]), tz=UTC).isoformat()
-        sql = (
-            "UPDATE posts SET comments_crawled_at = ?, "
-            "comments_crawled_replies = CASE WHEN comments_queued_run_id = ? "
-            "THEN COALESCE(comments_queued_replies, reply_count) ELSE reply_count END, "
-            "comments_queued_at = CASE WHEN comments_queued_run_id = ? THEN NULL ELSE comments_queued_at END, "
-            "comments_queued_replies = CASE WHEN comments_queued_run_id = ? THEN NULL ELSE comments_queued_replies END, "
-            "comments_queued_run_id = CASE WHEN comments_queued_run_id = ? THEN NULL ELSE comments_queued_run_id END "
-            "WHERE platform = ? AND external_id = ?"
+        mine = posts.c.comments_queued_run_id == run_id
+
+        def if_mine(value, otherwise):
+            return case((mine, value), else_=otherwise)
+
+        stmt = (
+            update(posts)
+            .where(*target)
+            .values(
+                comments_crawled_at=datetime.fromtimestamp(float(item["finished_at"]), tz=UTC).isoformat(),
+                comments_crawled_replies=if_mine(
+                    func.coalesce(posts.c.comments_queued_replies, posts.c.reply_count), posts.c.reply_count
+                ),
+                comments_queued_at=if_mine(None, posts.c.comments_queued_at),
+                comments_queued_replies=if_mine(None, posts.c.comments_queued_replies),
+                comments_queued_run_id=if_mine(None, posts.c.comments_queued_run_id),
+            )
         )
-        params = [finished, run_id, run_id, run_id, run_id, *where]
     else:
-        sql = (
-            "UPDATE posts SET comments_queued_at = NULL, comments_queued_replies = NULL, comments_queued_run_id = NULL "
-            "WHERE platform = ? AND external_id = ? AND comments_queued_run_id = ?"
-        )
-        params = [*where, run_id]
-    return await d1_query(sql, params, quiet=True) is not None
+        stmt = update(posts).where(*target, posts.c.comments_queued_run_id == run_id).values(**_NO_LEASE)
+    return await d1_exec(stmt, quiet=True) is not None
 
 
 async def apply_comment_completions() -> int:

@@ -26,11 +26,16 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import bindparam, delete, func, literal_column, select, text, update
+
 from app.clients.lake import lake_configured, put_object
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import compile_sql, json_values
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import movies, post_comment_value, post_engagement_snapshots, post_visuals
+from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts import platform_config_db as db
 from app.services.relevance.relevance_rules import film_context_reason
 from app.services.stats.stats_summary import subtract_deleted
@@ -40,18 +45,18 @@ logger = get_logger(__name__)
 BATCH_SIZE = 500
 MAX_BATCHES = 60
 
+# Bảng post_comment_value và post_visuals khai ở app/repositories/d1/tables.py (dùng chung với
+# crawl/comment_value.py và scripts/jobs/post_visuals.py).
+
 # Thời gian ân hạn tính từ lúc bài bị gắn nhãn not_related, không phải lúc được crawl -
 # một lượt gắn nhãn lại hạ cấp các bài cũ vẫn phải chừa cho người vận hành đủ
 # grace_hours để phát hiện và hoàn tác.
-_ELIGIBLE = (
-    "relevance_label = 'not_related' "
-    "AND COALESCE(relevance_labeled_at, scraped_at) < strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)"
-)
-
-# Cùng điều kiện, bảng posts có alias p (câu chọn ứng viên JOIN movies).
-_ELIGIBLE_P = (
-    "p.relevance_label = 'not_related' "
-    "AND COALESCE(p.relevance_labeled_at, p.scraped_at) < strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)"
+# Mốc ân hạn lấy bằng strftime('now', ?) - giữ nguyên dạng SQL thuần vì đây là điều kiện
+# dùng lại ở nhiều câu; :grace là tham số do SQLAlchemy bind khi dựng câu.
+_ELIGIBLE_SQL = (
+    "{prefix}relevance_label = 'not_related' "
+    "AND COALESCE({prefix}relevance_labeled_at, {prefix}scraped_at) "
+    "< strftime('%Y-%m-%dT%H:%M:%S', 'now', :grace)"
 )
 
 # Dùng chung giữa scheduler của API và scripts/tools/purge_irrelevant_posts.py, để một lượt
@@ -65,21 +70,38 @@ _BACKUP_TABLES = (
     ("post_comment_value", "post_id"),
     ("post_visuals", "post_id"),
 )
+# Bảng SQLAlchemy tương ứng từng bảng trong _BACKUP_TABLES - cùng thứ tự.
+_BACKUP_TABLE_OBJECTS = {
+    "posts": posts_table,
+    "comments": comments_table,
+    "post_engagement_snapshots": post_engagement_snapshots,
+    "post_comment_value": post_comment_value,
+    "post_visuals": post_visuals,
+}
 _LOCK_TTL_SECONDS = 2 * 60 * 60
 
 
 async def _run(sql: str, params: list[Any]) -> list[dict[str, Any]]:
+    """Chạy câu đã dựng bằng SQLAlchemy (compile_sql ở _run_stmt) - đây là ngõ duy nhất của module này
+    gọi D1, nên timeout và cách báo lỗi giống nhau cho mọi câu."""
+    from app.repositories.d1.store import d1_query
+
     rows = await d1_query(sql, params, timeout=60.0)
     if rows is None:
         raise RuntimeError(f"d1 statement failed: {sql[:80]}")
     return rows
 
 
-def _id_list(ids: list[str]) -> str:
-    # Nhúng thẳng thành literal trong dấu nháy thay vì bind tham số: D1 giới hạn một câu
-    # lệnh tối đa 100 tham số bind, và mỗi lô một câu lệnh giúp một lượt chạy chỉ tốn vài
-    # trăm lời gọi API. Các id lấy thẳng từ câu SELECT ở trên.
-    return ",".join("'" + str(i).replace("'", "''") + "'" for i in ids)
+async def _run_stmt(stmt: Any) -> list[dict[str, Any]]:
+    """Chạy câu dựng bằng SQLAlchemy (dùng _run để có cùng timeout và cùng cách báo lỗi)."""
+    sql, params = compile_sql(stmt)
+    return await _run(sql, params)
+
+
+def _eligible_posts(alias: Any, grace: str) -> Any:
+    """Điều kiện "bài đã gắn nhãn not_related đủ lâu" cho bảng posts (alias p). Mốc ân hạn lấy bằng
+    strftime('now', ?) - giữ dạng SQL thuần vì đây là điều kiện dùng lại ở nhiều câu."""
+    return text(_ELIGIBLE_SQL.format(prefix=f"{alias.name}.")).bindparams(bindparam("grace", value=grace))
 
 
 async def resolve_cleanup_settings() -> dict[str, Any]:
@@ -110,19 +132,29 @@ async def purge_irrelevant_posts(
     grace = f"-{grace_value} hours"
 
     if dry_run:
-        posts = await _run(f"SELECT count(*) AS n FROM posts WHERE {_ELIGIBLE}", [grace])
-        comments = await _run(
-            f"SELECT count(*) AS n FROM comments WHERE post_id IN (SELECT id FROM posts WHERE {_ELIGIBLE})", [grace]
+        posts = await _run_stmt(select(func.count().label("n")).where(_eligible_posts(posts_table, grace)))
+        comments = await _run_stmt(
+            select(func.count().label("n"))
+            .select_from(comments_table.alias("c"))
+            .where(comments_table.c.post_id.in_(select(posts_table.c.id).where(_eligible_posts(posts_table, grace))))
         )
         result = {"dry_run": True, "grace_hours": grace_value, "posts": posts[0]["n"], "comments": comments[0]["n"]}
         logger.info("irrelevant_purge_dry_run", **result)
         return result
 
-    candidates = await _run(
-        f"SELECT p.id, substr(p.content, 1, 1500) AS content, m.title, m.director, m.`cast` AS `cast` FROM posts p LEFT JOIN movies m ON m.id = p.movie_id "
-        f"WHERE {_ELIGIBLE_P} "
-        "ORDER BY p.id LIMIT ?",
-        [grace, BATCH_SIZE * MAX_BATCHES],
+    p, m = posts_table.alias("p"), movies.alias("m")
+    candidates = await _run_stmt(
+        select(
+            p.c.id,
+            func.substr(p.c.content, 1, 1500).label("content"),
+            m.c.title,
+            m.c.director,
+            m.c.cast.label("cast"),
+        )
+        .select_from(p.outerjoin(m, m.c.id == p.c.movie_id))
+        .where(_eligible_posts(p, grace))
+        .order_by(p.c.id)
+        .limit(BATCH_SIZE * MAX_BATCHES)
     )
     # bài nhắc tên diễn viên/đạo diễn của chính phim đó thì KHÔNG xoá dù bộ phân loại nói không liên quan -
     # chuyển về 'uncertain' (vẫn ẩn, gán lại được) để không bị chọn lại mỗi đêm.
@@ -132,8 +164,10 @@ async def purge_irrelevant_posts(
         if film_context_reason(row.get("content"), row, allow_title_hashtag=False) in ("cast", "director")
     ]
     if named:
-        await _run(
-            f"UPDATE posts SET relevance_label = 'uncertain', keyword_match = 0 WHERE id IN ({_id_list(named)})", []
+        await _run_stmt(
+            update(posts_table)
+            .where(posts_table.c.id.in_(json_values(named)))
+            .values(relevance_label="uncertain", keyword_match=0)
         )
     ids = [row["id"] for row in candidates if row["id"] not in set(named)]
     totals: dict[str, Any] = {"posts": 0, "comments": 0, "snapshots": 0, "batches": 0, "kept_named": len(named)}
@@ -142,20 +176,32 @@ async def purge_irrelevant_posts(
         raise RuntimeError("purge needs the R2 lake configured for backups")
     run_key = f"backups/purge/{datetime.now(UTC):%Y-%m-%d}/{uuid.uuid4().hex[:8]}"
     for start in range(0, len(ids), BATCH_SIZE):
-        id_list = _id_list(ids[start : start + BATCH_SIZE])
+        batch = ids[start : start + BATCH_SIZE]
         # Sao lưu lô lên R2 TRƯỚC khi xoá: bài + mọi bảng con, mỗi bảng một file jsonl.gz.
         backup: dict[str, list[dict[str, Any]]] = {}
         for table, column in _BACKUP_TABLES:
-            backup[table] = await _run(f"SELECT * FROM {table} WHERE {column} IN ({id_list})", [])
+            obj = _BACKUP_TABLE_OBJECTS[table]
+            backup[table] = await _run_stmt(
+                select(literal_column("*")).select_from(obj).where(obj.c[column].in_(json_values(batch)))
+            )
             body = gzip.compress("\n".join(json.dumps(r, ensure_ascii=False) for r in backup[table]).encode())
             await put_object(f"{run_key}/{totals['batches']:03d}-{table}.jsonl.gz", body)
         for table, column in _BACKUP_TABLES[1:]:
-            deleted = len(await _run(f"DELETE FROM {table} WHERE {column} IN ({id_list}) RETURNING 1 AS x", []))
+            obj = _BACKUP_TABLE_OBJECTS[table]
+            deleted = len(
+                await _run_stmt(
+                    delete(obj).where(obj.c[column].in_(json_values(batch))).returning(literal_column("1").label("x"))
+                )
+            )
             if table == "comments":
                 totals["comments"] += deleted
             elif table == "post_engagement_snapshots":
                 totals["snapshots"] += deleted
-        totals["posts"] += len(await _run(f"DELETE FROM posts WHERE id IN ({id_list}) RETURNING id", []))
+        totals["posts"] += len(
+            await _run_stmt(
+                delete(posts_table).where(posts_table.c.id.in_(json_values(batch))).returning(posts_table.c.id)
+            )
+        )
         totals["batches"] += 1
         # Trừ đúng phần đã xoá khỏi bảng thống kê ngày (trước 30/10/2026 là dựng lại toàn bộ - quét 2 triệu bình luận).
         try:
@@ -165,7 +211,7 @@ async def purge_irrelevant_posts(
     if ids:
         totals["backup"] = run_key
 
-    backlog = await _run(f"SELECT count(*) AS n FROM posts WHERE {_ELIGIBLE}", [grace])
+    backlog = await _run_stmt(select(func.count().label("n")).where(_eligible_posts(posts_table, grace)))
     totals["remaining_posts"] = backlog[0]["n"]
     totals["grace_hours"] = grace_value
     logger.info("irrelevant_purge_done", telegram=True, **totals)
@@ -193,7 +239,7 @@ async def run_purge(*, triggered_by: str) -> dict[str, Any] | None:
         if run_id is not None:
             try:
                 await db.record_cleanup_run_finish(run_id, summary={}, error=str(exc))
-            except Exception as history_exc:
+            except Exception as history_exc:  # noqa: BLE001 - không được che mất lỗi gốc
                 # Không được che mất lỗi gốc.
                 logger.error("irrelevant_purge_history_write_failed", error=str(history_exc))
         raise

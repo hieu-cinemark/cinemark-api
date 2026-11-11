@@ -11,6 +11,7 @@ import pytest
 
 from app.clients import d1, kafka
 from app.clients.redis import REDIS_KEY_PREFIX
+from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import comment_planner as cp
 from app.services.crawl import crawl_jobs, scheduler
 
@@ -222,11 +223,19 @@ def test_publish_marks_queue_lease_not_crawled_at(monkeypatch):
         queries.append((sql, params))
         return []
 
-    monkeypatch.setattr(cp, "d1_query", fake_d1)
+    monkeypatch.setattr(d1_sql, "d1_query", fake_d1)
     pick = cp.CrawlPick("p1", "x1", "u", "tiktok", "m", 2, "hot", 7)
     assert asyncio.run(cp._mark_queued(pick, NOW, "r1")) is True
     assert "comments_queued_at" in queries[0][0] and "comments_crawled_at" not in queries[0][0]
-    assert queries[0][1] == [NOW.isoformat(), 7, "r1", "hot", "p1"]
+    sql, params = queries[0]
+    columns = [part.split("=")[0].strip() for part in sql.split(" SET ")[1].split(" WHERE ")[0].split(",")]
+    assert dict(zip(columns, params, strict=False)) == {
+        "comments_queued_at": NOW.isoformat(),
+        "comments_queued_replies": 7,
+        "comments_queued_run_id": "r1",
+        "comments_crawl_reason": "hot",
+    }
+    assert params[-1] == "p1"
 
 
 def _completions(monkeypatch, *items, d1_result=lambda sql: []):
@@ -242,7 +251,7 @@ def _completions(monkeypatch, *items, d1_result=lambda sql: []):
         return None
 
     monkeypatch.setattr(cp, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(cp, "d1_query", fake_d1)
+    monkeypatch.setattr(d1_sql, "d1_query", fake_d1)
     monkeypatch.setattr(cp, "ensure_post_voice_columns", ready)
     return redis, queries
 
@@ -262,7 +271,7 @@ def posts_db(monkeypatch):
     async def fake_d1(sql, params=None, **kwargs):
         return [dict(row) for row in conn.execute(sql, params or [])]
 
-    monkeypatch.setattr(cp, "d1_query", fake_d1)
+    monkeypatch.setattr(d1_sql, "d1_query", fake_d1)
     return conn
 
 
@@ -354,7 +363,7 @@ def test_no_lease_means_no_publish(monkeypatch):
     async def publish(**kwargs):
         raise AssertionError("không có lease thì không được publish")
 
-    monkeypatch.setattr(cp, "d1_query", d1_down)
+    monkeypatch.setattr(d1_sql, "d1_query", d1_down)
     assert _round(monkeypatch, publish)["published"] == 0
 
 

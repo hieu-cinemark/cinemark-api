@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import scheduler
 from app.services.crawl import source_pages as sp
 
@@ -60,13 +61,14 @@ def env(monkeypatch):
 
     async def d1(sql, params=None, **kwargs):
         calls.append(sql)
-        if sql.startswith("SELECT s.*"):
+        if sql.startswith("SELECT") and "FROM source_pages" in sql:
             return [dict(row) for row in ROWS]
-        if sql.startswith("SELECT title"):
+        if sql.startswith("SELECT movies.title"):
             return [{"title": "Phim"}]
         return []
 
     monkeypatch.setattr(sp, "d1_query", d1)
+    monkeypatch.setattr(d1_sql, "d1_query", d1)
     monkeypatch.setattr(sp, "get_or_create_keyword", AsyncMock(return_value={"id": "kw"}))
     redis = Redis()
     monkeypatch.setattr(sp, "get_redis_client", lambda: redis)
@@ -122,6 +124,7 @@ def test_plan_is_not_reread_while_nothing_is_ready(env, monkeypatch):
         return []
 
     monkeypatch.setattr(sp, "d1_query", empty)
+    monkeypatch.setattr(d1_sql, "d1_query", empty)
     asyncio.run(sp.fill_public_pages_queue(NOW))
     asyncio.run(sp.fill_public_pages_queue(NOW + timedelta(minutes=1)))
     assert len(calls) == 1

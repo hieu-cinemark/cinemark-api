@@ -23,11 +23,15 @@ import zlib
 from datetime import date, datetime
 from typing import Any
 
+from sqlalchemy import select
+
 from app.clients.kafka import publish_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import movies
 from app.services.accounts import platform_config_db
 
 logger = get_logger(__name__)
@@ -90,13 +94,11 @@ def stage_of(released_at: str | None, today: date) -> str:
 
 
 async def _facebook_keywords() -> list[dict[str, Any]]:
-    rows = await d1_query(
-        """
-        SELECT k.id, k.movie_id, k.platform, k.keyword, m.released_at
-        FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE k.platform = 'facebook' AND k.enabled = 1 AND m.enabled = 1
-        """,
-        [],
+    k = keywords_table.c
+    rows = await d1_exec(
+        select(k.id, k.movie_id, k.platform, k.keyword, movies.c.released_at)
+        .select_from(keywords_table.join(movies, movies.c.id == k.movie_id))
+        .where(k.platform == "facebook", k.enabled == 1, movies.c.enabled == 1)
     )
     return rows or []
 

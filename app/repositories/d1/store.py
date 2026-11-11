@@ -15,8 +15,12 @@ import re
 import unicodedata
 import uuid
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from sqlalchemy import Select, func, insert, literal_column, select, text, update
+from sqlalchemy.sql import ClauseElement
 
 from app.ai.domain.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
 from app.ai.tasks.sentiment_rules import rule_sentiment
@@ -34,8 +38,8 @@ from app.repositories.d1.comments import (
 from app.repositories.d1.posts import (
     ENGAGEMENT_FIELDS,
     MIN_CONTENT_LENGTH,
-    RELEVANT_POST_SQL,
     PostRepository,
+    author_reputation,
     contains_keyword,
     ensure_author_reputation_table,
     get_post,
@@ -46,10 +50,15 @@ from app.repositories.d1.posts import (
     persist_post,
     post_mentions_movie,
     post_repo,
+    relevant_post,
     reputable_authors,
     update_post_engagement,
     update_post_views,
 )
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import keywords, movies, social_topic_reports
+from app.repositories.d1.tables import posts as posts_table
 
 logger = get_logger(__name__)
 
@@ -104,7 +113,7 @@ async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, lis
         for kid in keyword_ids:
             pipe.hgetall(OMAR_COOCCUR_KEY_TMPL.format(keyword_id=kid))
         omar_values = await pipe.execute()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Redis lỗi thì coi như chưa có hashtag liên quan
         logger.warning("related_hashtags_redis_failed", error=str(exc))
         return {}
     out: dict[str, list[dict[str, Any]]] = {}
@@ -179,7 +188,12 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
     return await _from_summary(platform)
 
 
-_MOVIE_COLUMNS = "id, title, slug, released_at, poster_url, description, director, `cast`, distributor"
+_MOVIE_FIELDS = ("released_at", "poster_url", "description", "director", "cast", "distributor")
+# Thông tin phim đưa vào prompt AI (app/ai/domain/movie_context.py).
+MOVIE_CONTEXT_FIELDS = ("title", "director", "cast", "distributor", "released_at", "description")
+_MOVIE_COLUMNS = (movies.c.id, movies.c.title, movies.c.slug, *(movies.c[f] for f in _MOVIE_FIELDS))
+_KEYWORD_JOIN = keywords.join(movies, movies.c.id == keywords.c.movie_id)
+_KEYWORD_ROW = (keywords.c.id, keywords.c.movie_id, movies.c.title.label("movie_title"), keywords.c.keyword)
 
 
 def movie_slug(title: str) -> str:
@@ -202,7 +216,7 @@ async def _unique_movie_slug(base: str, exclude_id: str | None = None) -> str | 
     slug = base
     suffix = 2
     while True:
-        rows = await d1_query("SELECT id FROM movies WHERE slug = ?", [slug])
+        rows = await d1_exec(select(movies.c.id).where(movies.c.slug == slug))
         if rows is None:
             return None
         clash = next((row for row in rows if row["id"] != exclude_id), None)
@@ -219,12 +233,12 @@ async def list_movies() -> list[dict[str, Any]]:
     (các trường thừa ở đây chỗ gọi đó đơn giản là không dùng, không làm hỏng gì). `cast`
     cần dấu backtick - nó là từ khoá SQL (hàm CAST()) trong ngữ pháp của chính SQLite,
     không chỉ của Python."""
-    rows = await d1_query(f"SELECT {_MOVIE_COLUMNS} FROM movies WHERE enabled = 1 ORDER BY title ASC")
+    rows = await d1_exec(select(*_MOVIE_COLUMNS).where(movies.c.enabled == 1).order_by(movies.c.title))
     return rows or []
 
 
 async def get_movie(movie_id: str) -> dict[str, Any] | None:
-    rows = await d1_query(f"SELECT {_MOVIE_COLUMNS} FROM movies WHERE id = ? AND enabled = 1", [movie_id])
+    rows = await d1_exec(select(*_MOVIE_COLUMNS).where(movies.c.id == movie_id, movies.c.enabled == 1))
     if rows is None:
         return None
     return rows[0] if rows else None
@@ -242,26 +256,16 @@ async def create_movie(fields: dict[str, Any]) -> dict[str, Any] | None:
         return None
     now = datetime.now(tz=UTC).isoformat()
     movie_id = f"movie_{uuid.uuid4()}"
-    inserted = await d1_query(
-        """
-        INSERT INTO movies (
-            id, title, slug, enabled, created_at, updated_at,
-            released_at, poster_url, description, director, `cast`, distributor
-        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            movie_id,
-            title,
-            slug,
-            now,
-            now,
-            _blank_to_none(fields.get("released_at")),
-            _blank_to_none(fields.get("poster_url")),
-            _blank_to_none(fields.get("description")),
-            _blank_to_none(fields.get("director")),
-            _blank_to_none(fields.get("cast")),
-            _blank_to_none(fields.get("distributor")),
-        ],
+    inserted = await d1_exec(
+        insert(movies).values(
+            id=movie_id,
+            title=title,
+            slug=slug,
+            enabled=1,
+            created_at=now,
+            updated_at=now,
+            **{f: _blank_to_none(fields.get(f)) for f in _MOVIE_FIELDS},
+        )
     )
     if inserted is None:
         return None
@@ -293,26 +297,10 @@ async def update_movie(movie_id: str, fields: dict[str, Any]) -> dict[str, Any] 
             return existing.get(key)
         return _blank_to_none(fields.get(key))
 
-    updated = await d1_query(
-        """
-        UPDATE movies SET
-            title = ?, slug = ?, updated_at = ?,
-            released_at = ?, poster_url = ?, description = ?,
-            director = ?, `cast` = ?, distributor = ?
-        WHERE id = ? AND enabled = 1
-        """,
-        [
-            title,
-            slug,
-            now,
-            pick("released_at"),
-            pick("poster_url"),
-            pick("description"),
-            pick("director"),
-            pick("cast"),
-            pick("distributor"),
-            movie_id,
-        ],
+    updated = await d1_exec(
+        update(movies)
+        .where(movies.c.id == movie_id, movies.c.enabled == 1)
+        .values(title=title, slug=slug, updated_at=now, **{f: pick(f) for f in _MOVIE_FIELDS})
     )
     if updated is None:
         return None
@@ -323,14 +311,13 @@ async def disable_movie(movie_id: str) -> bool | None:
     """Xoá mềm khỏi danh sách trên dashboard (keywords/posts vẫn giữ khoá ngoại)."""
     existing = await get_movie(movie_id)
     if existing is None:
-        rows = await d1_query("SELECT id FROM movies WHERE id = ?", [movie_id])
+        rows = await d1_exec(select(movies.c.id).where(movies.c.id == movie_id))
         if rows is None:
             return None
         return False
     now = datetime.now(tz=UTC).isoformat()
-    result = await d1_query(
-        "UPDATE movies SET enabled = 0, updated_at = ? WHERE id = ? AND enabled = 1",
-        [now, movie_id],
+    result = await d1_exec(
+        update(movies).where(movies.c.id == movie_id, movies.c.enabled == 1).values(enabled=0, updated_at=now)
     )
     if result is None:
         return None
@@ -379,7 +366,8 @@ REPORT_POST_TEXT_CHARS = 400
 
 # Comment bị bộ phân loại (batch 2026-09-24) gắn là không nói về phim - loại khỏi cả mẫu lẫn
 # tỉ lệ cảm xúc. Comment chưa có nhãn (NULL) vẫn được tính.
-_COMMENT_ABOUT_MOVIE_SQL = "(c.relevance_label IS NULL OR c.relevance_label != 'not_related')"
+# Giữ dạng text() vì điều kiện này nằm trong câu ghép với cột của bảng comments (alias c).
+_COMMENT_ABOUT_MOVIE_SQL = text("(c.relevance_label IS NULL OR c.relevance_label != 'not_related')")
 
 
 _SENTIMENT_BUCKETS = ("positive", "negative", "neutral")
@@ -453,8 +441,10 @@ async def _channel_authors() -> set[tuple[str, str]]:
     phải khán giả. Ngưỡng cao hơn MIN_MOVIES_FOR_REPUTABLE_AUTHOR (2) vì một khán giả thường cũng có thể đăng về
     hai phim."""
     await ensure_author_reputation_table()
-    rows = await d1_query(
-        "SELECT platform, author FROM author_reputation WHERE distinct_movies >= ?", [CHANNEL_MIN_MOVIES]
+    rows = await d1_exec(
+        select(author_reputation.c.platform, author_reputation.c.author).where(
+            author_reputation.c.distinct_movies >= CHANNEL_MIN_MOVIES
+        )
     )
     return {(r["platform"], r["author"]) for r in rows or []}
 
@@ -471,21 +461,28 @@ _REPORT_QUERY_TIMEOUT = 120.0
 REPORT_SAMPLE_CANDIDATES = 40_000
 
 
-async def _d1_rows(sql: str, params: list[Any]) -> list[dict[str, Any]]:
-    rows = await d1_query(sql, params, timeout=_REPORT_QUERY_TIMEOUT)
+async def _d1_rows(stmt: ClauseElement) -> list[dict[str, Any]]:
+    """Chạy câu dựng bằng SQLAlchemy; lỗi D1 thì raise (không lặng lẽ thành 0 - xem docstring _REPORT_QUERY_TIMEOUT)."""
+    rows = await d1_exec(stmt, timeout=_REPORT_QUERY_TIMEOUT)
     if rows is None:
         raise RuntimeError("D1 query failed while building the report")
     return rows
 
 
-async def _comments_of_posts(post_ids: list[str], columns: str, where: str) -> list[dict[str, Any]]:
-    """Comment (alias c) của các bài đã qua cổng, theo nhóm _POST_BATCH bài, tối đa _BATCH_CONCURRENCY câu song song."""
+async def _comments_of_posts(
+    post_ids: list[str], build: Callable[[Any], Select[tuple[Any, ...]]]
+) -> list[dict[str, Any]]:
+    """Comment (alias c) của các bài đã qua cổng, theo nhóm _POST_BATCH bài, tối đa _BATCH_CONCURRENCY câu song song.
+
+    `build` nhận alias của bảng comments và trả về câu select (đã có điều kiện post_id) để chỗ gọi tự chọn cột.
+    """
     semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
 
     async def one(batch: list[str]) -> list[dict[str, Any]]:
         async with semaphore:
-            marks = ",".join("?" * len(batch))
-            return await _d1_rows(f"SELECT {columns} FROM comments c WHERE c.post_id IN ({marks}) AND {where}", batch)
+            c = comments_table.alias("c")
+            stmt = build(c).where(c.c.post_id.in_(batch))
+            return await _d1_rows(stmt)
 
     batches = [post_ids[i : i + _POST_BATCH] for i in range(0, len(post_ids), _POST_BATCH)]
     return [row for rows in await asyncio.gather(*(one(b) for b in batches)) for row in rows]
@@ -496,24 +493,34 @@ async def _report_posts(movie_id: str) -> dict[str, dict[str, Any]]:
     get_report_sample_for_movie), theo id, mỗi bài có thêm "is_channel": True khi tác giả là một kênh
     (_channel_authors) hoặc đã đăng >= CHANNEL_MIN_POSTS bài về chính phim này (trang chính thức của phim, fanpage)
     - bài của kênh chỉ làm ngữ cảnh, không được coi là ý kiến khán giả."""
-    movie_rows = await d1_query("SELECT title FROM movies WHERE id = ?", [movie_id])
+    movie_rows = await d1_exec(select(movies.c.title).where(movies.c.id == movie_id))
     movie_title = movie_rows[0]["title"] if movie_rows else None
+    p, k = posts_table.alias("p"), keywords.alias("k")
+    page_query = (
+        select(
+            p.c.id,
+            p.c.url.label("post_url"),
+            p.c.content.label("post_content"),
+            p.c.author.label("post_author"),
+            p.c.platform,
+            p.c.like_count.label("post_likes"),
+            p.c.reply_count.label("post_comments"),
+            (p.c.repost_count + p.c.quote_count + p.c.reshare_count).label("post_shares"),
+            k.c.keyword.label("post_keyword"),
+        )
+        .select_from(p.outerjoin(k, k.c.id == p.c.keyword_id))
+        .order_by(p.c.id)
+        .limit(_POST_PAGE)
+    )
     rows: list[dict[str, Any]] = []
     last = ""
     while True:  # theo trang - phim lớn có hàng chục nghìn bài kèm nội dung
-        page = await _d1_rows(
-            f"""
-            SELECT p.id, p.url AS post_url, p.content AS post_content, p.author AS post_author, p.platform,
-                   p.like_count AS post_likes, p.reply_count AS post_comments,
-                   (p.repost_count + p.quote_count + p.reshare_count) AS post_shares,
-                   k.keyword AS post_keyword
-            FROM posts p
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND p.id > ?
-            ORDER BY p.id LIMIT {_POST_PAGE}
-            """,
-            [movie_id, last],
+        page = await d1_exec(
+            page_query.where(p.c.movie_id == movie_id, relevant_post(p), p.c.id > last),
+            timeout=_REPORT_QUERY_TIMEOUT,
         )
+        if page is None:
+            raise RuntimeError("D1 query failed while building the report")
         rows += page
         if len(page) < _POST_PAGE:
             break
@@ -570,9 +577,22 @@ async def get_report_sample_for_movie(
     per_mille = min(1000, math.ceil(REPORT_SAMPLE_CANDIDATES * 1000 / max(total, 1)))
     rows = await _comments_of_posts(
         list(posts),
-        "c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage",
-        f"{_COMMENT_ABOUT_MOVIE_SQL} AND c.sentiment IS NOT NULL AND c.message IS NOT NULL"
-        f" AND COALESCE(c.sentiment_source, '') != 'rule' AND (abs(c.rowid * 2654435761) % 1000) < {per_mille}",
+        lambda c: select(
+            c.c.id,
+            c.c.post_id,
+            c.c.message,
+            c.c.reactions_count,
+            c.c.sentiment,
+            c.c.aspects,
+            c.c.audience_stage,
+        ).where(
+            _COMMENT_ABOUT_MOVIE_SQL,
+            c.c.sentiment.is_not(None),
+            c.c.message.is_not(None),
+            func.coalesce(c.c.sentiment_source, "") != "rule",
+            # Băm rowid: mẫu rút trước trong SQL, cố định và rải đều theo toàn bộ bảng.
+            literal_column("abs(c.rowid * 2654435761) % 1000") < per_mille,
+        ),
     )
     rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trùng text: giữ bản nhiều like nhất
     seen_texts: set[str] = set()
@@ -690,8 +710,20 @@ async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
     posts = await _report_posts(movie_id)
     rows = await _comments_of_posts(
         list(posts),
-        "c.id, c.post_id, c.message, c.reactions_count, c.sentiment, c.aspects, c.audience_stage, c.posted_at",
-        f"{_COMMENT_ABOUT_MOVIE_SQL} AND c.insights_classified_at IS NOT NULL AND c.message IS NOT NULL",
+        lambda c: select(
+            c.c.id,
+            c.c.post_id,
+            c.c.message,
+            c.c.reactions_count,
+            c.c.sentiment,
+            c.c.aspects,
+            c.c.audience_stage,
+            c.c.posted_at,
+        ).where(
+            _COMMENT_ABOUT_MOVIE_SQL,
+            c.c.insights_classified_at.is_not(None),
+            c.c.message.is_not(None),
+        ),
     )
     rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trích dẫn: nhiều like trước
     tagged: list[dict[str, Any]] = []
@@ -797,15 +829,17 @@ async def get_movie_sentiment_counts(movie_id: str, posts: dict[str, dict[str, A
     # với Trại Buôn Người, 26/10) - rồi chỉ cộng các bài qua cổng của _report_posts (cùng movie_hashtag_present).
     if posts is None:
         posts = await _report_posts(movie_id)
+    c, p = comments_table.alias("c"), posts_table.alias("p")
     rows = await _d1_rows(
-        f"""
-        SELECT c.post_id, c.sentiment, COUNT(*) AS n
-        FROM comments c
-        JOIN posts p ON p.id = c.post_id
-        WHERE p.movie_id = ? AND {RELEVANT_POST_SQL} AND {_COMMENT_ABOUT_MOVIE_SQL} AND c.sentiment IS NOT NULL
-        GROUP BY c.post_id, c.sentiment
-        """,
-        [movie_id],
+        select(c.c.post_id, c.c.sentiment, func.count().label("n"))
+        .select_from(c.join(p, p.c.id == c.c.post_id))
+        .where(
+            p.c.movie_id == movie_id,
+            relevant_post(p),
+            _COMMENT_ABOUT_MOVIE_SQL,
+            c.c.sentiment.is_not(None),
+        )
+        .group_by(c.c.post_id, c.c.sentiment)
     )
     counts: dict[str, int] = {}
     for row in rows:
@@ -824,26 +858,20 @@ async def upsert_social_topic_report(
         return False
 
     generated_at = datetime.now(tz=UTC).isoformat()
-    existing_rows = await d1_query("SELECT id FROM social_topic_reports WHERE movie_id = ?", [movie_id])
+    report = social_topic_reports.c
+    fields = {
+        "dashboard_data_json": dashboard_data_json,
+        "comment_count": comment_count,
+        "post_count": post_count,
+        "kira_model": kira_model,
+        "generated_at": generated_at,
+    }
+    existing_rows = await d1_exec(select(report.id).where(report.movie_id == movie_id))
     if existing_rows:
-        updated = await d1_query(
-            """
-            UPDATE social_topic_reports SET
-                dashboard_data_json = ?, comment_count = ?, post_count = ?, kira_model = ?, generated_at = ?
-            WHERE id = ?
-            """,
-            [dashboard_data_json, comment_count, post_count, kira_model, generated_at, existing_rows[0]["id"]],
-        )
-        return updated is not None
-
-    inserted = await d1_query(
-        """
-        INSERT INTO social_topic_reports (id, movie_id, dashboard_data_json, comment_count, post_count, kira_model, generated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        [f"str_{uuid.uuid4()}", movie_id, dashboard_data_json, comment_count, post_count, kira_model, generated_at],
-    )
-    return inserted is not None
+        stmt = update(social_topic_reports).where(report.id == existing_rows[0]["id"]).values(**fields)
+    else:
+        stmt = insert(social_topic_reports).values(id=f"str_{uuid.uuid4()}", movie_id=movie_id, **fields)
+    return await d1_exec(stmt) is not None
 
 
 async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> dict[str, Any] | None:
@@ -851,31 +879,66 @@ async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> d
     dòng (movie_id, platform, keyword) đã có trước (bộ ba đó có unique index - xem
     src/db/schema.ts của cinemark-scraper) để gửi lặp lại hoặc đua với một tab khác chỉ
     trả về cùng dòng đó thay vì lỗi ràng buộc."""
-    existing = await d1_query(
-        """
-        SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword
-        FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE k.movie_id = ? AND k.platform = ? AND k.keyword = ?
-        """,
-        [movie_id, platform, keyword],
+    existing = await d1_exec(
+        select(*_KEYWORD_ROW)
+        .select_from(_KEYWORD_JOIN)
+        .where(keywords.c.movie_id == movie_id, keywords.c.platform == platform, keywords.c.keyword == keyword)
     )
     if existing:
         return existing[0]
 
-    movie_rows = await d1_query("SELECT title FROM movies WHERE id = ? AND enabled = 1", [movie_id])
+    movie_rows = await d1_exec(select(movies.c.title).where(movies.c.id == movie_id, movies.c.enabled == 1))
     if not movie_rows:
         return None
     movie_title = movie_rows[0]["title"]
 
     keyword_id = f"kw_{uuid.uuid4()}"
-    created_at = datetime.now(tz=UTC).isoformat()
-    inserted = await d1_query(
-        "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at) VALUES (?, ?, ?, ?, 1, ?)",
-        [keyword_id, movie_id, platform, keyword, created_at],
+    inserted = await d1_exec(
+        insert(keywords).values(
+            id=keyword_id,
+            movie_id=movie_id,
+            platform=platform,
+            keyword=keyword,
+            enabled=1,
+            created_at=datetime.now(tz=UTC).isoformat(),
+        )
     )
     if inserted is None:
         return None
     return {"id": keyword_id, "movie_id": movie_id, "movie_title": movie_title, "keyword": keyword}
+
+
+async def add_keyword(movie_id: str, platform: str, keyword: str, keyword_id: str | None = None) -> str | None:
+    """Thêm một từ khoá đang bật (luồng tự tìm từ khoá). Trả về id, None khi ghi lỗi."""
+    keyword_id = keyword_id or f"kw_{uuid.uuid4()}"
+    inserted = await d1_exec(
+        insert(keywords).values(
+            id=keyword_id,
+            movie_id=movie_id,
+            platform=platform,
+            keyword=keyword,
+            enabled=1,
+            created_at=datetime.now(tz=UTC).isoformat(),
+            related_keywords="[]",
+        )
+    )
+    return keyword_id if inserted is not None else None
+
+
+async def enable_keyword(keyword_id: str, enabled: bool) -> None:
+    """Bật/tắt từ khoá theo id, không kiểm tra nền tảng (luồng tự dọn từ khoá)."""
+    await d1_exec(update(keywords).where(keywords.c.id == keyword_id).values(enabled=1 if enabled else 0))
+
+
+async def movie_of_keyword(keyword_id: str) -> dict[str, Any] | None:
+    """Thông tin phim (MOVIE_CONTEXT_FIELDS) của phim sở hữu từ khoá; None khi không có hoặc D1 lỗi."""
+    rows = await d1_exec(
+        select(*(movies.c[f] for f in MOVIE_CONTEXT_FIELDS))
+        .select_from(_KEYWORD_JOIN)
+        .where(keywords.c.id == keyword_id),
+        quiet=True,
+    )
+    return rows[0] if rows else None
 
 
 async def list_keywords(platform: str) -> list[dict[str, Any]]:
@@ -883,14 +946,11 @@ async def list_keywords(platform: str) -> list[dict[str, Any]]:
     trên dashboard (GET /<platform>/keywords) để một lần kích hoạt crawl tay có thể nhắm
     vào một từ khoá thay vì "mọi từ khoá đang bật của nền tảng này" (xem
     get_enabled_keywords bên dưới, vẫn dùng cho trường hợp chạy hàng loạt đó)."""
-    rows = await d1_query(
-        """
-        SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword
-        FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE k.platform = ? AND k.enabled = 1 AND m.enabled = 1
-        ORDER BY m.title ASC, k.keyword ASC
-        """,
-        [platform],
+    rows = await d1_exec(
+        select(*_KEYWORD_ROW)
+        .select_from(_KEYWORD_JOIN)
+        .where(keywords.c.platform == platform, keywords.c.enabled == 1, movies.c.enabled == 1)
+        .order_by(movies.c.title, keywords.c.keyword)
     )
     return rows or []
 
@@ -905,16 +965,20 @@ async def get_keyword(keyword_id: str, platform: str, *, include_disabled: bool 
 
     include_disabled=True (ingest): nhận cả từ khoá đã tắt - bài đang trên đường về khi keyword_yield/người dùng vừa tắt
     từ khoá vẫn là bài thật của phim, trước đây bị bỏ với lý do unknown_keyword_id. Phim vẫn phải đang bật."""
-    rows = await d1_query(
-        """
-        SELECT k.id, k.movie_id, k.platform, k.keyword,
-               m.title AS movie_title, m.director AS movie_director,
-               m.`cast` AS movie_cast, m.distributor AS movie_distributor
-        FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE k.id = ? AND k.platform = ? AND (k.enabled = 1 OR ?) AND m.enabled = 1
-        """,
-        [keyword_id, platform, 1 if include_disabled else 0],
+    stmt = (
+        select(
+            *_KEYWORD_ROW,
+            keywords.c.platform,
+            movies.c.director.label("movie_director"),
+            movies.c.cast.label("movie_cast"),
+            movies.c.distributor.label("movie_distributor"),
+        )
+        .select_from(_KEYWORD_JOIN)
+        .where(keywords.c.id == keyword_id, keywords.c.platform == platform, movies.c.enabled == 1)
     )
+    if not include_disabled:
+        stmt = stmt.where(keywords.c.enabled == 1)
+    rows = await d1_exec(stmt)
     return rows[0] if rows else None
 
 
@@ -922,19 +986,14 @@ async def get_enabled_keywords(platform: str, movie_id: str | None = None) -> li
     """Mọi từ khoá đang bật trên nền tảng đã cho (có thể giới hạn trong một phim) mà phim
     của nó cũng đang bật - dùng cho cả nút "chạy mọi từ khoá của một phim" lẫn lời gọi
     cron hằng ngày của một nền tảng ("chạy mọi thứ của nền tảng này")."""
-    conditions = ["k.platform = ?", "k.enabled = 1", "m.enabled = 1"]
-    params: list[Any] = [platform]
-    if movie_id:
-        conditions.insert(0, "k.movie_id = ?")
-        params.insert(0, movie_id)
-    rows = await d1_query(
-        f"""
-        SELECT k.id, k.movie_id, k.platform, k.keyword
-        FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE {" AND ".join(conditions)}
-        """,
-        params,
+    stmt = (
+        select(keywords.c.id, keywords.c.movie_id, keywords.c.platform, keywords.c.keyword)
+        .select_from(_KEYWORD_JOIN)
+        .where(keywords.c.platform == platform, keywords.c.enabled == 1, movies.c.enabled == 1)
     )
+    if movie_id:
+        stmt = stmt.where(keywords.c.movie_id == movie_id)
+    rows = await d1_exec(stmt)
     return rows or []
 
 
@@ -945,19 +1004,17 @@ async def set_keyword_enabled(platform: str, keyword_id: str, enabled: bool) -> 
     không tự nó là key tra cứu - keyword_id vốn đã duy nhất - để một platform không khớp
     trên URL không thể âm thầm bật/tắt dòng của nền tảng khác. Trả về dòng đã cập nhật,
     hoặc None nếu id không tồn tại dưới nền tảng đó, hoặc việc ghi thất bại."""
-    updated = await d1_query(
-        "UPDATE keywords SET enabled = ? WHERE id = ? AND platform = ?",
-        [1 if enabled else 0, keyword_id, platform],
+    updated = await d1_exec(
+        update(keywords)
+        .where(keywords.c.id == keyword_id, keywords.c.platform == platform)
+        .values(enabled=1 if enabled else 0)
     )
     if updated is None:
         logger.warning("d1_set_keyword_enabled_failed", platform=platform, keyword_id=keyword_id, enabled=enabled)
         return None
-    rows = await d1_query(
-        """
-        SELECT k.id, k.movie_id, m.title AS movie_title, k.keyword, k.enabled
-        FROM keywords k JOIN movies m ON m.id = k.movie_id
-        WHERE k.id = ? AND k.platform = ?
-        """,
-        [keyword_id, platform],
+    rows = await d1_exec(
+        select(*_KEYWORD_ROW, keywords.c.enabled)
+        .select_from(_KEYWORD_JOIN)
+        .where(keywords.c.id == keyword_id, keywords.c.platform == platform)
     )
     return rows[0] if rows else None

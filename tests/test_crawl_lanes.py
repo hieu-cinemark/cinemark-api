@@ -49,7 +49,7 @@ def _patch(monkeypatch, redis):
         published.append(kwargs)
         return True
 
-    monkeypatch.setattr(crawl_lanes, "d1_query", fake_d1)
+    monkeypatch.setattr(crawl_lanes, "d1_exec", fake_d1)
     monkeypatch.setattr(crawl_lanes, "publish_crawl_request", fake_publish)
     monkeypatch.setattr(crawl_lanes, "get_redis_client", lambda: redis)
     monkeypatch.setattr(settings, "facebook_crawl_lanes", True)
@@ -90,7 +90,7 @@ def test_fresh_lane_takes_this_and_next_month_every_slot(monkeypatch):
     async def fake_d1(sql, params=None, **_):
         return [dict(k) for k in extra + KEYWORDS]
 
-    monkeypatch.setattr(crawl_lanes, "d1_query", fake_d1)
+    monkeypatch.setattr(crawl_lanes, "d1_exec", fake_d1)
     even = asyncio.run(crawl_lanes.fresh_keywords(0, TODAY))
     odd = asyncio.run(crawl_lanes.fresh_keywords(1, TODAY))
     assert [k["id"] for k in even] == ["showing", "upcoming", "showing_sept", "far"]

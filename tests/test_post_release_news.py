@@ -7,6 +7,7 @@ import pytest
 
 from app.core.errors import ConflictError, UpstreamError, ValidationError
 from app.repositories.d1 import press_reviews
+from app.repositories.d1 import sql as d1_sql
 from app.services import post_release_news as news
 
 
@@ -48,8 +49,7 @@ def setup(monkeypatch):
 
     monkeypatch.setattr(news, "now", lambda: clock["now"])
     monkeypatch.setattr(news, "get_redis_client", lambda: cache)
-    monkeypatch.setattr(news, "d1_query", query)
-    monkeypatch.setattr(press_reviews, "d1_query", query)
+    monkeypatch.setattr(d1_sql, "d1_query", query)
     search = AsyncMock(
         return_value={
             "organic_results": [
@@ -163,7 +163,7 @@ async def test_tick_only_released_movies_and_not_more_than_once_per_hour(setup, 
     monkeypatch.setattr(news.settings, "serpapi_api_key", "test")
     monkeypatch.setattr(
         news,
-        "d1_query",
+        "d1_exec",
         AsyncMock(
             return_value=[
                 setup[2],

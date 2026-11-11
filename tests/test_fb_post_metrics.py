@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.core.config import settings
 from app.repositories.d1 import posts as posts_repo
+from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import tracked_posts
 from app.workers.ingest_consumer import main as ingest
 
@@ -63,7 +64,7 @@ def _existing(**counts):
 
 async def _update(fake: _FakeD1, **counts) -> bool:
     with (
-        patch.object(posts_repo, "d1_query", fake),
+        patch.object(d1_sql, "d1_query", fake),
         patch.object(posts_repo, "_ensure_post_indexes", AsyncMock()),
         patch("app.services.stats.stats_summary.record_post", AsyncMock()),
     ):
@@ -104,10 +105,11 @@ async def _queue(rows, matched, *, logged_out=True):
     stats: dict = {}
 
     async def fake_d1(sql, params=None, **_):
-        return [{"external_id": e, "url": matched[e]} for e in params or [] if e in matched]
+        ids = json.loads(params[-1]) if params else []  # danh sách external_id đi qua một tham số JSON
+        return [{"external_id": e, "url": matched[e]} for e in ids if e in matched]
 
     with (
-        patch.object(tracked_posts, "d1_query", fake_d1),
+        patch.object(d1_sql, "d1_query", fake_d1),
         patch.object(tracked_posts, "get_redis_client", lambda: redis),
         patch.object(settings, "tracked_facebook_logged_out", logged_out),
     ):

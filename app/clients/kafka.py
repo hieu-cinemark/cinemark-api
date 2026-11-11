@@ -185,16 +185,14 @@ async def publish_crawl_request(
 
 async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
     """Tên phim của từ khoá (và phần trước dấu ":" nếu tên có phụ đề, vd. "Thám Tử Kiên") - cho bộ lọc lạc đề của spider."""
-    from app.repositories.d1.store import d1_query
+    from app.repositories.d1.store import movie_of_keyword
 
     try:
-        rows = await d1_query(
-            "SELECT m.title FROM keywords k JOIN movies m ON m.id = k.movie_id WHERE k.id = ?", [keyword_id], quiet=True
-        )
+        movie = await movie_of_keyword(keyword_id)
     except Exception as exc:  # noqa: BLE001 - thiếu tên phim thì spider chỉ lọc theo từ khoá
         logger.warning("match_terms_lookup_failed", keyword_id=keyword_id, error=str(exc))
         return []
-    title = str((rows or [{}])[0].get("title") or "").strip()
+    title = str((movie or {}).get("title") or "").strip()
     if not title:
         return []
     terms = [title]
@@ -208,19 +206,14 @@ async def _movie_context_for_keyword(keyword_id: str) -> str | None:
     """Khối thông tin phim (app/ai/domain/movie_context.py) của phim sở hữu từ khoá này, hoặc None khi không tra được -
     thiếu nó thì spider vẫn chạy, chỉ là Kira chấm hashtag kém hơn."""
     from app.ai.domain.movie_context import movie_context_block
-    from app.repositories.d1.store import d1_query
+    from app.repositories.d1.store import movie_of_keyword
 
     try:
-        rows = await d1_query(
-            "SELECT m.title, m.director, m.`cast` AS `cast`, m.distributor, m.released_at, m.description "
-            "FROM keywords k JOIN movies m ON m.id = k.movie_id WHERE k.id = ?",
-            [keyword_id],
-            quiet=True,
-        )
+        movie = await movie_of_keyword(keyword_id)
     except Exception as exc:  # noqa: BLE001 - không chặn việc publish vì thiếu thông tin phim
         logger.warning("movie_context_lookup_failed", keyword_id=keyword_id, error=str(exc))
         return None
-    return movie_context_block(rows[0], logline_chars=250) if rows else None
+    return movie_context_block(movie, logline_chars=250) if movie else None
 
 
 # Mặc định dùng chung cho dashboard/API khi crawl comment. Feed reply gốc của Threads

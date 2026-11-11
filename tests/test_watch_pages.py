@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
+from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import watch_pages
 
 NOON_VN = datetime(2026, 11, 5, 5, 0, tzinfo=UTC)
@@ -44,7 +45,7 @@ def _install(monkeypatch, pending=0, showing=("now",)):
             return [{"title": "Phim"}]
         return [{"id": "film", "movie_id": "now", "url": "https://www.facebook.com/phim"}]
 
-    monkeypatch.setattr(watch_pages, "d1_query", query)
+    monkeypatch.setattr(d1_sql, "d1_query", query)
     return redis
 
 

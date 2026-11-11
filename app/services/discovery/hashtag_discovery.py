@@ -20,12 +20,18 @@ from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import Column, Integer, Table, Text, exists, select, text
+from sqlalchemy.schema import CreateTable
+
 from app.ai.domain.movie_context import movie_context_block
 from app.ai.runtime import call_llm, parse_json_response
+from app.clients.d1 import d1_query
 from app.clients.kafka import publish_crawl_request
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query, related_hashtags_for_keywords
+from app.repositories.d1.sql import d1_exec, d1_insert_many, metadata
+from app.repositories.d1.store import add_keyword, enable_keyword, related_hashtags_for_keywords
+from app.repositories.d1.tables import keywords, movies, posts
 from app.services.omar.omar_tiktok import hashtag_exists
 from app.services.relevance.relevance_rules import normalize_title, title_acronym
 
@@ -143,25 +149,39 @@ def variant_hashtags(movie: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(out))
 
 
-async def _ensure_table() -> None:
-    await d1_query(
-        """CREATE TABLE IF NOT EXISTS hashtag_ai_decisions (
-            movie_id TEXT NOT NULL,
-            tag TEXT NOT NULL,
-            display TEXT NOT NULL,
-            source TEXT NOT NULL,
-            seen INTEGER NOT NULL DEFAULT 0,
-            verdict TEXT,
-            confidence INTEGER,
-            reason TEXT,
-            status TEXT NOT NULL,
-            keyword_id TEXT,
-            decided_at TEXT NOT NULL,
-            PRIMARY KEY (movie_id, tag)
-        )""",
-        quiet=True,
+# Quyết định của AI cho từng tag/câu tìm (source: hashtag/query); dùng chung với query_discovery.py.
+decisions_table = Table(
+    "hashtag_ai_decisions",
+    metadata,
+    Column("movie_id", Text, primary_key=True),
+    Column("tag", Text, primary_key=True),
+    Column("display", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("seen", Integer, nullable=False, server_default=text("0")),
+    Column("verdict", Text),
+    Column("confidence", Integer),
+    Column("reason", Text),
+    Column("status", Text, nullable=False),
+    Column("keyword_id", Text),
+    Column("decided_at", Text, nullable=False),
+    # Cột BFS (thêm sau): tag được sinh từ từ khoá nào và ở tầng mấy.
+    Column("parent_keyword_id", Text),
+    Column("depth", Integer, nullable=False, server_default=text("0")),
+)
+# Thông tin phim đưa vào prompt.
+ALL_KEYWORDS = select(*(keywords.c[name] for name in ("id", "movie_id", "platform", "keyword", "enabled")))
+# Phim đang bật kèm thông tin đưa vào prompt.
+ENABLED_MOVIES = select(
+    *(
+        movies.c[name]
+        for name in ("id", "title", "slug", "director", "cast", "distributor", "released_at", "description")
     )
-    # Cột BFS: tag được sinh từ từ khoá nào và ở tầng mấy. ALTER lỗi khi cột đã có - bỏ qua.
+).where(movies.c.enabled == 1)
+
+
+async def _ensure_table() -> None:
+    await d1_exec(CreateTable(decisions_table, if_not_exists=True), quiet=True)
+    # Bảng cũ thiếu cột BFS: ALTER (lỗi khi cột đã có - bỏ qua).
     for column in ("parent_keyword_id TEXT", "depth INTEGER NOT NULL DEFAULT 0"):
         await d1_query(f"ALTER TABLE hashtag_ai_decisions ADD COLUMN {column}", quiet=True)
 
@@ -169,27 +189,27 @@ async def _ensure_table() -> None:
 async def _record(
     movie_id: str, cand: dict[str, Any], verdict: dict[str, Any] | None, status: str, keyword_id: str | None
 ) -> None:
-    await d1_query(
-        "INSERT INTO hashtag_ai_decisions (movie_id, tag, display, source, seen, verdict, confidence, reason, status, keyword_id, decided_at, parent_keyword_id, depth) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(movie_id, tag) DO UPDATE SET display = excluded.display, "
-        "source = excluded.source, seen = excluded.seen, verdict = excluded.verdict, confidence = excluded.confidence, "
-        "reason = excluded.reason, status = excluded.status, keyword_id = excluded.keyword_id, decided_at = excluded.decided_at, "
-        "parent_keyword_id = excluded.parent_keyword_id, depth = excluded.depth",
+    verdict = verdict or {}
+    await d1_insert_many(
+        decisions_table,
         [
-            movie_id,
-            cand["tag"],
-            cand["display"],
-            cand["source"],
-            cand.get("seen", 0),
-            (verdict or {}).get("verdict"),
-            (verdict or {}).get("confidence"),
-            ((verdict or {}).get("reason") or "")[:300] or None,
-            status,
-            keyword_id,
-            datetime.now(tz=UTC).isoformat(),
-            cand.get("parent_keyword_id"),
-            int(cand.get("depth") or 0),
+            {
+                "movie_id": movie_id,
+                "tag": cand["tag"],
+                "display": cand["display"],
+                "source": cand["source"],
+                "seen": cand.get("seen", 0),
+                "verdict": verdict.get("verdict"),
+                "confidence": verdict.get("confidence"),
+                "reason": (verdict.get("reason") or "")[:300] or None,
+                "status": status,
+                "keyword_id": keyword_id,
+                "decided_at": datetime.now(tz=UTC).isoformat(),
+                "parent_keyword_id": cand.get("parent_keyword_id"),
+                "depth": int(cand.get("depth") or 0),
+            }
         ],
+        conflict=["movie_id", "tag"],
     )
 
 
@@ -224,17 +244,20 @@ async def _ask_kira(
 async def _prune(dry_run: bool) -> int:
     """Tắt tag AI đã thêm mà PRUNE_AFTER_DAYS ngày không đem về bài nào."""
     cutoff = (datetime.now(tz=UTC) - timedelta(days=PRUNE_AFTER_DAYS)).isoformat()
-    rows = await d1_query(
-        "SELECT d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id FROM hashtag_ai_decisions d "
-        "WHERE d.status = 'added' AND d.decided_at < ? AND d.keyword_id IS NOT NULL "
-        "AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.keyword_id = d.keyword_id)",
-        [cutoff],
+    d = decisions_table.c
+    rows = await d1_exec(
+        select(d.movie_id, d.tag, d.display, d.source, d.seen, d.keyword_id).where(
+            d.status == "added",
+            d.decided_at < cutoff,
+            d.keyword_id.is_not(None),
+            ~exists().where(posts.c.keyword_id == d.keyword_id),
+        )
     )
     for row in rows or []:
         logger.info("hashtag_ai_pruned", movie_id=row["movie_id"], tag=row["display"], dry_run=dry_run)
         if dry_run:
             continue
-        await d1_query("UPDATE keywords SET enabled = 0 WHERE id = ?", [row["keyword_id"]])
+        await enable_keyword(row["keyword_id"], False)
         await _record(
             row["movie_id"], row, {"reason": f"{PRUNE_AFTER_DAYS} ngày không có bài nào"}, "pruned", row["keyword_id"]
         )
@@ -244,17 +267,17 @@ async def _prune(dry_run: bool) -> int:
 async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -> dict[str, Any]:
     await _ensure_table()
     pruned = await _prune(dry_run)
-    movies = (
-        await d1_query(
-            'SELECT id, title, slug, director, "cast", distributor, released_at, description FROM movies WHERE enabled = 1',
-            quiet=True,
-        )
-        or []
-    )
-    keywords = await d1_query("SELECT id, movie_id, platform, keyword, enabled FROM keywords", quiet=True) or []
+    movies = await d1_exec(ENABLED_MOVIES, quiet=True) or []
+    keywords = await d1_exec(ALL_KEYWORDS, quiet=True) or []
     decisions = (
-        await d1_query(
-            "SELECT movie_id, tag, status, decided_at, keyword_id, depth FROM hashtag_ai_decisions", quiet=True
+        await d1_exec(
+            select(
+                *(
+                    decisions_table.c[name]
+                    for name in ("movie_id", "tag", "status", "decided_at", "keyword_id", "depth")
+                )
+            ),
+            quiet=True,
         )
         or []
     )
@@ -379,10 +402,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
                 continue
             keyword = f"#{cand['display'].lstrip('#')}"
             keyword_id = f"kw_{uuid.uuid4()}"
-            await d1_query(
-                "INSERT INTO keywords (id, movie_id, platform, keyword, enabled, created_at, related_keywords) VALUES (?, ?, 'tiktok', ?, 1, ?, '[]')",
-                [keyword_id, movie["id"], keyword, datetime.now(tz=UTC).isoformat()],
-            )
+            await add_keyword(movie["id"], "tiktok", keyword, keyword_id)
             await _record(movie["id"], cand, verdict, "added", keyword_id)
             await publish_crawl_request(platform="tiktok", keyword=keyword, keyword_id=keyword_id)
     logger.info(

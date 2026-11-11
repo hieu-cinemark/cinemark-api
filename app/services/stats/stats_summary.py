@@ -26,9 +26,35 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import (
+    Column,
+    Integer,
+    Table,
+    Text,
+    and_,
+    bindparam,
+    case,
+    delete,
+    func,
+    literal_column,
+    select,
+    text,
+    update,
+)
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.schema import CreateTable
+from sqlalchemy.sql import ClauseElement
+
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.telegram import send_telegram_message
 from app.core.logging import get_logger
+from app.repositories.d1.sql import compile_sql, metadata
+
+# Bảng nguồn của phần tổng hợp - import với tên khác để không trùng với tham số
+# `posts` / `comments` của subtract_deleted (biến trùng tên bảng làm dùng nhầm, lỗi bị
+# `except` nuốt im lặng - xem docs/review-angles-va-attack.md mục 3).
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 logger = get_logger(__name__)
 
@@ -69,12 +95,37 @@ def _as_int(value: Any) -> int:
 
 
 async def _q(
-    sql: str, params: list[Any] | None = None, *, quiet: bool = False, timeout: float = 10.0
+    sql: str | ClauseElement, params: list[Any] | None = None, *, quiet: bool = False, timeout: float = 10.0
 ) -> list[dict[str, Any]] | None:
-    # Import lười: d1.py gọi vào module này từ persist_*/get_*.
+    """Mọi câu của module đi qua đây (test vá hàm này). Nhận chuỗi SQL hoặc câu dựng bằng SQLAlchemy."""
+    # Import lười: repositories gọi vào module này từ persist_*/get_*.
+    from app.repositories.d1.sql import compile_sql
     from app.repositories.d1.store import d1_query
 
+    if not isinstance(sql, str):
+        sql, params = compile_sql(sql)
     return await d1_query(sql, params, quiet=quiet, timeout=timeout)
+
+
+def _stats_table(name: str, key: str) -> Table:
+    key_columns = [Column("day", Text, primary_key=True), Column(key, Text, primary_key=True)]
+    if key == "keyword_id":
+        key_columns.append(Column("platform", Text, nullable=False))
+    return Table(
+        name,
+        metadata,
+        *key_columns,
+        Column("posts", Integer, nullable=False, server_default=text("0")),
+        Column("comments", Integer, nullable=False, server_default=text("0")),
+        Column("last_scraped_at", Text),
+    )
+
+
+# Bảng tổng hợp theo ngày (UTC) cho dashboard: theo nền tảng và theo từ khoá.
+platform_daily = _stats_table("stats_platform_daily", "platform")
+keyword_daily = _stats_table("stats_keyword_daily", "keyword_id")
+_TODAY = func.date("now")
+_YESTERDAY = func.date("now", "-1 day")
 
 
 async def ensure_stats_tables() -> None:
@@ -85,33 +136,8 @@ async def ensure_stats_tables() -> None:
     async with _ready_lock:
         if _ready:
             return
-        await _q(
-            """
-            CREATE TABLE IF NOT EXISTS stats_platform_daily (
-                day TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                posts INTEGER NOT NULL DEFAULT 0,
-                comments INTEGER NOT NULL DEFAULT 0,
-                last_scraped_at TEXT,
-                PRIMARY KEY (day, platform)
-            )
-            """,
-            quiet=True,
-        )
-        await _q(
-            """
-            CREATE TABLE IF NOT EXISTS stats_keyword_daily (
-                day TEXT NOT NULL,
-                keyword_id TEXT NOT NULL,
-                platform TEXT NOT NULL,
-                posts INTEGER NOT NULL DEFAULT 0,
-                comments INTEGER NOT NULL DEFAULT 0,
-                last_scraped_at TEXT,
-                PRIMARY KEY (day, keyword_id)
-            )
-            """,
-            quiet=True,
-        )
+        for table in (platform_daily, keyword_daily):
+            await _q(CreateTable(table, if_not_exists=True), quiet=True)
         _ready = True
 
 
@@ -138,7 +164,7 @@ async def _bump_hourly(platform: str, scraped_at: str, metric: str) -> None:
         client = get_redis_client()
         await client.hincrby(key, f"{platform}:{metric}", 1)
         await client.expire(key, HOURLY_RETENTION_HOURS * 3600)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - chỉ là số liệu biểu đồ, không được làm hỏng việc ingest
         # Chỉ là số liệu biểu đồ - không bao giờ được làm hỏng việc ingest.
         logger.warning("stats_hourly_bump_failed", platform=platform, error=str(exc) or repr(exc))
 
@@ -158,7 +184,7 @@ async def bump_ingest_decision(platform: str | None, decision: str, reason: str)
             pipe.hincrby(key, f"{platform}:dropped.{reason}", 1)
         pipe.expire(key, HOURLY_RETENTION_HOURS * 3600)
         await pipe.execute()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - chỉ là số liệu phễu, không được làm hỏng việc ingest
         logger.warning("stats_funnel_bump_failed", platform=platform, error=str(exc) or repr(exc))
 
 
@@ -239,18 +265,19 @@ async def record_comment(
     await _bump_hourly(platform, scraped_at, "comments")
 
 
-async def get_post_counts_by_platform() -> list[dict[str, Any]]:
+async def _counts_by_platform(metric: str) -> list[dict[str, Any]]:
+    """Tổng `metric` (posts/comments) theo nền tảng, kèm hôm nay và hôm qua."""
     await ensure_stats_tables()
+    t = platform_daily.c
+    value = t[metric]
     rows = await _q(
-        """
-        SELECT platform,
-               SUM(posts) AS count,
-               MAX(last_scraped_at) AS last_scraped_at,
-               SUM(CASE WHEN day = date('now') THEN posts ELSE 0 END) AS count_today,
-               SUM(CASE WHEN day = date('now', '-1 day') THEN posts ELSE 0 END) AS count_prev
-        FROM stats_platform_daily
-        GROUP BY platform
-        """
+        select(
+            t.platform,
+            func.sum(value).label("count"),
+            func.max(t.last_scraped_at).label("last_scraped_at"),
+            func.sum(case((t.day == _TODAY, value), else_=0)).label("count_today"),
+            func.sum(case((t.day == _YESTERDAY, value), else_=0)).label("count_prev"),
+        ).group_by(t.platform)
     )
     return [
         {
@@ -261,58 +288,33 @@ async def get_post_counts_by_platform() -> list[dict[str, Any]]:
         }
         for row in (rows or [])
     ]
+
+
+async def get_post_counts_by_platform() -> list[dict[str, Any]]:
+    return await _counts_by_platform("posts")
 
 
 async def get_comment_counts_by_platform() -> list[dict[str, Any]]:
+    return await _counts_by_platform("comments")
+
+
+async def _timeseries(metric: str, days: int) -> list[dict[str, Any]]:
     await ensure_stats_tables()
+    t = platform_daily.c
     rows = await _q(
-        """
-        SELECT platform,
-               SUM(comments) AS count,
-               MAX(last_scraped_at) AS last_scraped_at,
-               SUM(CASE WHEN day = date('now') THEN comments ELSE 0 END) AS count_today,
-               SUM(CASE WHEN day = date('now', '-1 day') THEN comments ELSE 0 END) AS count_prev
-        FROM stats_platform_daily
-        GROUP BY platform
-        """
+        select(t.day, t.platform, t[metric].label("count"))
+        .where(t.day >= func.date("now", f"-{days} days"))
+        .order_by(t.day)
     )
-    return [
-        {
-            **row,
-            "count": _as_int(row.get("count")),
-            "count_today": _as_int(row.get("count_today")),
-            "count_prev": _as_int(row.get("count_prev")),
-        }
-        for row in (rows or [])
-    ]
+    return rows or []
 
 
 async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
-    await ensure_stats_tables()
-    rows = await _q(
-        """
-        SELECT day, platform, posts AS count
-        FROM stats_platform_daily
-        WHERE day >= date('now', ?)
-        ORDER BY day ASC
-        """,
-        [f"-{days} days"],
-    )
-    return rows or []
+    return await _timeseries("posts", days)
 
 
 async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
-    await ensure_stats_tables()
-    rows = await _q(
-        """
-        SELECT day, platform, comments AS count
-        FROM stats_platform_daily
-        WHERE day >= date('now', ?)
-        ORDER BY day ASC
-        """,
-        [f"-{days} days"],
-    )
-    return rows or []
+    return await _timeseries("comments", days)
 
 
 async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
@@ -320,42 +322,44 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
     from app.repositories.d1.store import related_hashtags_for_keywords
 
     await ensure_stats_tables()
-    platform_sql = "AND k.platform = ?" if platform else ""
-    platform_params: list[Any] = [platform] if platform else []
-    rows = await _q(
-        f"""
-        SELECT
-            k.id AS keyword_id,
-            k.movie_id AS movie_id,
-            k.keyword AS keyword,
-            k.platform AS platform,
-            k.enabled AS enabled,
-            m.title AS movie_title,
-            COALESCE(tot.posts_total, 0) AS posts_total,
-            COALESCE(today.posts, 0) AS posts_today,
-            COALESCE(prev.posts, 0) AS posts_prev,
-            tot.last_scraped_at AS last_scraped_at,
-            COALESCE(tot.comments_total, 0) AS comments_total,
-            COALESCE(today.comments, 0) AS comments_today,
-            COALESCE(prev.comments, 0) AS comments_prev
-        FROM keywords k
-        LEFT JOIN movies m ON m.id = k.movie_id
-        LEFT JOIN (
-            SELECT keyword_id,
-                   SUM(posts) AS posts_total,
-                   SUM(comments) AS comments_total,
-                   MAX(last_scraped_at) AS last_scraped_at
-            FROM stats_keyword_daily
-            GROUP BY keyword_id
-        ) tot ON tot.keyword_id = k.id
-        LEFT JOIN stats_keyword_daily today
-            ON today.keyword_id = k.id AND today.day = date('now')
-        LEFT JOIN stats_keyword_daily prev
-            ON prev.keyword_id = k.id AND prev.day = date('now', '-1 day')
-        WHERE 1=1 {platform_sql}
-        """,
-        platform_params,
+    from app.repositories.d1.tables import keywords, movies
+
+    kd = keyword_daily.c
+    totals = (
+        select(
+            kd.keyword_id,
+            func.sum(kd.posts).label("posts_total"),
+            func.sum(kd.comments).label("comments_total"),
+            func.max(kd.last_scraped_at).label("last_scraped_at"),
+        )
+        .group_by(kd.keyword_id)
+        .subquery("tot")
     )
+    today, prev = keyword_daily.alias("today"), keyword_daily.alias("prev")
+    k, m = keywords.alias("k"), movies.alias("m")
+    query = select(
+        k.c.id.label("keyword_id"),
+        k.c.movie_id,
+        k.c.keyword,
+        k.c.platform,
+        k.c.enabled,
+        m.c.title.label("movie_title"),
+        func.coalesce(totals.c.posts_total, 0).label("posts_total"),
+        func.coalesce(today.c.posts, 0).label("posts_today"),
+        func.coalesce(prev.c.posts, 0).label("posts_prev"),
+        totals.c.last_scraped_at,
+        func.coalesce(totals.c.comments_total, 0).label("comments_total"),
+        func.coalesce(today.c.comments, 0).label("comments_today"),
+        func.coalesce(prev.c.comments, 0).label("comments_prev"),
+    ).select_from(
+        k.outerjoin(m, m.c.id == k.c.movie_id)
+        .outerjoin(totals, totals.c.keyword_id == k.c.id)
+        .outerjoin(today, and_(today.c.keyword_id == k.c.id, today.c.day == _TODAY))
+        .outerjoin(prev, and_(prev.c.keyword_id == k.c.id, prev.c.day == _YESTERDAY))
+    )
+    if platform:
+        query = query.where(k.c.platform == platform)
+    rows = await _q(query)
     out: list[dict[str, Any]] = []
     for row in rows or []:
         posts_total = _as_int(row.get("posts_total"))
@@ -389,6 +393,131 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
     return out
 
 
+# --- các câu tổng hợp (INSERT ... SELECT ... ON CONFLICT) --------------------
+# Ngày của một dòng = 10 ký tự đầu của first_seen_at, không có thì scraped_at (dòng cũ hơn
+# cột first_seen_at). Ngày tính bằng SQL để INDEX (day, ...) dùng được.
+_DAY = literal_column("1")
+_DAY_LEN = literal_column("10")
+_ZERO = literal_column("0")
+
+
+def _day_of(first_seen: Any, scraped: Any) -> Any:
+    """substr(COALESCE(first_seen_at, scraped_at), 1, 10) - ngày (UTC) của một dòng."""
+    return func.substr(func.coalesce(first_seen, scraped), _DAY, _DAY_LEN)
+
+
+def _platform_posts_insert() -> Any:
+    """Bài theo (day, platform) - upsert, ghi đè posts/last_scraped_at (dòng cũ có thể đã có)."""
+    day = _day_of(posts_table.c.first_seen_at, posts_table.c.scraped_at)
+    source = (
+        select(
+            day.label("day"),
+            posts_table.c.platform.label("platform"),
+            func.count().label("posts"),
+            _ZERO.label("comments"),
+            func.max(posts_table.c.scraped_at).label("last_scraped_at"),
+        )
+        .where(posts_table.c.scraped_at.is_not(None), func.length(posts_table.c.scraped_at) >= 10)
+        .group_by(day, posts_table.c.platform)
+    )
+    stmt = sqlite_insert(platform_daily).from_select(
+        ["day", "platform", "posts", "comments", "last_scraped_at"], source
+    )
+    return stmt.on_conflict_do_update(
+        index_elements=["day", "platform"],
+        set_={"posts": stmt.excluded.posts, "last_scraped_at": stmt.excluded.last_scraped_at},
+    )
+
+
+def _platform_comments_insert() -> Any:
+    """Comment theo (day, platform) - CỘNG DỒN vào dòng bài đã có (comments = cũ + excluded)."""
+    day = _day_of(comments_table.c.first_seen_at, comments_table.c.scraped_at)
+    source = (
+        select(
+            day.label("day"),
+            comments_table.c.platform.label("platform"),
+            _ZERO.label("posts"),
+            func.count().label("comments"),
+            func.max(comments_table.c.scraped_at).label("last_scraped_at"),
+        )
+        .where(comments_table.c.scraped_at.is_not(None), func.length(comments_table.c.scraped_at) >= 10)
+        .group_by(day, comments_table.c.platform)
+    )
+    stmt = sqlite_insert(platform_daily).from_select(
+        ["day", "platform", "posts", "comments", "last_scraped_at"], source
+    )
+    newer = stmt.excluded.last_scraped_at > func.coalesce(platform_daily.c.last_scraped_at, "")
+    return stmt.on_conflict_do_update(
+        index_elements=["day", "platform"],
+        set_={
+            "comments": platform_daily.c.comments + stmt.excluded.comments,
+            "last_scraped_at": case((newer, stmt.excluded.last_scraped_at), else_=platform_daily.c.last_scraped_at),
+        },
+    )
+
+
+def _keyword_posts_insert() -> Any:
+    """Bài theo (day, keyword_id) - upsert, ghi đè posts/last_scraped_at."""
+    day = _day_of(posts_table.c.first_seen_at, posts_table.c.scraped_at)
+    source = (
+        select(
+            day.label("day"),
+            posts_table.c.keyword_id.label("keyword_id"),
+            posts_table.c.platform.label("platform"),
+            func.count().label("posts"),
+            _ZERO.label("comments"),
+            func.max(posts_table.c.scraped_at).label("last_scraped_at"),
+        )
+        .where(
+            posts_table.c.keyword_id.is_not(None),
+            posts_table.c.scraped_at.is_not(None),
+            func.length(posts_table.c.scraped_at) >= 10,
+        )
+        .group_by(day, posts_table.c.keyword_id, posts_table.c.platform)
+    )
+    stmt = sqlite_insert(keyword_daily).from_select(
+        ["day", "keyword_id", "platform", "posts", "comments", "last_scraped_at"], source
+    )
+    return stmt.on_conflict_do_update(
+        index_elements=["day", "keyword_id"],
+        set_={"posts": stmt.excluded.posts, "last_scraped_at": stmt.excluded.last_scraped_at},
+    )
+
+
+def _keyword_comments_insert() -> Any:
+    """Comment theo (day, keyword_id), qua bài cha - CỘNG DỒN vào dòng bài đã có."""
+    c, p = comments_table.alias("c"), posts_table.alias("p")
+    day = _day_of(c.c.first_seen_at, c.c.scraped_at)
+    source = (
+        select(
+            day.label("day"),
+            p.c.keyword_id.label("keyword_id"),
+            c.c.platform.label("platform"),
+            _ZERO.label("posts"),
+            func.count().label("comments"),
+            func.max(c.c.scraped_at).label("last_scraped_at"),
+        )
+        .select_from(c.join(p, p.c.id == c.c.post_id))
+        .where(
+            p.c.keyword_id.is_not(None),
+            c.c.scraped_at.is_not(None),
+            func.length(c.c.scraped_at) >= 10,
+        )
+        .group_by(day, p.c.keyword_id, c.c.platform)
+    )
+    stmt = sqlite_insert(keyword_daily).from_select(
+        ["day", "keyword_id", "platform", "posts", "comments", "last_scraped_at"], source
+    )
+    newer = stmt.excluded.last_scraped_at > func.coalesce(keyword_daily.c.last_scraped_at, "")
+    return stmt.on_conflict_do_update(
+        index_elements=["day", "keyword_id"],
+        set_={
+            "comments": keyword_daily.c.comments + stmt.excluded.comments,
+            "last_scraped_at": case((newer, stmt.excluded.last_scraped_at), else_=keyword_daily.c.last_scraped_at),
+        },
+    )
+
+
 async def rebuild_from_source() -> dict[str, int]:
     """Xoá sạch + điền lại cả hai bảng tổng hợp từ posts/comments. Chạy bằng tay
     (scripts/jobs/rebuild_stats_summaries.py) và sau mỗi lượt dọn bài không liên quan có xoá
@@ -400,85 +529,28 @@ async def rebuild_from_source() -> dict[str, int]:
     await ensure_stats_tables()
     # Phép tổng hợp toàn bảng có thể vượt timeout HTTP mặc định 10s của D1.
     slow = 120.0
-    await _q("DELETE FROM stats_platform_daily", timeout=slow)
-    await _q("DELETE FROM stats_keyword_daily", timeout=slow)
+    await _q(delete(platform_daily), timeout=slow)
+    await _q(delete(keyword_daily), timeout=slow)
 
     # Bài theo nền tảng
-    ok = await _q(
-        """
-        INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-        SELECT substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
-        FROM posts
-        WHERE scraped_at IS NOT NULL AND length(scraped_at) >= 10
-        GROUP BY substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform
-        ON CONFLICT(day, platform) DO UPDATE SET
-            posts = excluded.posts,
-            last_scraped_at = excluded.last_scraped_at
-        """,
-        timeout=slow,
-    )
+    ok = await _q(_platform_posts_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: platform posts aggregate")
     # Comment theo nền tảng (cộng vào các dòng day/platform đã có)
-    ok = await _q(
-        """
-        INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-        SELECT substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
-        FROM comments
-        WHERE scraped_at IS NOT NULL AND length(scraped_at) >= 10
-        GROUP BY substr(COALESCE(first_seen_at, scraped_at), 1, 10), platform
-        ON CONFLICT(day, platform) DO UPDATE SET
-            comments = stats_platform_daily.comments + excluded.comments,
-            last_scraped_at = CASE
-                WHEN excluded.last_scraped_at > COALESCE(stats_platform_daily.last_scraped_at, '')
-                THEN excluded.last_scraped_at
-                ELSE stats_platform_daily.last_scraped_at
-            END
-        """,
-        timeout=slow,
-    )
+    ok = await _q(_platform_comments_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: platform comments aggregate")
     # Bài theo từ khoá
-    ok = await _q(
-        """
-        INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-        SELECT substr(COALESCE(first_seen_at, scraped_at), 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
-        FROM posts
-        WHERE keyword_id IS NOT NULL AND scraped_at IS NOT NULL AND length(scraped_at) >= 10
-        GROUP BY substr(COALESCE(first_seen_at, scraped_at), 1, 10), keyword_id, platform
-        ON CONFLICT(day, keyword_id) DO UPDATE SET
-            posts = excluded.posts,
-            last_scraped_at = excluded.last_scraped_at
-        """,
-        timeout=slow,
-    )
+    ok = await _q(_keyword_posts_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: keyword posts aggregate")
     # Comment theo từ khoá, qua bài cha
-    ok = await _q(
-        """
-        INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-        SELECT substr(COALESCE(c.first_seen_at, c.scraped_at), 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
-        FROM comments c
-        INNER JOIN posts p ON p.id = c.post_id
-        WHERE p.keyword_id IS NOT NULL AND c.scraped_at IS NOT NULL AND length(c.scraped_at) >= 10
-        GROUP BY substr(COALESCE(c.first_seen_at, c.scraped_at), 1, 10), p.keyword_id, c.platform
-        ON CONFLICT(day, keyword_id) DO UPDATE SET
-            comments = stats_keyword_daily.comments + excluded.comments,
-            last_scraped_at = CASE
-                WHEN excluded.last_scraped_at > COALESCE(stats_keyword_daily.last_scraped_at, '')
-                THEN excluded.last_scraped_at
-                ELSE stats_keyword_daily.last_scraped_at
-            END
-        """,
-        timeout=slow,
-    )
+    ok = await _q(_keyword_comments_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: keyword comments aggregate")
 
-    platform_rows = await _q("SELECT COUNT(*) AS n FROM stats_platform_daily")
-    keyword_rows = await _q("SELECT COUNT(*) AS n FROM stats_keyword_daily")
+    platform_rows = await _q(select(func.count().label("n")).select_from(platform_daily))
+    keyword_rows = await _q(select(func.count().label("n")).select_from(keyword_daily))
     return {
         "platform_days": _as_int((platform_rows or [{}])[0].get("n")),
         "keyword_days": _as_int((keyword_rows or [{}])[0].get("n")),
@@ -504,15 +576,125 @@ async def subtract_deleted(posts: list[dict[str, Any]], comments: list[dict[str,
             if keyword_id:
                 keyword_rows[(kind, day(row), keyword_id)] = keyword_rows.get((kind, day(row), keyword_id), 0) + 1
     for (kind, d, platform), n in platform_rows.items():
-        await _q(
-            f"UPDATE stats_platform_daily SET {kind} = MAX(0, {kind} - ?) WHERE day = ? AND platform = ?",
-            [n, d, platform],
+        table = platform_daily
+        sql, params = compile_sql(
+            update(table)
+            .where(table.c.day == d, table.c.platform == platform)
+            .values(**{kind: func.max(_ZERO, table.c[kind] - n)})
         )
+        await _q(sql, params)
     for (kind, d, keyword_id), n in keyword_rows.items():
-        await _q(
-            f"UPDATE stats_keyword_daily SET {kind} = MAX(0, {kind} - ?) WHERE day = ? AND keyword_id = ?",
-            [n, d, keyword_id],
+        table = keyword_daily
+        sql, params = compile_sql(
+            update(table)
+            .where(table.c.day == d, table.c.keyword_id == keyword_id)
+            .values(**{kind: func.max(_ZERO, table.c[kind] - n)})
         )
+        await _q(sql, params)
+
+
+def _reconcile_statements(since: str) -> tuple[tuple[Any, str], ...]:
+    """Bốn câu upsert GHI ĐÈ (không cộng dồn, không DELETE) cho các ngày gần nhất.
+
+    Mỗi câu dùng CHUNG một tham số `since` (ngày bắt đầu) - bind param tên "since" để cả bốn câu
+    có cùng một bộ tham số, đối chiếu được khi D1 quá tải giữa chừng."""
+    since_param = bindparam("since", value=since)
+
+    def platform(source: Any, metric: str) -> Any:
+        stmt = sqlite_insert(platform_daily).from_select(
+            ["day", "platform", "posts", "comments", "last_scraped_at"], source
+        )
+        return stmt.on_conflict_do_update(
+            index_elements=["day", "platform"],
+            set_={
+                metric: stmt.excluded[metric],
+                "last_scraped_at": func.max(
+                    func.coalesce(platform_daily.c.last_scraped_at, ""), stmt.excluded.last_scraped_at
+                ),
+            },
+        )
+
+    def keyword(source: Any, metric: str) -> Any:
+        stmt = sqlite_insert(keyword_daily).from_select(
+            ["day", "keyword_id", "platform", "posts", "comments", "last_scraped_at"], source
+        )
+        return stmt.on_conflict_do_update(
+            index_elements=["day", "keyword_id"],
+            set_={
+                metric: stmt.excluded[metric],
+                "last_scraped_at": func.max(
+                    func.coalesce(keyword_daily.c.last_scraped_at, ""), stmt.excluded.last_scraped_at
+                ),
+            },
+        )
+
+    p, c = posts_table, comments_table
+    p_day = func.substr(p.c.first_seen_at, _DAY, _DAY_LEN)
+    c_day = func.substr(c.c.first_seen_at, _DAY, _DAY_LEN)
+
+    platform_posts = (
+        select(
+            p_day.label("day"),
+            p.c.platform.label("platform"),
+            func.count().label("posts"),
+            _ZERO.label("comments"),
+            func.max(p.c.scraped_at).label("last_scraped_at"),
+        )
+        .where(p.c.scraped_at >= since_param, p.c.first_seen_at >= since_param)
+        .group_by(p_day, p.c.platform)
+    )
+    platform_comments = (
+        select(
+            c_day.label("day"),
+            c.c.platform.label("platform"),
+            _ZERO.label("posts"),
+            func.count().label("comments"),
+            func.max(c.c.scraped_at).label("last_scraped_at"),
+        )
+        .where(c.c.scraped_at >= since_param, c.c.first_seen_at >= since_param)
+        .group_by(c_day, c.c.platform)
+    )
+    keyword_posts = (
+        select(
+            p_day.label("day"),
+            p.c.keyword_id.label("keyword_id"),
+            p.c.platform.label("platform"),
+            func.count().label("posts"),
+            _ZERO.label("comments"),
+            func.max(p.c.scraped_at).label("last_scraped_at"),
+        )
+        .where(
+            p.c.keyword_id.is_not(None),
+            p.c.scraped_at >= since_param,
+            p.c.first_seen_at >= since_param,
+        )
+        .group_by(p_day, p.c.keyword_id, p.c.platform)
+    )
+    ca, pa = c.alias("c"), p.alias("p")
+    ca_day = func.substr(ca.c.first_seen_at, _DAY, _DAY_LEN)
+    keyword_comments = (
+        select(
+            ca_day.label("day"),
+            pa.c.keyword_id.label("keyword_id"),
+            ca.c.platform.label("platform"),
+            _ZERO.label("posts"),
+            func.count().label("comments"),
+            func.max(ca.c.scraped_at).label("last_scraped_at"),
+        )
+        .select_from(ca.join(pa, pa.c.id == ca.c.post_id))
+        .where(
+            pa.c.keyword_id.is_not(None),
+            ca.c.scraped_at >= since_param,
+            ca.c.first_seen_at >= since_param,
+        )
+        .group_by(ca_day, pa.c.keyword_id, ca.c.platform)
+    )
+    return (
+        (platform(platform_posts, "posts"), "platform posts"),
+        (platform(platform_comments, "comments"), "platform comments"),
+        (keyword(keyword_posts, "posts"), "keyword posts"),
+        (keyword(keyword_comments, "comments"), "keyword comments"),
+    )
 
 
 async def reconcile_recent_days(days: int = 2) -> bool:
@@ -530,59 +712,11 @@ async def reconcile_recent_days(days: int = 2) -> bool:
     # Trước ngày này first_seen_at chưa ghi đủ cho mọi dòng mới - đừng ghi đè các ngày đó bằng số đếm thiếu.
     since = max(since, FIRST_SEEN_COMPLETE_SINCE)
     slow = 60.0
-    statements = (
-        (
-            """
-            INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-            SELECT substr(first_seen_at, 1, 10), platform, COUNT(*), 0, MAX(scraped_at)
-            FROM posts WHERE scraped_at >= ?1 AND first_seen_at >= ?1
-            GROUP BY substr(first_seen_at, 1, 10), platform
-            ON CONFLICT(day, platform) DO UPDATE SET
-                posts = excluded.posts,
-                last_scraped_at = MAX(COALESCE(stats_platform_daily.last_scraped_at, ''), excluded.last_scraped_at)
-            """,
-            "platform posts",
-        ),
-        (
-            """
-            INSERT INTO stats_platform_daily (day, platform, posts, comments, last_scraped_at)
-            SELECT substr(first_seen_at, 1, 10), platform, 0, COUNT(*), MAX(scraped_at)
-            FROM comments WHERE scraped_at >= ?1 AND first_seen_at >= ?1
-            GROUP BY substr(first_seen_at, 1, 10), platform
-            ON CONFLICT(day, platform) DO UPDATE SET
-                comments = excluded.comments,
-                last_scraped_at = MAX(COALESCE(stats_platform_daily.last_scraped_at, ''), excluded.last_scraped_at)
-            """,
-            "platform comments",
-        ),
-        (
-            """
-            INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-            SELECT substr(first_seen_at, 1, 10), keyword_id, platform, COUNT(*), 0, MAX(scraped_at)
-            FROM posts WHERE keyword_id IS NOT NULL AND scraped_at >= ?1 AND first_seen_at >= ?1
-            GROUP BY substr(first_seen_at, 1, 10), keyword_id, platform
-            ON CONFLICT(day, keyword_id) DO UPDATE SET
-                posts = excluded.posts,
-                last_scraped_at = MAX(COALESCE(stats_keyword_daily.last_scraped_at, ''), excluded.last_scraped_at)
-            """,
-            "keyword posts",
-        ),
-        (
-            """
-            INSERT INTO stats_keyword_daily (day, keyword_id, platform, posts, comments, last_scraped_at)
-            SELECT substr(c.first_seen_at, 1, 10), p.keyword_id, c.platform, 0, COUNT(*), MAX(c.scraped_at)
-            FROM comments c INNER JOIN posts p ON p.id = c.post_id
-            WHERE p.keyword_id IS NOT NULL AND c.scraped_at >= ?1 AND c.first_seen_at >= ?1
-            GROUP BY substr(c.first_seen_at, 1, 10), p.keyword_id, c.platform
-            ON CONFLICT(day, keyword_id) DO UPDATE SET
-                comments = excluded.comments,
-                last_scraped_at = MAX(COALESCE(stats_keyword_daily.last_scraped_at, ''), excluded.last_scraped_at)
-            """,
-            "keyword comments",
-        ),
-    )
-    for sql, label in statements:
-        if await _q(sql, [since], timeout=slow) is None:
+    for stmt, label in _reconcile_statements(since):
+        # Biến câu thành chuỗi + tham số ngay ở đây: cả bốn câu dùng CHUNG một bộ tham số
+        # (đối chiếu được khi D1 quá tải giữa chừng), và _q nhận cả hai kiểu.
+        sql, params = compile_sql(stmt)
+        if await _q(sql, params, timeout=slow) is None:
             await _note_rollup_failure("stats_reconcile", step=label, since=since)
             return False
     logger.info("stats_reconciled", since=since)

@@ -19,15 +19,19 @@ from typing import Any
 from urllib.parse import urlencode
 
 from botocore.exceptions import ClientError
+from sqlalchemy import func, literal_column, select
 
 from app.ai.prompts.review_angles import REVIEW_ANGLES_SYSTEM, REVIEW_ASPECTS
 from app.ai.runtime import call_llm_json
 from app.ai.tasks.review_angles import angle_id_of, has_text, js_json, parse_batch
 from app.clients import lake
-from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
-from app.services.ai_jobs.channels import RELEVANT_POST_FILTER, channel_of_post, channel_url
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import movie_measure_settings, movies
+from app.repositories.d1.tables import posts as posts_table
+from app.services.ai_jobs.channels import channel_of_post, channel_url
 
 logger = get_logger(__name__)
 
@@ -104,16 +108,25 @@ def empty_state() -> dict[str, Any]:
 
 
 _movies: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_M, _S, _P = movies.alias("m"), movie_measure_settings.alias("s"), posts_table.alias("p")
+_MOVIE_DATES = _M.outerjoin(_S, _S.c.movie_id == _M.c.id)
+# Bài của phim trên các nền tảng Review Angles đọc, theo thời gian đăng.
+_SCAN = (
+    select(_P.c.id, _P.c.platform, _P.c.posted_at)
+    .where(_P.c.platform.in_(("facebook", "tiktok", "threads")), relevant_post(_P))
+    .order_by(_P.c.posted_at, _P.c.id)
+)
 
 
 async def load_movie(movie_id: str) -> dict[str, Any] | None:
     cached = _movies.get(movie_id)
     if cached and time.monotonic() - cached[0] < 3600:
         return cached[1]
-    rows = await d1_query(
-        """SELECT m.title, m.released_at, s.premiere_date FROM movies m
-           LEFT JOIN movie_measure_settings s ON s.movie_id = m.id WHERE m.id = ? LIMIT 1""",
-        [movie_id],
+    rows = await d1_exec(
+        select(_M.c.title, _M.c.released_at, _S.c.premiere_date)
+        .select_from(_MOVIE_DATES)
+        .where(_M.c.id == movie_id)
+        .limit(1)
     )
     if rows is None:
         return cached[1] if cached else None
@@ -140,12 +153,7 @@ def _iso_utc(at: datetime) -> str:
 async def _next_batch(movie_id: str, start: str, state: dict[str, Any]) -> list[dict[str, Any]]:
     cursor = state.get("cursor")
     since = cursor if cursor and cursor > start else start
-    fresh = await d1_query(
-        f"""SELECT p.id, p.platform, p.posted_at FROM posts p
-            WHERE p.movie_id = ? AND p.posted_at >= ? AND p.platform IN ('facebook', 'tiktok', 'threads') AND {RELEVANT_POST_FILTER}
-            ORDER BY p.posted_at, p.id LIMIT {NEW_SCAN_LIMIT}""",
-        [movie_id, since],
-    )
+    fresh = await d1_exec(_SCAN.where(_P.c.movie_id == movie_id, _P.c.posted_at >= since).limit(NEW_SCAN_LIMIT))
     if fresh is None:
         raise RuntimeError("posts unavailable")
     recent = state["recent"]
@@ -153,12 +161,10 @@ async def _next_batch(movie_id: str, start: str, state: dict[str, Any]) -> list[
     if not pending and cursor and time.time() * 1000 - state.get("lateScanAt", 0) > LATE_SCAN_EVERY_MS:
         state["lateScanAt"] = int(time.time() * 1000)
         late_from = max(datetime.fromisoformat(start), datetime.fromisoformat(cursor) - LATE_WINDOW)
-        late = await d1_query(
-            f"""SELECT p.id, p.platform, p.posted_at FROM posts p
-                WHERE p.movie_id = ? AND p.posted_at >= ? AND p.posted_at < ?
-                  AND p.platform IN ('facebook', 'tiktok', 'threads') AND {RELEVANT_POST_FILTER}
-                ORDER BY p.posted_at, p.id LIMIT {LATE_SCAN_LIMIT}""",
-            [movie_id, _iso_utc(late_from), cursor],
+        late = await d1_exec(
+            _SCAN.where(
+                _P.c.movie_id == movie_id, _P.c.posted_at >= _iso_utc(late_from), _P.c.posted_at < cursor
+            ).limit(LATE_SCAN_LIMIT),
             timeout=60.0,
         )
         pending = [post for post in late or [] if post["id"] not in recent]
@@ -175,22 +181,38 @@ def _num(value: Any) -> int:
 async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
     if not ids:
         return []
-    rows = await d1_query(
-        f"""SELECT p.id, p.platform, p.author, p.url, p.posted_at, substr(p.content, 1, {CAPTION_CHARS + 1}) AS content,
-              p.like_count, p.reply_count, p.repost_count, p.reshare_count, p.quote_count, p.view_count
-            FROM posts p JOIN json_each(?) ids ON ids.value = p.id WHERE p.movie_id = ?""",
-        [json.dumps(ids), movie_id],
+    p = posts_table.alias("p")
+    # json_each để truyền cả danh sách id dài bằng MỘT tham số (giới hạn 100 tham số của D1).
+    each = func.json_each(json.dumps(ids, ensure_ascii=False)).table_valued("value")
+    rows = await d1_exec(
+        select(
+            p.c.id,
+            p.c.platform,
+            p.c.author,
+            p.c.url,
+            p.c.posted_at,
+            # Cắt nội dung ngay trong SQL để không kéo cả caption dài về Python.
+            literal_column(f"substr({p.name}.content, 1, {CAPTION_CHARS + 1})").label("content"),
+            p.c.like_count,
+            p.c.reply_count,
+            p.c.repost_count,
+            p.c.reshare_count,
+            p.c.quote_count,
+            p.c.view_count,
+        )
+        .select_from(p.join(each, each.c.value == p.c.id))
+        .where(p.c.movie_id == movie_id)
     )
     if rows is None:
         raise RuntimeError("posts unavailable")
-    posts = []
+    result = []
     for row in rows:
         channel = channel_of_post(row)
         likes, comments = _num(row.get("like_count")), _num(row.get("reply_count"))
         shares = _num(row.get("repost_count")) + _num(row.get("reshare_count")) + _num(row.get("quote_count"))
         content = row.get("content") or ""
         views = _num(row.get("view_count"))
-        posts.append(
+        result.append(
             {
                 "id": row["id"],
                 "platform": row["platform"],
@@ -215,7 +237,7 @@ async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
                 "interactions": likes + comments + shares,
             }
         )
-    return sorted(posts, key=lambda p: p.get("postedAt") or "")
+    return sorted(result, key=lambda p: p.get("postedAt") or "")
 
 
 async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
@@ -380,11 +402,12 @@ async def _active_movies() -> list[str]:
         return json.loads(cached)
     today = vn_day()
     since = vn_day(datetime.now(tz=UTC) - timedelta(days=ACTIVE_DAYS))
-    rows = await d1_query(
-        """SELECT m.id FROM movies m LEFT JOIN movie_measure_settings s ON s.movie_id = m.id
-           WHERE m.enabled = 1 AND substr(COALESCE(s.premiere_date, m.released_at), 1, 10) BETWEEN ? AND ?
-           ORDER BY COALESCE(s.premiere_date, m.released_at) DESC""",
-        [since, today],
+    opening = func.coalesce(_S.c.premiere_date, _M.c.released_at)
+    rows = await d1_exec(
+        select(_M.c.id)
+        .select_from(_MOVIE_DATES)
+        .where(_M.c.enabled == 1, func.substr(opening, 1, 10).between(since, today))
+        .order_by(opening.desc())
     )
     ids = [row["id"] for row in rows or []]
     if rows is not None:

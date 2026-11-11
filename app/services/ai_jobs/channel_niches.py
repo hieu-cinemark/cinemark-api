@@ -10,11 +10,16 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import func, select
+
 from app.ai.prompts.channel_niches import CHANNEL_NICHES_SYSTEM, DEFAULT_NICHES
 from app.ai.runtime import call_llm_json
 from app.clients.d1 import d1_query
 from app.core.logging import get_logger
-from app.services.ai_jobs.channels import RELEVANT_POST_FILTER, channel_of_post
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import channel_profiles, config_settings, posts
+from app.services.ai_jobs.channels import channel_of_post
 
 logger = get_logger(__name__)
 
@@ -34,7 +39,9 @@ def _iso(value: datetime) -> str:
 
 async def _niches() -> list[dict[str, Any]]:
     niches: list[dict[str, Any]] = DEFAULT_NICHES
-    rows = await d1_query("SELECT value FROM settings WHERE key = 'audience_niches' LIMIT 1", database="config")
+    rows = await d1_exec(
+        select(config_settings.c.value).where(config_settings.c.key == "audience_niches").limit(1), database="config"
+    )
     if rows:
         try:
             niches = json.loads(rows[0]["value"])
@@ -50,17 +57,18 @@ async def process_channel_niches() -> dict[str, Any]:
     now = datetime.now(tz=UTC)
     since = _iso(now - timedelta(days=LOOKBACK_DAYS))
     recheck_before = _iso(now - timedelta(days=RECHECK_DAYS))
-    posts = await d1_query(
-        f"""SELECT p.platform, p.author, p.url, substr(p.content, 1, 240) AS content FROM posts p
-            WHERE p.posted_at >= ? AND {RELEVANT_POST_FILTER}
-            ORDER BY COALESCE(p.like_count, 0) + COALESCE(p.reply_count, 0) DESC LIMIT {SAMPLE_POSTS}""",
-        [since],
+    p, cp = posts.alias("p"), channel_profiles.c
+    sample = await d1_exec(
+        select(p.c.platform, p.c.author, p.c.url, func.substr(p.c.content, 1, 240).label("content"))
+        .where(p.c.posted_at >= since, relevant_post(p))
+        .order_by((func.coalesce(p.c.like_count, 0) + func.coalesce(p.c.reply_count, 0)).desc())
+        .limit(SAMPLE_POSTS),
         timeout=60.0,
     )
-    profiles = await d1_query(
-        "SELECT platform, handle, niche_at, niche_source FROM channel_profiles WHERE niche_at IS NOT NULL", timeout=60.0
+    profiles = await d1_exec(
+        select(cp.platform, cp.handle, cp.niche_at, cp.niche_source).where(cp.niche_at.is_not(None)), timeout=60.0
     )
-    if posts is None or profiles is None:
+    if sample is None or profiles is None:
         return {"checked": 0, "labelled": 0, "skipped": "d1_unavailable"}
     done = {
         f"{p['platform']}|{p['handle']}"
@@ -68,7 +76,7 @@ async def process_channel_niches() -> dict[str, Any]:
         if p.get("niche_source") == "manual" or (p.get("niche_at") or "") >= recheck_before
     }
     by_channel: dict[str, dict[str, Any]] = {}
-    for post in posts:
+    for post in sample:
         channel = channel_of_post(post)
         if not channel:
             continue

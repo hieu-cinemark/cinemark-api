@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
-from app.repositories.d1.store import d1_query, get_or_create_keyword, list_keywords, set_keyword_enabled
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.store import get_or_create_keyword, list_keywords, set_keyword_enabled
+from app.repositories.d1.tables import movies
 from app.schemas.scraper import KeywordEnabledUpdate, KeywordOut
 from app.services.crawl.keyword_yield import PLATFORMS as YIELD_PLATFORMS
 from app.services.crawl.keyword_yield import keyword_yields, paused_keywords
@@ -55,10 +58,10 @@ def build_keyword_routes(router: APIRouter, platform: str) -> None:
     async def keyword_yield() -> dict:
         """Hiệu quả từng từ khoá 14 ngày qua (app/services/crawl/keyword_yield.py) + từ khoá bị tự tắt vì toàn ra rác."""
         yields = await keyword_yields(platform)
-        rows = await d1_query(
-            "SELECT k.id, k.keyword, k.enabled, m.title AS movie_title FROM keywords k JOIN movies m ON m.id = k.movie_id "
-            "WHERE k.platform = ? AND m.enabled = 1",
-            [platform],
+        rows = await d1_exec(
+            select(keywords.c.id, keywords.c.keyword, keywords.c.enabled, movies.c.title.label("movie_title"))
+            .select_from(keywords.join(movies, movies.c.id == keywords.c.movie_id))
+            .where(keywords.c.platform == platform, movies.c.enabled == 1)
         )
         paused = await paused_keywords()
         items = [

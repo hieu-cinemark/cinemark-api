@@ -26,12 +26,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from sqlalchemy import select
 
 from app.clients.kafka import publish_raw_post
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.store import OMAR_COOCCUR_KEY_TMPL, get_enabled_keywords
+from app.repositories.d1.tables import movies
 from app.services.accounts.platform_config_db import get_omar_api_settings, omar_requests_cap
 from app.services.omar import omar_channels, omar_comments, omar_search, omar_yield
 
@@ -404,7 +407,7 @@ async def fetch_usage(api_key: str, client: httpx.AsyncClient | None = None) -> 
 
 async def _movie_priority() -> dict[str, float]:
     """movie_id -> số ngày lệch khỏi ngày chiếu (nhỏ = gần ngày chiếu, cào trước)."""
-    rows = await d1_query("SELECT id, released_at FROM movies", quiet=True) or []
+    rows = await d1_exec(select(movies.c.id, movies.c.released_at), quiet=True) or []
     today = datetime.now(tz=UTC).date()
     out: dict[str, float] = {}
     for row in rows:
@@ -724,7 +727,7 @@ def crawl_hashtag_now(keyword: dict[str, Any]) -> bool:
 async def hashtag_progress() -> list[dict[str, Any]]:
     """Mỗi hashtag TikTok đang bật: tên, phim, số trang đã lấy, cursor, đã cào xong lúc nào (từ Redis omar:hashtag_state)."""
     keywords = [k for k in await get_enabled_keywords(platform="tiktok") if str(k["keyword"]).startswith("#")]
-    titles = {row["id"]: row["title"] for row in await d1_query("SELECT id, title FROM movies", quiet=True) or []}
+    titles = {row["id"]: row["title"] for row in await d1_exec(select(movies.c.id, movies.c.title), quiet=True) or []}
     raw = await get_redis_client().hgetall(_STATE_KEY) or {}
     state = {}
     for key, value in raw.items():

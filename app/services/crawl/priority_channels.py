@@ -12,22 +12,26 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from sqlalchemy import Column, Table, Text, select, update
+from sqlalchemy.schema import CreateTable
+
 from app.core.logging import get_logger
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec, metadata
 
 logger = get_logger(__name__)
 
 # Giống PRIORITY_CHANNELS_SQL ở api/lib/bookingReport.ts (cinemark).
-TABLE_SQL = """CREATE TABLE IF NOT EXISTS priority_channels (
-  platform TEXT NOT NULL,
-  handle TEXT NOT NULL,
-  movie_id TEXT,
-  source TEXT,
-  requested_at TEXT NOT NULL,
-  crawled_at TEXT,
-  result TEXT,
-  PRIMARY KEY (platform, handle)
-)"""
+priority_channels = Table(
+    "priority_channels",
+    metadata,
+    Column("platform", Text, primary_key=True),
+    Column("handle", Text, primary_key=True),
+    Column("movie_id", Text),
+    Column("source", Text),
+    Column("requested_at", Text, nullable=False),
+    Column("crawled_at", Text),
+    Column("result", Text),
+)
 BATCH = 5
 KEEP_DAYS = 30
 
@@ -42,7 +46,7 @@ def is_running() -> bool:
 async def _ensure_table() -> None:
     global _table_ready
     if not _table_ready:
-        await d1_query(TABLE_SQL)
+        await d1_exec(CreateTable(priority_channels, if_not_exists=True))
         _table_ready = True
 
 
@@ -51,9 +55,9 @@ async def priority_tiktok_handles() -> list[str]:
     try:
         await _ensure_table()
         since = (datetime.now(tz=UTC) - timedelta(days=KEEP_DAYS)).isoformat()
-        rows = await d1_query(
-            "SELECT handle FROM priority_channels WHERE platform = 'tiktok' AND requested_at >= ? ORDER BY requested_at DESC",
-            [since],
+        pc = priority_channels.c
+        rows = await d1_exec(
+            select(pc.handle).where(pc.platform == "tiktok", pc.requested_at >= since).order_by(pc.requested_at.desc()),
             quiet=True,
         )
     except Exception as exc:  # noqa: BLE001 - lỗi bảng ưu tiên không được chặn lượt cào kênh
@@ -70,9 +74,12 @@ async def process_pending() -> dict[str, int]:
     _running = True
     try:
         await _ensure_table()
-        rows = await d1_query(
-            "SELECT platform, handle FROM priority_channels WHERE platform = 'tiktok' AND crawled_at IS NULL ORDER BY requested_at LIMIT ?",
-            [BATCH],
+        pc = priority_channels.c
+        rows = await d1_exec(
+            select(pc.platform, pc.handle)
+            .where(pc.platform == "tiktok", pc.crawled_at.is_(None))
+            .order_by(pc.requested_at)
+            .limit(BATCH),
             quiet=True,
         )
         if not rows:
@@ -95,9 +102,10 @@ async def process_pending() -> dict[str, int]:
             await channel_profiles.refresh_tiktok_handles(by_platform["tiktok"])
         now = datetime.now(tz=UTC).isoformat()
         for (platform, handle), result in results.items():
-            await d1_query(
-                "UPDATE priority_channels SET crawled_at = ?, result = ? WHERE platform = ? AND handle = ?",
-                [now, json.dumps(result, ensure_ascii=False)[:500], platform, handle],
+            await d1_exec(
+                update(priority_channels)
+                .where(pc.platform == platform, pc.handle == handle)
+                .values(crawled_at=now, result=json.dumps(result, ensure_ascii=False)[:500])
             )
         logger.info(
             "priority_channels_processed",

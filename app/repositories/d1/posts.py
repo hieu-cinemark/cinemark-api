@@ -23,16 +23,21 @@ import re
 import time
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
+
+from sqlalchemy import Column, Integer, Table, Text, and_, func, insert, or_, select, text, update
+from sqlalchemy.schema import CreateTable
 
 from app.clients.d1 import _configured, d1_query
 from app.core.logging import get_logger
+from app.repositories.d1.sql import d1_exec, metadata
+from app.repositories.d1.tables import ENGAGEMENT_COLUMNS, comments, keywords, movies, post_engagement_snapshots, posts
 from app.services.crawl.platforms import PostDraft, registered_platforms
 
 logger = get_logger(__name__)
 
-ENGAGEMENT_FIELDS = ("like_count", "reply_count", "repost_count", "quote_count", "reshare_count", "view_count")
+ENGAGEMENT_FIELDS = ENGAGEMENT_COLUMNS
 
 # Dưới số ký tự này (sau khi trim), nội dung bài bị coi là rác - một reaction/emoji/
 # comment một chữ trơ trọi, không có gì để phân tích. Chỉnh thoải mái; đây là con số
@@ -66,6 +71,16 @@ _HASHTAG_STRIP = re.compile(r"[\s._-]+")
 # tất cả đều nằm dưới bài có nhãn NULL, nên report của phim báo "không đủ comment".
 # Nhãn mà bộ phân loại hoặc quy tắc đã ghi (not_related/uncertain) vẫn được ưu tiên.
 RELEVANT_POST_SQL = "(p.relevance_label = 'related' OR (p.relevance_label IS NULL AND p.keyword_match > 0))"
+
+
+def relevant_post(p):
+    """RELEVANT_POST_SQL cho query SQLAlchemy (p: bảng posts hoặc alias của nó)."""
+    return or_(p.c.relevance_label == "related", and_(p.c.relevance_label.is_(None), p.c.keyword_match > 0))
+
+
+def engagement_score(p):
+    """ENGAGEMENT_SCORE_SQL cho query SQLAlchemy."""
+    return p.c.like_count + COMMENT_WEIGHT * p.c.reply_count + p.c.repost_count + p.c.quote_count + p.c.reshare_count
 
 
 # --- cột "tiếng nói" của bài + trạng thái quét comment -----------------------
@@ -281,6 +296,15 @@ MIN_MOVIES_FOR_REPUTABLE_AUTHOR = 2
 _REPUTABLE_AUTHORS_TTL_SECONDS = 300.0
 
 _author_reputation_ready = False
+author_reputation = Table(
+    "author_reputation",
+    metadata,
+    Column("platform", Text, primary_key=True),
+    Column("author", Text, primary_key=True),
+    Column("distinct_movies", Integer, nullable=False, server_default=text("0")),
+    Column("confirmed_posts", Integer, nullable=False, server_default=text("0")),
+    Column("updated_at", Text, nullable=False),
+)
 _reputable_authors_cache: tuple[float, set[tuple[str, str]]] | None = None
 
 
@@ -288,19 +312,7 @@ async def ensure_author_reputation_table() -> None:
     global _author_reputation_ready
     if _author_reputation_ready:
         return
-    await d1_query(
-        """
-        CREATE TABLE IF NOT EXISTS author_reputation (
-            platform text NOT NULL,
-            author text NOT NULL,
-            distinct_movies integer NOT NULL DEFAULT 0,
-            confirmed_posts integer NOT NULL DEFAULT 0,
-            updated_at text NOT NULL,
-            PRIMARY KEY (platform, author)
-        )
-        """,
-        quiet=True,
-    )
+    await d1_exec(CreateTable(author_reputation, if_not_exists=True), quiet=True)
     _author_reputation_ready = True
 
 
@@ -316,9 +328,10 @@ async def reputable_authors() -> set[tuple[str, str]]:
     if _reputable_authors_cache is not None and now - _reputable_authors_cache[0] < _REPUTABLE_AUTHORS_TTL_SECONDS:
         return _reputable_authors_cache[1]
     await ensure_author_reputation_table()
-    rows = await d1_query(
-        "SELECT platform, author FROM author_reputation WHERE distinct_movies >= ?",
-        [MIN_MOVIES_FOR_REPUTABLE_AUTHOR],
+    rows = await d1_exec(
+        select(author_reputation.c.platform, author_reputation.c.author).where(
+            author_reputation.c.distinct_movies >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR
+        )
     )
     result = {(r["platform"], r["author"]) for r in (rows or [])}
     _reputable_authors_cache = (now, result)
@@ -474,6 +487,48 @@ def _hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]
     return out
 
 
+_POST_REF = (posts.c.id, posts.c.platform, posts.c.external_id, posts.c.url)
+
+# Danh sách bài cho dashboard: bài + từ khoá + tên phim.
+_P, _K, _M = posts.alias("p"), keywords.alias("k"), movies.alias("m")
+_FEED_FROM = _P.outerjoin(_K, _K.c.id == _P.c.keyword_id).outerjoin(_M, _M.c.id == _P.c.movie_id)
+_FEED_COLUMNS = (
+    *(_P.c[name] for name in ("id", "platform", "external_id", "url", "author", "content", "media_json")),
+    func.json_extract(_P.c.raw_json, "$.cover_url").label("raw_cover_url"),
+    *(_P.c[name] for name in ENGAGEMENT_COLUMNS),
+    _P.c.posted_at,
+    _P.c.scraped_at,
+    _P.c.keyword_match,
+    _K.c.keyword,
+    _M.c.title.label("movie_title"),
+)
+
+
+def _feed_filters(
+    platform: str | None, keyword_id: str | None, movie_id: str | None, keyword_match: bool | None
+) -> list:
+    """Bộ lọc không bắt buộc, cộng dồn, của list_posts / list_posts_cursor."""
+    filters = []
+    if platform:
+        filters.append(_P.c.platform == platform)
+    if keyword_id:
+        filters.append(_P.c.keyword_id == keyword_id)
+    if movie_id:
+        filters.append(_P.c.movie_id == movie_id)
+    if keyword_match is not None:
+        filters.append(_P.c.keyword_match == (1 if keyword_match else 0))
+    return filters
+
+
+async def _snapshot(post_id: str, recorded_at: str, engagement: dict[str, int]) -> None:
+    """Một dòng lịch sử tương tác của bài (ghi khi số đổi)."""
+    await d1_exec(
+        insert(post_engagement_snapshots).values(
+            id=f"eng_{uuid.uuid4()}", post_id=post_id, recorded_at=recorded_at, **engagement
+        )
+    )
+
+
 class PostRepository:
     """Giữ mọi query trên `posts`. Một instance cho cả tiến trình (`post_repo` bên dưới) -
     không có trạng thái theo request, nên đây chỉ là namespace cho các query cộng với cờ
@@ -513,45 +568,24 @@ class PostRepository:
         còn `limit` - bài chưa được AI gắn nhãn, hoặc không có hashtag/tên phim khớp nào, sẽ
         không chiếm chỗ dù tương tác cao."""
         await _ensure_post_indexes()
-        where = []
-        params: list[Any] = []
-        if platform:
-            where.append("p.platform = ?")
-            params.append(platform)
-        if keyword_id:
-            where.append("p.keyword_id = ?")
-            params.append(keyword_id)
-        if movie_id:
-            where.append("p.movie_id = ?")
-            params.append(movie_id)
-        if keyword_match is not None:
-            where.append("p.keyword_match = ?")
-            params.append(1 if keyword_match else 0)
+        filters = _feed_filters(platform, keyword_id, movie_id, keyword_match)
         if sort == "engagement":
-            where.append(RELEVANT_POST_SQL)
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        order_sql = f"{ENGAGEMENT_SCORE_SQL} DESC" if sort == "engagement" else "p.scraped_at DESC"
+            filters.append(relevant_post(_P))
+            order = (engagement_score(_P).desc(),)
+        else:
+            order = (_P.c.scraped_at.desc(),)
         # movie_hashtag_present chạy bằng Python sau khi lấy dữ liệu và loại bỏ một số dòng mà
         # riêng relevance_label='related' lẽ ra đã cho qua - nên lấy nhiều hơn `limit` ngay từ
         # đầu để sau khi lọc rồi cắt lại thì trang không bị thiếu/rỗng.
         sql_limit = max(limit * 4, limit + 100) if sort == "engagement" else limit
 
-        rows = await d1_query(
-            f"""
-            SELECT
-                p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
-                json_extract(p.raw_json, '$.cover_url') AS raw_cover_url,
-                p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
-                p.posted_at, p.scraped_at, p.keyword_match,
-                k.keyword, m.title AS movie_title
-            FROM posts p
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            LEFT JOIN movies m ON m.id = p.movie_id
-            {where_sql}
-            ORDER BY {order_sql}
-            LIMIT ? OFFSET ?
-            """,
-            [*params, sql_limit, offset],
+        rows = await d1_exec(
+            select(*_FEED_COLUMNS)
+            .select_from(_FEED_FROM)
+            .where(*filters)
+            .order_by(*order)
+            .limit(sql_limit)
+            .offset(offset),
             timeout=20.0 if keyword_match is not None else 10.0,
         )
         hydrated = _hydrate_post_rows(rows)
@@ -573,7 +607,7 @@ class PostRepository:
         # đã làm D1 timeout (~10s) mỗi lần bấm tab. Ước lượng "còn trang sau" từ kích thước
         # trang thay thế.
         if keyword_match is None:
-            count_rows = await d1_query(f"SELECT COUNT(*) AS total FROM posts p {where_sql}", params)
+            count_rows = await d1_exec(select(func.count().label("total")).select_from(_P).where(*filters))
             total = (count_rows[0]["total"] if count_rows else 0) or 0
         else:
             n = len(hydrated)
@@ -610,42 +644,21 @@ class PostRepository:
             raise ValueError("list_posts_cursor only supports sort='recent'")
         await _ensure_post_indexes()
 
-        where = []
-        params: list[Any] = []
-        if platform:
-            where.append("p.platform = ?")
-            params.append(platform)
-        if keyword_id:
-            where.append("p.keyword_id = ?")
-            params.append(keyword_id)
-        if movie_id:
-            where.append("p.movie_id = ?")
-            params.append(movie_id)
-        if keyword_match is not None:
-            where.append("p.keyword_match = ?")
-            params.append(1 if keyword_match else 0)
+        filters = _feed_filters(platform, keyword_id, movie_id, keyword_match)
         if cursor:
             cursor_scraped_at, _, cursor_id = cursor.partition("|")
-            where.append("(p.scraped_at < ? OR (p.scraped_at = ? AND p.id < ?))")
-            params += [cursor_scraped_at, cursor_scraped_at, cursor_id]
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-
-        rows = await d1_query(
-            f"""
-            SELECT
-                p.id, p.platform, p.external_id, p.url, p.author, p.content, p.media_json,
-                json_extract(p.raw_json, '$.cover_url') AS raw_cover_url,
-                p.like_count, p.reply_count, p.repost_count, p.quote_count, p.reshare_count, p.view_count,
-                p.posted_at, p.scraped_at, p.keyword_match,
-                k.keyword, m.title AS movie_title
-            FROM posts p
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            LEFT JOIN movies m ON m.id = p.movie_id
-            {where_sql}
-            ORDER BY p.scraped_at DESC, p.id DESC
-            LIMIT ?
-            """,
-            [*params, limit],
+            filters.append(
+                or_(
+                    _P.c.scraped_at < cursor_scraped_at,
+                    and_(_P.c.scraped_at == cursor_scraped_at, _P.c.id < cursor_id),
+                )
+            )
+        rows = await d1_exec(
+            select(*_FEED_COLUMNS)
+            .select_from(_FEED_FROM)
+            .where(*filters)
+            .order_by(_P.c.scraped_at.desc(), _P.c.id.desc())
+            .limit(limit),
             timeout=20.0 if keyword_match is not None else 10.0,
         )
         hydrated = _hydrate_post_rows(rows)
@@ -674,19 +687,18 @@ class PostRepository:
         chạy theo lô của label_posts_relevance.py quét qua cũng không hiện ở đây)."""
         await _ensure_post_indexes()
         overfetch = max(top_n * 4, top_n + 100)
-        rows = await d1_query(
-            f"""
-            SELECT p.id, p.external_id, p.url, p.content, p.author, k.keyword, m.title AS movie_title,
-                   COALESCE(c.n, 0) AS comment_n
-            FROM posts p
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            LEFT JOIN movies m ON m.id = p.movie_id
-            LEFT JOIN (SELECT post_id, COUNT(*) AS n FROM comments GROUP BY post_id) c ON c.post_id = p.id
-            WHERE p.platform = ? AND p.keyword_id = ? AND {RELEVANT_POST_SQL}
-            ORDER BY {ENGAGEMENT_SCORE_SQL} DESC
-            LIMIT ?
-            """,
-            [platform, keyword_id, overfetch],
+        counts = select(comments.c.post_id, func.count().label("n")).group_by(comments.c.post_id).subquery("c")
+        rows = await d1_exec(
+            select(
+                *(_P.c[name] for name in ("id", "external_id", "url", "content", "author")),
+                _K.c.keyword,
+                _M.c.title.label("movie_title"),
+                func.coalesce(counts.c.n, 0).label("comment_n"),
+            )
+            .select_from(_FEED_FROM.outerjoin(counts, counts.c.post_id == _P.c.id))
+            .where(_P.c.platform == platform, _P.c.keyword_id == keyword_id, relevant_post(_P))
+            .order_by(engagement_score(_P).desc())
+            .limit(overfetch)
         )
         reputable = await reputable_authors()
         selected: list[dict[str, Any]] = []
@@ -708,9 +720,11 @@ class PostRepository:
     async def update_post_views(self, platform: str, external_id: str, view_count: int) -> bool:
         """Chỉ cập nhật lượt xem của một bài đã có (message kind="metrics" của spider-hub - lượt xem reel Facebook từ tab
         Reels của trang). Bài chưa có thì không làm gì (không đủ dữ liệu để tạo). False khi câu lệnh lỗi."""
-        result = await d1_query(
-            "UPDATE posts SET view_count = ? WHERE platform = ? AND external_id = ? AND view_count != ?",
-            [int(view_count), platform, external_id, int(view_count)],
+        views = int(view_count)
+        result = await d1_exec(
+            update(posts)
+            .where(posts.c.platform == platform, posts.c.external_id == external_id, posts.c.view_count != views)
+            .values(view_count=views),
             quiet=True,
         )
         return result is not None
@@ -728,9 +742,10 @@ class PostRepository:
         trang bài không đăng nhập). Số None = trang không có (reel không có share) -> giữ số cũ. Ghi snapshot khi số đổi,
         như persist_post. Bài chưa có thì không làm gì. False khi bài không có hoặc câu lệnh lỗi."""
         await _ensure_post_indexes()
-        rows = await d1_query(
-            f"SELECT id, keyword_id, {', '.join(ENGAGEMENT_FIELDS)} FROM posts WHERE platform = ? AND external_id = ?",
-            [platform, external_id],
+        rows = await d1_exec(
+            select(posts.c.id, posts.c.keyword_id, *(posts.c[f] for f in ENGAGEMENT_FIELDS)).where(
+                posts.c.platform == platform, posts.c.external_id == external_id
+            ),
             quiet=True,
         )
         if not rows:
@@ -741,28 +756,23 @@ class PostRepository:
             if value is not None:
                 engagement[field] = int(value)
         changed = any((existing.get(field) or 0) != engagement[field] for field in ENGAGEMENT_FIELDS)
-        scraped_at = datetime.now(tz=timezone.utc).isoformat()
-        updated = await d1_query(
-            "UPDATE posts SET like_count = ?, reply_count = ?, repost_count = ?, scraped_at = ? WHERE id = ?",
-            [
-                engagement["like_count"],
-                engagement["reply_count"],
-                engagement["repost_count"],
-                scraped_at,
-                existing["id"],
-            ],
+        scraped_at = datetime.now(tz=UTC).isoformat()
+        updated = await d1_exec(
+            update(posts)
+            .where(posts.c.id == existing["id"])
+            .values(
+                like_count=engagement["like_count"],
+                reply_count=engagement["reply_count"],
+                repost_count=engagement["repost_count"],
+                scraped_at=scraped_at,
+            ),
             quiet=True,
         )
         if updated is None:
             logger.warning("d1_post_engagement_update_failed", platform=platform, external_id=external_id)
             return False
         if changed:
-            await d1_query(
-                "INSERT INTO post_engagement_snapshots "
-                "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [f"eng_{uuid.uuid4()}", existing["id"], scraped_at, *engagement.values()],
-            )
+            await _snapshot(existing["id"], scraped_at, engagement)
         from app.services.stats.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=existing.get("keyword_id"), scraped_at=scraped_at, is_new=False)
@@ -773,10 +783,7 @@ class PostRepository:
         (xem handle_comment trong app/workers/ingest_consumer/main.py), khác với id nội bộ D1
         của get_post."""
         await _ensure_post_indexes()
-        rows = await d1_query(
-            "SELECT id, platform, external_id, url FROM posts WHERE platform = ? AND external_id = ?",
-            [platform, external_id],
-        )
+        rows = await d1_exec(select(*_POST_REF).where(posts.c.platform == platform, posts.c.external_id == external_id))
         return rows[0] if rows else None
 
     async def get_post(self, post_id: str) -> dict[str, Any] | None:
@@ -784,7 +791,7 @@ class PostRepository:
         cho bài này" (xem app/api/routes/facebook.py) để tra ra id bài của nền tảng + url mà
         bootstrap/spider của spider-hub cần, từ id D1 mà dashboard đang có (xem Post.id
         trong app/schemas/stats.py)."""
-        rows = await d1_query("SELECT id, platform, external_id, url FROM posts WHERE id = ?", [post_id])
+        rows = await d1_exec(select(*_POST_REF).where(posts.c.id == post_id))
         return rows[0] if rows else None
 
     async def persist_post(
@@ -841,7 +848,7 @@ class PostRepository:
             return True
         is_keyword_match = ai_relevant if ai_relevant is not None else contains_keyword(content, keyword)
 
-        scraped_at = datetime.now(tz=timezone.utc).isoformat()
+        scraped_at = datetime.now(tz=UTC).isoformat()
         media_json = json.dumps(draft.get("media") or {})
         kept_raw = trim_post_raw(draft.get("raw"))
         raw_json = json.dumps(kept_raw) if kept_raw else None
@@ -852,50 +859,37 @@ class PostRepository:
         # khớp vẫn được lưu thay vì bị bỏ qua.
         keyword_match = int(is_keyword_match)
 
-        existing_rows = await d1_query(
-            "SELECT id, like_count, reply_count, repost_count, quote_count, reshare_count, view_count "
-            "FROM posts WHERE platform = ? AND external_id = ?",
-            [platform, external_id],
+        existing_rows = await d1_exec(
+            select(posts.c.id, *(posts.c[f] for f in ENGAGEMENT_FIELDS)).where(
+                posts.c.platform == platform, posts.c.external_id == external_id
+            )
         )
         existing = existing_rows[0] if existing_rows else None
 
         if existing is None:
             post_id = f"post_{uuid.uuid4()}"
             relevance_labeled_at = scraped_at if relevance_label is not None else None
-            inserted = await d1_query(
-                """
-                INSERT INTO posts (
-                    id, movie_id, keyword_id, platform, external_id, url, author, content, media_json,
-                    like_count, reply_count, repost_count, quote_count, reshare_count, view_count,
-                    first_seen_at, posted_at, scraped_at, raw_json, keyword_match,
-                    relevance_label, relevance_confidence, relevance_labeled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    post_id,
-                    movie_id,
-                    keyword_id,
-                    platform,
-                    external_id,
-                    draft.get("url"),
-                    draft.get("author"),
-                    draft.get("content"),
-                    media_json,
-                    engagement["like_count"],
-                    engagement["reply_count"],
-                    engagement["repost_count"],
-                    engagement["quote_count"],
-                    engagement["reshare_count"],
-                    engagement["view_count"],
-                    scraped_at,  # first_seen_at: chỉ ghi lúc INSERT, các UPDATE không đụng tới
-                    draft.get("posted_at"),
-                    scraped_at,
-                    raw_json,
-                    keyword_match,
-                    relevance_label,
-                    relevance_confidence,
-                    relevance_labeled_at,
-                ],
+            inserted = await d1_exec(
+                insert(posts).values(
+                    id=post_id,
+                    movie_id=movie_id,
+                    keyword_id=keyword_id,
+                    platform=platform,
+                    external_id=external_id,
+                    url=draft.get("url"),
+                    author=draft.get("author"),
+                    content=draft.get("content"),
+                    media_json=media_json,
+                    **engagement,
+                    first_seen_at=scraped_at,  # chỉ ghi lúc INSERT, các UPDATE không đụng tới
+                    posted_at=draft.get("posted_at"),
+                    scraped_at=scraped_at,
+                    raw_json=raw_json,
+                    keyword_match=keyword_match,
+                    relevance_label=relevance_label,
+                    relevance_confidence=relevance_confidence,
+                    relevance_labeled_at=relevance_labeled_at,
+                )
             )
             if inserted is None:
                 # Insert thất bại (đua với một message khác cùng external_id, D1 sập, ...) - dòng bài
@@ -903,12 +897,7 @@ class PostRepository:
                 # dừng; lần crawl lại bài này sau sẽ thử lại toàn bộ upsert từ đầu.
                 logger.warning("d1_post_insert_failed", platform=platform, external_id=external_id)
                 return False
-            await d1_query(
-                "INSERT INTO post_engagement_snapshots "
-                "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
-            )
+            await _snapshot(post_id, scraped_at, engagement)
             from app.services.stats.stats_summary import record_post
 
             await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
@@ -927,37 +916,25 @@ class PostRepository:
         # một cách hợp lệ ở đây (chỉ khớp chuỗi con đã quyết định, không có phán quyết của
         # Kira) - ghi đè thẳng sẽ xoá mất một nhãn thật mà lượt quét theo lô (hoặc lần phân
         # loại lúc ingest trước đó) đã đặt.
-        updated = await d1_query(
-            """
-            UPDATE posts SET
-                url = ?, author = ?, content = ?, media_json = ?,
-                like_count = ?, reply_count = ?, repost_count = ?, quote_count = ?, reshare_count = ?, view_count = ?,
-                posted_at = ?, scraped_at = ?, raw_json = ?, keyword_match = ?,
-                relevance_label = COALESCE(?, relevance_label),
-                relevance_confidence = COALESCE(?, relevance_confidence),
-                relevance_labeled_at = COALESCE(?, relevance_labeled_at)
-            WHERE id = ?
-            """,
-            [
-                draft.get("url"),
-                draft.get("author"),
-                draft.get("content"),
-                media_json,
-                engagement["like_count"],
-                engagement["reply_count"],
-                engagement["repost_count"],
-                engagement["quote_count"],
-                engagement["reshare_count"],
-                engagement["view_count"],
-                draft.get("posted_at"),
-                scraped_at,
-                raw_json,
-                keyword_match,
-                relevance_label,
-                relevance_confidence,
-                scraped_at if relevance_label is not None else None,
-                post_id,
-            ],
+        updated = await d1_exec(
+            update(posts)
+            .where(posts.c.id == post_id)
+            .values(
+                url=draft.get("url"),
+                author=draft.get("author"),
+                content=draft.get("content"),
+                media_json=media_json,
+                **engagement,
+                posted_at=draft.get("posted_at"),
+                scraped_at=scraped_at,
+                raw_json=raw_json,
+                keyword_match=keyword_match,
+                relevance_label=func.coalesce(relevance_label, posts.c.relevance_label),
+                relevance_confidence=func.coalesce(relevance_confidence, posts.c.relevance_confidence),
+                relevance_labeled_at=func.coalesce(
+                    scraped_at if relevance_label is not None else None, posts.c.relevance_labeled_at
+                ),
+            )
         )
         if updated is None:
             # UPDATE thất bại (D1 sập, ...) - post_id vẫn trỏ tới một dòng thật đã có từ trước
@@ -967,12 +944,7 @@ class PostRepository:
             logger.warning("d1_post_update_failed", platform=platform, external_id=external_id, post_id=post_id)
             return False
         if changed:
-            await d1_query(
-                "INSERT INTO post_engagement_snapshots "
-                "(id, post_id, recorded_at, like_count, reply_count, repost_count, quote_count, reshare_count, view_count) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [f"eng_{uuid.uuid4()}", post_id, scraped_at, *engagement.values()],
-            )
+            await _snapshot(post_id, scraped_at, engagement)
         from app.services.stats.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)

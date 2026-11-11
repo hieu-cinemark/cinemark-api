@@ -16,12 +16,12 @@ def _run(monkeypatch, rows, yields):
     disabled: list[str] = []
     recorded: list[tuple[str, str]] = []
 
-    async def fake_d1(sql, params=None, **_):
-        if sql.startswith("SELECT d.movie_id"):
-            return rows
-        if sql.startswith("UPDATE keywords SET enabled = 0"):
-            disabled.append(params[0])
-        return []
+    async def fake_select(_stmt, **_):
+        return rows
+
+    async def fake_enable(keyword_id, enabled):
+        assert enabled is False
+        disabled.append(keyword_id)
 
     async def fake_yields(_platform):
         return yields
@@ -29,7 +29,8 @@ def _run(monkeypatch, rows, yields):
     async def fake_record(movie_id, row, verdict, status, keyword_id):
         recorded.append((keyword_id, verdict["reason"]))
 
-    monkeypatch.setattr(qd, "d1_query", fake_d1)
+    monkeypatch.setattr(qd, "d1_exec", fake_select)
+    monkeypatch.setattr(qd, "enable_keyword", fake_enable)
     monkeypatch.setattr(qd, "keyword_yields", fake_yields)
     monkeypatch.setattr(qd, "_record", fake_record)
     pruned = asyncio.run(qd._prune(dry_run=False))
@@ -72,15 +73,14 @@ def test_no_prune_before_release(monkeypatch):
 def test_threads_backfill_copies_facebook_template_queries(monkeypatch):
     inserted: list[str] = []
 
-    async def fake_d1(sql, params=None, **_):
-        if sql.startswith("INSERT INTO keywords"):
-            inserted.append(params[2])
-        return []
+    async def fake_add(movie_id, platform, keyword, keyword_id=None):
+        inserted.append(keyword)
+        return "kw"
 
     async def fake_record(*_args):
         pass
 
-    monkeypatch.setattr(qd, "d1_query", fake_d1)
+    monkeypatch.setattr(qd, "add_keyword", fake_add)
     monkeypatch.setattr(qd, "_record", fake_record)
     now = datetime.now(tz=UTC)
     movies = [{"id": "m1", "title": "Huyết Thống", "released_at": now.date().isoformat()}]

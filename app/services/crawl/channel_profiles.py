@@ -23,13 +23,17 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
+from sqlalchemy import and_, func, literal_column, or_, select
 
 from app.clients.kafka import publish_threads_profiles_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import channel_profiles
+from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
@@ -79,7 +83,10 @@ async def _ensure_table() -> None:
 
 
 # Handle trong link bài: https://www.tiktok.com/@<handle>/video/..., https://www.threads.com/@<handle>/post/...
+# Giữ dạng SQL thuần (literal_column) vì đây là biểu thức cắt chuỗi lồng nhau - dựng bằng
+# func() sẽ sinh hàng loạt tham số bind cho từng hằng số bên trong.
 _HANDLE_SQL = "lower(substr(p.url, instr(p.url, '@') + 1, instr(substr(p.url, instr(p.url, '@') + 1) || '/', '/') - 1))"
+_URL_FILTER_SQL = "instr(p.url, '@') > 0"
 
 
 _running = False
@@ -102,25 +109,39 @@ async def _candidates(platform: str, limit: int) -> list[dict[str, Any]]:
     """Kênh `platform` cần hỏi follower (xem docstring module), nhiều bài nhất trước."""
     since = (datetime.now(tz=UTC) - timedelta(days=LOOKBACK_DAYS)).isoformat()
     fresh_after = (datetime.now(tz=UTC) - timedelta(days=REFRESH_DAYS)).isoformat()
-    handle_sql, url_filter = _HANDLE_SQL, "instr(p.url, '@') > 0"
-    rows = await d1_query(
-        f"""
-        SELECT c.handle, SUM(c.posts) AS posts FROM (
-          SELECT p.movie_id, {handle_sql} AS handle, COUNT(*) AS posts
-          FROM posts p
-          WHERE p.platform = ?1 AND p.posted_at >= ?2 AND p.movie_id IS NOT NULL AND {url_filter}
-            AND {RELEVANT_POST_SQL}
-          GROUP BY p.movie_id, handle HAVING COUNT(*) >= ?3
-        ) c
-        LEFT JOIN channel_profiles cp ON cp.platform = ?1 AND cp.handle = c.handle
-        WHERE c.handle != '' AND COALESCE(cp.followers_source, '') != 'manual'
-          AND (cp.followers_at IS NULL OR cp.followers_at < ?4)
-        GROUP BY c.handle
-        ORDER BY posts DESC LIMIT ?5
-        """,
-        [platform, since, CHANNEL_MIN_POSTS, fresh_after, limit],
-        timeout=60.0,
+    p = posts_table.alias("p")
+    handle = literal_column(_HANDLE_SQL)
+    url_filter = literal_column(_URL_FILTER_SQL)
+    # Bài theo từng phim: kênh nào đạt CHANNEL_MIN_POSTS bài về CÙNG một phim mới được hỏi.
+    inner = (
+        select(p.c.movie_id, handle.label("handle"), func.count().label("posts"))
+        .where(
+            p.c.platform == platform,
+            p.c.posted_at >= since,
+            p.c.movie_id.is_not(None),
+            url_filter,
+            relevant_post(p),
+        )
+        .group_by(p.c.movie_id, handle)
+        .having(func.count() >= CHANNEL_MIN_POSTS)
+        .subquery("c")
     )
+    cp = channel_profiles.alias("cp")
+    stmt = (
+        select(inner.c.handle, func.sum(inner.c.posts).label("posts"))
+        .select_from(
+            inner.outerjoin(cp, and_(cp.c.platform == platform, cp.c.handle == inner.c.handle)),
+        )
+        .where(
+            inner.c.handle != "",
+            func.coalesce(cp.c.followers_source, "") != "manual",
+            or_(cp.c.followers_at.is_(None), cp.c.followers_at < fresh_after),
+        )
+        .group_by(inner.c.handle)
+        .order_by(literal_column("posts").desc())
+        .limit(limit)
+    )
+    rows = await d1_exec(stmt, timeout=60.0)
     return rows or []
 
 

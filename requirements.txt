@@ -26,6 +26,7 @@ python-dotenv==1.2.3
 pyotp==2.10.0
 redis==8.1.0
 six==1.17.0
+SQLAlchemy==2.1.8
 starlette==1.6.0
 structlog==26.1.0
 tzdata==2026.4

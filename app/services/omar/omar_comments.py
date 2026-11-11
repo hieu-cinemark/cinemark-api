@@ -21,13 +21,17 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import httpx
+from sqlalchemy import Column, Table, Text, and_, delete, func, or_, select, update
+from sqlalchemy.schema import CreateTable
 
 from app.clients.kafka import publish_raw_comment
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query, get_enabled_keywords
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metadata
+from app.repositories.d1.store import get_enabled_keywords
+from app.repositories.d1.tables import posts
 from app.services.omar import omar_yield
 
 if TYPE_CHECKING:
@@ -97,9 +101,41 @@ def weekly_due(now: datetime) -> bool:
 
 # Chạy mỗi ngày: bỏ video Omar đã cào hết mà chưa có thêm đủ bình luận. Chỉ tính lần cào của Omar (lý do "omar_..."):
 # spider cũng ghi comments_crawled_* nhưng chỉ quét vài trang đầu (comment_planner), video đó vẫn cần Omar cào hết.
-_NEEDS_CRAWL_SQL = """(COALESCE(p.comments_crawl_reason, '') NOT LIKE 'omar%'
-  OR (p.reply_count - COALESCE(p.comments_crawled_replies, 0) >= ?
-      AND p.reply_count >= COALESCE(p.comments_crawled_replies, 0) * (1 + ?)))"""
+_P = posts.alias("p")
+
+
+def video_score(p):
+    """Thứ tự "nhiều tương tác" của video TikTok (bình luận nặng gấp 3) - cũng dùng ở omar_trending."""
+    return (
+        func.coalesce(p.c.like_count, 0)
+        + 3 * func.coalesce(p.c.reply_count, 0)
+        + func.coalesce(p.c.repost_count, 0)
+        + func.coalesce(p.c.reshare_count, 0)
+    )
+
+
+_VIDEO_SCORE = video_score(_P)
+keyword_table = Table(
+    "omar_comment_keywords",
+    metadata,
+    Column("keyword_id", Text, primary_key=True),
+    Column("created_at", Text, nullable=False),
+)
+options_table = Table(
+    "omar_comment_options", metadata, Column("key", Text, primary_key=True), Column("value", Text, nullable=False)
+)
+
+
+def _needs_crawl():
+    """Chưa cào bằng Omar, hoặc bình luận đã tăng đủ (regrowth) từ lần cào trước."""
+    crawled = func.coalesce(_P.c.comments_crawled_replies, 0)
+    return or_(
+        func.coalesce(_P.c.comments_crawl_reason, "").not_like("omar%"),
+        and_(
+            _P.c.reply_count - crawled >= settings.omar_comments_regrowth_min,
+            _P.c.reply_count >= crawled * (1 + settings.omar_comments_regrowth_ratio),
+        ),
+    )
 
 
 async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[str, list[dict[str, Any]]]:
@@ -108,24 +144,22 @@ async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[st
     dashboard hết giờ chờ 15 giây. Danh sách id truyền qua json_each (D1 giới hạn 100 tham số mỗi câu)."""
     if not keyword_ids:
         return {}
-    needs = f" AND {_NEEDS_CRAWL_SQL}" if _daily() else ""
-    regrowth = [settings.omar_comments_regrowth_min, settings.omar_comments_regrowth_ratio] if _daily() else []
+    rn = func.row_number().over(partition_by=_P.c.keyword_id, order_by=_VIDEO_SCORE.desc()).label("rn")
+    ranked = select(_P.c.keyword_id, _P.c.id, _P.c.external_id, _P.c.reply_count, rn).where(
+        _P.c.platform == "tiktok",
+        _P.c.keyword_id.in_(json_values(keyword_ids)),
+        _P.c.posted_at >= since,
+        _P.c.reply_count > 0,
+        relevant_post(_P),
+    )
+    if _daily():
+        ranked = ranked.where(_needs_crawl())
+    top = ranked.subquery()
     rows = (
-        await d1_query(
-            f"""
-            SELECT keyword_id, id, external_id, reply_count FROM (
-              SELECT p.keyword_id, p.id, p.external_id, p.reply_count,
-                     ROW_NUMBER() OVER (
-                       PARTITION BY p.keyword_id
-                       ORDER BY COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0)
-                                + COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) DESC
-                     ) AS rn
-              FROM posts p
-              WHERE p.platform = 'tiktok' AND p.keyword_id IN (SELECT value FROM json_each(?))
-                AND p.posted_at >= ? AND p.reply_count > 0 AND {RELEVANT_POST_SQL}{needs}
-            ) WHERE rn <= ? ORDER BY keyword_id, rn
-            """,
-            [json.dumps(keyword_ids), since, *regrowth, limit],
+        await d1_exec(
+            select(top.c.keyword_id, top.c.id, top.c.external_id, top.c.reply_count)
+            .where(top.c.rn <= limit)
+            .order_by(top.c.keyword_id, top.c.rn),
             quiet=True,
             timeout=60.0,
         )
@@ -144,10 +178,7 @@ async def _ensure_keyword_table() -> None:
     global _KEYWORD_TABLE_READY
     if _KEYWORD_TABLE_READY:
         return
-    await d1_query(
-        "CREATE TABLE IF NOT EXISTS omar_comment_keywords (keyword_id TEXT PRIMARY KEY, created_at TEXT NOT NULL)",
-        quiet=True,
-    )
+    await d1_exec(CreateTable(keyword_table, if_not_exists=True), quiet=True)
     _KEYWORD_TABLE_READY = True
 
 
@@ -158,9 +189,7 @@ async def _ensure_options_table() -> None:
     global _OPTIONS_TABLE_READY
     if _OPTIONS_TABLE_READY:
         return
-    await d1_query(
-        "CREATE TABLE IF NOT EXISTS omar_comment_options (key TEXT PRIMARY KEY, value TEXT NOT NULL)", quiet=True
-    )
+    await d1_exec(CreateTable(options_table, if_not_exists=True), quiet=True)
     _OPTIONS_TABLE_READY = True
 
 
@@ -169,17 +198,14 @@ async def all_videos_enabled() -> bool:
     chọn (mọi thời điểm) mà Omar chưa cào. Chỉ áp dụng cho từ khoá chọn tay - danh sách trống (mặc định mọi hashtag)
     thì bỏ qua, tránh xếp hàng hàng chục nghìn video một lúc."""
     await _ensure_options_table()
-    rows = await d1_query("SELECT value FROM omar_comment_options WHERE key = 'all_videos'", quiet=True) or []
+    rows = await d1_exec(select(options_table.c.value).where(options_table.c.key == "all_videos"), quiet=True) or []
     return bool(rows) and str(rows[0]["value"]) == "1"
 
 
 async def set_all_videos(enabled: bool) -> bool:
     await _ensure_options_table()
-    await d1_query(
-        "INSERT INTO omar_comment_options (key, value) VALUES ('all_videos', ?) "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        ["1" if enabled else "0"],
-        quiet=True,
+    await d1_insert_many(
+        options_table, [{"key": "all_videos", "value": "1" if enabled else "0"}], conflict=["key"], quiet=True
     )
     logger.info("omar_comment_all_videos_set", enabled=enabled)
     return enabled
@@ -191,18 +217,16 @@ async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]
     if not keyword_ids:
         return {}
     rows = (
-        await d1_query(
-            f"""
-            SELECT p.keyword_id, p.id, p.external_id, p.reply_count
-            FROM posts p
-            WHERE p.platform = 'tiktok' AND p.keyword_id IN (SELECT value FROM json_each(?))
-              AND p.reply_count > 0 AND {RELEVANT_POST_SQL}
-              AND (p.comments_crawl_reason IS NULL OR p.comments_crawl_reason NOT LIKE 'omar%')
-            ORDER BY p.keyword_id,
-                     COALESCE(p.like_count, 0) + 3 * COALESCE(p.reply_count, 0)
-                     + COALESCE(p.repost_count, 0) + COALESCE(p.reshare_count, 0) DESC
-            """,
-            [json.dumps(keyword_ids)],
+        await d1_exec(
+            select(_P.c.keyword_id, _P.c.id, _P.c.external_id, _P.c.reply_count)
+            .where(
+                _P.c.platform == "tiktok",
+                _P.c.keyword_id.in_(json_values(keyword_ids)),
+                _P.c.reply_count > 0,
+                relevant_post(_P),
+                or_(_P.c.comments_crawl_reason.is_(None), _P.c.comments_crawl_reason.not_like("omar%")),
+            )
+            .order_by(_P.c.keyword_id, _VIDEO_SCORE.desc()),
             quiet=True,
             timeout=60.0,
         )
@@ -217,7 +241,7 @@ async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]
 async def selected_keyword_ids() -> list[str]:
     """Từ khoá người dùng chọn để cào bình luận (tab Omar). Rỗng = mặc định: mọi hashtag TikTok đang bật."""
     await _ensure_keyword_table()
-    rows = await d1_query("SELECT keyword_id FROM omar_comment_keywords ORDER BY created_at", quiet=True) or []
+    rows = await d1_exec(select(keyword_table.c.keyword_id).order_by(keyword_table.c.created_at), quiet=True) or []
     return [str(row["keyword_id"]) for row in rows]
 
 
@@ -227,14 +251,8 @@ async def set_selected_keyword_ids(keyword_ids: list[str]) -> list[str]:
     known = {str(k["id"]) for k in await get_enabled_keywords(platform="tiktok")}
     wanted = list(dict.fromkeys(str(i) for i in keyword_ids if str(i) in known))
     now = datetime.now(tz=UTC).isoformat()
-    await d1_query("DELETE FROM omar_comment_keywords", quiet=True)
-    for start in range(0, len(wanted), 40):
-        chunk = wanted[start : start + 40]
-        await d1_query(
-            "INSERT INTO omar_comment_keywords (keyword_id, created_at) VALUES " + ", ".join("(?, ?)" for _ in chunk),
-            [value for keyword_id in chunk for value in (keyword_id, now)],
-            quiet=True,
-        )
+    await d1_exec(delete(keyword_table), quiet=True)
+    await d1_insert_many(keyword_table, [{"keyword_id": k, "created_at": now} for k in wanted], quiet=True)
     logger.info("omar_comment_keywords_set", count=len(wanted))
     return wanted
 
@@ -501,14 +519,15 @@ async def process_queue(
         await redis.hdel(JOBS_KEY, video_id)
         stats["comment_videos"] += 1
         await _update_last_job()
-        await d1_query(
-            "UPDATE posts SET comments_crawled_at = ?, comments_crawled_replies = ?, comments_crawl_reason = ? WHERE id = ?",
-            [
-                datetime.now(tz=UTC).isoformat(),
-                job.get("reply_count") or 0,
-                job.get("reason") or "omar_weekly",  # "omar_trending": xếp hàng từ omar_trending (enqueue_videos)
-                job["post_id"],
-            ],
+        await d1_exec(
+            update(posts)
+            .where(posts.c.id == job["post_id"])
+            .values(
+                comments_crawled_at=datetime.now(tz=UTC).isoformat(),
+                comments_crawled_replies=job.get("reply_count") or 0,
+                # "omar_trending": xếp hàng từ omar_trending (enqueue_videos)
+                comments_crawl_reason=job.get("reason") or "omar_weekly",
+            ),
             quiet=True,
         )
 
