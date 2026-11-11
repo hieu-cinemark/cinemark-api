@@ -14,8 +14,11 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import or_, select
+
 from app.ai.tasks.sentiment_rules import is_tag_or_icon
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
 
 CURSOR_FILE = Path(__file__).resolve().parents[2] / "data" / "backfill_tag_icon_stage.cursor"
 PAGE_SIZE = 2000
@@ -25,20 +28,30 @@ OVERLOAD_PAUSE_SECONDS = 60.0
 
 
 def ids_to_update(rows: list[dict[str, Any]]) -> list[str]:
-    return [row["id"] for row in rows if row.get("audience_stage") in (None, "", "khac") and is_tag_or_icon(row.get("message"))]
+    return [
+        row["id"]
+        for row in rows
+        if row.get("audience_stage") in (None, "", "khac") and is_tag_or_icon(row.get("message"))
+    ]
 
 
 async def main(args: argparse.Namespace) -> None:
     last_id = CURSOR_FILE.read_text().strip() if CURSOR_FILE.exists() else ""
     read = updated = 0
     while True:
-        rows = await d1_query(
-            "SELECT id, message, audience_stage FROM comments "
-            "WHERE id > ? AND (sentiment_source = 'rule' OR message LIKE '[%') ORDER BY id LIMIT ?",
-            [last_id, PAGE_SIZE],
-            timeout=60.0,
-            quiet=True,
+        stmt = (
+            select(comments_table.c.id, comments_table.c.message, comments_table.c.audience_stage)
+            .where(
+                comments_table.c.id > last_id,
+                or_(
+                    comments_table.c.sentiment_source == "rule",
+                    comments_table.c.message.like("[%"),
+                ),
+            )
+            .order_by(comments_table.c.id)
+            .limit(PAGE_SIZE)
         )
+        rows = await d1_exec(stmt, timeout=60.0, quiet=True)
         if rows is None:
             print(f"đọc lỗi, nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
             await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)
@@ -53,11 +66,12 @@ async def main(args: argparse.Namespace) -> None:
             return
         for i in range(0, len(ids), UPDATE_CHUNK):
             chunk = ids[i : i + UPDATE_CHUNK]
-            sql = (
-                "UPDATE comments SET audience_stage = 'hong', sentiment_source = 'rule' "
-                f"WHERE id IN ({','.join('?' * len(chunk))})"
+            stmt = (
+                comments_table.update()
+                .where(comments_table.c.id.in_(chunk))
+                .values(audience_stage="hong", sentiment_source="rule")
             )
-            while await d1_query(sql, chunk, timeout=60.0, quiet=True) is None:
+            while await d1_exec(stmt, timeout=60.0, quiet=True) is None:
                 print(f"ghi lỗi, nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
                 await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)
         last_id = rows[-1]["id"]

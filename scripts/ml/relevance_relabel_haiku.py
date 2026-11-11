@@ -20,8 +20,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from app.core.config import settings
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import movies as movies_table
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_FILE = ROOT / "data" / "visobert" / "relevance.jsonl"
@@ -35,7 +38,16 @@ _BINARY_RULE = (
 
 
 async def _load_movies(ids: list[str]) -> dict[str, dict[str, Any]]:
-    rows = await d1_query(f"SELECT * FROM movies WHERE id IN ({','.join('?' * len(ids))})", ids, timeout=60.0)
+    stmt = select(
+        movies_table.c.id,
+        movies_table.c.title,
+        movies_table.c.director,
+        movies_table.c.cast,
+        movies_table.c.distributor,
+        movies_table.c.released_at,
+        movies_table.c.description,
+    ).where(movies_table.c.id.in_(ids))
+    rows = await d1_exec(stmt, timeout=60.0)
     if rows is None:
         raise RuntimeError("movies_download_failed")
     return {row["id"]: row for row in rows}

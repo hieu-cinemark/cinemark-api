@@ -11,8 +11,13 @@ import argparse
 import asyncio
 import json
 
+from sqlalchemy import or_, select
+
 from app.ai.tasks.sentiment_rules import slang_positive
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 POST_CHUNK = 40
 SLANG_LIKE = (
@@ -31,18 +36,19 @@ SLANG_LIKE = (
 
 
 async def run(movie_id: str, dry_run: bool) -> None:
-    posts = await d1_query("SELECT id FROM posts WHERE movie_id = ?", [movie_id], timeout=90.0, quiet=True)
-    post_ids = [row["id"] for row in posts or []]
-    like = " OR ".join("c.message LIKE ?" for _ in SLANG_LIKE)
+    post_rows = await d1_exec(
+        select(posts_table.c.id).where(posts_table.c.movie_id == movie_id), timeout=90.0, quiet=True
+    )
+    post_ids = [row["id"] for row in post_rows or []]
     fixes = []
     for i in range(0, len(post_ids), POST_CHUNK):
         chunk = post_ids[i : i + POST_CHUNK]
-        rows = await d1_query(
-            f"SELECT c.id, c.message, c.sentiment, c.aspects FROM comments c WHERE c.post_id IN ({','.join('?' * len(chunk))}) AND ({like})",
-            [*chunk, *SLANG_LIKE],
-            timeout=90.0,
-            quiet=True,
+        c = comments_table.alias("c")
+        like = or_(*(c.c.message.like(pattern) for pattern in SLANG_LIKE))
+        stmt = (
+            select(c.c.id, c.c.message, c.c.sentiment, c.c.aspects).select_from(c).where(c.c.post_id.in_(chunk), like)
         )
+        rows = await d1_exec(stmt, timeout=90.0, quiet=True)
         for row in rows or []:
             if not slang_positive(row["message"]):
                 continue
@@ -65,6 +71,7 @@ async def run(movie_id: str, dry_run: bool) -> None:
     if dry_run:
         return
     for i in range(0, len(fixes), 300):
+        # Giữ SQL thuần: UPDATE ... FROM json_each - ghi cả khối bằng một tham số JSON.
         await d1_query(
             "UPDATE comments SET sentiment = j.s, aspects = j.a FROM (SELECT value ->> 'id' AS id, value ->> 's' AS s, value ->> 'a' AS a "
             "FROM json_each(?1)) AS j WHERE comments.id = j.id",

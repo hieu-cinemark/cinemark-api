@@ -144,6 +144,17 @@ movie_scenes = Table(
     *_text("computed_at"),
 )
 
+# Nhãn tên cảnh do người vận hành đặt tay (scripts/tools/name_scenes.py).
+movie_scene_labels = Table(
+    "movie_scene_labels",
+    metadata,
+    Column("movie_id", Text, primary_key=True),
+    Column("rep_post_id", Text, primary_key=True),
+    *_text("label", "description"),
+    *_int("confident"),
+    *_text("created_at"),
+)
+
 # Nhóm bình luận theo chủ đề (scripts/tools/publish_clusters.py ghi, scripts/jobs/social_topic_reports.py đọc).
 comment_cluster_topics = Table(
     "comment_cluster_topics",
@@ -154,6 +165,15 @@ comment_cluster_topics = Table(
     *_int("comments"),
     Column("share_percent", Float),
     *_text("generated_at"),
+)
+
+# Thành viên từng nhóm (scripts/tools/publish_clusters.py ghi).
+comment_cluster_members = Table(
+    "comment_cluster_members",
+    metadata,
+    Column("movie_id", Text, primary_key=True),
+    Column("cluster", Integer, primary_key=True),
+    Column("comment_id", Text, primary_key=True),
 )
 
 # Bảng key/value cấu hình trên database "config" (cinemark-config-db).

@@ -31,10 +31,15 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import func, select
+
 from app.ai.domain.accuracy import compute_metrics, parse_human_aspects, parse_human_sentiment, parse_human_yes_no
 from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.repositories.d1.comments import ensure_comment_insight_columns
-from app.repositories.d1.store import RELEVANT_POST_SQL, d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 COLUMNS = [
     "id",
@@ -53,18 +58,22 @@ _ID_CHUNK = 90  # D1 cho tối đa 100 tham số mỗi câu lệnh
 
 async def export(n: int, out: Path, movie_id: str | None) -> None:
     await ensure_comment_insight_columns()
-    sql = f"""
-        SELECT c.id, c.platform, c.message, p.content AS post_content
-        FROM comments c JOIN posts p ON p.id = c.post_id
-        WHERE {RELEVANT_POST_SQL} AND c.insights_classified_at IS NOT NULL AND length(trim(c.message)) >= 15
-    """
-    params: list[str | int] = []
+    c = comments_table.alias("c")
+    p = posts_table.alias("p")
+    stmt = (
+        select(c.c.id, c.c.platform, c.c.message, p.c.content.label("post_content"))
+        .select_from(c.join(p, p.c.id == c.c.post_id))
+        .where(
+            relevant_post(p),
+            c.c.insights_classified_at.is_not(None),
+            func.length(func.trim(c.c.message)) >= 15,
+        )
+        .order_by(func.random())
+        .limit(n * 2)  # dư để bù các comment không mang nội dung bị bỏ dưới đây
+    )
     if movie_id:
-        sql += " AND p.movie_id = ?"
-        params.append(movie_id)
-    sql += " ORDER BY random() LIMIT ?"
-    params.append(n * 2)  # dư để bù các comment không mang nội dung bị bỏ dưới đây
-    rows = await d1_query(sql, params)
+        stmt = stmt.where(p.c.movie_id == movie_id)
+    rows = await d1_exec(stmt)
     if rows is None:
         sys.exit("Không đọc được D1")
     picked = [r for r in rows if rule_sentiment(r["message"]) is None][:n]
@@ -87,11 +96,14 @@ async def _machine_labels(ids: list[str]) -> dict[str, dict]:
     labels: dict[str, dict] = {}
     for start in range(0, len(ids), _ID_CHUNK):
         chunk = ids[start : start + _ID_CHUNK]
-        rows = await d1_query(
-            f"SELECT id, sentiment, aspects, audience_stage, insights_classified_at FROM comments "
-            f"WHERE id IN ({','.join('?' * len(chunk))})",
-            chunk,
-        )
+        stmt = select(
+            comments_table.c.id,
+            comments_table.c.sentiment,
+            comments_table.c.aspects,
+            comments_table.c.audience_stage,
+            comments_table.c.insights_classified_at,
+        ).where(comments_table.c.id.in_(chunk))
+        rows = await d1_exec(stmt)
         for r in rows or []:
             aspects = json.loads(r["aspects"]) if r.get("insights_classified_at") and r.get("aspects") else None
             labels[r["id"]] = {"sentiment": r["sentiment"], "aspects": aspects, "stage": r.get("audience_stage")}

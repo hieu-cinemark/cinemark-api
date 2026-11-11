@@ -20,11 +20,14 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from sqlalchemy import case, func, select
 
 from app.ai.local.embedding import embed_texts
 from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 from app.services.topics.clustering import kmeans
 from scripts.jobs.embed_comments import DB_PATH
 
@@ -64,25 +67,27 @@ def has_content(message: str | None) -> bool:
 
 async def comment_details(movie_id: str) -> dict[str, dict[str, Any]]:
     """Bình luận gốc của các bài liên quan, không phải bài trend, của phim - đọc theo từng nhóm bài qua index post_id."""
-    posts = await d1_query(
-        f"SELECT p.id FROM posts p WHERE p.movie_id = ? AND COALESCE(p.trend_post, 0) = 0 AND {RELEVANT_POST_SQL}",
-        [movie_id],
-        timeout=90.0,
-        quiet=True,
+    p = posts_table.alias("p")
+    stmt = select(p.c.id).where(
+        p.c.movie_id == movie_id,
+        func.coalesce(p.c.trend_post, 0) == 0,
+        relevant_post(p),
     )
+    posts = await d1_exec(stmt, timeout=90.0, quiet=True)
     if posts is None:
         raise RuntimeError("post_read_failed")
     post_ids = [row["id"] for row in posts]
     details: dict[str, dict[str, Any]] = {}
     for i in range(0, len(post_ids), POST_CHUNK):
         chunk = post_ids[i : i + POST_CHUNK]
-        rows = await d1_query(
-            "SELECT c.id, c.message, c.reactions_count AS likes, CASE WHEN c.sentiment_source = 'rule' THEN NULL ELSE c.sentiment END AS sentiment "
-            f"FROM comments c WHERE c.post_id IN ({','.join('?' * len(chunk))}) AND c.parent_external_id IS NULL",
-            chunk,
-            timeout=90.0,
-            quiet=True,
-        )
+        c = comments_table.alias("c")
+        stmt = select(
+            c.c.id,
+            c.c.message,
+            c.c.reactions_count.label("likes"),
+            case((c.c.sentiment_source == "rule", None), else_=c.c.sentiment).label("sentiment"),
+        ).where(c.c.post_id.in_(chunk), c.c.parent_external_id.is_(None))
+        rows = await d1_exec(stmt, timeout=90.0, quiet=True)
         if rows is None:
             raise RuntimeError("comment_read_failed")
         for row in rows:
@@ -95,14 +100,20 @@ async def comment_details(movie_id: str) -> dict[str, dict[str, Any]]:
 
 
 async def post_details(movie_id: str) -> dict[str, dict[str, Any]]:
-    marks = ",".join("?" * len(POST_PLATFORMS))
-    rows = await d1_query(
-        f"SELECT p.id, p.platform, substr(p.content, 1, {POST_TEXT_LIMIT}) AS content, p.like_count AS likes, p.sentiment "
-        f"FROM posts p WHERE p.movie_id = ? AND p.platform IN ({marks}) AND COALESCE(p.trend_post, 0) = 0 AND {RELEVANT_POST_SQL}",
-        [movie_id, *POST_PLATFORMS],
-        timeout=90.0,
-        quiet=True,
+    p = posts_table.alias("p")
+    stmt = select(
+        p.c.id,
+        p.c.platform,
+        func.substr(p.c.content, 1, POST_TEXT_LIMIT).label("content"),
+        p.c.like_count.label("likes"),
+        p.c.sentiment,
+    ).where(
+        p.c.movie_id == movie_id,
+        p.c.platform.in_(POST_PLATFORMS),
+        func.coalesce(p.c.trend_post, 0) == 0,
+        relevant_post(p),
     )
+    rows = await d1_exec(stmt, timeout=90.0, quiet=True)
     if rows is None:
         raise RuntimeError("post_read_failed")
     return {

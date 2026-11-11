@@ -19,8 +19,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func, select
+
 from app.core.config import settings
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts as posts_table
 
 ROOT = Path(__file__).resolve().parents[2]
 CANDIDATES_FILE = ROOT / "data" / "visobert" / "part_candidates.jsonl"
@@ -34,12 +38,20 @@ LABELS = {"this_part", "other_part", "not_related", "unclear"}
 FRANCHISES: dict[str, dict[str, Any]] = {
     "chi-chi-em-em-3": {"earlier": ["Chị Chị Em Em (2019)", "Chị Chị Em Em 2 (2023)"]},
     "quy-an-tang-4-ho-tinh-tee-yod": {
-        "earlier": ["Tee Yod / Quỷ Ăn Tạng (2023)", "Tee Yod 2 / Quỷ Ăn Tạng 2 (2024)", "Tee Yod 3 / Quỷ Ăn Tạng 3 (2025)"]
+        "earlier": [
+            "Tee Yod / Quỷ Ăn Tạng (2023)",
+            "Tee Yod 2 / Quỷ Ăn Tạng 2 (2024)",
+            "Tee Yod 3 / Quỷ Ăn Tạng 3 (2025)",
+        ]
     },
     "ut-lan-2": {"earlier": ["Út Lan: Oán Linh Giữ Của (phần đầu)"]},
     "tham-tu-kien-loi-nguyen-hoang-kim": {"earlier": ["Thám Tử Kiên: Kỳ Án Không Đầu (2025)"]},
     "shaun-the-sheep-quai-la-ghe-nha": {
-        "earlier": ["Shaun the Sheep Movie (2015)", "Shaun the Sheep: Farmageddon (2019)", "phim truyền hình Shaun the Sheep"]
+        "earlier": [
+            "Shaun the Sheep Movie (2015)",
+            "Shaun the Sheep: Farmageddon (2019)",
+            "phim truyền hình Shaun the Sheep",
+        ]
     },
 }
 
@@ -72,9 +84,10 @@ def _batch_prompt(rows: list[dict[str, Any]], movies: dict[str, dict[str, Any]])
 
 async def _load_movies() -> dict[str, dict[str, Any]]:
     slugs = sorted(FRANCHISES)
-    rows = await d1_query(
-        f"SELECT id, slug, title, released_at FROM movies WHERE slug IN ({','.join('?' * len(slugs))})", slugs, timeout=60.0
+    stmt = select(movies_table.c.id, movies_table.c.slug, movies_table.c.title, movies_table.c.released_at).where(
+        movies_table.c.slug.in_(slugs)
     )
+    rows = await d1_exec(stmt, timeout=60.0)
     if rows is None:
         raise RuntimeError("movies_download_failed")
     return {row["id"]: row for row in rows}
@@ -85,18 +98,31 @@ async def _load_candidates(movies: dict[str, dict[str, Any]]) -> list[dict[str, 
         return [json.loads(line) for line in CANDIDATES_FILE.read_text(encoding="utf-8").split("\n") if line]
     picked: list[dict[str, Any]] = []
     for movie_id, movie in movies.items():
-        years = await d1_query(
-            "SELECT DISTINCT substr(posted_at, 1, 4) AS y FROM posts WHERE movie_id = ? AND posted_at IS NOT NULL",
-            [movie_id],
+        years = await d1_exec(
+            select(func.distinct(func.substr(posts_table.c.posted_at, 1, 4)).label("y")).where(
+                posts_table.c.movie_id == movie_id, posts_table.c.posted_at.is_not(None)
+            ),
             timeout=60.0,
         )
         for year in sorted(r["y"] for r in years or []):
-            rows = await d1_query(
-                "SELECT id, movie_id, platform, content, posted_at, keyword_match FROM posts "
-                "WHERE movie_id = ? AND substr(posted_at, 1, 4) = ? AND length(content) >= 20 ORDER BY id LIMIT ?",
-                [movie_id, year, PER_FILM_YEAR],
-                timeout=60.0,
+            stmt = (
+                select(
+                    posts_table.c.id,
+                    posts_table.c.movie_id,
+                    posts_table.c.platform,
+                    posts_table.c.content,
+                    posts_table.c.posted_at,
+                    posts_table.c.keyword_match,
+                )
+                .where(
+                    posts_table.c.movie_id == movie_id,
+                    func.substr(posts_table.c.posted_at, 1, 4) == year,
+                    func.length(posts_table.c.content) >= 20,
+                )
+                .order_by(posts_table.c.id)
+                .limit(PER_FILM_YEAR)
             )
+            rows = await d1_exec(stmt, timeout=60.0)
             if rows is None:
                 raise RuntimeError(f"posts_download_failed:{movie['slug']}:{year}")
             picked.extend(rows)

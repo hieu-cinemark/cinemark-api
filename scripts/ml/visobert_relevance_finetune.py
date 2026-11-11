@@ -27,8 +27,13 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from sqlalchemy import func, select
+
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts as posts_table
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_FILE = ROOT / "data" / "visobert" / "relevance.jsonl"
@@ -45,15 +50,30 @@ async def download() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     last_id = ""
     while True:
-        page = await d1_query(
-            f"SELECT p.id, p.movie_id, m.title, substr(p.content, 1, {CONTENT_CHARS}) AS content, p.relevance_label, "
-            "k.keyword FROM posts p JOIN movies m ON m.id = p.movie_id LEFT JOIN keywords k ON k.id = p.keyword_id "
-            "WHERE p.relevance_confidence > 0 AND p.relevance_confidence < 1 "
-            "AND p.relevance_label IN ('related', 'not_related', 'uncertain') "
-            f"AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH} AND p.id > ? ORDER BY p.id LIMIT ?",
-            [last_id, FETCH_PAGE],
-            timeout=120.0,
+        p = posts_table.alias("p")
+        m = movies_table.alias("m")
+        k = keywords_table.alias("k")
+        stmt = (
+            select(
+                p.c.id,
+                p.c.movie_id,
+                m.c.title,
+                func.substr(p.c.content, 1, CONTENT_CHARS).label("content"),
+                p.c.relevance_label,
+                k.c.keyword,
+            )
+            .select_from(p.join(m, m.c.id == p.c.movie_id).outerjoin(k, k.c.id == p.c.keyword_id))
+            .where(
+                p.c.relevance_confidence > 0,
+                p.c.relevance_confidence < 1,
+                p.c.relevance_label.in_(LABELS),
+                func.length(func.trim(p.c.content)) >= MIN_CONTENT_LENGTH,
+                p.c.id > last_id,
+            )
+            .order_by(p.c.id)
+            .limit(FETCH_PAGE)
         )
+        page = await d1_exec(stmt, timeout=120.0)
         if page is None:
             raise RuntimeError("download_failed")
         if not page:

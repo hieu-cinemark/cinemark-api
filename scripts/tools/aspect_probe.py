@@ -28,9 +28,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from sqlalchemy import ColumnElement, and_, func, select
 
 from app.ai.domain.aspects import parse_aspects
-from app.clients.d1 import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
 
 DATA_DIR = Path.home() / "cinemark-ml" / "aspects"
 MODELS = {
@@ -45,17 +47,28 @@ SEED = 13
 # --- 1. download ----------------------------------------------------------------------------------------------------
 
 
-async def _fetch(where: str, limit: int | None) -> list[dict]:
+async def _fetch(where: ColumnElement[bool], limit: int | None) -> list[dict]:
     rows: list[dict] = []
     last = ""
     while True:
-        page = await d1_query(
-            f"""SELECT id, post_id, message, aspects, audience_stage FROM comments
-            WHERE insights_classified_at IS NOT NULL AND {where} AND id > ?1 AND length(message) >= 2
-            ORDER BY id LIMIT 2000""",
-            [last],
-            timeout=120.0,
+        stmt = (
+            select(
+                comments_table.c.id,
+                comments_table.c.post_id,
+                comments_table.c.message,
+                comments_table.c.aspects,
+                comments_table.c.audience_stage,
+            )
+            .where(
+                comments_table.c.insights_classified_at.is_not(None),
+                where,
+                comments_table.c.id > last,
+                func.length(comments_table.c.message) >= 2,
+            )
+            .order_by(comments_table.c.id)
+            .limit(2000)
         )
+        page = await d1_exec(stmt, timeout=120.0)
         if not page:
             break
         rows.extend(page)
@@ -69,9 +82,15 @@ async def _fetch(where: str, limit: int | None) -> list[dict]:
 
 async def _fetch_all(neg: int) -> tuple[list[dict], list[dict]]:
     print("tải mẫu dương (có khía cạnh)...")
-    pos = await _fetch("aspects IS NOT NULL AND aspects NOT IN ('[]', '')", None)
+    pos = await _fetch(
+        and_(
+            comments_table.c.aspects.is_not(None),
+            comments_table.c.aspects.not_in(("[]", "")),
+        ),
+        None,
+    )
     print("tải mẫu âm (AI xử lý, không khía cạnh)...")
-    return pos, await _fetch("aspects = '[]'", neg)
+    return pos, await _fetch(comments_table.c.aspects == "[]", neg)
 
 
 def download(neg: int) -> list[dict]:

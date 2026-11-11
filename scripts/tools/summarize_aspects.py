@@ -16,10 +16,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import and_, func, or_, select
+
 from app.ai.domain.aspects import ASPECTS
 from app.ai.runtime import call_llm
 from app.ai.tasks.sentiment_rules import strip_placeholders
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import movie_measure_settings as movie_measure_settings_table
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts as posts_table
 from scripts.jobs.aspect_label import MODEL_DIR, AspectModel
 
 OUT_DIR = Path(__file__).resolve().parents[2] / "data" / "summaries"
@@ -49,19 +55,19 @@ def vn_day_start(day: str) -> str:
     return datetime.fromisoformat(f"{day[:10]}T00:00:00+07:00").astimezone(UTC).isoformat()
 
 
-def phase_filter(phase: str | None, premiere: str | None, released: str | None) -> tuple[str, list[str]]:
-    """Cùng định nghĩa với cinemark api/lib/commentPhase.ts."""
+def phase_filter(phase: str | None, premiere: str | None, released: str | None) -> list[Any]:
+    """Cùng định nghĩa với cinemark api/lib/commentPhase.ts. Trả về danh sách điều kiện."""
     first = premiere or released
     if not phase or not first:
-        return "", []
+        return []
     start = vn_day_start(first)
     release = vn_day_start(released) if released else start
-    at = "COALESCE(c.posted_at, c.scraped_at)"
+    at = func.coalesce(comments_table.c.posted_at, comments_table.c.scraped_at)
     if phase == "hong":
-        return f"AND {at} < ? ", [start]
+        return [at < start]
     if phase == "early":
-        return f"AND {at} >= ? AND {at} < ? AND p.posted_at >= ? ", [start, max(start, release), start]
-    return f"AND {at} >= ? AND p.posted_at >= ? ", [release, start]
+        return [at >= start, at < release, posts_table.c.posted_at >= start]
+    return [at >= release, posts_table.c.posted_at >= start]
 
 
 def group_comments(rows: list[dict[str, Any]], labels: list[list[str]]) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -83,26 +89,43 @@ def build_prompt(title: str, aspect: str, sides: dict[str, list[dict[str, Any]]]
     for polarity, heading in (("+", "KHEN"), ("-", "CHÊ")):
         items = sides[polarity]
         lines.append(f"\n{heading}: {len(items)} bình luận, dưới đây là tối đa {PER_POLARITY} câu nhiều like nhất")
-        lines.extend(f"- ({row.get('likes') or 0} like) {' '.join(row['text'].split())[:300]}" for row in items[:PER_POLARITY])
+        lines.extend(
+            f"- ({row.get('likes') or 0} like) {' '.join(row['text'].split())[:300]}" for row in items[:PER_POLARITY]
+        )
     return "\n".join(lines)
 
 
 async def main(args: argparse.Namespace) -> None:
-    dates = await d1_query(
-        "SELECT m.released_at, s.premiere_date FROM movies m LEFT JOIN movie_measure_settings s ON s.movie_id = m.id WHERE m.id = ?",
-        [args.movie_id],
+    c = comments_table.alias("c")
+    p = posts_table.alias("p")
+    m = movies_table.alias("m")
+    s = movie_measure_settings_table.alias("s")
+    dates = await d1_exec(
+        select(m.c.released_at, s.c.premiere_date)
+        .select_from(m.outerjoin(s, s.c.movie_id == m.c.id))
+        .where(m.c.id == args.movie_id),
         quiet=True,
     )
-    extra_sql, extra_params = phase_filter(args.phase, *(dates[0][key] for key in ("premiere_date", "released_at")))
-    rows = await d1_query(
-        "SELECT c.message AS text, c.reactions_count AS likes FROM comments c JOIN posts p ON p.id = c.post_id "
-        "WHERE p.movie_id = ? AND COALESCE(p.trend_post, 0) = 0 "
-        "AND (p.relevance_label = 'related' OR (p.relevance_label IS NULL AND p.keyword_match > 0)) "
-        "AND c.parent_external_id IS NULL AND COALESCE(c.sentiment_source, '') != 'rule' AND length(trim(c.message)) >= 10 "
-        f"{extra_sql}ORDER BY c.reactions_count DESC LIMIT ?",
-        [args.movie_id, *extra_params, SAMPLE],
-        timeout=90.0,
+    extra_where = phase_filter(args.phase, *(dates[0][key] for key in ("premiere_date", "released_at")))
+    stmt = (
+        select(c.c.message.label("text"), c.c.reactions_count.label("likes"))
+        .select_from(c.join(p, p.c.id == c.c.post_id))
+        .where(
+            p.c.movie_id == args.movie_id,
+            func.coalesce(p.c.trend_post, 0) == 0,
+            or_(
+                p.c.relevance_label == "related",
+                and_(p.c.relevance_label.is_(None), p.c.keyword_match > 0),
+            ),
+            c.c.parent_external_id.is_(None),
+            func.coalesce(c.c.sentiment_source, "") != "rule",
+            func.length(func.trim(c.c.message)) >= 10,
+            *extra_where,
+        )
+        .order_by(c.c.reactions_count.desc())
+        .limit(SAMPLE)
     )
+    rows = await d1_exec(stmt, timeout=90.0)
     if not rows:
         raise SystemExit("Không đọc được bình luận")
     labels = AspectModel(MODEL_DIR, 64).predict([strip_placeholders(row["text"]) for row in rows])
@@ -122,7 +145,13 @@ async def main(args: argparse.Namespace) -> None:
             max_tokens=8000,  # Haiku suy luận ẩn trước khi trả lời: 2.500 làm 3/10 chủ đề bị cắt giữa câu
             force=True,
         )
-        return {"aspect": aspect, "name": ASPECTS[aspect][0], "positive": len(sides["+"]), "negative": len(sides["-"]), "summary": text}
+        return {
+            "aspect": aspect,
+            "name": ASPECTS[aspect][0],
+            "positive": len(sides["+"]),
+            "negative": len(sides["-"]),
+            "summary": text,
+        }
 
     picked = {a: s for a, s in groups.items() if a in ASPECTS and len(s["+"]) + len(s["-"]) >= MIN_COMMENTS}
     results = await asyncio.gather(*(summarize(a, s) for a, s in picked.items()))
@@ -133,12 +162,22 @@ async def main(args: argparse.Namespace) -> None:
         quotes = re.findall(r'"([^"\n]{8,})"', item["summary"].split("**Trích dẫn:**")[-1])
         item["quotes_found"] = sum(quote.strip() in source for quote in quotes)
         item["quotes"] = len(quotes)
-        print(item["name"], "đủ" if item["complete"] else "BỊ CẮT", f"trích dẫn đúng {item['quotes_found']}/{item['quotes']}", flush=True)
+        print(
+            item["name"],
+            "đủ" if item["complete"] else "BỊ CẮT",
+            f"trích dẫn đúng {item['quotes_found']}/{item['quotes']}",
+            flush=True,
+        )
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     heading = f"{args.title}, {PHASE_LABELS[args.phase]}" if args.phase else args.title
-    lines = [f"# {heading}: tổng kết theo chủ đề (thử)\n", f"Từ {len(rows)} bình luận gốc nhiều like nhất, gán chủ đề bằng model.\n"]
+    lines = [
+        f"# {heading}: tổng kết theo chủ đề (thử)\n",
+        f"Từ {len(rows)} bình luận gốc nhiều like nhất, gán chủ đề bằng model.\n",
+    ]
     for item in results:
-        lines.append(f"## {item['name']} ({item['positive']} khen, {item['negative']} chê)\n\n{item['summary'].strip()}\n")
+        lines.append(
+            f"## {item['name']} ({item['positive']} khen, {item['negative']} chê)\n\n{item['summary'].strip()}\n"
+        )
     path = OUT_DIR / f"{args.movie_id}{'-' + args.phase if args.phase else ''}.md"
     path.write_text("\n".join(lines), encoding="utf-8")
     path.with_suffix(".json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")

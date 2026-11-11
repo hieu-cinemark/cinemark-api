@@ -18,10 +18,15 @@ import asyncio
 import random
 from collections import Counter
 
+from sqlalchemy import not_, select
+
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts as posts_table
 from app.services.relevance.relevance_rules import resolve_relevance
 
 logger = get_logger(__name__)
@@ -32,9 +37,29 @@ CHUNK = 90  # id mỗi câu UPDATE (D1 tối đa 100 tham số)
 
 async def load_movies() -> dict[str, dict]:
     """Cùng dữ liệu phim mà ingest dùng (app/workers/ingest_consumer/main.py:_tracked_movies)."""
-    rows = await d1_query('SELECT id, title, slug, director, "cast", released_at FROM movies', quiet=True) or []
+    rows = (
+        await d1_exec(
+            select(
+                movies_table.c.id,
+                movies_table.c.title,
+                movies_table.c.slug,
+                movies_table.c.director,
+                movies_table.c.cast.label("cast"),
+                movies_table.c.released_at,
+            ),
+            quiet=True,
+        )
+        or []
+    )
     movies = {r["id"]: {**r, "keywords": []} for r in rows if r.get("title")}
-    for row in await d1_query("SELECT movie_id, keyword FROM keywords WHERE enabled = 1", quiet=True) or []:
+    keyword_rows = (
+        await d1_exec(
+            select(keywords_table.c.movie_id, keywords_table.c.keyword).where(keywords_table.c.enabled == 1),
+            quiet=True,
+        )
+        or []
+    )
+    for row in keyword_rows:
         if row["movie_id"] in movies and row.get("keyword"):
             movies[row["movie_id"]]["keywords"].append(row["keyword"])
     return movies
@@ -69,12 +94,19 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
     picked: list[tuple[str, str, str]] = []
     last_id = ""
     while True:
-        rows = await d1_query(
-            f"SELECT p.id, p.platform, p.movie_id, p.content, p.posted_at FROM posts p "
-            f"WHERE p.scraped_at >= ? AND p.id > ? AND NOT COALESCE({RELEVANT_POST_SQL}, 0) ORDER BY p.id LIMIT ?",
-            [since, last_id, PAGE],
-            timeout=120.0,
+        p = posts_table.alias("p")
+        stmt = (
+            select(p.c.id, p.c.platform, p.c.movie_id, p.c.content, p.c.posted_at)
+            .where(
+                p.c.scraped_at >= since,
+                p.c.id > last_id,
+                # NOT COALESCE(RELEVANT_POST_SQL, 0): bài chưa được coi là liên quan.
+                not_(relevant_post(p)),
+            )
+            .order_by(p.c.id)
+            .limit(PAGE)
         )
+        rows = await d1_exec(stmt, timeout=120.0)
         if not rows:
             break
         last_id = rows[-1]["id"]
@@ -96,10 +128,12 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
         if not dry_run:
             for i in range(0, len(lift), CHUNK):
                 ids = lift[i : i + CHUNK]
-                await d1_query(
-                    f"UPDATE posts SET relevance_label = 'related', keyword_match = 1 WHERE id IN ({','.join('?' * len(ids))})",
-                    ids,
+                stmt = (
+                    posts_table.update()
+                    .where(posts_table.c.id.in_(ids))
+                    .values(relevance_label="related", keyword_match=1)
                 )
+                await d1_exec(stmt)
         logger.info("relabel_hidden_page", **totals)
     logger.info("relabel_hidden_finished", dry_run=dry_run, since=since, **totals)
     print("lý do:", dict(reasons.most_common()))

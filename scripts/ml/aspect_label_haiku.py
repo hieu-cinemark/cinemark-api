@@ -18,9 +18,13 @@ from collections import Counter
 from itertools import chain, zip_longest
 from typing import Any
 
+from sqlalchemy import func, select
+
 from app.ai.domain.aspects import aspect_prompt_lines, parse_aspects
 from app.core.config import settings
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts as posts_table
 from app.services.topics.text import normalize
 from scripts.tools.aspect_probe import DATA_DIR, SEED
 
@@ -64,10 +68,12 @@ async def _load_context(post_ids: list[str]) -> dict[str, dict[str, Any]]:
     context: dict[str, dict[str, Any]] = {}
     for i in range(0, len(post_ids), QUERY_CHUNK):
         chunk = post_ids[i : i + QUERY_CHUNK]
-        found = await d1_query(
-            f"SELECT p.id, m.title, substr(p.content, 1, {POST_CHARS}) AS content FROM posts p "
-            f"JOIN movies m ON m.id = p.movie_id WHERE p.id IN ({','.join('?' * len(chunk))})",
-            chunk,
+        p = posts_table.alias("p")
+        m = movies_table.alias("m")
+        found = await d1_exec(
+            select(p.c.id, m.c.title, func.substr(p.c.content, 1, POST_CHARS).label("content"))
+            .select_from(p.join(m, m.c.id == p.c.movie_id))
+            .where(p.c.id.in_(chunk)),
             timeout=60.0,
         )
         if found is None:

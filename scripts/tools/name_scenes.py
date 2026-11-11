@@ -17,9 +17,17 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import func, select
+from sqlalchemy.dialects.sqlite import insert
+
 from app.ai.providers.client import _client_for, load_provider
 from app.clients.lake import get_object
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import movie_scene_labels as movie_scene_labels_table
+from app.repositories.d1.tables import movie_scenes as movie_scenes_table
+from app.repositories.d1.tables import movies as movies_table
 
 MAX_SCENES = 8
 
@@ -39,11 +47,24 @@ Trả về đúng một object JSON, không thêm gì khác (không dùng nháy 
 
 async def scene_context(movie_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     movie = (
-        await d1_query("SELECT title, `cast` AS cast_json FROM movies WHERE id = ?", [movie_id], quiet=True) or [{}]
+        await d1_exec(
+            select(movies_table.c.title, movies_table.c.cast.label("cast_json")).where(movies_table.c.id == movie_id),
+            quiet=True,
+        )
+        or [{}]
     )[0]
-    scenes = await d1_query(
-        "SELECT rank, rep_post_id, r2_key, posts, discussions, samples FROM movie_scenes WHERE movie_id = ? ORDER BY rank LIMIT ?",
-        [movie_id, MAX_SCENES],
+    scenes = await d1_exec(
+        select(
+            movie_scenes_table.c.rank,
+            movie_scenes_table.c.rep_post_id,
+            movie_scenes_table.c.r2_key,
+            movie_scenes_table.c.posts,
+            movie_scenes_table.c.discussions,
+            movie_scenes_table.c.samples,
+        )
+        .where(movie_scenes_table.c.movie_id == movie_id)
+        .order_by(movie_scenes_table.c.rank)
+        .limit(MAX_SCENES),
         quiet=True,
     )
     return movie, scenes or []
@@ -52,12 +73,18 @@ async def scene_context(movie_id: str) -> tuple[dict[str, Any], list[dict[str, A
 async def top_comments(post_ids: list[str]) -> list[str]:
     if not post_ids:
         return []
-    rows = await d1_query(
-        f"SELECT message FROM comments WHERE post_id IN ({','.join('?' * len(post_ids))}) AND parent_external_id IS NULL "
-        "AND length(message) >= 12 ORDER BY reactions_count DESC LIMIT 12",
-        post_ids,
-        quiet=True,
+    c = comments_table.alias("c")
+    stmt = (
+        select(c.c.message)
+        .where(
+            c.c.post_id.in_(post_ids),
+            c.c.parent_external_id.is_(None),
+            func.length(c.c.message) >= 12,
+        )
+        .order_by(c.c.reactions_count.desc())
+        .limit(12)
     )
+    rows = await d1_exec(stmt, quiet=True)
     return [" ".join(str(row["message"]).split())[:200] for row in rows or []]
 
 
@@ -111,6 +138,7 @@ async def ask(text: str, image: bytes | None) -> dict[str, Any] | None:
 async def run(args: argparse.Namespace) -> None:
     movie, scenes = await scene_context(args.movie_id)
     if not args.dry_run:
+        # Giữ SQL thuần: CREATE TABLE IF NOT EXISTS là DDL.
         await d1_query(
             """CREATE TABLE IF NOT EXISTS movie_scene_labels (
                 movie_id TEXT NOT NULL, rep_post_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, confident INTEGER,
@@ -119,8 +147,9 @@ async def run(args: argparse.Namespace) -> None:
         )
     done = set()
     if not args.force and not args.dry_run:
-        rows = await d1_query(
-            "SELECT rep_post_id FROM movie_scene_labels WHERE movie_id = ?", [args.movie_id], quiet=True
+        rows = await d1_exec(
+            select(movie_scene_labels_table.c.rep_post_id).where(movie_scene_labels_table.c.movie_id == args.movie_id),
+            quiet=True,
         )
         done = {row["rep_post_id"] for row in rows or []}
     for scene in scenes:
@@ -138,16 +167,20 @@ async def run(args: argparse.Namespace) -> None:
         )
         if args.dry_run:
             continue
-        await d1_query(
-            "INSERT OR REPLACE INTO movie_scene_labels (movie_id, rep_post_id, label, description, confident, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                args.movie_id,
-                scene["rep_post_id"],
-                result.get("ten") or "Chưa rõ cảnh",
-                result.get("mo_ta"),
-                int(result.get("chac_chan") == "cao"),
-                datetime.now(tz=UTC).isoformat(),
-            ],
+        values = {
+            "movie_id": args.movie_id,
+            "rep_post_id": scene["rep_post_id"],
+            "label": result.get("ten") or "Chưa rõ cảnh",
+            "description": result.get("mo_ta"),
+            "confident": int(result.get("chac_chan") == "cao"),
+            "created_at": datetime.now(tz=UTC).isoformat(),
+        }
+        stmt = insert(movie_scene_labels_table).values(values)
+        await d1_exec(
+            stmt.on_conflict_do_update(
+                index_elements=["movie_id", "rep_post_id"],
+                set_={k: v for k, v in values.items() if k not in ("movie_id", "rep_post_id")},
+            ),
             timeout=30.0,
         )
 

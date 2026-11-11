@@ -60,6 +60,7 @@ async def _copy_table(d1_query, conn: sqlite3.Connection, table_name: str) -> No
     total = 0
     columns: list[str] | None = None
     while True:
+        # Giữ SQL thuần: tên bảng đến từ sqlite_master của D1 nên không dựng trước được trong SQLAlchemy.
         rows = await d1_query(f"SELECT * FROM {table_name} LIMIT {_PAGE_SIZE} OFFSET {offset}")
         if rows is None:
             raise RuntimeError(f"D1 read failed for table={table_name!r} at offset={offset} - see logged error above.")
@@ -100,6 +101,7 @@ async def pull() -> None:
         )
 
     tables = await d1_query(
+        # Giữ SQL thuần: đọc schema của D1 thật, động theo bảng nên không dựng trước được trong SQLAlchemy.
         "SELECT name, sql FROM sqlite_master WHERE type='table' "
         "AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name NOT LIKE 'd1_%'"
     )

@@ -22,8 +22,12 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from sqlalchemy import func, select
+
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comments as comments_table
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_FILE = ROOT / "data" / "visobert" / "labeled.jsonl"
@@ -38,14 +42,23 @@ async def download() -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     last_id = ""
     while True:
-        page = await d1_query(
-            "SELECT id, message, sentiment FROM comments WHERE sentiment IN ('positive','negative','neutral') "
-            f"AND length(trim(message)) >= {MIN_CONTENT_LENGTH} AND id > ? "
-            # Không học lại nhãn của chính ViSoBERT, cũng không học nhãn luật (sticker/emoji/tag - rule_sentiment).
-            "AND COALESCE(sentiment_source, '') NOT IN ('visobert', 'rule') ORDER BY id LIMIT ?",
-            [last_id, FETCH_PAGE],
-            timeout=120.0,
+        stmt = (
+            select(
+                comments_table.c.id,
+                comments_table.c.message,
+                comments_table.c.sentiment,
+            )
+            .where(
+                comments_table.c.sentiment.in_(LABELS),
+                func.length(func.trim(comments_table.c.message)) >= MIN_CONTENT_LENGTH,
+                comments_table.c.id > last_id,
+                # Không học lại nhãn của chính ViSoBERT, cũng không học nhãn luật (sticker/emoji/tag - rule_sentiment).
+                func.coalesce(comments_table.c.sentiment_source, "").not_in(("visobert", "rule")),
+            )
+            .order_by(comments_table.c.id)
+            .limit(FETCH_PAGE)
         )
+        page = await d1_exec(stmt, timeout=120.0)
         if page is None:
             raise RuntimeError("download_failed")
         if not page:
@@ -59,6 +72,7 @@ async def download() -> list[dict[str, str]]:
 
 
 async def ensure_source_column() -> None:
+    # Giữ SQL thuần: PRAGMA/ALTER TABLE là DDL.
     cols = {row.get("name") for row in await d1_query("PRAGMA table_info(comments)") or []}
     if "sentiment_source" not in cols:
         await d1_query("ALTER TABLE comments ADD COLUMN sentiment_source TEXT", quiet=True)
@@ -147,7 +161,10 @@ def train(rows: list[dict[str, str]], args: argparse.Namespace, unseen_ids: set[
             step += 1
             if step % 100 == 0:
                 rate = step / (time.monotonic() - started)
-                print(f"  epoch {epoch + 1} bước {step}/{steps} loss {loss.item():.3f} · còn ~{(steps - step) / rate / 60:.0f} phút", flush=True)
+                print(
+                    f"  epoch {epoch + 1} bước {step}/{steps} loss {loss.item():.3f} · còn ~{(steps - step) / rate / 60:.0f} phút",
+                    flush=True,
+                )
         print(f"sau epoch {epoch + 1}:")
         evaluate()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -180,5 +197,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--refresh-data", action="store_true")
-    parser.add_argument("--out", type=Path, default=OUT_DIR, help="thư mục lưu model (mặc định ghi đè models/visobert-cinemark)")
+    parser.add_argument(
+        "--out", type=Path, default=OUT_DIR, help="thư mục lưu model (mặc định ghi đè models/visobert-cinemark)"
+    )
     asyncio.run(main(parser.parse_args()))

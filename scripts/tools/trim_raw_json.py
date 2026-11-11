@@ -21,11 +21,14 @@ from pathlib import Path
 from typing import Any
 
 import boto3
+from sqlalchemy import Update, select
 
 from app.core.config import settings
 from app.repositories.d1.comments import trim_comment_raw
 from app.repositories.d1.posts import trim_post_raw
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 BATCH_SIZE = 500
 UPDATE_CHUNK = 90  # D1 tối đa 100 tham số mỗi câu
@@ -38,7 +41,7 @@ def cursor_file(table: str) -> Path:
     return ROOT / "data" / f"trim_raw_json_{table}.cursor"
 
 
-def build_updates(table: str, rows: list[dict[str, Any]]) -> list[tuple[str, list[Any]]]:
+def build_updates(table: str, rows: list[dict[str, Any]]) -> list[Update]:
     """Các câu UPDATE cho một lô. Bài đã gọn sẵn thì không cần ghi lại."""
     if table == "comments":
         empty = []
@@ -46,14 +49,13 @@ def build_updates(table: str, rows: list[dict[str, Any]]) -> list[tuple[str, lis
         for row in rows:
             kept = trim_comment_raw(json.loads(row["raw_json"]))
             if kept:
-                media.append(("UPDATE comments SET raw_json = ? WHERE id = ?", [json.dumps(kept), row["id"]]))
+                media.append(
+                    comments_table.update().where(comments_table.c.id == row["id"]).values(raw_json=json.dumps(kept))
+                )
             else:
                 empty.append(row["id"])
         return [
-            (
-                f"UPDATE comments SET raw_json = NULL WHERE id IN ({','.join('?' * len(empty[i : i + UPDATE_CHUNK]))})",
-                empty[i : i + UPDATE_CHUNK],
-            )
+            comments_table.update().where(comments_table.c.id.in_(empty[i : i + UPDATE_CHUNK])).values(raw_json=None)
             for i in range(0, len(empty), UPDATE_CHUNK)
         ] + media
     updates = []
@@ -61,14 +63,16 @@ def build_updates(table: str, rows: list[dict[str, Any]]) -> list[tuple[str, lis
         trimmed = trim_post_raw(json.loads(row["raw_json"]))
         text = json.dumps(trimmed) if trimmed else None
         if text != row["raw_json"]:
-            updates.append(("UPDATE posts SET raw_json = ? WHERE id = ?", [text, row["id"]]))
+            updates.append(posts_table.update().where(posts_table.c.id == row["id"]).values(raw_json=text))
     return updates
 
 
 async def archive(client: Any, table: str, rows: list[dict[str, Any]]) -> str:
     """Trả về key đã xác nhận có trên R2. Lỗi thì ném ra, lô này không bị đụng tới."""
     key = f"archive/raw_json/{table}/{rows[0]['id']}__{rows[-1]['id']}.ndjson.gz"
-    lines = "".join(json.dumps({"id": row["id"], "raw_json": row["raw_json"]}, ensure_ascii=False) + "\n" for row in rows)
+    lines = "".join(
+        json.dumps({"id": row["id"], "raw_json": row["raw_json"]}, ensure_ascii=False) + "\n" for row in rows
+    )
     body = gzip.compress(lines.encode("utf-8"))
     await asyncio.to_thread(client.put_object, Bucket=settings.lake_bucket, Key=key, Body=body)
     head = await asyncio.to_thread(client.head_object, Bucket=settings.lake_bucket, Key=key)
@@ -88,12 +92,14 @@ async def main(args: argparse.Namespace) -> None:
     last_id = path.read_text().strip() if path.exists() else ""
     batches = rows_done = bytes_seen = 0
     while not args.max_batches or batches < args.max_batches:
-        rows = await d1_query(
-            f"SELECT id, raw_json FROM {args.table} WHERE id > ? AND raw_json IS NOT NULL ORDER BY id LIMIT ?",
-            [last_id, BATCH_SIZE],
-            timeout=60.0,
-            quiet=True,
+        table = comments_table if args.table == "comments" else posts_table
+        stmt = (
+            select(table.c.id, table.c.raw_json)
+            .where(table.c.id > last_id, table.c.raw_json.is_not(None))
+            .order_by(table.c.id)
+            .limit(BATCH_SIZE)
         )
+        rows = await d1_exec(stmt, timeout=60.0, quiet=True)
         if rows is None:
             print(f"đọc lỗi (D1 có thể quá tải), nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
             await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)
@@ -106,8 +112,8 @@ async def main(args: argparse.Namespace) -> None:
             print(f"lô {len(rows)} dòng, {len(updates)} lệnh ghi, {bytes_seen / 1e6:.1f} MB raw_json", flush=True)
             return
         await archive(client, args.table, rows)
-        for sql, params in updates:
-            while await d1_query(sql, params, timeout=60.0, quiet=True) is None:
+        for stmt in updates:
+            while await d1_exec(stmt, timeout=60.0, quiet=True) is None:
                 print(f"ghi lỗi, nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
                 await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)
         last_id = rows[-1]["id"]

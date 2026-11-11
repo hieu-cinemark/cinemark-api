@@ -15,7 +15,9 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comment_cluster_members, comment_cluster_topics
 from scripts.tools.cluster_film_comments import OUT_DIR
 
 # D1 giới hạn mỗi câu 100 KB: ~1.500 id comment (khoảng 50 byte mỗi id) mỗi lần ghi.
@@ -38,16 +40,20 @@ EXTRA_COLUMNS = ("positive INTEGER", "negative INTEGER", "neutral INTEGER", "sum
 async def run(movie_id: str) -> None:
     groups = json.loads((OUT_DIR / f"{movie_id}.final.json").read_text(encoding="utf-8"))
     for sql in SCHEMA:
+        # Giữ SQL thuần: CREATE TABLE/ALTER TABLE là DDL.
         if await d1_query(sql, timeout=60.0) is None:
             raise SystemExit("không tạo được bảng")
     existing = {
-        row["name"] for row in await d1_query("SELECT name FROM pragma_table_info('comment_cluster_topics')") or []
+        # Giữ SQL thuần: pragma_table_info đọc cột thực tế của D1.
+        row["name"]
+        for row in await d1_query("SELECT name FROM pragma_table_info('comment_cluster_topics')") or []
     }
     for column in EXTRA_COLUMNS:
         if column.split()[0] not in existing:
             await d1_query(f"ALTER TABLE comment_cluster_topics ADD COLUMN {column}", timeout=60.0)
     for table in ("comment_cluster_topics", "comment_cluster_members"):
-        await d1_query(f"DELETE FROM {table} WHERE movie_id = ?", [movie_id], timeout=120.0)
+        tbl = comment_cluster_topics if table == "comment_cluster_topics" else comment_cluster_members
+        await d1_exec(tbl.delete().where(tbl.c.movie_id == movie_id), timeout=120.0)
     now = datetime.now(tz=UTC).isoformat()
     topics = [
         {
@@ -66,6 +72,7 @@ async def run(movie_id: str) -> None:
         }
         for group in groups
     ]
+    # Giữ SQL thuần: INSERT ... SELECT ... json_each - ghi cả nhóm bằng một tham số JSON.
     await d1_query(
         "INSERT INTO comment_cluster_topics (movie_id, cluster, name, description, kind, comments, share_percent, merge_with, generated_at, "
         "positive, negative, neutral, summary, posts) "
@@ -80,6 +87,7 @@ async def run(movie_id: str) -> None:
         ids = group["members"]
         for i in range(0, len(ids), MEMBER_CHUNK):
             chunk = ids[i : i + MEMBER_CHUNK]
+            # Giữ SQL thuần: INSERT OR IGNORE ... json_each - nạp cả lô id thành viên bằng một tham số JSON.
             result = await d1_query(
                 "INSERT OR IGNORE INTO comment_cluster_members (movie_id, cluster, comment_id) SELECT ?1, ?2, value FROM json_each(?3)",
                 [movie_id, int(group["cluster"]), json.dumps(chunk)],
