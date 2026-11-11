@@ -43,6 +43,8 @@ async def omar_status() -> dict[str, Any]:
     return {
         "key_set": bool(api_key),
         "usage": usage,
+        # Trần request/phút đặt ở tab Omar (0 = theo gói); lượt chạy dùng số nhỏ hơn giữa trần này và gói.
+        "requests_per_minute": int((row or {}).get("requests_per_minute") or 0),
         "round": round_status,
         # Đang dừng chờ hạn mức / key mới: {"reason": "quota"|"key", "until": iso, ...} hoặc None.
         "paused": paused,

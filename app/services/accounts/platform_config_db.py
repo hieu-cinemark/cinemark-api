@@ -1288,11 +1288,38 @@ async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
 
 
 async def get_omar_api_settings() -> dict[str, Any] | None:
-    """Trả về {"api_key": "...", "updated_at": ...} hoặc None nếu chưa có."""
+    """Trả về {"api_key", "requests_per_minute", "updated_at"} hoặc None nếu chưa có."""
     await _ensure_omar_api_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT api_key, updated_at FROM omar_api_settings WHERE id = 1")
+        await cur.execute("SELECT api_key, requests_per_minute, updated_at FROM omar_api_settings WHERE id = 1")
         return await cur.fetchone()
+
+
+_omar_cap = 0
+
+
+async def omar_requests_cap() -> int:
+    """Trần request/phút người dùng đặt cho Omar (0 = theo gói). Đọc lỗi thì giữ giá trị lần trước."""
+    global _omar_cap
+    try:
+        row = await get_omar_api_settings()
+        _omar_cap = int((row or {}).get("requests_per_minute") or 0)
+    except Exception as exc:  # noqa: BLE001 - lỗi đọc cấu hình không được chặn lượt cào
+        logger.warning("omar_requests_cap_read_failed", error=str(exc)[:200])
+    return _omar_cap
+
+
+async def set_omar_requests_per_minute(per_minute: int) -> None:
+    await _ensure_omar_api_settings_table()
+    async with _connect() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO omar_api_settings (id, requests_per_minute) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET requests_per_minute = EXCLUDED.requests_per_minute, updated_at = now()
+            """,
+            (max(0, per_minute),),
+        )
+        await conn.commit()
 
 
 _omar_api_settings_ready = False
@@ -1311,6 +1338,10 @@ async def _ensure_omar_api_settings_table() -> None:
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
             """
+        )
+        # Trần request/phút đặt ở tab Omar (0 = theo gói), thêm 11/11/2026.
+        await cur.execute(
+            "ALTER TABLE omar_api_settings ADD COLUMN IF NOT EXISTS requests_per_minute integer NOT NULL DEFAULT 0"
         )
         await conn.commit()
     _omar_api_settings_ready = True

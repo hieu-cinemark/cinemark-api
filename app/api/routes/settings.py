@@ -732,6 +732,7 @@ async def get_omar_api_settings() -> OmarApiSettingsOut:
     return OmarApiSettingsOut(
         api_key_set=bool(row and row.get("api_key")),
         base_url=app_settings.omar_api_base_url,
+        requests_per_minute=int((row or {}).get("requests_per_minute") or 0),
         updated_at=(row or {}).get("updated_at"),
     )
 
@@ -745,6 +746,8 @@ async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettin
     # Ghi api_key
     if payload.api_key is not None:
         await db.upsert_omar_api_key(payload.api_key)
+    if payload.requests_per_minute is not None:
+        await db.set_omar_requests_per_minute(payload.requests_per_minute)
 
     # Ghi base_url override nếu có (lưu vào env override để nó tồn tại giữa các lần restart)
     if payload.base_url is not None and payload.base_url.strip():

@@ -496,9 +496,13 @@ class OmarApiSettingsOut(BaseModel):
     # Có api_key hay chưa - không bao giờ trả về key thô.
     api_key_set: bool
     base_url: str
+    # Trần request/phút (0 = theo gói).
+    requests_per_minute: int = 0
     updated_at: datetime | None = None
 
 
 class OmarApiSettingsUpdate(BaseModel):
     api_key: str | None = Field(default=None, max_length=500)
     base_url: str | None = Field(default=None, max_length=200)
+    # None = giữ nguyên; 0 = theo giới hạn của gói.
+    requests_per_minute: int | None = Field(default=None, ge=0, le=10000)

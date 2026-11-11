@@ -32,7 +32,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.store import OMAR_COOCCUR_KEY_TMPL, d1_query, get_enabled_keywords
-from app.services.accounts.platform_config_db import get_omar_api_settings
+from app.services.accounts.platform_config_db import get_omar_api_settings, omar_requests_cap
 from app.services.omar import omar_channels, omar_comments, omar_search, omar_yield
 
 logger = get_logger(__name__)
@@ -176,20 +176,32 @@ async def publish_videos(
         await omar_yield.add(source, sent=int(stats.get("published") or 0) - sent_before, new=len(brand_new))
 
 
+_CAP_REFRESH_SECONDS = 60.0
+
+
 class _Pacer:
     """Rải đều thời điểm BẮT ĐẦU các request theo giới hạn mỗi phút của gói - dùng chung cho mọi worker chạy song song
-    (request chạy chồng lên nhau, chỉ lúc bắt đầu bị giãn cách), nên tận dụng hết giới hạn mà không bị 429."""
+    (request chạy chồng lên nhau, chỉ lúc bắt đầu bị giãn cách), nên tận dụng hết giới hạn mà không bị 429.
+
+    Trần đặt ở tab Omar (omar_api_settings.requests_per_minute, 0 = theo gói) đọc lại mỗi phút: hạ trần là lượt đang
+    chạy chậm lại ngay, không phải chờ lượt sau."""
 
     def __init__(self, per_minute: int) -> None:
-        self.gap = 60.0 / max(per_minute, 1) + 0.05
+        self.per_minute = per_minute
+        self.cap = 0
+        self.cap_checked_at: float | None = None
         self.next_at = 0.0
         self.lock = asyncio.Lock()
 
     async def wait(self) -> None:
         async with self.lock:
             now = time.monotonic()
+            if self.cap_checked_at is None or now - self.cap_checked_at >= _CAP_REFRESH_SECONDS:
+                self.cap_checked_at = now
+                self.cap = await omar_requests_cap()
+            per_minute = min(self.per_minute, self.cap) if self.cap > 0 else self.per_minute
             start = max(now, self.next_at)
-            self.next_at = start + self.gap
+            self.next_at = start + 60.0 / max(per_minute, 1) + 0.05
         if start > now:
             await asyncio.sleep(start - now)
 
@@ -802,7 +814,8 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         else:
             budget = hour_cap // 4
         stats["budget"] = budget
-        stats["per_minute"] = per_minute
+        cap = await omar_requests_cap()
+        stats["per_minute"] = min(per_minute, cap) if cap > 0 else per_minute
         if budget <= 0:
             logger.info("omar_round_no_budget", remaining=day.get("remaining"))
             if reset_at is not None:
