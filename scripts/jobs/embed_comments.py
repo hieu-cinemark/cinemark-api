@@ -20,10 +20,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from sqlalchemy import and_, literal, select
 
 from app.ai.local.embedding import embed_texts
 from app.ai.tasks.sentiment_rules import rule_sentiment, with_parent_context
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 DB_PATH = Path(__file__).resolve().parents[2] / "data" / "comment_embeddings.sqlite"
 PAGE_SIZE = 2000
@@ -86,9 +89,10 @@ def save_page(
 MOVIE_POST_CHUNK = 40
 
 
-async def _read(sql: str, params: list[Any]) -> list[dict[str, Any]]:
+async def _read(stmt: Any) -> list[dict[str, Any]]:
+    """Đọc một trang; D1 quá tải thì nghỉ rồi thử lại (câu dựng bằng SQLAlchemy Core)."""
     while True:
-        rows = await d1_query(sql, params, timeout=60.0, quiet=True)
+        rows = await d1_exec(stmt, timeout=60.0, quiet=True)
         if rows is not None:
             return rows
         print(f"đọc lỗi (D1 có thể quá tải), nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
@@ -98,15 +102,24 @@ async def _read(sql: str, params: list[Any]) -> list[dict[str, Any]]:
 async def _movie_pages(movie_id: str):
     """--movie-id: comment của phim theo từng nhóm bài, qua index post_id (09/11/2026). Lọc `post_id IN (bài của phim)` trên
     câu sắp theo id quét gần như cả bảng comments mỗi trang và làm D1 quá tải."""
-    post_ids = [row["id"] for row in await _read("SELECT id FROM posts WHERE movie_id = ?", [movie_id])]
+    post_ids = [row["id"] for row in await _read(select(posts_table.c.id).where(posts_table.c.movie_id == movie_id))]
     for i in range(0, len(post_ids), MOVIE_POST_CHUNK):
         chunk = post_ids[i : i + MOVIE_POST_CHUNK]
-        rows = await _read(
-            "SELECT c.id, c.message, ? AS movie_id, par.message AS parent_message FROM comments c "
-            "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
-            f"WHERE c.post_id IN ({','.join('?' * len(chunk))})",
-            [movie_id, *chunk],
+        c = comments_table.alias("c")
+        par = comments_table.alias("par")
+        stmt = (
+            select(
+                c.c.id,
+                c.c.message,
+                literal(movie_id).label("movie_id"),
+                par.c.message.label("parent_message"),
+            )
+            .select_from(
+                c.outerjoin(par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id))
+            )
+            .where(c.c.post_id.in_(chunk))
         )
+        rows = await _read(stmt)
         if rows:
             yield rows
 
@@ -127,13 +140,26 @@ async def main(args: argparse.Namespace) -> None:
                 yield rows
             return
         while not args.limit or read < args.limit:
-            rows = await _read(
-                "SELECT c.id, c.message, p.movie_id, par.message AS parent_message FROM comments c "
-                "LEFT JOIN posts p ON p.id = c.post_id "
-                "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
-                "WHERE c.id > ? ORDER BY c.id LIMIT ?",
-                [last_id, PAGE_SIZE],
+            c = comments_table.alias("c")
+            p = posts_table.alias("p")
+            par = comments_table.alias("par")
+            stmt = (
+                select(
+                    c.c.id,
+                    c.c.message,
+                    p.c.movie_id,
+                    par.c.message.label("parent_message"),
+                )
+                .select_from(
+                    c.outerjoin(p, p.c.id == c.c.post_id).outerjoin(
+                        par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id)
+                    )
+                )
+                .where(c.c.id > last_id)
+                .order_by(c.c.id)
+                .limit(PAGE_SIZE)
             )
+            rows = await _read(stmt)
             if not rows:
                 return
             last_id = rows[-1]["id"]

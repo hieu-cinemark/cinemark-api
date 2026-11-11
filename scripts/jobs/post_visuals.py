@@ -33,11 +33,15 @@ from typing import Any
 
 import httpx
 import numpy as np
+from sqlalchemy import delete, func, select
 
 from app.clients.lake import lake_configured, put_object
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import movie_scenes, movies, post_visuals
+from app.repositories.d1.tables import posts as posts_table
 from app.vision.cinema_frames import MODEL_TAG, CinemaFrameClassifier, shrink_jpeg
 from app.vision.scenes import MAX_IMAGES, cluster_scenes
 
@@ -92,11 +96,10 @@ CREATE TABLE IF NOT EXISTS movie_scenes (
 SCENE_MIN_CONFIDENCE = 0.7
 SCENES_PER_MOVIE = 12
 
-COVER_SQL = "json_extract(p.raw_json, '$.cover_url')"
-RELEASED_SQL = "m.released_at IS NOT NULL AND date(p.posted_at, '+7 hours') >= date(m.released_at, '-1 day')"
-
 
 async def ensure_table() -> None:
+    # CREATE TABLE/INDEX giữ dạng SQL thuần (SQLAlchemy không dựng được câu DDL có DEFAULT CURRENT_TIMESTAMP
+    # cho cột NOT NULL mà không đổi hành vi).
     await d1_query(TABLE_SQL)
     await d1_query(INDEX_SQL)
     await d1_query(SCENES_TABLE_SQL)
@@ -104,14 +107,22 @@ async def ensure_table() -> None:
 
 async def recent_candidates(hours: float, limit: int) -> list[dict[str, Any]]:
     since = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - hours * 3600))
-    rows = await d1_query(
-        f"""SELECT p.id AS post_id, p.movie_id, p.platform, {COVER_SQL} AS cover
-        FROM posts p JOIN movies m ON m.id = p.movie_id
-        LEFT JOIN post_visuals v ON v.post_id = p.id
-        WHERE p.scraped_at >= ?1 AND v.post_id IS NULL AND {COVER_SQL} IS NOT NULL
-          AND {RELEASED_SQL} AND {RELEVANT_POST_SQL}
-        ORDER BY p.scraped_at DESC LIMIT ?2""",
-        [since, limit],
+    p, m, v = posts_table.alias("p"), movies.alias("m"), post_visuals.alias("v")
+    cover = func.json_extract(p.c.raw_json, "$.cover_url").label("cover")
+    rows = await d1_exec(
+        select(p.c.id.label("post_id"), p.c.movie_id, p.c.platform, cover)
+        .select_from(p.join(m, m.c.id == p.c.movie_id).outerjoin(v, v.c.post_id == p.c.id))
+        .where(
+            p.c.scraped_at >= since,
+            v.c.post_id.is_(None),
+            cover.is_not(None),
+            # Ảnh chụp màn hình rạp / có mặt ở rạp chỉ có sau khi phim chiếu (kể cả suất sớm).
+            m.c.released_at.is_not(None),
+            func.date(p.c.posted_at, "+7 hours") >= func.date(m.c.released_at, "-1 day"),
+            relevant_post(p),
+        )
+        .order_by(p.c.scraped_at.desc())
+        .limit(limit),
         timeout=60.0,
     )
     return rows or []
@@ -121,11 +132,13 @@ async def rows_for_ids(post_ids: list[str]) -> list[dict[str, Any]]:
     """Bài (chưa có trong post_visuals) cho các ảnh đã tải sẵn ở máy."""
     out: list[dict[str, Any]] = []
     for start in range(0, len(post_ids), 500):
-        rows = await d1_query(
-            """SELECT p.id AS post_id, p.movie_id, p.platform FROM posts p
-            JOIN (SELECT value AS id FROM json_each(?1)) j ON j.id = p.id
-            LEFT JOIN post_visuals v ON v.post_id = p.id WHERE v.post_id IS NULL""",
-            [json.dumps(post_ids[start : start + 500])],
+        p, v = posts_table.alias("p"), post_visuals.alias("v")
+        # json_each: truyền cả trăm id bằng MỘT tham số (giới hạn 100 tham số của D1).
+        ids = func.json_each(json.dumps(post_ids[start : start + 500])).table_valued("value")
+        rows = await d1_exec(
+            select(p.c.id.label("post_id"), p.c.movie_id, p.c.platform)
+            .select_from(p.join(ids, ids.c.value == p.c.id).outerjoin(v, v.c.post_id == p.c.id))
+            .where(v.c.post_id.is_(None)),
             timeout=60.0,
         )
         out.extend(rows or [])
@@ -234,17 +247,33 @@ def _decode_embedding(text: str) -> np.ndarray:
 async def build_scenes(movie_id: str) -> int:
     """Gom lại cảnh của một phim, thay toàn bộ dòng movie_scenes của phim đó. Trả về số cảnh."""
     rows: list[dict[str, Any]] = []
-    while True:
-        page = await d1_query(
-            f"""SELECT v.post_id, v.r2_key, v.embedding, p.author, p.url, p.platform, substr(p.content, 1, 240) AS text,
-                   COALESCE(p.reply_count, 0) AS replies, COALESCE(p.view_count, 0) AS views, p.posted_at
-            FROM post_visuals v JOIN posts p ON p.id = v.post_id
-            WHERE v.movie_id = ?1 AND v.label = 'screen' AND v.confidence >= ?2 AND v.embedding IS NOT NULL
-              AND {RELEVANT_POST_SQL}
-            ORDER BY v.post_id LIMIT 500 OFFSET ?3""",
-            [movie_id, SCENE_MIN_CONFIDENCE, len(rows)],
-            timeout=60.0,
+    v, p = post_visuals.alias("v"), posts_table.alias("p")
+    page_query = (
+        select(
+            v.c.post_id,
+            v.c.r2_key,
+            v.c.embedding,
+            p.c.author,
+            p.c.url,
+            p.c.platform,
+            func.substr(p.c.content, 1, 240).label("text"),
+            func.coalesce(p.c.reply_count, 0).label("replies"),
+            func.coalesce(p.c.view_count, 0).label("views"),
+            p.c.posted_at,
         )
+        .select_from(v.join(p, p.c.id == v.c.post_id))
+        .where(
+            v.c.movie_id == movie_id,
+            v.c.label == "screen",
+            v.c.confidence >= SCENE_MIN_CONFIDENCE,
+            v.c.embedding.is_not(None),
+            relevant_post(p),
+        )
+        .order_by(v.c.post_id)
+        .limit(500)
+    )
+    while True:
+        page = await d1_exec(page_query.offset(len(rows)), timeout=60.0)
         rows.extend(page or [])
         if not page or len(page) < 500 or len(rows) >= MAX_IMAGES:
             break
@@ -300,8 +329,9 @@ async def build_scenes(movie_id: str) -> int:
                 ),
             }
         )
-    await d1_query("DELETE FROM movie_scenes WHERE movie_id = ?1", [movie_id])
+    await d1_exec(delete(movie_scenes).where(movie_scenes.c.movie_id == movie_id), timeout=60.0)
     if scenes:
+        # Giữ SQL thuần: INSERT ... SELECT ... FROM json_each - dạng này SQLAlchemy dựng verbose hơn nhiều.
         await d1_query(
             """INSERT INTO movie_scenes (movie_id, rank, rep_post_id, r2_key, posts, authors, discussions, views, first_at, last_at,
                                        cohesion, thumbs, samples)
@@ -324,12 +354,13 @@ async def build_scenes(movie_id: str) -> int:
 
 async def movies_with_screens(since: str | None) -> list[str]:
     """Phim có ảnh screen (mới chấm từ `since`, hoặc mọi lúc)."""
-    where = "label = 'screen' AND confidence >= ?1" + (" AND scored_at >= ?2" if since else "")
-    rows = await d1_query(
-        f"SELECT DISTINCT movie_id FROM post_visuals WHERE {where}",
-        [SCENE_MIN_CONFIDENCE, since] if since else [SCENE_MIN_CONFIDENCE],
-        timeout=60.0,
+    stmt = select(post_visuals.c.movie_id).where(
+        post_visuals.c.label == "screen",
+        post_visuals.c.confidence >= SCENE_MIN_CONFIDENCE,
     )
+    if since:
+        stmt = stmt.where(post_visuals.c.scored_at >= since)
+    rows = await d1_exec(stmt.distinct(), timeout=60.0)
     return [r["movie_id"] for r in rows or []]
 
 

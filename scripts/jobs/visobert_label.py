@@ -27,11 +27,16 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import and_, func, or_, select
+
 from app.ai.tasks.sentiment_rules import rule_sentiment, slang_positive, strip_placeholders
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import MIN_CONTENT_LENGTH, RELEVANT_POST_SQL, ensure_post_voice_columns
+from app.repositories.d1.posts import MIN_CONTENT_LENGTH, ensure_post_voice_columns, relevant_post
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import posts as posts_table
 
 logger = get_logger(__name__)
 
@@ -99,21 +104,29 @@ async def _ensure_columns(table: str) -> None:
             logger.info("visobert_column_added", table=table, column=column)
 
 
-def _select_sql(table: str, *, labeled: bool) -> str:
-    cond = "IS NOT NULL" if labeled else "IS NULL"
+def _select_stmt(table: str, *, labeled: bool):
+    """Câu chọn dòng để gán nhãn (SQLAlchemy Core)."""
     if table == "posts":
-        return (
-            f"SELECT p.id, substr(p.content, 1, {POST_TEXT_LIMIT}) AS message, p.sentiment FROM posts p "
-            f"WHERE p.sentiment {cond} AND {RELEVANT_POST_SQL} AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
-        )
+        p = posts_table.alias("p")
+        cond = p.c.sentiment.is_not(None) if labeled else p.c.sentiment.is_(None)
+        stmt = select(
+            p.c.id,
+            p.c.scraped_at,
+            func.substr(p.c.content, 1, POST_TEXT_LIMIT).label("message"),
+            p.c.sentiment,
+        ).where(cond, relevant_post(p), func.length(func.trim(p.c.content)) >= MIN_CONTENT_LENGTH)
+        return stmt, p
+    c = comments_table.alias("c")
+    cond = c.c.sentiment.is_not(None) if labeled else c.c.sentiment.is_(None)
     if labeled:
-        return (
-            "SELECT c.id, c.message, c.sentiment FROM comments c "
-            f"WHERE c.sentiment {cond} AND length(trim(c.message)) >= {MIN_CONTENT_LENGTH}"
+        stmt = select(c.c.id, c.c.scraped_at, c.c.message, c.c.sentiment).where(
+            cond, func.length(func.trim(c.c.message)) >= MIN_CONTENT_LENGTH
         )
-    # Lấy cả comment ngắn/rỗng (19/10/2026: 184k comment < MIN_CONTENT_LENGTH ký tự NULL mãi vì không lượt gán nào lấy
-    # chúng): rule_sentiment gán phần không có nội dung, phần có chữ ("hay mà", "đã quá") để model.
-    return f"SELECT c.id, c.message, c.sentiment FROM comments c WHERE c.sentiment {cond}"
+    else:
+        # Lấy cả comment ngắn/rỗng (19/10/2026: 184k comment < MIN_CONTENT_LENGTH ký tự NULL mãi vì không lượt gán nào lấy
+        # chúng): rule_sentiment gán phần không có nội dung, phần có chữ ("hay mà", "đã quá") để model.
+        stmt = select(c.c.id, c.c.scraped_at, c.c.message, c.c.sentiment).where(cond)
+    return stmt, c
 
 
 async def _select(
@@ -121,21 +134,20 @@ async def _select(
 ) -> list[dict[str, Any]]:
     """Một trang dòng chưa có nhãn, mới nhất trước, sau con trỏ (scraped_at, id) của trang trước - câu model không chắc
     vẫn NULL nên không thể chỉ chọn lại "sentiment IS NULL" từ đầu (mỗi trang sẽ đọc lại mọi câu đã bỏ qua)."""
-    alias = "p" if table == "posts" else "c"
-    sql = _select_sql(table, labeled=False).replace("SELECT ", f"SELECT {alias}.scraped_at, ", 1)
-    params: list[Any] = []
+    stmt, alias = _select_stmt(table, labeled=False)
     if cursor:
-        sql += f" AND ({alias}.scraped_at < ? OR ({alias}.scraped_at = ? AND {alias}.id < ?))"
-        params.extend([cursor[0], cursor[0], cursor[1]])
+        stmt = stmt.where(
+            or_(
+                alias.c.scraped_at < cursor[0],
+                and_(alias.c.scraped_at == cursor[0], alias.c.id < cursor[1]),
+            )
+        )
     if since:
-        sql += f" AND {alias}.scraped_at >= ?"
-        params.append(since)
+        stmt = stmt.where(alias.c.scraped_at >= since)
     if platform:
-        sql += f" AND {alias}.platform = ?"
-        params.append(platform)
-    sql += f" ORDER BY {alias}.scraped_at DESC, {alias}.id DESC LIMIT ?"
-    params.append(limit)
-    rows = await d1_query(sql, params, timeout=90.0)
+        stmt = stmt.where(alias.c.platform == platform)
+    stmt = stmt.order_by(alias.c.scraped_at.desc(), alias.c.id.desc()).limit(limit)
+    rows = await d1_exec(stmt, timeout=90.0)
     if rows is None:
         raise RuntimeError("visobert_select_failed")
     return rows
@@ -166,13 +178,10 @@ async def _save(table: str, labels: dict[str, tuple[str, float]], source: str = 
 async def evaluate(clf: Classifier, table: str, n: int) -> None:
     """So với nhãn đã có (Jev/Kira, sentiment_source khác visobert): độ khớp theo từng ngưỡng tin cậy + ma trận nhầm."""
     cols = {row.get("name") for row in await d1_query(f"PRAGMA table_info({table})") or []}
-    alias = "p" if table == "posts" else "c"
-    not_ours = f" AND COALESCE({alias}.sentiment_source, '') != '{SOURCE}'" if "sentiment_source" in cols else ""
-    rows = await d1_query(
-        _select_sql(table, labeled=True) + not_ours + " ORDER BY random() LIMIT ?",
-        [n],
-        timeout=120.0,
-    )
+    stmt, alias = _select_stmt(table, labeled=True)
+    if "sentiment_source" in cols:
+        stmt = stmt.where(func.coalesce(alias.c.sentiment_source, "") != SOURCE)
+    rows = await d1_exec(stmt.order_by(func.random()).limit(n), timeout=120.0)
     rows = [r for r in rows or [] if r.get("sentiment") in LABELS.values()]
     started = time.monotonic()
     preds = clf.predict([r["message"] for r in rows])

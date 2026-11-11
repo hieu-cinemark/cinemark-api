@@ -24,11 +24,15 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import func, select, update
+
 from app.ai.tasks.post_relevance import classify_post_relevance_kira
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH, contains_keyword
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import posts as posts_table
 from app.services.relevance.relevance_rules import (
     foreign_language_reason,
     mentions_film_manual,
@@ -46,18 +50,20 @@ IDLE_SECONDS = 120.0
 
 
 async def _select(since: str, movie_id: str | None, limit: int, exclude: set[str]) -> list[dict[str, Any]]:
-    sql = (
-        "SELECT p.id, p.movie_id, p.platform, p.content, p.posted_at, k.keyword "
-        "FROM posts p LEFT JOIN keywords k ON k.id = p.keyword_id "
-        f"WHERE p.relevance_confidence IS NULL AND p.scraped_at >= ? AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
+    p, k = posts_table.alias("p"), keywords_table.alias("k")
+    stmt = (
+        select(p.c.id, p.c.movie_id, p.c.platform, p.c.content, p.c.posted_at, k.c.keyword)
+        .select_from(p.outerjoin(k, k.c.id == p.c.keyword_id))
+        .where(
+            p.c.relevance_confidence.is_(None),
+            p.c.scraped_at >= since,
+            func.length(func.trim(p.c.content)) >= MIN_CONTENT_LENGTH,
+        )
     )
-    params: list[str | int] = [since]
     if movie_id:
-        sql += " AND p.movie_id = ?"
-        params.append(movie_id)
-    sql += " ORDER BY p.scraped_at DESC LIMIT ?"
-    params.append(limit + len(exclude))
-    rows = await d1_query(sql, params)
+        stmt = stmt.where(p.c.movie_id == movie_id)
+    stmt = stmt.order_by(p.c.scraped_at.desc()).limit(limit + len(exclude))
+    rows = await d1_exec(stmt)
     if rows is None:
         raise RuntimeError("relabel_select_failed")
     return [row for row in rows if row["id"] not in exclude][:limit]
@@ -85,10 +91,15 @@ async def _relabel(
     )
     if rule_relevant is True:
         if not dry_run:
-            await d1_query(
-                "UPDATE posts SET relevance_label = 'related', relevance_confidence = 1.0, relevance_labeled_at = ?, "
-                "keyword_match = 1 WHERE id = ? AND relevance_confidence IS NULL",
-                [datetime.now(tz=UTC).isoformat(), row["id"]],
+            await d1_exec(
+                update(posts_table)
+                .where(posts_table.c.id == row["id"], posts_table.c.relevance_confidence.is_(None))
+                .values(
+                    relevance_label="related",
+                    relevance_confidence=1.0,
+                    relevance_labeled_at=datetime.now(tz=UTC).isoformat(),
+                    keyword_match=1,
+                )
             )
         return f"rule:{context}"
     verdict = await classify_post_relevance_kira(
@@ -111,10 +122,15 @@ async def _relabel(
         )
     keyword_match = int(ai_relevant if ai_relevant is not None else has_keyword)
     if not dry_run:
-        await d1_query(
-            "UPDATE posts SET relevance_label = ?, relevance_confidence = ?, relevance_labeled_at = ?, keyword_match = ? "
-            "WHERE id = ? AND relevance_confidence IS NULL",
-            [label, verdict["confidence"], datetime.now(tz=UTC).isoformat(), keyword_match, row["id"]],
+        await d1_exec(
+            update(posts_table)
+            .where(posts_table.c.id == row["id"], posts_table.c.relevance_confidence.is_(None))
+            .values(
+                relevance_label=label,
+                relevance_confidence=verdict["confidence"],
+                relevance_labeled_at=datetime.now(tz=UTC).isoformat(),
+                keyword_match=keyword_match,
+            )
         )
     else:
         logger.info("relabel_dry_run", post_id=row["id"], label=label, kira=verdict["label"], reason=verdict["reason"])
@@ -129,17 +145,20 @@ async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
     totals: Counter[str] = Counter()
     cursor = "9999"
     while True:
-        sql = (
-            "SELECT p.id, p.movie_id, p.content, p.scraped_at, k.keyword FROM posts p "
-            "LEFT JOIN keywords k ON k.id = p.keyword_id "
-            "WHERE p.relevance_confidence IS NULL AND p.scraped_at >= ? AND p.scraped_at < ? "
-            f"AND length(trim(p.content)) >= {MIN_CONTENT_LENGTH}"
+        p, k = posts_table.alias("p"), keywords_table.alias("k")
+        stmt = (
+            select(p.c.id, p.c.movie_id, p.c.content, p.c.scraped_at, k.c.keyword)
+            .select_from(p.outerjoin(k, k.c.id == p.c.keyword_id))
+            .where(
+                p.c.relevance_confidence.is_(None),
+                p.c.scraped_at >= since,
+                p.c.scraped_at < cursor,
+                func.length(func.trim(p.c.content)) >= MIN_CONTENT_LENGTH,
+            )
         )
-        params: list[str | int] = [since, cursor]
         if movie_id:
-            sql += " AND p.movie_id = ?"
-            params.append(movie_id)
-        rows = await d1_query(sql + " ORDER BY p.scraped_at DESC LIMIT 500", params)
+            stmt = stmt.where(p.c.movie_id == movie_id)
+        rows = await d1_exec(stmt.order_by(p.c.scraped_at.desc()).limit(500))
         if rows is None:
             raise RuntimeError("relabel_rules_select_failed")
         if not rows:
@@ -163,10 +182,10 @@ async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
                 if totals[rule] <= 5:
                     logger.info("relabel_rules_sample", rule=rule, post_id=row["id"], content=(content or "")[:160])
                 continue
-            await d1_query(
-                "UPDATE posts SET relevance_label = ?, relevance_labeled_at = ?, keyword_match = ? "
-                "WHERE id = ? AND relevance_confidence IS NULL",
-                [label, now, int(label == "related"), row["id"]],
+            await d1_exec(
+                update(posts_table)
+                .where(posts_table.c.id == row["id"], posts_table.c.relevance_confidence.is_(None))
+                .values(relevance_label=label, relevance_labeled_at=now, keyword_match=int(label == "related"))
             )
         logger.info("relabel_rules_page", rows=len(rows), totals=dict(totals))
     logger.info("relabel_rules_finished", **totals, dry_run=dry_run)

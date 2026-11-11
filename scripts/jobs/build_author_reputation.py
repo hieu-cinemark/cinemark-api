@@ -25,12 +25,18 @@ import asyncio
 from collections import defaultdict
 from datetime import datetime, timezone
 
+from sqlalchemy import delete, insert, select
+
 from app.repositories.d1.posts import (
     MIN_MOVIES_FOR_REPUTABLE_AUTHOR,
+    author_reputation,
     ensure_author_reputation_table,
     movie_hashtag_present,
 )
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.tables import posts as posts_table
 
 PAGE_SIZE = 2000
 # 7 tham số/dòng (platform, author, distinct_movies, confirmed_posts, updated_at - xem
@@ -46,17 +52,26 @@ async def main() -> None:
     last_id = ""
     total_scanned = 0
     while True:
-        rows = await d1_query(
-            """
-            SELECT p.id, p.platform, p.author, p.movie_id, p.content, k.keyword, m.title AS movie_title
-            FROM posts p
-            LEFT JOIN keywords k ON k.id = p.keyword_id
-            LEFT JOIN movies m ON m.id = p.movie_id
-            WHERE p.relevance_label = 'related' AND p.author IS NOT NULL AND p.author != '' AND p.id > ?
-            ORDER BY p.id
-            LIMIT ?
-            """,
-            [last_id, PAGE_SIZE],
+        p, k, m = posts_table.alias("p"), keywords_table.alias("k"), movies_table.alias("m")
+        rows = await d1_exec(
+            select(
+                p.c.id,
+                p.c.platform,
+                p.c.author,
+                p.c.movie_id,
+                p.c.content,
+                k.c.keyword,
+                m.c.title.label("movie_title"),
+            )
+            .select_from(p.outerjoin(k, k.c.id == p.c.keyword_id).outerjoin(m, m.c.id == p.c.movie_id))
+            .where(
+                p.c.relevance_label == "related",
+                p.c.author.is_not(None),
+                p.c.author != "",
+                p.c.id > last_id,
+            )
+            .order_by(p.c.id)
+            .limit(PAGE_SIZE),
             timeout=30.0,
         )
         if not rows:
@@ -79,7 +94,7 @@ async def main() -> None:
     print(f"authors reaching MIN_MOVIES_FOR_REPUTABLE_AUTHOR={MIN_MOVIES_FOR_REPUTABLE_AUTHOR}: {reputable_count}")
 
     await ensure_author_reputation_table()
-    await d1_query("DELETE FROM author_reputation")
+    await d1_exec(delete(author_reputation))
 
     now = datetime.now(tz=timezone.utc).isoformat()
     all_rows = [
@@ -88,12 +103,12 @@ async def main() -> None:
     ]
     for i in range(0, len(all_rows), ROWS_PER_INSERT_BATCH):
         batch = all_rows[i : i + ROWS_PER_INSERT_BATCH]
-        placeholders = ", ".join("(?, ?, ?, ?, ?)" for _ in batch)
-        params = [value for row in batch for value in row]
-        await d1_query(
-            f"INSERT INTO author_reputation (platform, author, distinct_movies, confirmed_posts, updated_at) "
-            f"VALUES {placeholders}",
-            params,
+        await d1_exec(
+            insert(author_reputation),
+            values=[
+                dict(zip(("platform", "author", "distinct_movies", "confirmed_posts", "updated_at"), row))
+                for row in batch
+            ],
         )
 
     print(f"wrote {len(all_rows)} author_reputation rows")

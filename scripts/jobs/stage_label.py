@@ -19,8 +19,14 @@ from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+from sqlalchemy import and_, func, select
+
 from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders, with_parent_context
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import movie_measure_settings, movies
+from app.repositories.d1.tables import posts as posts_table
 
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models" / "visobert-stage"
 LABELS = ("hong", "da_xem", "khac")
@@ -56,9 +62,11 @@ class StageModel:
 
 
 async def premiere_start(movie_id: str) -> str | None:
-    rows = await d1_query(
-        "SELECT COALESCE(s.premiere_date, m.released_at) AS d FROM movies m LEFT JOIN movie_measure_settings s ON s.movie_id = m.id WHERE m.id = ?",
-        [movie_id],
+    m, s = movies.alias("m"), movie_measure_settings.alias("s")
+    rows = await d1_exec(
+        select(func.coalesce(s.c.premiere_date, m.c.released_at).label("d"))
+        .select_from(m.outerjoin(s, s.c.movie_id == m.c.id))
+        .where(m.c.id == movie_id),
         quiet=True,
     )
     day = (rows or [{}])[0].get("d")
@@ -71,16 +79,26 @@ async def premiere_start(movie_id: str) -> str | None:
 async def run(args: argparse.Namespace) -> None:
     model = StageModel()
     start = await premiere_start(args.movie_id)
-    posts = await d1_query("SELECT id FROM posts WHERE movie_id = ?", [args.movie_id], timeout=90.0, quiet=True)
-    post_ids = [row["id"] for row in posts or []]
+    post_rows = await d1_exec(
+        select(posts_table.c.id).where(posts_table.c.movie_id == args.movie_id), timeout=90.0, quiet=True
+    )
+    post_ids = [row["id"] for row in post_rows or []]
     totals: Counter[str] = Counter()
     for i in range(0, len(post_ids), POST_CHUNK):
         chunk = post_ids[i : i + POST_CHUNK]
-        rows = await d1_query(
-            "SELECT c.id, c.message, c.posted_at, par.message AS parent_message FROM comments c "
-            "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
-            f"WHERE c.post_id IN ({','.join('?' * len(chunk))})",
-            chunk,
+        c = comments_table.alias("c")
+        par = comments_table.alias("par")
+        rows = await d1_exec(
+            select(
+                c.c.id,
+                c.c.message,
+                c.c.posted_at,
+                par.c.message.label("parent_message"),
+            )
+            .select_from(
+                c.outerjoin(par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id))
+            )
+            .where(c.c.post_id.in_(chunk)),
             timeout=90.0,
             quiet=True,
         )
@@ -102,6 +120,7 @@ async def run(args: argparse.Namespace) -> None:
             for row, item in list(zip(rows, updates, strict=True))[:20]:
                 print(f"{item['s']:<7} {' '.join(str(row['message']).split())[:100]}")
             break
+        # Giữ SQL thuần: UPDATE ... FROM json_each - SQLAlchemy dựng câu này dài dòng và khó đọc.
         result = await d1_query(
             "UPDATE comments SET audience_stage = j.s FROM (SELECT value ->> 'id' AS id, value ->> 's' AS s FROM json_each(?1)) AS j "
             "WHERE comments.id = j.id",

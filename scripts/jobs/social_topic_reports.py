@@ -20,7 +20,11 @@ import sys
 import time
 from datetime import UTC, date, datetime, timedelta
 
-from app.repositories.d1.store import d1_query
+from sqlalchemy import func, select
+
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comment_cluster_topics
+from app.repositories.d1.tables import movies as movies_table
 
 WINDOW_DAYS = 60
 NEW_FILM_DAYS = 21
@@ -31,14 +35,25 @@ STEP_TIMEOUT_SECONDS = 2 * 3600
 
 async def pick_films(max_films: int) -> list[dict]:
     today = datetime.now(tz=UTC).date()
-    films = await d1_query(
-        "SELECT m.id, m.title, substr(m.released_at, 1, 10) AS released FROM movies m "
-        "WHERE m.enabled = 1 AND m.released_at IS NOT NULL AND substr(m.released_at, 1, 10) BETWEEN ? AND ?",
-        [(today - timedelta(days=WINDOW_DAYS)).isoformat(), today.isoformat()],
+    m = movies_table.alias("m")
+    films = await d1_exec(
+        select(m.c.id, m.c.title, func.substr(m.c.released_at, 1, 10).label("released")).where(
+            m.c.enabled == 1,
+            m.c.released_at.is_not(None),
+            func.substr(m.c.released_at, 1, 10).between(
+                (today - timedelta(days=WINDOW_DAYS)).isoformat(), today.isoformat()
+            ),
+        ),
         quiet=True,
     )
     done = (
-        await d1_query("SELECT movie_id, MAX(generated_at) AS g FROM comment_cluster_topics GROUP BY 1", quiet=True)
+        await d1_exec(
+            select(
+                comment_cluster_topics.c.movie_id,
+                func.max(comment_cluster_topics.c.generated_at).label("g"),
+            ).group_by(comment_cluster_topics.c.movie_id),
+            quiet=True,
+        )
         or []
     )
     generated = {row["movie_id"]: str(row["g"])[:10] for row in done}
