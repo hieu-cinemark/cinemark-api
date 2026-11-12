@@ -359,9 +359,9 @@ async def set_proxy_settings(payload: ProxySettings) -> ProxySettingsOut:
 def _proxy_provider_out(row: dict) -> ProxyProviderOut:
     return ProxyProviderOut(
         key=row["key"],
-        kind=row.get("kind") or "",
         api_url=row.get("api_url") or "",
         token_set=bool(row.get("token")),
+        proxy_count=int(row.get("proxy_count") or 0),
         updated_at=row.get("updated_at"),
         last_used_at=row.get("last_used_at"),
         last_status=row.get("last_status"),
@@ -370,33 +370,33 @@ def _proxy_provider_out(row: dict) -> ProxyProviderOut:
 
 @router.get("/proxy/providers", response_model=list[ProxyProviderOut])
 async def list_proxy_providers() -> list[ProxyProviderOut]:
-    """Các gói proxy xoay vòng của nhà cung cấp (dòng proxy_providers) - nơi duy nhất
-    spider-hub đọc token của nhà cung cấp. Không bao giờ trả về token, chỉ cho biết đã
-    lưu token hay chưa."""
+    """Các nguồn proxy của nhà cung cấp (dòng proxy_providers) - nơi duy nhất
+    spider-hub đọc key của nhà cung cấp. Không bao giờ trả về key, chỉ cho biết đã
+    lưu key hay chưa."""
     return [_proxy_provider_out(row) for row in await db.list_proxy_providers()]
 
 
 @router.put("/proxy/providers/{key}", response_model=ProxyProviderOut)
 async def set_proxy_provider(key: str, payload: ProxyProviderUpdate) -> ProxyProviderOut:
-    """Upsert - có thể thêm key nhà cung cấp mới từ đây. Bỏ trống hoặc không gửi token thì
-    giữ nguyên token đã lưu.
+    """Upsert - có thể thêm nguồn proxy mới từ đây. Bỏ trống hoặc không gửi key thì
+    giữ nguyên key đã lưu.
 
-    `kind` là loại của gói - spider-hub tra adapter theo đó (xem clients/proxy_provider.py
-    bên đó), nên nó là phần bắt buộc của payload chứ không phải tuỳ chọn."""
+    Mỗi nguồn chỉ gồm 1 link reset + 1 key: link reset được gọi để xoay IP của cổng
+    đã ghim, key đi trong placeholder {token}."""
     if not re.fullmatch(r"[a-z0-9_]{1,64}", key):
         raise ValidationError("provider key must be 1-64 chars of a-z, 0-9, _")
     token = payload.token.strip() if payload.token and payload.token.strip() else None
     row = await db.upsert_proxy_provider(
-        key, kind=payload.kind, api_url=payload.api_url.strip(), token=token
+        key, api_url=payload.api_url.strip(), token=token
     )
-    logger.info("proxy_provider_updated", key=key, kind=payload.kind, api_url=payload.api_url.strip(), token_changed=token is not None)
+    logger.info("proxy_provider_updated", key=key, api_url=payload.api_url.strip(), token_changed=token is not None)
     return _proxy_provider_out(row)
 
 
 @router.delete("/proxy/providers/{key}")
 async def delete_proxy_provider(key: str) -> dict[str, bool]:
-    """Xoá gói proxy. Gói đang được dùng (có dòng platform_proxies trỏ tới, hoặc là gói
-    của tiktok_synthetic_provider) thì bị từ chối - xoá nó sẽ để những proxy đó mồ
+    """Xoá nguồn proxy. Nguồn đang được dùng (có dòng platform_proxies trỏ tới, hoặc là
+    nguồn của tiktok_synthetic_provider) thì bị từ chối - xoá nó sẽ để những proxy đó mồ
     côi mà không ai hỏi."""
     await db.delete_proxy_provider(key)
     logger.info("proxy_provider_deleted", key=key)

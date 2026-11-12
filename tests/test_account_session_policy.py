@@ -69,6 +69,8 @@ def target(**fields):
         ({"platform": "threads", "ip_type": "rotating"}, "rotating_ip"),
         ({"others": 1}, "shared_ip"),
         ({"platform": "threads", "others": 1}, "shared_ip"),
+        # Một proxy chỉ thuộc một tài khoản - không kể nền tảng.
+        ({"platform": "tiktok", "others": 1}, "shared_ip"),
         ({"proxy_platform": "public"}, "public_proxy"),
         ({"ip_type": "unknown"}, "ip_type_not_static"),
     ],
@@ -82,7 +84,7 @@ def test_pin_refusals(fields, fragment):
     [
         {},
         {"platform": "threads", "ip_type": "unknown", "proxy_platform": "threads"},
-        {"platform": "tiktok", "ip_type": "rotating", "others": 3},
+        {"platform": "tiktok", "ip_type": "rotating", "others": 0},
     ],
 )
 def test_pin_allowed(fields):

@@ -39,7 +39,7 @@ ACCOUNT_COLUMNS = (
 )
 PROXY_COLUMNS = (
     "id, platform, proxy_url, username, password, login_use_proxy, ip_type, enabled, created_at, updated_at, "
-    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, provider_key"
+    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, provider_key, provider_ref"
 )
 
 _pool_columns_ready = False
@@ -86,6 +86,9 @@ async def _ensure_pool_columns() -> None:
         # Gói nhà cung cấp nào sở hữu dòng proxy này (NULL = nhập tay/tĩnh). Trước đó code
         # phải đoán bằng cách so proxy_url với host:port trong token của từng gói.
         await cur.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS provider_key text")
+        # Mã riêng của cổng trong hệ thống nhà cung cấp - điền vào placeholder {ref} của
+        # link reset (vd proxy_id của webtui).
+        await cur.execute("ALTER TABLE platform_proxies ADD COLUMN IF NOT EXISTS provider_ref text")
         await conn.commit()
     _pool_columns_ready = True
 
@@ -109,8 +112,10 @@ _PROXY_CREATE_COLUMNS = (
     "login_use_proxy",
     "ip_type",
     "enabled",
-    # Gói nhà cung cấp sở hữu dòng này (NULL = nhập tay/tĩnh) - xem list_proxies.
+    # Nguồn proxy sở hữu dòng này (NULL = nhập tay/tĩnh) - xem list_proxies.
     "provider_key",
+    # Mã riêng của cổng trong hệ thống nhà cung cấp (placeholder {ref} của link reset).
+    "provider_ref",
 )
 
 
@@ -357,15 +362,23 @@ async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
 
 
 def proxy_pin_refusal(target: dict[str, Any]) -> str | None:
-    """Lý do tài khoản không được ghim vào proxy này (spider-hub db/proxies.meta_proxy_violation). Mỗi tài khoản Facebook một IP
-    cố định, đã đo: proxy tự xoay từng làm #90-92 chết trong một ngày, và nhãn unknown nghĩa là chưa ai đo."""
+    """Lý do tài khoản không được ghim vào proxy này (spider-hub db/proxies.meta_proxy_violation).
+
+    Nguyên tắc từ 12/11/2026: MỘT proxy chỉ thuộc MỘT tài khoản - không kể nền tảng
+    (Meta nối Facebook với Threads qua IP, và một proxy của TikTok cũng là một IP). Nên
+    bất kỳ tài khoản nào khác đang giữ cổng này đều là vi phạm.
+
+    Ngoài ra Facebook phải đúng nhãn static, Threads chỉ bị chặn proxy tự xoay (#17 đang
+    chờ 2 tài khoản Threads và chưa có IP thay thế)."""
     platform, ip_type = target["platform"], target["ip_type"]
+    # Một proxy chỉ thuộc một tài khoản - không kể nền tảng (Meta nối Facebook với
+    # Threads qua IP, và một proxy của TikTok cũng là một IP).
+    if int(target["others"]):
+        return "shared_ip"
     if platform not in ("facebook", "threads"):
         return None
     if ip_type == "rotating":
         return "rotating_ip"
-    if int(target["others"]):
-        return "shared_ip"
     if target["proxy_platform"] == "public":
         return "public_proxy"
     if platform == "facebook" and ip_type != "static":
@@ -407,7 +420,7 @@ async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
         await cur.execute(
             "SELECT a.platform, a.account_id, a.email, p.platform AS proxy_platform, p.ip_type, "
             "(SELECT count(*) FROM platform_accounts o JOIN platform_proxies same ON same.id = o.assigned_proxy_id "
-            " WHERE same.proxy_url = p.proxy_url AND o.id != a.id AND o.platform IN ('facebook', 'threads') "
+            " WHERE same.proxy_url = p.proxy_url AND o.id != a.id "
             " AND o.enabled = true AND o.status != 'checkpoint') AS others "
             "FROM platform_accounts a JOIN platform_proxies p ON p.id = %s WHERE a.id = %s",
             (proxy_id, account_id),
@@ -441,7 +454,7 @@ async def delete_account(account_id: int) -> None:
 _PROXY_LIST_COLUMNS = (
     "pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.ip_type, pp.enabled, "
     "pp.created_at, pp.updated_at, pp.status AS pool_status, pp.cooldown_until, pp.consecutive_failures, "
-    "pp.last_used_at, pp.provider_key, "
+    "pp.last_used_at, pp.provider_key, pp.provider_ref, "
     # Số dòng platform_accounts còn sống đang được ghim cố định vào proxy này (đang bật,
     # không bị checkpoint) - khớp với pin_account_to_least_loaded_proxy của spider-hub để con số "tài
     # khoản đã ghim" trên dashboard đúng bằng mức tải mà pool thực sự cân bằng theo. Các
@@ -456,15 +469,15 @@ async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
     await _ensure_pool_columns()
     await _ensure_proxy_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
-        # LEFT JOIN proxy_providers để biết dòng proxy này thuộc gói nào và gói đó loại
-        # gì / được gọi lần cuối lúc nào - trước đó không có quan hệ này, code phải đoán
-        # chủ quan bằng cách so proxy_url với token của từng gói.
+        # LEFT JOIN proxy_providers để biết dòng proxy này thuộc nguồn nào và nguồn đó
+        # được gọi lần cuối lúc nào - trước đó không có quan hệ này, code phải đoán
+        # chủ quan bằng cách so proxy_url với token của từng nguồn.
         join = (
             "LEFT JOIN proxy_providers pv ON pv.key = pp.provider_key"
         )
         columns = (
             _PROXY_LIST_COLUMNS
-            + ", pv.kind AS provider_kind, pv.last_used_at AS provider_last_used_at, "
+            + ", pv.last_used_at AS provider_last_used_at, "
             "pv.last_status AS provider_last_status"
         )
         if platform:
@@ -954,8 +967,8 @@ async def upsert_ai_provider(
 
 # --- Setting hành vi proxy -----------------------------------------------
 # proxy_settings: jsonb singleton chứa các tham số tinh chỉnh (xem ProxySettings trong
-# app/schemas/settings.py cho key/mặc định/giới hạn). proxy_providers: mỗi gói proxy
-# xoay vòng của nhà cung cấp một dòng (URL API + token + loại `kind`). Cả hai
+# app/schemas/settings.py cho key/mặc định/giới hạn). proxy_providers: mỗi nguồn proxy
+# của nhà cung cấp một dòng (URL reset + key). Cả hai
 # đều được social_crawler/db/proxy_settings.py của spider-hub đọc (cache 60s bên đó,
 # nên lưu ở đây thì các crawler đang chạy áp dụng trong vòng một phút).
 
@@ -989,9 +1002,8 @@ async def _ensure_proxy_settings_tables() -> None:
         # spider-hub ghi hai cột này mỗi lần thực sự dùng gói (proxy_settings.record_provider_use).
         await cur.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
         await cur.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS last_status text")
-        # `kind` = loại của gói (static/rotate_url/webtui/zingproxy). Spider-hub tra adapter
-        # theo cột này thay vì đoán theo URL/token - xem clients/proxy_provider.py bên đó.
-        await cur.execute("ALTER TABLE proxy_providers ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT ''")
+        # Cột `kind` cũ (phân loại gói) đã bị bỏ - mọi nguồn dùng chung 1 cơ chế
+        # (link reset + key) nên không cần phân loại.
         # Cột của chế độ "cấp quyền theo IP nguồn" đã bị bỏ cùng API lease của nhà cung cấp cũ.
         # Cột vẫn còn trong DB cho tới khi spider-hub chạy migrate --drop-ip-allowlist.
         await conn.commit()
@@ -1026,40 +1038,45 @@ async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
     return row  # type: ignore[return-value]
 
 
-PROXY_PROVIDER_COLUMNS = "key, kind, api_url, token, updated_at, last_used_at, last_status"
+PROXY_PROVIDER_COLUMNS = "key, api_url, token, updated_at, last_used_at, last_status"
 
 
 async def list_proxy_providers() -> list[dict[str, Any]]:
     await _ensure_proxy_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(f"SELECT {PROXY_PROVIDER_COLUMNS} FROM proxy_providers ORDER BY key")
+        await cur.execute(
+            f"SELECT {PROXY_PROVIDER_COLUMNS}, "
+            "(SELECT count(*) FROM platform_proxies pp WHERE pp.provider_key = proxy_providers.key) AS proxy_count "
+            "FROM proxy_providers ORDER BY key"
+        )
         return await cur.fetchall()
 
 
-async def upsert_proxy_provider(key: str, *, kind: str, api_url: str, token: str | None) -> dict[str, Any]:
-    """token=None thì giữ nguyên token đã lưu (cùng hợp đồng với api_key của
-    upsert_ai_provider). `kind` là loại của gói - spider-hub tra adapter theo đó."""
+async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None) -> dict[str, Any]:
+    """token=None thì giữ nguyên key đã lưu (cùng hợp đồng với api_key của
+    upsert_ai_provider). Mỗi nguồn là một link reset + một key - mọi nhà cung cấp dùng
+    chung một cơ chế nên không có trường phân loại."""
     await _ensure_proxy_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         if token is None:
             await cur.execute(
                 f"""
-                INSERT INTO proxy_providers (key, kind, api_url) VALUES (%s, %s, %s)
+                INSERT INTO proxy_providers (key, api_url) VALUES (%s, %s)
                 ON CONFLICT (key) DO UPDATE SET
-                    kind = EXCLUDED.kind, api_url = EXCLUDED.api_url, updated_at = now()
+                    api_url = EXCLUDED.api_url, updated_at = now()
                 RETURNING {PROXY_PROVIDER_COLUMNS}
                 """,
-                (key, kind, api_url),
+                (key, api_url),
             )
         else:
             await cur.execute(
                 f"""
-                INSERT INTO proxy_providers (key, kind, api_url, token) VALUES (%s, %s, %s, %s)
+                INSERT INTO proxy_providers (key, api_url, token) VALUES (%s, %s, %s)
                 ON CONFLICT (key) DO UPDATE SET
-                    kind = EXCLUDED.kind, api_url = EXCLUDED.api_url, token = EXCLUDED.token, updated_at = now()
+                    api_url = EXCLUDED.api_url, token = EXCLUDED.token, updated_at = now()
                 RETURNING {PROXY_PROVIDER_COLUMNS}
                 """,
-                (key, kind, api_url, token),
+                (key, api_url, token),
             )
         row = await cur.fetchone()
         await conn.commit()
@@ -1067,8 +1084,8 @@ async def upsert_proxy_provider(key: str, *, kind: str, api_url: str, token: str
 
 
 async def delete_proxy_provider(key: str) -> None:
-    """Xoá gói proxy. Gói đang được dùng (có proxy trong platform_proxies trỏ tới, hoặc
-    là gói của tiktok_synthetic_provider) thì không xoá - xoá nó sẽ để các proxy đó mồ
+    """Xoá nguồn proxy. Nguồn đang được dùng (có proxy trong platform_proxies trỏ tới, hoặc
+    là nguồn của tiktok_synthetic_provider) thì không xoá - xoá nó sẽ để các proxy đó mồ
     côi (không ai xoay IP cho chúng nữa) mà không ai hỏi."""
     await _ensure_proxy_settings_tables()
     await _ensure_pool_columns()
