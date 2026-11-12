@@ -265,8 +265,8 @@ async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> Ac
 async def reset_account_proxy(account_id: int) -> AccountOut:
     """Xoá việc ghim proxy cố định của một tài khoản (xem
     app/services/platform_config_db.reset_account_proxy) - lần crawl/bootstrap kế tiếp
-    nó sẽ được ghim lại vào proxy đang có ít tài khoản nhất. Dùng từ dashboard khi bỏ một
-    proxy hoặc cân bằng lại sau khi thêm proxy mới."""
+    nó sẽ được ghim lại vào một proxy TRỐNG (proxy chưa có tài khoản nào khác, vì mỗi proxy
+    thuộc riêng một tài khoản). Dùng từ dashboard khi bỏ một proxy hoặc ghim lại."""
     row = await db.reset_account_proxy(account_id)
     await db.record_account_event(row, "proxy_unpinned")
     return AccountOut.masked(row)
@@ -276,7 +276,10 @@ async def reset_account_proxy(account_id: int) -> AccountOut:
 async def set_account_proxy(account_id: int, payload: AccountSetProxy) -> AccountOut:
     """Ghim tay một tài khoản vào một proxy cụ thể - xem
     app/services/platform_config_db.set_account_proxy. Ngược với reset-proxy phía trên
-    (xoá ghim để quay về tự gán)."""
+    (xoá ghim để quay về tự gán).
+
+    Mỗi proxy thuộc riêng một tài khoản: proxy đang bị tài khoản khác giữ thì bị từ chối
+    (shared_ip)."""
     row = await db.set_account_proxy(account_id, payload.proxy_id)
     await db.record_account_event(row, "proxy_pinned", proxy_id=payload.proxy_id)
     return AccountOut.masked(row)

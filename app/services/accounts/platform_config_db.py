@@ -389,9 +389,9 @@ def proxy_pin_refusal(target: dict[str, Any]) -> str | None:
 async def reset_account_proxy(account_id: int) -> dict[str, Any]:
     """Xoá ghim proxy cố định của một tài khoản (assigned_proxy_id -> NULL) - xem
     services/pool.acquire_proxy_for_account của spider-hub. Ở lượt crawl/bootstrap kế
-    tiếp, tài khoản được ghim lại vào proxy đang có ít tài khoản nhất; dùng từ dashboard
-    khi bỏ một proxy đang được ghim, hoặc để tự cân bằng lại sau khi thêm proxy mới vào
-    pool."""
+    tiếp, tài khoản được ghim lại vào một proxy TRỐNG (proxy chưa có tài khoản nào khác -
+    mỗi proxy thuộc riêng một tài khoản); dùng từ dashboard khi bỏ một proxy đang được
+    ghim, hoặc để ghim lại sau khi thêm proxy mới vào pool."""
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -456,10 +456,10 @@ _PROXY_LIST_COLUMNS = (
     "pp.created_at, pp.updated_at, pp.status AS pool_status, pp.cooldown_until, pp.consecutive_failures, "
     "pp.last_used_at, pp.provider_key, pp.provider_ref, "
     # Số dòng platform_accounts còn sống đang được ghim cố định vào proxy này (đang bật,
-    # không bị checkpoint) - khớp với pin_account_to_least_loaded_proxy của spider-hub để con số "tài
+    # không bị checkpoint) - khớp với pin_account_to_free_proxy của spider-hub để con số "tài
     # khoản đã ghim" trên dashboard đúng bằng mức tải mà pool thực sự cân bằng theo. Các
     # ghim chết vẫn nằm trên assigned_proxy_id nhưng không được làm một IP trông như đã
-    # đầy.
+    # đầy. Nguyên tắc mới: một proxy thuộc riêng một tài khoản - giá trị này luôn 0 hoặc 1.
     "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id "
     "AND pa.enabled = true AND pa.status != 'checkpoint') AS assigned_account_count"
 )
