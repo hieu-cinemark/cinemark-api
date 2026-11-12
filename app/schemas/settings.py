@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from itertools import pairwise
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -130,6 +130,15 @@ class ProxyOut(BaseModel):
     # Số tài khoản đang được ghim cố định vào proxy này - xem
     # platform_config_db.list_proxies. Chỉ endpoint danh sách mới điền giá trị này.
     assigned_account_count: int = 0
+    # Gói nhà cung cấp sở hữu dòng proxy này (NULL = nhập tay/tĩnh) - xem
+    # platform_config_db.list_proxies. Trước đó không có quan hệ này, code đoán chủ
+    # quan bằng cách so proxy_url với token của từng gói.
+    provider_key: str | None = None
+    # Loại của gói đó (static/rotate_url/webtui/zingproxy) - spider-hub tra adapter theo đó.
+    provider_kind: str | None = None
+    # Lần gói đó được gọi gần nhất + kết quả ("ok" / "error: ...").
+    provider_last_used_at: datetime | None = None
+    provider_last_status: str | None = None
 
 
 class ProxyCreate(BaseModel):
@@ -140,6 +149,8 @@ class ProxyCreate(BaseModel):
     login_use_proxy: bool = False
     ip_type: ProxyIpType = "unknown"
     enabled: bool = True
+    # Gói nhà cung cấp sở hữu dòng này (NULL = nhập tay/tĩnh).
+    provider_key: str | None = Field(default=None, max_length=64)
 
 
 class ProxyUpdate(BaseModel):
@@ -150,6 +161,7 @@ class ProxyUpdate(BaseModel):
     login_use_proxy: bool | None = None
     ip_type: ProxyIpType | None = None
     enabled: bool | None = None
+    provider_key: str | None = Field(default=None, max_length=64)
 
 
 class FilterKeywordOut(BaseModel):
@@ -368,6 +380,9 @@ class CronJob(BaseModel):
 class ProxySettings(BaseModel):
     # Ghim proxy cố định (services/pool.py)
     repin_after_consecutive_failures: int = Field(default=5, ge=1, le=100)
+    # Số tài khoản (mọi nền tảng) tối đa trên một IP trước khi cảnh báo proxy_over_capacity -
+    # nhiều tài khoản Meta chung một IP là tín hiệu checkpoint mạnh.
+    max_accounts_per_ip: int = Field(default=2, ge=1, le=100)
     # Cooldown của circuit-breaker: base * 2^failures, có trần (db/proxies.py)
     cooldown_base_minutes: float = Field(default=5.0, gt=0, le=240)
     cooldown_max_minutes: float = Field(default=120.0, gt=0, le=10080)
@@ -378,9 +393,11 @@ class ProxySettings(BaseModel):
     health_check_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     health_check_alert_after_failures: int = Field(default=2, ge=1, le=100)
     health_check_streak_ttl_hours: float = Field(default=6.0, gt=0, le=168)
-    # API thuê proxy xoay vòng của nhà cung cấp (clients/proxy_provider.py)
+    # API xoay IP của nhà cung cấp (clients/proxy_provider.py của spider-hub)
     provider_request_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
-    provider_min_get_new_interval_seconds: float = Field(default=60.0, ge=0, le=3600)
+    # Giãn cách tối thiểu giữa hai lần gọi cùng một gói - nhà cung cấp từ chối lời gọi
+    # quá dồn dập.
+    provider_min_call_interval_seconds: float = Field(default=60.0, ge=0, le=3600)
     provider_max_cooldown_wait_seconds: float = Field(default=120.0, ge=0, le=3600)
     # crawl_request_consumer.py - backoff khi xếp hàng lại lúc cả pool proxy của một nền tảng bị sập
     exhausted_backoff_base_seconds: float = Field(default=30.0, gt=0, le=3600)
@@ -388,7 +405,7 @@ class ProxySettings(BaseModel):
     exhausted_backoff_max_seconds: float = Field(default=300.0, gt=0, le=86400)
     exhausted_max_requeues: int = Field(default=3, ge=0, le=100)
     # Danh tính khách synthetic của TikTok (spiders/tiktok/client.py)
-    tiktok_synthetic_provider: str = Field(default="proxiestrust_tiktok_us", min_length=1, max_length=64)
+    tiktok_synthetic_provider: str = Field(default="tiktok_us", min_length=1, max_length=64)
     tiktok_hashtag_max_attempts: int = Field(default=8, ge=1, le=50)
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
     # Cập nhật số bài booking Facebook bằng trang không đăng nhập (consumer/jobs/post_metrics.py của spider-hub). Tắt thì
@@ -404,21 +421,60 @@ class ProxySettingsOut(BaseModel):
 
 class ProxyProviderOut(BaseModel):
     key: str
+    # Loại của gói - spider-hub tra adapter theo cột này (xem clients/proxy_provider.py).
+    kind: str
     api_url: str
     # Có lưu token trong DB hay chưa - không bao giờ trả về token thô.
     token_set: bool
-    ip_allowlist: bool
     updated_at: datetime | None = None
     # Lần spider-hub thực sự gọi gói này + kết quả ("ok" / "error: ...").
     last_used_at: datetime | None = None
     last_status: str | None = None
 
 
-class ProxyProviderUpdate(BaseModel):
-    api_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
+# Loại của một gói proxy. Mỗi loại có một cách cấu hình riêng, nên model của mỗi loại
+# riêng - và Union có discriminator để validate đúng theo `kind` client gửi lên.
+#   static     : danh sách IP cố định nhập tay - không có URL API, không xoay được.
+#   rotate_url : một URL đổi IP chung, token = host:port:user:pass của cổng đó.
+#   webtui     : API của webtui, token = API token của tài khoản.
+#   zingproxy  : link đổi IP của gói, token = host:port:user:pass của cổng đó.
+PROXY_PROVIDER_KINDS = ("static", "rotate_url", "webtui", "zingproxy")
+
+
+class ProxyProviderBase(BaseModel):
+    api_url: str = Field(min_length=0, max_length=500, pattern=r"^$|^https?://")
     # None/rỗng thì giữ nguyên token đã lưu.
     token: str | None = Field(default=None, max_length=500)
-    ip_allowlist: bool = False
+
+
+class StaticProxyProviderUpdate(ProxyProviderBase):
+    kind: Literal["static"] = "static"
+    # Gói tĩnh không có URL API nào để gọi.
+    api_url: str = Field(default="", max_length=500)
+
+
+class RotateUrlProxyProviderUpdate(ProxyProviderBase):
+    kind: Literal["rotate_url"] = "rotate_url"
+    api_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
+
+
+class WebtuiProxyProviderUpdate(ProxyProviderBase):
+    kind: Literal["webtui"] = "webtui"
+    api_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
+
+
+class ZingproxyProxyProviderUpdate(ProxyProviderBase):
+    kind: Literal["zingproxy"] = "zingproxy"
+    api_url: str = Field(min_length=8, max_length=500, pattern=r"^https?://")
+
+
+ProxyProviderUpdate = Annotated[
+    StaticProxyProviderUpdate
+    | RotateUrlProxyProviderUpdate
+    | WebtuiProxyProviderUpdate
+    | ZingproxyProxyProviderUpdate,
+    Field(discriminator="kind"),
+]
 
 
 # --- Dọn bài không liên quan (app/services/relevance/cleanup.py) ---
