@@ -420,8 +420,9 @@ async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
         await cur.execute(
             "SELECT a.platform, a.account_id, a.email, p.platform AS proxy_platform, p.ip_type, "
             "(SELECT count(*) FROM platform_accounts o JOIN platform_proxies same ON same.id = o.assigned_proxy_id "
-            " WHERE same.proxy_url = p.proxy_url AND o.id != a.id "
-            " AND o.enabled = true AND o.status != 'checkpoint') AS others "
+            # Mọi tài khoản khác đã ghim cổng này, kể cả đang tắt / checkpoint: tài khoản tắt tạm vẫn giữ IP của nó
+            # (cùng luật với pin_account_to_free_proxy của spider-hub). Muốn lấy cổng thì bỏ ghim tài khoản kia trước.
+            " WHERE same.proxy_url = p.proxy_url AND o.id != a.id) AS others "
             "FROM platform_accounts a JOIN platform_proxies p ON p.id = %s WHERE a.id = %s",
             (proxy_id, account_id),
         )
@@ -472,13 +473,9 @@ async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
         # LEFT JOIN proxy_providers để biết dòng proxy này thuộc nguồn nào và nguồn đó
         # được gọi lần cuối lúc nào - trước đó không có quan hệ này, code phải đoán
         # chủ quan bằng cách so proxy_url với token của từng nguồn.
-        join = (
-            "LEFT JOIN proxy_providers pv ON pv.key = pp.provider_key"
-        )
+        join = "LEFT JOIN proxy_providers pv ON pv.key = pp.provider_key"
         columns = (
-            _PROXY_LIST_COLUMNS
-            + ", pv.last_used_at AS provider_last_used_at, "
-            "pv.last_status AS provider_last_status"
+            _PROXY_LIST_COLUMNS + ", pv.last_used_at AS provider_last_used_at, pv.last_status AS provider_last_status"
         )
         if platform:
             await cur.execute(
@@ -1100,7 +1097,7 @@ async def delete_proxy_provider(key: str) -> None:
         if isinstance(settings, dict) and settings.get("tiktok_synthetic_provider") == key:
             raise ConflictError(f"Provider {key} is the tiktok_synthetic_provider - point it elsewhere first")
         await cur.execute("DELETE FROM proxy_providers WHERE key = %s", (key,))
-        deleted = await cur.rowcount
+        deleted = cur.rowcount
         await conn.commit()
     if not deleted:
         raise NotFoundError(f"Proxy provider {key} not found")

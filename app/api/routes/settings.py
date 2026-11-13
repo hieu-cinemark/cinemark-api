@@ -325,10 +325,18 @@ async def delete_proxy(proxy_id: int) -> dict[str, bool]:
     return {"ok": True}
 
 
+_RENAMED_PROXY_SETTINGS = {"provider_min_get_new_interval_seconds": "provider_min_call_interval_seconds"}
+
+
 def _proxy_settings_out(row: dict) -> ProxySettingsOut:
     # Key lạ/cũ bị bỏ qua; giá trị đã lưu mà không còn qua được kiểm tra (ví dụ giới hạn
     # bị siết lại sau này) thì quay về mặc định thay vì làm cả trang Settings lỗi 500.
-    stored = value if isinstance(value := row.get("settings"), dict) else {}
+    stored = dict(value) if isinstance(value := row.get("settings"), dict) else {}
+    # Key đã đổi tên (spider-hub db/proxy_settings.RENAMED_KEYS): giá trị lưu dưới tên cũ vẫn hiện và vẫn có hiệu lực
+    # cho tới lần lưu kế tiếp (lần lưu đó ghi tên mới).
+    for old, new in _RENAMED_PROXY_SETTINGS.items():
+        if old in stored and new not in stored:
+            stored[new] = stored[old]
     merged = ProxySettings().model_dump()
     for key, value in stored.items():
         if key not in merged:
@@ -389,9 +397,7 @@ async def set_proxy_provider(key: str, payload: ProxyProviderUpdate) -> ProxyPro
     if not re.fullmatch(r"[a-z0-9_]{1,64}", key):
         raise ValidationError("provider key must be 1-64 chars of a-z, 0-9, _")
     token = payload.token.strip() if payload.token and payload.token.strip() else None
-    row = await db.upsert_proxy_provider(
-        key, api_url=payload.api_url.strip(), token=token
-    )
+    row = await db.upsert_proxy_provider(key, api_url=payload.api_url.strip(), token=token)
     logger.info("proxy_provider_updated", key=key, api_url=payload.api_url.strip(), token_changed=token is not None)
     return _proxy_provider_out(row)
 
