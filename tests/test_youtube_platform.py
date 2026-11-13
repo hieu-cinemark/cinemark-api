@@ -46,3 +46,19 @@ def test_youtube_comment_mapper_and_registration():
     assert "youtube" in platforms.registered_platforms() and "youtube" in platforms.COMMENT_CRAWL_PLATFORMS
     assert "youtube" in PLATFORMS
     assert ("youtube", "crawl_requests", "spider-hub.crawl-requests.youtube") in CONSUMER_GROUPS
+
+
+def test_youtube_comment_refresh_rule():
+    from datetime import UTC, datetime, timedelta
+
+    from app.services.crawl.comment_planner import youtube_due
+
+    now = datetime(2026, 11, 13, tzinfo=UTC)
+    iso = lambda delta: (now - delta).isoformat()  # noqa: E731
+    assert youtube_due({"comments_crawled_at": None, "posted_at": iso(timedelta(days=80))}, now)
+    # video 2 ngày tuổi: quét lại sau 12 giờ
+    assert youtube_due({"comments_crawled_at": iso(timedelta(hours=13)), "posted_at": iso(timedelta(days=2))}, now)
+    assert not youtube_due({"comments_crawled_at": iso(timedelta(hours=5)), "posted_at": iso(timedelta(days=2))}, now)
+    # video 40 ngày tuổi: mỗi tuần một lần
+    assert not youtube_due({"comments_crawled_at": iso(timedelta(days=3)), "posted_at": iso(timedelta(days=40))}, now)
+    assert youtube_due({"comments_crawled_at": iso(timedelta(days=8)), "posted_at": iso(timedelta(days=40))}, now)

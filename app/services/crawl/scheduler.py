@@ -38,7 +38,11 @@ from app.services.crawl import (
     tracked_posts,
     watch_pages,
 )
-from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
+from app.services.crawl.comment_planner import (
+    apply_comment_completions,
+    run_comment_round,
+    run_youtube_comment_round,
+)
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.crawl.source_pages import fill_public_pages_queue
@@ -219,7 +223,7 @@ async def _trigger_platform(
                 complete = False
         # Trang nguồn: mỗi ngày một lượt (lượt đầu) khi chạy theo phần - 6 lượt bài mới mà lượt nào cũng xếp lại bảng
         # tin mọi trang nguồn là gấp 6 lần request page_feed.
-        if platform == "facebook" and (not fresh_lane or slot_index == 0):
+        if platform == "facebook" and settings.facebook_account_page_feed and (not fresh_lane or slot_index == 0):
             # Cào theo nguồn: bảng tin các trang nguồn đang bật (app/services/crawl/source_pages.py).
             try:
                 if "source_pages" not in progress:
@@ -433,6 +437,9 @@ async def _comments_tick() -> None:
             with_sample=with_sample,
         )
         # Không await tại chỗ - một lượt chọn bài chậm cho một nền tảng không được làm trễ lịch của nền tảng khác.
+        if platform == "youtube":
+            _spawn(run_youtube_comment_round())
+            continue
         _spawn(run_comment_round(platform, hot_per_movie=hot_per_movie, with_sample=with_sample))
 
 

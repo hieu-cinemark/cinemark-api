@@ -453,6 +453,23 @@ async def run_source(source_id: str) -> bool:
         from app.services.crawl.threads_channels import queue_channel
 
         return await queue_channel(source, datetime.now(tz=UTC))
+    if not settings.facebook_account_page_feed:
+        # "Chạy ngay" khi đường tài khoản tắt: xếp thẳng vào hàng đọc không tài khoản.
+        request = {
+            "type": "public_page",
+            "platform": "facebook",
+            "page_url": source["url"],
+            "keyword_id": None,
+            "run_id": str(uuid.uuid4()),
+            "published_at": datetime.now(tz=UTC).timestamp(),
+        }
+        if source.get("movie_id") and (title := await _movie_title(source["movie_id"])):
+            keyword = await get_or_create_keyword(source["movie_id"], "facebook", title)
+            request["keyword_id"] = keyword["id"] if keyword else None
+        await enqueue_published(request)
+        await get_redis_client().rpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
+        await _set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat(), quiet=True)
+        return True
     return await queue_source(source, bypass_drain=True)
 
 

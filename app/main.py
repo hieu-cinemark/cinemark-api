@@ -23,6 +23,7 @@ from app.api.routes.settings import router as settings_router
 from app.api.routes.stats import router as stats_router
 from app.api.routes.threads import router as threads_router
 from app.api.routes.tiktok import router as tiktok_router
+from app.api.routes.youtube import router as youtube_router
 from app.clients.kafka import start_kafka_producer, stop_kafka_producer
 from app.core.auth import ApiKeyMiddleware
 from app.core.config import settings
@@ -59,6 +60,7 @@ app.include_router(jobs_router)
 app.include_router(facebook_router)
 app.include_router(threads_router)
 app.include_router(tiktok_router)
+app.include_router(youtube_router)
 app.include_router(stats_router)
 app.include_router(logs_router)
 app.include_router(movies_router)

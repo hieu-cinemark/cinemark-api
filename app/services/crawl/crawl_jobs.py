@@ -47,7 +47,7 @@ _SCAN_COUNT = 5000
 async def _running_keys(client: Any, platform: str) -> list[str]:
     """Key "đang chạy" của nền tảng. Chỉ Facebook có key phụ (làn, comment ẩn danh, cào page) nên nền tảng khác không phải quét."""
     base = f"{REDIS_KEY_PREFIX}crawl_job:{platform}"
-    if platform != "facebook":
+    if platform not in ("facebook", "youtube"):  # YouTube: mỗi làn một key crawl_job:youtube:lane<N>
         return [base]
     extra = [key async for key in client.scan_iter(match=f"{base}:*", count=_SCAN_COUNT)]
     return [base, *sorted(extra)]

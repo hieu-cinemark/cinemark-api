@@ -26,6 +26,7 @@ from sqlalchemy import case, func, select, update
 
 from app.clients.kafka import publish_comments_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post, reputable_authors
 from app.repositories.d1.sql import d1_exec
@@ -421,4 +422,57 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
         "skipped_queued": len(all_rows) - len(week_rows),
     }
     logger.info("comment_round_finished", platform=platform, with_sample=with_sample, **stats)
+    return stats
+
+
+# YouTube (13/11/2026): cào bình luận + trả lời của MỌI video liên quan (không chọn lọc bài nóng như nền tảng dùng tài khoản) -
+# spider-hub đọc không tài khoản theo làn song song. Video chưa cào đi trước; video mới đăng được quét lại để lấy bình luận mới.
+YOUTUBE_WINDOW = timedelta(days=90)
+YOUTUBE_REFRESH = (
+    (timedelta(days=3), timedelta(hours=12)),
+    (timedelta(days=14), timedelta(days=1)),
+    (YOUTUBE_WINDOW, timedelta(days=7)),
+)
+
+
+def youtube_due(row: dict[str, Any], now: datetime) -> bool:
+    crawled = _parse_time(row.get("comments_crawled_at"))
+    if crawled is None:
+        return True
+    age = now - (_parse_time(row.get("posted_at")) or now)
+    for max_age, every in YOUTUBE_REFRESH:
+        if age <= max_age:
+            return now - crawled >= every
+    return False
+
+
+async def run_youtube_comment_round() -> dict[str, int]:
+    now = datetime.now(tz=UTC)
+    rows = await _candidates("youtube", YOUTUBE_WINDOW, now)
+    due = [row for row in rows if not queued_recently(row, now) and youtube_due(row, now)]
+    # Chưa cào trước, rồi video nhiều tương tác.
+    due.sort(key=lambda row: (row.get("comments_crawled_at") is not None, -_num(row.get("like_count"))))
+    published = 0
+    for row in due[: settings.youtube_comments_per_round]:
+        pick = CrawlPick(
+            post_id=row["id"],
+            external_id=str(row["external_id"]),
+            url=str(row["url"]),
+            platform="youtube",
+            movie_id=row["movie_id"],
+            max_pages=0,
+            reason="youtube_all",
+            reply_count=_num(row.get("reply_count")),
+        )
+        run_id = str(uuid.uuid4())
+        if not await _mark_queued(pick, now, run_id):
+            continue
+        if await publish_comments_crawl_request(
+            platform="youtube", post_external_id=pick.external_id, post_url=pick.url, bypass_drain=False, run_id=run_id
+        ):
+            published += 1
+        else:
+            await _release_queued(pick, run_id)
+    stats = {"relevant": len(rows), "due": len(due), "published": published}
+    logger.info("youtube_comment_round_finished", **stats)
     return stats
