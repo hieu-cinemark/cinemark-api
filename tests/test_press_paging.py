@@ -119,3 +119,24 @@ async def test_snapshot_without_saved_queries_is_rejected(setup):
     setup["snapshot"] = {"data": {"organic_results": [], "news_results": [], "sources": []}}
     with pytest.raises(UpstreamError):
         await press_paging.more_pages("film", page=2)
+
+
+async def test_max_pages_is_capped_because_every_page_is_paid(setup):
+    setup["snapshot"] = _snapshot([], [])
+    more = {"serpapi_pagination": {"next_link": "x"}}
+    for start in range(10, 2000, 10):
+        setup["pages"][("web", start)] = {"organic_results": [{"link": f"https://w.vn/{start}"}], **more}
+    result = await press_paging.more_pages("film", page=2, max_pages=1000)
+    assert result["pagesRead"] == press_paging.MAX_PAGES
+    assert len([c for c in setup["calls"] if c[0] == "web"]) == press_paging.MAX_PAGES
+
+
+async def test_a_source_without_next_page_is_not_called_again(setup):
+    setup["snapshot"] = _snapshot([], [])
+    more = {"serpapi_pagination": {"next_link": "x"}}
+    setup["pages"][("web", 10)] = {"organic_results": [{"link": "https://w.vn/1"}], **more}
+    setup["pages"][("web", 20)] = {"organic_results": [{"link": "https://w.vn/2"}]}
+    setup["pages"][("news", 10)] = {"news_results": [{"link": "https://n.vn/1"}]}  # tin hết ngay trang này
+    await press_paging.more_pages("film", page=2)
+    assert ("news", 20) not in setup["calls"]
+    assert ("web", 20) in setup["calls"]

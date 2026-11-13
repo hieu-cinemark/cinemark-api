@@ -28,9 +28,7 @@ def _params(base: dict, start: int) -> GoogleNewsRequest:
     )
 
 
-def _merge(
-    existing: list[dict], incoming: list[dict], start_index: int
-) -> tuple[list[dict], list[dict], int]:
+def _merge(existing: list[dict], incoming: list[dict], start_index: int) -> tuple[list[dict], list[dict], int]:
     """Ghép bài mới vào danh sách cũ.
 
     Trả về (danh sách đã gộp, danh sách chỉ gồm bài MỚI, số nguồn cuối cùng).
@@ -50,6 +48,11 @@ def _merge(
         merged.append(numbered)
         added.append(numbered)
     return merged, added, index
+
+
+async def _empty() -> dict:
+    """Nguồn đã hết trang: không gọi SerpApi."""
+    return {}
 
 
 def _has_next(data: dict) -> bool:
@@ -84,12 +87,15 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
     added_organic: list[dict] = []
     added_press: list[dict] = []
     pages_read = 0
-    has_more = False
-    for offset in range(max(1, page) - 1, max(1, page) - 1 + max(1, max_pages)):
+    # Mỗi trang là 2 lượt SerpApi trả phí và endpoint gọi được bằng GET: kẹp số trang, không tin tham số query.
+    pages = min(max(1, max_pages), MAX_PAGES)
+    # Nguồn nào đã báo hết trang thì thôi gọi nguồn đó (trước đây vẫn gọi cả hai tới khi CẢ HAI hết).
+    web_more = news_more = True
+    for offset in range(max(1, page) - 1, max(1, page) - 1 + pages):
         start = offset * PAGE_SIZE
         web_data, news_data = await asyncio.gather(
-            google_news.search_web(_params(web_base, start)),
-            google_news.search(_params(news_base, start)),
+            google_news.search_web(_params(web_base, start)) if web_more else _empty(),
+            google_news.search(_params(news_base, start)) if news_more else _empty(),
         )
         organic, new_organic, next_index = _merge(
             organic, press_groups.flatten(web_data.get("organic_results", [])), next_index
@@ -100,10 +106,11 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
         added_organic.extend(new_organic)
         added_press.extend(new_press)
         pages_read += 1
-        # Còn trang kế tiếp ở một trong hai nguồn thì cần gọi tiếp.
-        has_more = _has_next(web_data) or _has_next(news_data)
-        if not has_more:
+        web_more = web_more and _has_next(web_data)
+        news_more = news_more and _has_next(news_data)
+        if not (web_more or news_more):
             break
+    has_more = web_more or news_more
 
     return {
         "movieId": movie_id,
