@@ -1,4 +1,10 @@
-"""Google News Light qua SerpApi, gọi theo yêu cầu và giữ nguyên các khối kết quả."""
+"""Tìm tin Google cho "Góc nhìn sau công chiếu", giữ dạng kết quả của SerpApi (news_results / organic_results,
+serpapi_pagination) để press_groups / press_paging không phải đổi.
+
+- search (Google News): mặc định Google News RSS miễn phí (app/clients/google.py, settings.google_news_provider="rss"),
+  10 bài mỗi trang, link đã giải về bài gốc; "serpapi" = Google News Light qua SerpApi như cũ.
+- search_web (Google Search): vẫn SerpApi - trang kết quả Google cần trình duyệt + giải captcha.
+"""
 
 import logging
 import re
@@ -6,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from app.clients import google as google_free
 from app.core.config import settings
 from app.core.errors import AppError, UpstreamError
 from app.schemas.research import GoogleNewsRequest
@@ -31,8 +38,47 @@ class SerpApiNotConfigured(AppError):
     code = "serpapi_not_configured"
 
 
+RSS_PAGE_SIZE = 10
+
+
 async def search(payload: GoogleNewsRequest) -> dict[str, Any]:
+    if settings.google_news_provider == "rss":
+        return await search_rss(payload)
     return await _search(payload, engine="google_news_light")
+
+
+def web_search_available() -> bool:
+    return bool((settings.serpapi_api_key or "").strip())
+
+
+async def search_rss(payload: GoogleNewsRequest) -> dict[str, Any]:
+    """Một trang (payload.start) của Google News RSS, dạng như Google News Light của SerpApi. RSS trả cả lô (~100 bài)
+    một lần nên mỗi trang đọc lại RSS rồi cắt; chỉ giải link gốc cho 10 bài của trang."""
+    items = await google_free.news_search(payload.q, hl=payload.hl, gl=payload.gl)
+    page = items[payload.start : payload.start + RSS_PAGE_SIZE]
+    await google_free.resolve_links(page)
+    results = [
+        {
+            "position": payload.start + i + 1,
+            "title": item.get("title"),
+            "link": item.get("link"),
+            "google_link": item.get("google_link"),
+            "source": item.get("source"),
+            "source_url": item.get("source_url"),
+            "iso_date": item.get("published_at"),
+            "date": item.get("published_at"),
+        }
+        for i, item in enumerate(page)
+        if item.get("link")
+    ]
+    data: dict[str, Any] = {
+        "search_metadata": {"status": "Success", "provider": "google_news_rss"},
+        "search_parameters": {"engine": "google_news_rss", "q": payload.q, "gl": payload.gl, "hl": payload.hl},
+        "news_results": results,
+    }
+    if payload.start + RSS_PAGE_SIZE < len(items):
+        data["serpapi_pagination"] = {"next_link": f"rss:start={payload.start + RSS_PAGE_SIZE}"}
+    return data
 
 
 async def search_web(payload: GoogleNewsRequest) -> dict[str, Any]:

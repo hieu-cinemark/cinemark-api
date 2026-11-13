@@ -51,12 +51,12 @@ def _merge(existing: list[dict], incoming: list[dict], start_index: int) -> tupl
 
 
 async def _empty() -> dict:
-    """Nguồn đã hết trang: không gọi SerpApi."""
+    """Nguồn đã hết trang: không gọi nữa."""
     return {}
 
 
 def _has_next(data: dict) -> bool:
-    """SerpApi báo còn trang kế tiếp thì mới đáng gọi tiếp."""
+    """Còn trang kế tiếp (SerpApi, hoặc RSS còn bài - google_news.search_rss) thì mới đáng gọi tiếp."""
     pagination = data.get("serpapi_pagination") or {}
     return bool(pagination.get("next_link"))
 
@@ -74,7 +74,7 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
     data = snapshot["data"]
     web_base = data.get("search_parameters") or {}
     news_base = data.get("news_search_parameters") or {}
-    if not web_base.get("q") or not news_base.get("q"):
+    if not web_base.get("q") and not news_base.get("q"):
         raise UpstreamError("Bản tin hiện có không lưu câu tìm nên không lấy thêm được trang.")
 
     organic = press_groups.flatten(data.get("organic_results", []))
@@ -90,7 +90,8 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
     # Mỗi trang là 2 lượt SerpApi trả phí và endpoint gọi được bằng GET: kẹp số trang, không tin tham số query.
     pages = min(max(1, max_pages), MAX_PAGES)
     # Nguồn nào đã báo hết trang thì thôi gọi nguồn đó (trước đây vẫn gọi cả hai tới khi CẢ HAI hết).
-    web_more = news_more = True
+    # Bản tin không có phần Google Search (không key SerpApi) thì chỉ lật phần tin báo.
+    web_more, news_more = bool(web_base.get("q")), bool(news_base.get("q"))
     for offset in range(max(1, page) - 1, max(1, page) - 1 + pages):
         start = offset * PAGE_SIZE
         web_data, news_data = await asyncio.gather(

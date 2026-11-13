@@ -102,8 +102,11 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
         query = f"phim {movie['title']} đánh giá"
         news_query = f"phim {movie['title']} review"
+        # Không có key SerpApi thì chỉ có phần tin báo (Google News RSS), bỏ phần kết quả Google Search.
         data, press = await asyncio.gather(
-            google_news.search_web(GoogleNewsRequest(q=query, no_cache=force)),
+            google_news.search_web(GoogleNewsRequest(q=query, no_cache=force))
+            if google_news.web_search_available()
+            else _no_web_results(),
             google_news.search(GoogleNewsRequest(q=news_query, no_cache=force)),
         )
         data["collection_queries"] = [query, news_query]
@@ -133,8 +136,12 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         await cache.eval(UNLOCK, 1, lock, owner)
 
 
+async def _no_web_results() -> dict:
+    return {"organic_results": [], "search_parameters": {}}
+
+
 async def tick() -> None:
-    if not settings.serpapi_api_key:
+    if not settings.serpapi_api_key and settings.google_news_provider != "rss":
         return
     cache = get_redis_client()
     if not await cache.set(PREFIX + "schedule_scan:hybrid_full_page:v3", "1", nx=True, ex=3600):

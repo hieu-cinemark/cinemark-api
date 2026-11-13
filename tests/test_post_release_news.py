@@ -11,6 +11,13 @@ from app.repositories.d1 import sql as d1_sql
 from app.services import post_release_news as news
 
 
+@pytest.fixture(autouse=True)
+def _serpapi_mode(monkeypatch):
+    """Các test này kiểm tra đường SerpApi (Google News RSS mặc định có test riêng: tests/test_google_free.py)."""
+    monkeypatch.setattr(news.settings, "google_news_provider", "serpapi")
+    monkeypatch.setattr(news.settings, "serpapi_api_key", news.settings.serpapi_api_key or "test")
+
+
 class Cache:
     def __init__(self):
         self.data = {}

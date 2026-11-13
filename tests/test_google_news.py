@@ -11,6 +11,14 @@ from app.core.errors import UpstreamError, register_exception_handlers
 from app.schemas.research import GoogleNewsRequest
 from app.services import google_news
 
+
+@pytest.fixture(autouse=True)
+def _serpapi_mode(monkeypatch):
+    """Các test này kiểm tra đường SerpApi (Google News RSS mặc định có test riêng: tests/test_google_free.py)."""
+    monkeypatch.setattr(settings, "google_news_provider", "serpapi")
+    monkeypatch.setattr(settings, "serpapi_api_key", settings.serpapi_api_key or "test")
+
+
 RESULT = {
     "search_metadata": {"status": "Success", "id": "search-1"},
     "search_parameters": {"q": "Phim Út Lan 2", "engine": "google_news_light"},

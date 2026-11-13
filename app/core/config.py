@@ -47,6 +47,8 @@ class Settings(BaseSettings):
 
     # Google News Light (SerpApi), tin sau công chiếu cập nhật mỗi 72 giờ.
     serpapi_api_key: str | None = None
+    # Google News cho "Góc nhìn sau công chiếu": "rss" = Google News RSS miễn phí (app/clients/google.py), "serpapi" = như cũ.
+    google_news_provider: str = "rss"
     serpapi_timeout_seconds: float = 120.0
 
     # Cloudflare D1 - cho ingest consumer đọc/ghi database D1 của cinemark-scraper qua
