@@ -189,6 +189,7 @@ def test_queue_label_and_search_first_ordering(monkeypatch):
         ],
         "threads": [{"id": "s2", "type": "search"}],
         "tiktok": [],
+        "youtube": [],
     }
     monkeypatch.setattr(task_queue, "list_pending", AsyncMock(side_effect=lambda platform: pending[platform]))
     monkeypatch.setattr(task_queue, "list_history", AsyncMock(return_value=[]))

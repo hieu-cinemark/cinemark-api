@@ -122,10 +122,40 @@ def _map_tiktok_post(payload: dict[str, Any]) -> PostDraft:
     }
 
 
+def _map_youtube_post(payload: dict[str, Any]) -> PostDraft:
+    """Video YouTube từ spider-hub (consumer/jobs/youtube.py, 13/11/2026) -> PostDraft. Nội dung = tiêu đề + mô tả (bộ lọc
+    liên quan đọc cả hai). create_time là ngày đăng chính xác từ API player; video chỉ có ngày tương đối thì là ước lượng.
+    YouTube không có số share công khai; số bình luận cập nhật khi cào bình luận."""
+    timestamp = payload.get("create_time")
+    title = (payload.get("title") or "").strip()
+    description = (payload.get("description") or "").strip()
+    return {
+        "external_id": payload.get("video_id"),
+        "url": payload.get("url"),
+        "author": payload.get("channel_handle") or payload.get("channel_name"),
+        "content": f"{title}\n\n{description}".strip() if description else title,
+        "media": {
+            "media_type": "short" if payload.get("is_short") else "video",
+            "media_url": payload.get("url"),
+            "cover_url": payload.get("thumbnail"),
+            "duration_seconds": payload.get("duration_seconds"),
+        },
+        "like_count": payload.get("like_count") or 0,
+        "reply_count": payload.get("comment_count") or 0,
+        "repost_count": 0,
+        "quote_count": 0,
+        "reshare_count": 0,
+        "view_count": payload.get("view_count") or 0,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
 PLATFORM_POST_MAPPERS: dict[str, Callable[[dict[str, Any]], PostDraft]] = {
     "facebook": _map_facebook_post,
     "threads": _map_threads_post,
     "tiktok": _map_tiktok_post,
+    "youtube": _map_youtube_post,
 }
 
 
@@ -205,10 +235,30 @@ def _map_tiktok_comment(payload: dict[str, Any]) -> CommentDraft:
     }
 
 
+def _map_youtube_comment(payload: dict[str, Any]) -> CommentDraft:
+    """Bình luận YouTube từ spider-hub. YouTube chỉ cho thời gian tương đối ("2 ngày trước") - timestamp là ước lượng."""
+    timestamp = payload.get("timestamp")
+    author = payload.get("author_name")
+    return {
+        "external_id": payload.get("comment_id"),
+        "message": payload.get("message"),
+        "author_name": author,
+        "author_id": payload.get("author_id"),
+        "author_url": f"https://www.youtube.com/{author}" if author and author.startswith("@") else None,
+        "author_profile_picture": payload.get("author_avatar_url"),
+        "reactions_count": payload.get("like_count") or 0,
+        "replies_count": payload.get("reply_count") or 0,
+        "parent_external_id": payload.get("parent_comment_id"),
+        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "raw": payload,
+    }
+
+
 PLATFORM_COMMENT_MAPPERS: dict[str, Callable[[dict[str, Any]], CommentDraft]] = {
     "facebook": _map_facebook_comment,
     "threads": _map_threads_comment,
     "tiktok": _map_tiktok_comment,
+    "youtube": _map_youtube_comment,
 }
 
 

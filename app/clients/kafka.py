@@ -46,6 +46,7 @@ CONSUMER_GROUPS: tuple[tuple[str, str, str], ...] = (
     ("facebook_public", FACEBOOK_PUBLIC_COMMENTS_TOPIC, "spider-hub.crawl-requests.facebook-public-comments"),
     ("threads", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.threads"),
     ("tiktok", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.tiktok"),
+    ("youtube", CRAWL_REQUESTS_TOPIC, "spider-hub.crawl-requests.youtube"),
     ("ingest_posts", "raw_posts", "cinemark-api.ingest.posts"),
     ("ingest_comments", "raw_comments", "cinemark-api.ingest.comments"),
     ("lake_posts", "raw_posts", "cinemark-api.lake"),

@@ -170,6 +170,8 @@ async def _trigger_platform(
     # nhịp đào mỗi giờ (crawl_lanes.run_deep_tick) lo.
     fresh_lane = platform == "facebook" and settings.facebook_crawl_lanes
     today = datetime.now(TIMEZONE).date()
+    if platform == "youtube":
+        await _ensure_youtube_keywords()
     if fresh_lane:
         keywords = await crawl_lanes.fresh_keywords(slot_index, today)
     else:
@@ -263,6 +265,32 @@ _CRAWL_LEASE_SECONDS = 600
 _CRAWL_RETRY_BACKOFF_SECONDS = 120
 _crawl_fired: set[str] = set()
 _crawl_running: set[str] = set()
+
+
+async def _ensure_youtube_keywords() -> int:
+    """YouTube (13/11/2026): mỗi phim đang theo dõi chưa có từ khoá YouTube nào được tạo một từ khoá = tên phim. Từ khoá
+    người vận hành đã tắt thì không tạo lại (phim đó vẫn có dòng). Trả số từ khoá mới."""
+    from sqlalchemy import select
+
+    from app.repositories.d1.sql import d1_exec
+    from app.repositories.d1.store import get_or_create_keyword
+    from app.repositories.d1.tables import keywords as keywords_table
+    from app.repositories.d1.tables import movies as movies_table
+
+    has_youtube = select(keywords_table.c.movie_id).where(keywords_table.c.platform == "youtube")
+    rows = await d1_exec(
+        select(movies_table.c.id, movies_table.c.title).where(
+            movies_table.c.enabled == 1, movies_table.c.id.not_in(has_youtube)
+        ),
+        quiet=True,
+    )
+    created = 0
+    for row in rows or []:
+        if row.get("title") and await get_or_create_keyword(row["id"], "youtube", str(row["title"]).strip()):
+            created += 1
+    if created:
+        logger.info("youtube_keywords_created", created=created)
+    return created
 
 
 def _crawl_slot_key(platform: str, today: str, slot: str) -> str:

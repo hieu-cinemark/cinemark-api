@@ -12,7 +12,7 @@ from typing import Any
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 
-PLATFORMS = ("facebook", "threads", "tiktok")
+PLATFORMS = ("facebook", "threads", "tiktok", "youtube")
 HISTORY_LIMIT = 200
 
 
