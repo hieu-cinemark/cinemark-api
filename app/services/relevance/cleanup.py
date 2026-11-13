@@ -104,6 +104,12 @@ def _eligible_posts(alias: Any, grace: str) -> Any:
     return text(_ELIGIBLE_SQL.format(prefix=f"{alias.name}.")).bindparams(bindparam("grace", value=grace))
 
 
+def _count_eligible(grace: str) -> Any:
+    """Số bài đủ điều kiện xoá. select_from bắt buộc: điều kiện là text() nên SQLAlchemy không tự suy ra FROM, thiếu nó
+    câu thành "SELECT count(*) WHERE posts...." - D1 báo no such column."""
+    return select(func.count().label("n")).select_from(posts_table).where(_eligible_posts(posts_table, grace))
+
+
 async def resolve_cleanup_settings() -> dict[str, Any]:
     """Các tham số dọn dẹp đang có hiệu lực: dòng cleanup_settings lưu trên dashboard cho
     những key nó có, còn lại lấy giá trị dự phòng từ env trong app/core/config.py. Luôn
@@ -132,10 +138,12 @@ async def purge_irrelevant_posts(
     grace = f"-{grace_value} hours"
 
     if dry_run:
-        posts = await _run_stmt(select(func.count().label("n")).where(_eligible_posts(posts_table, grace)))
+        posts = await _run_stmt(_count_eligible(grace))
+        # Một bảng comments, không alias: alias + điều kiện trên bảng gốc sinh "FROM comments AS c, comments"
+        # (tích Descartes - quét cả bảng nhân số dòng khớp).
         comments = await _run_stmt(
             select(func.count().label("n"))
-            .select_from(comments_table.alias("c"))
+            .select_from(comments_table)
             .where(comments_table.c.post_id.in_(select(posts_table.c.id).where(_eligible_posts(posts_table, grace))))
         )
         result = {"dry_run": True, "grace_hours": grace_value, "posts": posts[0]["n"], "comments": comments[0]["n"]}
@@ -211,7 +219,7 @@ async def purge_irrelevant_posts(
     if ids:
         totals["backup"] = run_key
 
-    backlog = await _run_stmt(select(func.count().label("n")).where(_eligible_posts(posts_table, grace)))
+    backlog = await _run_stmt(_count_eligible(grace))
     totals["remaining_posts"] = backlog[0]["n"]
     totals["grace_hours"] = grace_value
     logger.info("irrelevant_purge_done", telegram=True, **totals)

@@ -81,3 +81,25 @@ def test_purge_refuses_without_backup_storage(monkeypatch):
         assert "backup" in str(exc)
     else:
         raise AssertionError("purge must refuse to delete without R2 backups")
+
+
+def test_dry_run_counts_run_on_sqlite(monkeypatch):
+    """Xem trước = 2 câu đếm. select(count).where(text(...)) không tự có FROM ("no such column" trên D1); alias +
+    bảng gốc thì nhân chéo (5 comment x 2 khớp = 10 thay vì 2)."""
+    import sqlite3
+
+    db = sqlite3.connect(":memory:")
+    db.row_factory = sqlite3.Row
+    db.executescript(
+        "CREATE TABLE posts (id TEXT, relevance_label TEXT, relevance_labeled_at TEXT, scraped_at TEXT);"
+        "CREATE TABLE comments (id TEXT, post_id TEXT);"
+        "INSERT INTO posts VALUES ('p1','not_related','2020-01-01','2020-01-01'),('p2','related',NULL,'2020-01-01');"
+        "INSERT INTO comments VALUES ('c1','p1'),('c2','p1'),('c3','p2'),('c4','p2'),('c5','p2');"
+    )
+
+    async def run(sql, params):
+        return [dict(row) for row in db.execute(sql, params).fetchall()]
+
+    monkeypatch.setattr(cleanup, "_run", run)
+    result = asyncio.run(cleanup.purge_irrelevant_posts(dry_run=True, grace_hours=1))
+    assert (result["posts"], result["comments"]) == (1, 2)
