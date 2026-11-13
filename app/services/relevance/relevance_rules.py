@@ -713,6 +713,51 @@ def resolve_relevance(
 # loại - phần chữ của nó rỗng.
 
 
+def _clearly_about(content: str | None, movie: dict, *, strict: bool, ambiguous: bool) -> bool:
+    """Tín hiệu rõ ràng bài nói về ĐÚNG phim này: ngữ cảnh điện ảnh quanh tên phim / hashtag chỉ trỏ tới phim này
+    (film_context_reason, không tính tên diễn viên), hoặc đủ tên phim dài (mentions_full_title) khi tên không phải cụm từ
+    thông dụng. Phim "chặt" không nhận hashtag tên phim."""
+    if film_context_reason(content, movie, allow_title_hashtag=not strict, allow_names=False):
+        return True
+    return not strict and not ambiguous and mentions_full_title(content, movie.get("title"))
+
+
+def find_film(
+    content: str | None,
+    movies: Iterable[dict],
+    posted_at: object = None,
+    *,
+    exclude_movie_id: str | None = None,
+    strict: bool = False,
+    strict_slugs: Iterable[str] = (),
+    ambiguous_slugs: Iterable[str] = (),
+) -> dict | None:
+    """Phim đang theo dõi mà bài nói tới, bỏ qua `exclude_movie_id`. Nhiều phim khớp thì lấy phim tên dài nhất (cụ thể
+    nhất). `movies`: [{"id", "title", "slug", "keywords": [...], ...}] (ingest _tracked_movies).
+
+    strict=False (bài trang nguồn chung - trang rạp, trang review): tên phim hoặc một từ khoá của phim
+    (mentions_keyword_or_title), không có thì tên rút gọn quanh ngày công chiếu khi đúng một phim khớp.
+    strict=True (chuyển bài tìm bằng từ khoá phim khác sang phim này): chỉ khi có tín hiệu rõ (_clearly_about) - từ khoá
+    của phim có cả hashtag chung chung, và tên ngắn ("Mẹ Mìn", "Người Được Chọn") trùng cụm từ thường ngày, nên khớp lỏng
+    gán truyện đời thường hay bài phim khác vào phim (chạy thử 13/11/2026 trên bản sao lưu đợt xoá)."""
+    if not content:
+        return None
+    candidates = [m for m in movies if m.get("keywords") and m.get("id") != exclude_movie_id]
+    if strict:
+        strict_set, ambiguous_set = set(strict_slugs), set(ambiguous_slugs)
+        matches = [
+            m
+            for m in candidates
+            if _clearly_about(content, m, strict=m.get("slug") in strict_set, ambiguous=m.get("slug") in ambiguous_set)
+        ]
+    else:
+        matches = [m for m in candidates if mentions_keyword_or_title(content, m["keywords"], m.get("title"))]
+        if not matches:
+            short = [m for m in candidates if mentions_short_title(content, m, posted_at)]
+            matches = short if len(short) == 1 else []
+    return max(matches, key=lambda m: len(str(m.get("title") or ""))) if matches else None
+
+
 def title_acronym(title: str | None) -> str | None:
     """Chữ đầu các từ của tên phim, khi tên có từ ba chữ trở lên ("Hộ Linh Tráng Sĩ" -> "hlts"). Tên ngắn hơn thì
     viết tắt quá dễ trùng nên không dùng."""

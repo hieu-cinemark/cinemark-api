@@ -30,7 +30,13 @@ from app.repositories.d1.store import get_enabled_keywords
 from app.schemas.settings import parse_run_times
 from app.services.accounts import platform_config_db as db
 from app.services.ai_jobs import author_classify, channel_niches, review_angles
-from app.services.crawl import channel_profiles, crawl_lanes, priority_channels, tracked_posts, watch_pages
+from app.services.crawl import (
+    channel_profiles,
+    crawl_lanes,
+    priority_channels,
+    tracked_posts,
+    watch_pages,
+)
 from app.services.crawl.comment_planner import apply_comment_completions, run_comment_round
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS
@@ -482,14 +488,19 @@ async def _discovery_enabled() -> bool:
         return True
 
 
-async def _run_hashtag_discovery() -> None:
+async def _tiktok_hashtags_enabled() -> bool:
+    """AI duyệt hashtag TikTok: bật riêng bằng settings.tiktok_hashtag_discovery, hoặc theo công tắc chung."""
+    return settings.tiktok_hashtag_discovery or await _discovery_enabled()
+
+
+async def _run_hashtag_discovery(*, everything: bool = True) -> None:
     # Hashtag TikTok rồi câu tìm kiếm Facebook/Threads (app/services/discovery/query_discovery.py); lỗi phần này không chặn phần kia.
     # Rồi AI duyệt trang nguồn Facebook gợi ý (app/services/crawl/source_pages.py) - tự thêm trang của phim / trang chung.
-    for name, job in (
-        ("hashtag_discovery", run_discovery),
-        ("query_discovery", run_query_discovery),
-        ("source_page_review", review_source_pages),
-    ):
+    # everything=False (công tắc chung tắt): chỉ hashtag TikTok.
+    jobs = [("hashtag_discovery", run_discovery)]
+    if everything:
+        jobs += [("query_discovery", run_query_discovery), ("source_page_review", review_source_pages)]
+    for name, job in jobs:
         try:
             await job()
         except Exception as exc:  # noqa: BLE001 - một lượt lỗi chỉ để mai chạy lại
@@ -506,11 +517,12 @@ async def _hashtag_tick() -> None:
     if await redis.get(_HASHTAG_DISCOVERY_KEY) == today:
         return
     await redis.set(_HASHTAG_DISCOVERY_KEY, today, ex=3 * 24 * 3600)
-    if not await _discovery_enabled():
+    everything = await _discovery_enabled()
+    if not everything and not settings.tiktok_hashtag_discovery:
         logger.info("hashtag_discovery_skipped_disabled", run_time=run_time)
         return
-    logger.info("hashtag_discovery_firing", run_time=run_time)
-    _spawn(_run_hashtag_discovery())
+    logger.info("hashtag_discovery_firing", run_time=run_time, tiktok_only=not everything)
+    _spawn(_run_hashtag_discovery(everything=everything))
 
 
 # --- Omar API: hashtag TikTok mỗi giờ (app/services/omar/omar_tiktok.py) ---------------------------------------------
@@ -529,7 +541,10 @@ async def _run_omar_round(trigger: str) -> None:
     try:
         redis = get_redis_client()
         last = float(await redis.get(_BFS_DISCOVERY_KEY) or 0)
-        if time.time() - last >= settings.hashtag_discovery_after_omar_hours * 3600 and await _discovery_enabled():
+        if (
+            time.time() - last >= settings.hashtag_discovery_after_omar_hours * 3600
+            and await _tiktok_hashtags_enabled()
+        ):
             await redis.set(_BFS_DISCOVERY_KEY, str(time.time()), ex=7 * 24 * 3600)
             logger.info("hashtag_discovery_after_omar")
             await run_discovery()

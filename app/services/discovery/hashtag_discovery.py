@@ -38,10 +38,12 @@ from app.services.relevance.relevance_rules import normalize_title, title_acrony
 logger = get_logger(__name__)
 
 TASK = "hashtag_discovery"
-MIN_CONFIDENCE = 80
-MAX_CANDIDATES_PER_MOVIE = 30
+# Nới để gom nhiều video: tag AI thêm mà không đem về bài nào vẫn bị tắt sau PRUNE_AFTER_DAYS ngày, nên tag sai chỉ tốn
+# hạn mức Omar trong vài ngày.
+MIN_CONFIDENCE = 70
+MAX_CANDIDATES_PER_MOVIE = 60
 # BFS: tối đa chừng này tầng tính từ từ khoá gốc (người nhập = 0) để không lan sang chủ đề khác.
-BFS_MAX_DEPTH = 2
+BFS_MAX_DEPTH = 3
 PRUNE_AFTER_DAYS = 3
 RECHECK_REJECTED_DAYS = 14
 

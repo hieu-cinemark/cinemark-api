@@ -908,8 +908,11 @@ async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> d
     return {"id": keyword_id, "movie_id": movie_id, "movie_title": movie_title, "keyword": keyword}
 
 
-async def add_keyword(movie_id: str, platform: str, keyword: str, keyword_id: str | None = None) -> str | None:
-    """Thêm một từ khoá đang bật (luồng tự tìm từ khoá). Trả về id, None khi ghi lỗi."""
+async def add_keyword(
+    movie_id: str, platform: str, keyword: str, keyword_id: str | None = None, *, enabled: bool = True
+) -> str | None:
+    """Thêm một từ khoá (luồng tự tìm từ khoá). enabled=False: từ khoá chỉ để gắn bài chuyển sang phim (ingest), không cào.
+    Trả về id, None khi ghi lỗi."""
     keyword_id = keyword_id or f"kw_{uuid.uuid4()}"
     inserted = await d1_exec(
         insert(keywords).values(
@@ -917,7 +920,7 @@ async def add_keyword(movie_id: str, platform: str, keyword: str, keyword_id: st
             movie_id=movie_id,
             platform=platform,
             keyword=keyword,
-            enabled=1,
+            enabled=1 if enabled else 0,
             created_at=datetime.now(tz=UTC).isoformat(),
             related_keywords="[]",
         )

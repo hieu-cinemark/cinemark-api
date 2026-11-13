@@ -32,6 +32,7 @@ from app.core.logging import enable_file_logging, get_logger
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import (
     MOVIE_CONTEXT_FIELDS,
+    add_keyword,
     contains_keyword,
     get_keyword,
     get_post_by_external_id,
@@ -45,6 +46,7 @@ from app.repositories.d1.tables import movies as movies_table
 from app.services.crawl.platforms import get_comment_mapper, get_post_mapper
 from app.services.crawl.tracked_posts import tracked_keyword_for
 from app.services.relevance.relevance_rules import (
+    find_film,
     foreign_language_reason,
     hashtag_only_mention,
     mentions_film_manual,
@@ -167,34 +169,73 @@ async def _tracked_movies() -> dict[str, dict[str, Any]]:
     return movies
 
 
-_film_keyword_cache: dict[str, str | None] = {}
+_film_keyword_cache: dict[tuple[str, str], str | None] = {}
 
 
-async def _route_shared_page_post(content: str | None, posted_at: object = None) -> str | None:
-    """keyword_id (từ khoá Facebook của phim, ưu tiên từ khoá đúng tên phim) của phim đang theo dõi mà bài nêu tên
-    (tên phim hoặc một từ khoá của phim). Nhiều phim thì lấy phim có tên dài nhất khớp (cụ thể nhất). Không phim nào
-    khớp đủ tên thì thử tên rút gọn quanh ngày công chiếu (mentions_short_title) - chỉ nhận khi đúng một phim khớp."""
-    if not content:
+async def _route_post_to_film(
+    content: str | None,
+    posted_at: object = None,
+    *,
+    platform: str = "facebook",
+    exclude_movie_id: str | None = None,
+    strict: bool = True,
+) -> str | None:
+    """keyword_id (cùng nền tảng với bài) của phim đang theo dõi mà bài nêu tên (tên phim hoặc một từ khoá của phim),
+    bỏ qua `exclude_movie_id`. Nhiều phim thì lấy phim có tên dài nhất khớp (cụ thể nhất). Không phim nào khớp đủ tên thì
+    thử tên rút gọn quanh ngày công chiếu (mentions_short_title) - chỉ nhận khi đúng một phim khớp.
+
+    Từ khoá phải cùng nền tảng: ingest tra từ khoá theo (id, nền tảng), từ khoá Facebook gắn cho bài TikTok/Threads làm
+    bài bị bỏ với lý do unknown_keyword_id. Phim chưa có từ khoá trên nền tảng đó thì tạo một từ khoá TẮT (chỉ để gắn
+    bài, không cào)."""
+    movie = find_film(
+        content,
+        (await _tracked_movies()).values(),
+        posted_at,
+        exclude_movie_id=exclude_movie_id,
+        strict=strict,
+        strict_slugs=settings.strict_relevance_movies,
+        ambiguous_slugs=settings.ambiguous_title_movies,
+    )
+    if movie is None:
         return None
-    movies = [movie for movie in (await _tracked_movies()).values() if movie.get("keywords")]
-    matches = [movie for movie in movies if mentions_keyword_or_title(content, movie["keywords"], movie.get("title"))]
-    if not matches:
-        short = [movie for movie in movies if mentions_short_title(content, movie, posted_at)]
-        matches = short if len(short) == 1 else []
-    if not matches:
-        return None
-    movie = max(matches, key=lambda m: len(str(m.get("title") or "")))
-    if movie["id"] not in _film_keyword_cache:
+    cache_key = (movie["id"], platform)
+    if cache_key not in _film_keyword_cache:
         k = keywords.c
         rows = await d1_exec(
             select(k.id)
-            .where(k.movie_id == movie["id"], k.platform == "facebook", k.enabled == 1)
-            .order_by((k.keyword == movie.get("title")).desc())  # từ khoá đúng tên phim trước
+            .where(k.movie_id == movie["id"], k.platform == platform)
+            # từ khoá đúng tên phim trước, rồi từ khoá đang bật
+            .order_by((k.keyword == movie.get("title")).desc(), k.enabled.desc())
             .limit(1),
             quiet=True,
         )
-        _film_keyword_cache[movie["id"]] = rows[0]["id"] if rows else None
-    return _film_keyword_cache[movie["id"]]
+        if rows:
+            _film_keyword_cache[cache_key] = rows[0]["id"]
+        else:
+            created = await add_keyword(movie["id"], platform, str(movie.get("title") or ""), enabled=False)
+            if created:
+                logger.info("route_keyword_created", movie_id=movie["id"], platform=platform, keyword_id=created)
+            _film_keyword_cache[cache_key] = created
+    return _film_keyword_cache[cache_key]
+
+
+async def _reroute_to_other_film(
+    payload: dict[str, Any], draft: dict[str, Any], *, platform: str, post_id: Any, keyword: dict[str, Any], why: str
+) -> bool:
+    """Bài tìm ra bằng từ khoá phim A nhưng nói về phim B đang theo dõi: xử lý lại như bài của B (đi lại mọi cổng của
+    B) thay vì bỏ hay ẩn dưới A. True khi đã chuyển. Mỗi bài chỉ chuyển một lần (_rerouted)."""
+    if payload.get("_rerouted"):
+        return False
+    other_keyword_id = await _route_post_to_film(
+        draft.get("content"), draft.get("posted_at"), platform=platform, exclude_movie_id=keyword.get("movie_id")
+    )
+    if not other_keyword_id or other_keyword_id == payload.get("keyword_id"):
+        return False
+    logger.info(
+        "post_rerouted_other_film", platform=platform, post_id=post_id, why=why, from_movie=keyword.get("movie_id")
+    )
+    await handle_post({**payload, "keyword_id": other_keyword_id, "_rerouted": True})
+    return True
 
 
 async def _tracked_titles() -> list[str]:
@@ -288,7 +329,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
         # Trang nguồn CHUNG (CGV, trang review... - không gắn phim): tìm phim đang theo dõi mà bài nêu tên, rồi đi
         # qua đúng các cổng liên quan như bài tìm kiếm của phim đó. Không nêu phim nào thì bỏ.
         mapped = mapper(payload)
-        keyword_id = await _route_shared_page_post(mapped.get("content"), mapped.get("posted_at"))
+        keyword_id = await _route_post_to_film(
+            mapped.get("content"), mapped.get("posted_at"), platform=platform, strict=False
+        )
         if not keyword_id:
             await _drop(platform=platform, post_id=post_id, reason="source_page_no_film")
             return
@@ -367,17 +410,16 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if not mentions(draft.get("content"), movie_keywords, keyword.get("movie_title")) and not mentions_short_title(
         draft.get("content"), movie, draft.get("posted_at")
     ):
+        # Bài tìm ra bằng từ khoá phim A nhưng chỉ nói về phim B đang theo dõi: chuyển sang phim B thay vì bỏ (16/10/2026:
+        # bài về Hộ Linh Tráng Sĩ tìm ra bằng từ khoá Án Mạng Xém Hoàn Hảo). Thử với mọi phim (kể cả tên 1-2 chữ, qua đúng
+        # cổng tên/từ khoá của phim đó), không chỉ phim mentions_other_film nhận ra.
+        if await _reroute_to_other_film(
+            payload, draft, platform=platform, post_id=post_id, keyword=keyword, why="not_about_keyword_film"
+        ):
+            return
         other_film = mentions_other_film(
             draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
         )
-        if other_film and not payload.get("_rerouted"):
-            # Bài tìm ra bằng từ khoá phim A nhưng chỉ nói về phim B đang theo dõi: chuyển sang phim B (đi lại mọi cổng
-            # như bài của B) thay vì bỏ - 16/10/2026 thấy bài về Hộ Linh Tráng Sĩ tìm ra bằng từ khoá Án Mạng Xém Hoàn Hảo.
-            other_keyword_id = await _route_shared_page_post(draft.get("content"), draft.get("posted_at"))
-            if other_keyword_id and other_keyword_id != keyword_id:
-                logger.info("post_rerouted_other_film", platform=platform, post_id=post_id, other_film=other_film)
-                await handle_post({**payload, "keyword_id": other_keyword_id, "_rerouted": True})
-                return
         reason = "other_film" if other_film else "keyword_absent"
         logger.info(
             "post_dropped_other_film" if other_film else "post_dropped_keyword_absent",
@@ -428,6 +470,14 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if verdict is not None:
         relevance_label = verdict["label"]
         relevance_confidence = verdict["confidence"]
+    if (
+        verdict is not None
+        and relevance_label == "not_related"
+        and await _reroute_to_other_film(
+            payload, draft, platform=platform, post_id=post_id, keyword=keyword, why="classifier_not_related"
+        )
+    ):
+        return
     if verdict is not None and relevance_label == "not_related":
         # Từ 17/10/2026 LƯU nhưng ẩn (nhãn not_related) thay vì bỏ: bộ phân loại loại nhầm khá nhiều bài thật (vd. "Xem QUỶ
         # ĂN TẠNG 4 chỉ từ 40.000Đ/vé"), bỏ đi là mất hẳn. Bài ẩn vẫn gán lại được (scripts/tools/relabel_hidden_posts.py); job
@@ -487,6 +537,11 @@ async def handle_post(payload: dict[str, Any]) -> None:
             posted_at=draft.get("posted_at"),
         )
     no_film_context = ai_relevant is False and context != "hashtag_only"
+    # Sắp lưu ẩn dưới phim A vì thiếu tín hiệu phim A: bài nêu phim khác đang theo dõi thì chuyển sang phim đó.
+    if no_film_context and await _reroute_to_other_film(
+        payload, draft, platform=platform, post_id=post_id, keyword=keyword, why="no_film_context"
+    ):
+        return
     ok = await persist_post(
         movie_id=keyword["movie_id"],
         keyword_id=keyword_id,
