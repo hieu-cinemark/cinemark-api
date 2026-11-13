@@ -66,7 +66,11 @@ decisions = Table(
 _ENABLED_SOURCES = (
     select(source_pages)
     .select_from(source_pages.outerjoin(movies, movies.c.id == source_pages.c.movie_id))
-    .where(source_pages.c.enabled == 1, (source_pages.c.movie_id.is_(None)) | (movies.c.enabled == 1))
+    .where(
+        source_pages.c.platform == "facebook",
+        source_pages.c.enabled == 1,
+        (source_pages.c.movie_id.is_(None)) | (movies.c.enabled == 1),
+    )
 )
 
 
@@ -148,6 +152,21 @@ async def _ensure_table() -> None:
     _TABLE_READY = True
 
 
+_THREADS_HANDLE = re.compile(r"threads\.(?:com|net)/@([A-Za-z0-9._]{1,30})", re.IGNORECASE)
+
+
+def is_threads_url(url: str) -> bool:
+    return bool(_THREADS_HANDLE.search(url or ""))
+
+
+def normalize_threads_url(url: str) -> str:
+    """https://www.threads.com/@<handle> (chữ thường, bỏ /post/... và query)."""
+    match = _THREADS_HANDLE.search(url or "")
+    if not match:
+        raise ValidationError("Đường dẫn kênh Threads phải có dạng threads.com/@ten_kenh")
+    return f"https://www.threads.com/@{match.group(1).lower()}"
+
+
 def normalize_page_url(url: str) -> str:
     """https://www.facebook.com/<trang> (bỏ query/đường dẫn con, giữ profile.php?id=...)."""
     raw = url.strip()
@@ -188,15 +207,16 @@ async def add_source(
     added_by: str = "manual",
     reason: str | None = None,
 ) -> dict[str, Any]:
-    """movie_id None = trang chung (nhiều phim)."""
+    """movie_id None = trang chung (nhiều phim). Đường dẫn threads.com/@... là kênh Threads (đọc không đăng nhập)."""
     await _ensure_table()
-    page_url = normalize_page_url(url)
+    platform = "threads" if is_threads_url(url) else "facebook"
+    page_url = normalize_threads_url(url) if platform == "threads" else normalize_page_url(url)
     movie_id = (movie_id or "").strip() or None
     if movie_id and await _movie_title(movie_id) is None:
         raise NotFoundError("Không tìm thấy phim")
     existing = await d1_exec(
         select(source_pages.c.id).where(
-            source_pages.c.platform == "facebook",
+            source_pages.c.platform == platform,
             source_pages.c.url == page_url,
             func.coalesce(source_pages.c.movie_id, "") == (movie_id or ""),
         )
@@ -207,7 +227,7 @@ async def add_source(
     await d1_exec(
         insert(source_pages).values(
             id=source_id,
-            platform="facebook",
+            platform=platform,
             url=page_url,
             name=(name or "").strip() or None,
             movie_id=movie_id,
@@ -217,7 +237,7 @@ async def add_source(
             ai_reason=reason,
         )
     )
-    logger.info("source_page_added", url=page_url, movie_id=movie_id)
+    logger.info("source_page_added", platform=platform, url=page_url, movie_id=movie_id)
     row = await _get_source(source_id)
     if not row:
         raise NotFoundError(f"Source page {source_id} not found after insert")
@@ -429,6 +449,10 @@ async def run_source(source_id: str) -> bool:
     source = await _get_source(source_id)
     if not source:
         raise NotFoundError("Không tìm thấy trang nguồn")
+    if source.get("platform") == "threads":
+        from app.services.crawl.threads_channels import queue_channel
+
+        return await queue_channel(source, datetime.now(tz=UTC))
     return await queue_source(source, bypass_drain=True)
 
 

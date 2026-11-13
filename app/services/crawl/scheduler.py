@@ -34,6 +34,7 @@ from app.services.crawl import (
     channel_profiles,
     crawl_lanes,
     priority_channels,
+    threads_channels,
     tracked_posts,
     watch_pages,
 )
@@ -497,7 +498,8 @@ async def _run_hashtag_discovery(*, everything: bool = True) -> None:
     # Hashtag TikTok rồi câu tìm kiếm Facebook/Threads (app/services/discovery/query_discovery.py); lỗi phần này không chặn phần kia.
     # Rồi AI duyệt trang nguồn Facebook gợi ý (app/services/crawl/source_pages.py) - tự thêm trang của phim / trang chung.
     # everything=False (công tắc chung tắt): chỉ hashtag TikTok.
-    jobs = [("hashtag_discovery", run_discovery)]
+    # Kênh Threads tự thêm theo số bài liên quan, không dùng AI - chạy cả khi công tắc chung tắt.
+    jobs = [("hashtag_discovery", run_discovery), ("threads_channels_auto_add", threads_channels.auto_add_authors)]
     if everything:
         jobs += [("query_discovery", run_query_discovery), ("source_page_review", review_source_pages)]
     for name, job in jobs:
@@ -911,6 +913,12 @@ async def _loop() -> None:
             logger.error("scheduler_public_pages_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001 - như các lượt khác: không được giết vòng lặp
             logger.error("scheduler_public_pages_tick_failed", error=str(exc)[:300])
+        try:
+            await asyncio.wait_for(threads_channels.fill_queue(), timeout=_TICK_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.error("scheduler_threads_channels_tick_timeout", timeout_seconds=_TICK_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - như các lượt khác: không được giết vòng lặp
+            logger.error("scheduler_threads_channels_tick_failed", error=str(exc)[:300])
         try:
             await asyncio.wait_for(_hashtag_tick(), timeout=_TICK_TIMEOUT_SECONDS)
         except TimeoutError:

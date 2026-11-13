@@ -175,6 +175,13 @@ class Settings(BaseSettings):
     facebook_public_pages_enabled: bool = True
     facebook_public_pages_queue_target: int = 6
     facebook_public_pages_min_gap_minutes: int = 60
+    # Kênh Threads đọc không đăng nhập (app/services/crawl/threads_channels.py, spider-hub job threads_channel). Tìm kiếm và
+    # bình luận Threads vẫn dùng tài khoản.
+    threads_channels_enabled: bool = True
+    threads_channels_queue_target: int = 4
+    threads_channel_interval_hours: int = 6
+    # Tự thêm tác giả Threads có nhiều bài liên quan (mỗi ngày, không dùng AI); 0 = tắt.
+    threads_channels_auto_add: int = 20
 
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/discovery/hashtag_discovery.py) -
     # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.
