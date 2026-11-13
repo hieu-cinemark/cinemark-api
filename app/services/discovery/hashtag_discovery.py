@@ -267,8 +267,8 @@ async def _prune(dry_run: bool) -> int:
 async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -> dict[str, Any]:
     await _ensure_table()
     pruned = await _prune(dry_run)
-    movies = await d1_exec(ENABLED_MOVIES, quiet=True) or []
-    keywords = await d1_exec(ALL_KEYWORDS, quiet=True) or []
+    movie_rows = await d1_exec(ENABLED_MOVIES, quiet=True) or []
+    keyword_rows = await d1_exec(ALL_KEYWORDS, quiet=True) or []
     decisions = (
         await d1_exec(
             select(
@@ -285,11 +285,11 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
     depth_of = {d["keyword_id"]: int(d.get("depth") or 0) for d in decisions if d.get("keyword_id")}
 
     related = await related_hashtags_for_keywords(
-        [k["id"] for k in keywords if k["platform"] == "tiktok" and k["enabled"]]
+        [k["id"] for k in keyword_rows if k["platform"] == "tiktok" and k["enabled"]]
     )
 
-    titles = [m["title"] for m in movies if m.get("title")]
-    title_tags = {m["id"]: _squash(m["title"]) for m in movies}
+    titles = [m["title"] for m in movie_rows if m.get("title")]
+    title_tags = {m["id"]: _squash(m["title"]) for m in movie_rows}
     recheck_before = (datetime.now(tz=UTC) - timedelta(days=RECHECK_REJECTED_DAYS)).isoformat()
     decided = {
         (d["movie_id"], d["tag"])
@@ -299,12 +299,14 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
     # Tag đã là từ khoá hashtag của BẤT KỲ phim nào (kể cả đang tắt) thì không thêm nữa. Chỉ so từ khoá dạng "#..." /
     # của TikTok: câu tìm kiếm Facebook "phim Bò Sữa Bay" (query_discovery) không được chặn hashtag #PhimBoSuaBay.
     existing = {
-        _squash(k["keyword"].lstrip("#")) for k in keywords if k["platform"] == "tiktok" or k["keyword"].startswith("#")
+        _squash(k["keyword"].lstrip("#"))
+        for k in keyword_rows
+        if k["platform"] == "tiktok" or k["keyword"].startswith("#")
     }
 
     stats = {"movies": 0, "candidates": 0, "asked": 0, "added": 0, "rejected": 0, "pruned": pruned, "failed": 0}
     added_total = 0
-    for movie in movies:
+    for movie in movie_rows:
         if movie_id and movie["id"] != movie_id:
             continue
         stats["movies"] += 1
@@ -313,7 +315,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             cands.setdefault(
                 _squash(display), {"tag": _squash(display), "display": display, "source": "variant", "seen": 0}
             )
-        for kw in keywords:
+        for kw in keyword_rows:
             if kw["movie_id"] != movie["id"]:
                 continue
             # Hashtag đi kèm (spider + Omar, d1.related_hashtags_for_keywords) - chỉ khi từ khoá cha chưa ở tầng sâu nhất.

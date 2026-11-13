@@ -301,14 +301,14 @@ async def _post_info(video_ids: list[str]) -> dict[str, dict[str, Any]]:
 async def trending(movie_id: str | None = None, hours: float = 24, limit: int = 30) -> dict[str, Any]:
     """Top video theo lượt xem/giờ của mỗi phim: {"hours", "movies": [{"movie_id", "title", "videos": [...]}]}."""
     items = await _velocities(hours, movie_id)
-    posts = await _post_info([item["video_id"] for item in items])
+    post_by_video = await _post_info([item["video_id"] for item in items])
     titles = {
         row["id"]: row["title"]
         for row in await d1_exec(select(movies.c.id, movies.c.title).where(movies.c.enabled == 1), quiet=True) or []
     }
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for item in items:
-        post = posts.get(item["video_id"]) or {}
+        post = post_by_video.get(item["video_id"]) or {}
         grouped[item["movie_id"]].append(
             {
                 **item,
@@ -338,11 +338,11 @@ async def rising_video_ids(limit: int) -> list[dict[str, Any]]:
         if item["velocity"]["comments_per_hour"] >= settings.omar_trending_rising_comments_per_hour
     ]
     items.sort(key=lambda item: item["velocity"]["comments_per_hour"], reverse=True)
-    posts = await _post_info([item["video_id"] for item in items])
+    post_by_video = await _post_info([item["video_id"] for item in items])
     fresh_after = datetime.now(tz=UTC) - timedelta(hours=settings.omar_trending_comments_recrawl_hours)
     rising = []
     for item in items:
-        post = posts.get(item["video_id"])
+        post = post_by_video.get(item["video_id"])
         if not post:
             continue
         crawled = post.get("comments_crawled_at")

@@ -454,24 +454,24 @@ async def run_tick() -> dict[str, Any] | None:
     used = int(await redis.get(cap_key) or 0)
     if used >= DAILY_BATCH_CAP:
         return {"skipped": "daily_cap", "used": used}
-    movies = await _active_movies()
-    if not movies:
+    movie_ids = await _active_movies()
+    if not movie_ids:
         return None
     pointer_key = f"{_PREFIX}pointer"
     start = int(await redis.get(pointer_key) or 0)
-    for step in range(min(len(movies), 4)):
-        index = (start + step) % len(movies)
+    for step in range(min(len(movie_ids), 4)):
+        index = (start + step) % len(movie_ids)
         try:
-            result = await analyze_next_batch(movies[index])
+            result = await analyze_next_batch(movie_ids[index])
         except Exception as exc:  # noqa: BLE001 - một phim lỗi không chặn phim khác
-            logger.warning("review_angles_batch_failed", movie_id=movies[index], error=str(exc)[:300])
-            result = {"movie_id": movies[index], "read": 0}
-        await _add_tokens(movies[index], result.get("tokens", 0))
+            logger.warning("review_angles_batch_failed", movie_id=movie_ids[index], error=str(exc)[:300])
+            result = {"movie_id": movie_ids[index], "read": 0}
+        await _add_tokens(movie_ids[index], result.get("tokens", 0))
         if result.get("ai_called"):
             await redis.incr(cap_key)
             await redis.expire(cap_key, 2 * 86400)
         if result["read"] or result.get("ai_called"):
-            await redis.set(pointer_key, (index + 1) % len(movies))
+            await redis.set(pointer_key, (index + 1) % len(movie_ids))
             return result
-    await redis.set(pointer_key, (start + 4) % len(movies))
+    await redis.set(pointer_key, (start + 4) % len(movie_ids))
     return None

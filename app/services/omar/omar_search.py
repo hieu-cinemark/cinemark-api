@@ -359,9 +359,9 @@ async def discover_queries(client: httpx.AsyncClient, pacer: _Pacer, api_key: st
     for q in queries:
         if q["source"] == "suggest":
             per_movie[q["movie_id"]] = per_movie.get(q["movie_id"], 0) + 1
-    movies = {q["movie_id"]: q["movie"] for q in queries if q["source"] == "title"}
+    titles_by_movie = {q["movie_id"]: q["movie"] for q in queries if q["source"] == "title"}
     candidates: list[tuple[str, str]] = []
-    for movie_id, title in movies.items():
+    for movie_id, title in titles_by_movie.items():
         title_plain = normalize_title(title)
         if len(title_plain) < 4 or not take():
             continue
@@ -381,7 +381,7 @@ async def discover_queries(client: httpx.AsyncClient, pacer: _Pacer, api_key: st
             data = await omar_get(client, pacer, api_key, "trending_searches", {"region": "VN"})
             for item in (data or {}).get("words") or []:
                 word = str(item.get("trendingSearchWord") or "").strip()
-                for movie_id, title in movies.items():
+                for movie_id, title in titles_by_movie.items():
                     if word and len(normalize_title(title)) >= 6 and normalize_title(title) in normalize_title(word):
                         candidates.append((movie_id, word))
         except Exception as exc:  # noqa: BLE001
