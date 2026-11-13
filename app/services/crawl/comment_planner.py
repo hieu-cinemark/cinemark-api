@@ -26,7 +26,7 @@ from sqlalchemy import case, func, select, update
 
 from app.clients.kafka import publish_comments_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.core.config import settings
+from app.services.accounts.platform_config_db import crawl_setting
 from app.core.logging import get_logger
 from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post, reputable_authors
 from app.repositories.d1.sql import d1_exec
@@ -453,7 +453,7 @@ async def run_youtube_comment_round() -> dict[str, int]:
     # Chưa cào trước, rồi video nhiều tương tác.
     due.sort(key=lambda row: (row.get("comments_crawled_at") is not None, -_num(row.get("like_count"))))
     published = 0
-    for row in due[: settings.youtube_comments_per_round]:
+    for row in due[: int(await crawl_setting("youtube_comments_per_round"))]:
         pick = CrawlPick(
             post_id=row["id"],
             external_id=str(row["external_id"]),

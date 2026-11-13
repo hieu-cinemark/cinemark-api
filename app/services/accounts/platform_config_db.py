@@ -1017,6 +1017,36 @@ async def get_proxy_settings() -> dict[str, Any]:
     return row or {"settings": {}, "updated_at": None}
 
 
+_crawl_settings_cache: tuple[float, dict[str, Any]] | None = None
+
+
+async def crawl_setting(name: str) -> Any:
+    """Một khoá của proxy_settings (đã lưu, không có thì mặc định của ProxySettings) - cache 60 giây; DB lỗi thì dùng bản tốt
+    gần nhất / mặc định. Dùng cho các ngưỡng hiệu năng cào sửa trên dashboard (Settings › Proxy)."""
+    import time
+
+    from app.schemas.settings import ProxySettings
+
+    global _crawl_settings_cache
+    now = time.monotonic()
+    if _crawl_settings_cache is None or now - _crawl_settings_cache[0] > 60:
+        values = ProxySettings().model_dump()
+        try:
+            stored = (await get_proxy_settings()).get("settings") or {}
+            for key, value in stored.items():
+                if key in values:
+                    try:
+                        values[key] = getattr(ProxySettings.model_validate({key: value}), key)
+                    except Exception:  # noqa: BLE001 - giá trị lưu sai thì dùng mặc định của riêng khoá đó
+                        pass
+        except Exception as exc:  # noqa: BLE001 - DB lỗi: giữ bản tốt gần nhất
+            logger.warning("crawl_settings_read_failed", error=str(exc)[:200])
+            if _crawl_settings_cache is not None:
+                values = _crawl_settings_cache[1]
+        _crawl_settings_cache = (now, values)
+    return _crawl_settings_cache[1][name]
+
+
 async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
     from psycopg.types.json import Json
 

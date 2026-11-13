@@ -40,6 +40,7 @@ from app.repositories.d1.sql import d1_exec, metadata
 from app.repositories.d1.store import d1_query, get_or_create_keyword
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
+from app.services.accounts.platform_config_db import crawl_setting
 from app.services.crawl.task_queue import enqueue_published, list_pending
 from app.services.relevance.relevance_rules import normalize_title
 
@@ -404,7 +405,7 @@ async def _public_since_days(url: str, now: datetime) -> int | None:
 
 
 async def fill_public_pages_queue(now: datetime | None = None) -> int:
-    """Gọi từ mỗi nhịp scheduler: thấy hàng đợi vơi là nạp đủ facebook_public_pages_queue_target, trả số page đã xếp. Spider-hub
+    """Gọi từ mỗi nhịp scheduler: thấy hàng đợi vơi là nạp đủ public_pages_queue_target (Settings › Proxy), trả số page đã xếp. Spider-hub
     không chạy thì hàng đợi đầy và không xếp thêm; last_queued_at chỉ ghi khi đã xếp nên page không bị tính là đã đọc."""
     now = now or datetime.now(tz=UTC)
     if not settings.facebook_public_pages_enabled:
@@ -412,7 +413,7 @@ async def fill_public_pages_queue(now: datetime | None = None) -> int:
     redis = get_redis_client()
     if await redis.exists(_PUBLIC_PAUSED_KEY):
         return 0
-    room = settings.facebook_public_pages_queue_target - await redis.llen(_PUBLIC_QUEUE_KEY)
+    room = int(await crawl_setting("public_pages_queue_target")) - await redis.llen(_PUBLIC_QUEUE_KEY)
     if room <= 0:
         return 0
     await _refresh_public_plan(now)
@@ -453,7 +454,7 @@ async def run_source(source_id: str) -> bool:
         from app.services.crawl.threads_channels import queue_channel
 
         return await queue_channel(source, datetime.now(tz=UTC))
-    if not settings.facebook_account_page_feed:
+    if not await crawl_setting("facebook_account_page_feed"):
         # "Chạy ngay" khi đường tài khoản tắt: xếp thẳng vào hàng đọc không tài khoản.
         request = {
             "type": "public_page",

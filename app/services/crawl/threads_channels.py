@@ -29,6 +29,7 @@ from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import get_or_create_keyword
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
+from app.services.accounts.platform_config_db import crawl_setting
 from app.services.crawl.source_pages import _ensure_table, _movie_title, _set_source, source_pages
 from app.services.crawl.task_queue import enqueue_published
 
@@ -123,7 +124,7 @@ async def fill_queue(now: datetime | None = None) -> int:
     now = now or datetime.now(tz=UTC)
     if not settings.threads_channels_enabled:
         return 0
-    room = settings.threads_channels_queue_target - await get_redis_client().llen(QUEUE_KEY)
+    room = int(await crawl_setting("threads_channels_queue_target")) - await get_redis_client().llen(QUEUE_KEY)
     if room <= 0:
         return 0
     await _ensure_table()

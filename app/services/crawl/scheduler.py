@@ -223,7 +223,11 @@ async def _trigger_platform(
                 complete = False
         # Trang nguồn: mỗi ngày một lượt (lượt đầu) khi chạy theo phần - 6 lượt bài mới mà lượt nào cũng xếp lại bảng
         # tin mọi trang nguồn là gấp 6 lần request page_feed.
-        if platform == "facebook" and settings.facebook_account_page_feed and (not fresh_lane or slot_index == 0):
+        if (
+            platform == "facebook"
+            and await db.crawl_setting("facebook_account_page_feed")
+            and (not fresh_lane or slot_index == 0)
+        ):
             # Cào theo nguồn: bảng tin các trang nguồn đang bật (app/services/crawl/source_pages.py).
             try:
                 if "source_pages" not in progress:

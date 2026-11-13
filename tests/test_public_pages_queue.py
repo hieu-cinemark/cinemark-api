@@ -55,7 +55,11 @@ def env(monkeypatch):
     monkeypatch.setattr(sp, "enqueue_published", AsyncMock())
     monkeypatch.setattr(sp, "_due", lambda row, now: row["id"] != "recent")
     monkeypatch.setattr(sp.settings, "facebook_public_pages_enabled", True)
-    monkeypatch.setattr(sp.settings, "facebook_public_pages_queue_target", 2)
+
+    async def target(name):
+        return {"public_pages_queue_target": 2}[name]
+
+    monkeypatch.setattr(sp, "crawl_setting", target)
     monkeypatch.setattr(sp.settings, "facebook_public_pages_min_gap_minutes", 60)
     calls = []
 

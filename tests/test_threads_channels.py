@@ -90,7 +90,11 @@ def world(monkeypatch):
     monkeypatch.setattr(threads_channels, "_ensure_table", noop)
     monkeypatch.setattr(threads_channels, "enqueue_published", noop)
     monkeypatch.setattr(threads_channels.settings, "threads_channels_enabled", True)
-    monkeypatch.setattr(threads_channels.settings, "threads_channels_queue_target", 4)
+
+    async def target(name):
+        return {"threads_channels_queue_target": 4}[name]
+
+    monkeypatch.setattr(threads_channels, "crawl_setting", target)
     return redis, updates
 
 

@@ -412,6 +412,20 @@ class ProxySettings(BaseModel):
     # Cập nhật số bài booking Facebook bằng trang không đăng nhập (consumer/jobs/post_metrics.py của spider-hub). Tắt thì
     # spider-hub đẩy các bài đó sang page_feed có đăng nhập như trước.
     fb_logged_out_metrics_enabled: bool = True
+    # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Giữ đồng bộ với DEFAULTS trong
+    # social_crawler/db/proxy_settings.py của spider-hub.
+    youtube_lanes: int = Field(default=16, ge=1, le=64)
+    youtube_filter_concurrency: int = Field(default=6, ge=1, le=12)
+    youtube_search_pages: int = Field(default=30, ge=1, le=200)
+    youtube_reply_pages: int = Field(default=50, ge=0, le=500)
+    public_pages_per_proxy: int = Field(default=3, ge=1, le=10)
+    public_pages_gap_seconds: float = Field(default=3.0, ge=0, le=600)
+    threads_channel_workers: int = Field(default=4, ge=0, le=16)
+    facebook_account_page_feed: bool = False
+    # Phía cinemark-api (scheduler)
+    public_pages_queue_target: int = Field(default=20, ge=0, le=500)
+    threads_channels_queue_target: int = Field(default=8, ge=0, le=200)
+    youtube_comments_per_round: int = Field(default=1000, ge=0, le=10000)
 
 
 class ProxySettingsOut(BaseModel):

@@ -175,20 +175,13 @@ class Settings(BaseSettings):
     facebook_deep_hours: str = "06-22"
     # Đọc trang nguồn không đăng nhập: hàng đợi vơi là nạp thêm, spider-hub giới hạn số job song song mỗi proxy.
     facebook_public_pages_enabled: bool = True
-    facebook_public_pages_queue_target: int = 6
     facebook_public_pages_min_gap_minutes: int = 60
     # Kênh Threads đọc không đăng nhập (app/services/crawl/threads_channels.py, spider-hub job threads_channel). Tìm kiếm và
     # bình luận Threads vẫn dùng tài khoản.
     threads_channels_enabled: bool = True
-    threads_channels_queue_target: int = 4
     threads_channel_interval_hours: int = 6
     # Tự thêm tác giả Threads có nhiều bài liên quan (mỗi ngày, không dùng AI); 0 = tắt.
     threads_channels_auto_add: int = 20
-    # YouTube: số video liên quan được xếp cào bình luận mỗi giờ (app/services/crawl/comment_planner.run_youtube_comment_round).
-    youtube_comments_per_round: int = 1000
-    # Đọc page Facebook bằng tài khoản (page_feed) - tắt 13/11/2026: Facebook đổi truy vấn nên job hỏng mà vẫn tốn lượt tài
-    # khoản; các page được đọc bằng đường không tài khoản (fill_public_pages_queue).
-    facebook_account_page_feed: bool = False
 
     # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/discovery/hashtag_discovery.py) -
     # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.
