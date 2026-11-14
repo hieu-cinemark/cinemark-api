@@ -4,7 +4,7 @@ khớp từ khoá. Cùng prompt post_relevance với lúc chạy thật, nhưng 
 
 Hai bước:
   label   đọc bài ẩn từ D1, gọi AI, ghi nối vào data/relevance_hidden/labels.jsonl - chạy lại thì bỏ qua bài đã có.
-  apply   ghi nhãn vào D1: related -> hiện lại trên dashboard, not_related -> lượt dọn bài không liên quan
+  apply   ghi nhãn vào D1: related (điểm >= --min-related) -> hiện lại trên dashboard, related điểm thấp -> uncertain, not_related -> lượt dọn bài không liên quan
           (scripts/tools/purge_irrelevant_posts.py, có sao lưu R2) sẽ xoá. Bài AI không trả lời được thì giữ nguyên.
 
     python -m scripts.ml.hidden_posts_haiku label --limit 50
@@ -188,10 +188,13 @@ async def apply(args: argparse.Namespace) -> None:
         if line:
             record = json.loads(line)
             latest[record["id"]] = record
-    by_label: dict[str, list[str]] = {"related": [], "not_related": []}
+    by_label: dict[str, list[str]] = {"related": [], "uncertain": [], "not_related": []}
     for record in latest.values():
-        if record["label"] in by_label:
-            by_label[record["label"]].append(record["id"])
+        name = record["label"]
+        if name == "related" and record.get("confidence", 0) < args.min_related:
+            name = "uncertain"  # AI nghiêng về liên quan nhưng gần 50/50: vẫn ẩn, không xoá
+        if name in by_label:
+            by_label[name].append(record["id"])
     print({label: len(ids) for label, ids in by_label.items()}, flush=True)
     if args.dry_run:
         return
@@ -217,5 +220,6 @@ if __name__ == "__main__":
     p_label.add_argument("--concurrency", type=int, default=8)
     p_apply = sub.add_parser("apply")
     p_apply.add_argument("--dry-run", action="store_true")
+    p_apply.add_argument("--min-related", type=float, default=0.6)
     parsed = parser.parse_args()
     asyncio.run(label(parsed) if parsed.cmd == "label" else apply(parsed))
