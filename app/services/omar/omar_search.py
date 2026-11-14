@@ -52,7 +52,6 @@ CURSOR_KEY = f"{REDIS_KEY_PREFIX}omar:search:cursor"
 SUGGEST_DAY_KEY = f"{REDIS_KEY_PREFIX}omar:search:suggest_day"
 # Gợi ý chứa các cụm này là tìm kiếm nước ngoài (tên phim trùng chữ / phim Việt trên Netflix nước ngoài) - bỏ.
 _FOREIGN = (" espanol ", " de que ", " pelicula ", " netflix ", " sub indo ", " english ", " trata ")
-ENDPOINTS = ("search_videos", "search_photos")
 _WORKERS = 4
 
 

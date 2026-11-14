@@ -303,8 +303,7 @@ def find_spikes(hours: list[dict], events: list[str], *, min_count=30, ratio=3.0
 4. Mỗi cụm đo: số bình luận, **số tài khoản khác nhau**, số bài, số nền tảng, **độ dồn** (% bình luận nằm trong 2 giờ
    dày nhất), độ giống trung bình.
 5. Cụm đáng ngờ (`strong`): ≥ 15 tài khoản khác nhau, ≥ 70% trong 2 giờ, độ giống trung bình ≥ 0,92.
-6. Bằng chứng: 10 câu của cụm (link bài, giờ, tên đã che bớt), tên chủ đề AI chứa cụm nếu có
-   (`data/topics.sqlite`, bảng `comment_topics`).
+6. Bằng chứng: 10 câu của cụm (link bài, giờ, tên đã che bớt), tên cụm AI chứa nó nếu có.
 
 ```python
 def similar_clusters(rows: list[dict], vectors: np.ndarray, *, sim=0.92) -> list[dict]:

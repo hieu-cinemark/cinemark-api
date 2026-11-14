@@ -141,10 +141,6 @@ async def ensure_stats_tables() -> None:
         _ready = True
 
 
-def _day_from_iso(scraped_at: str) -> str:
-    return scraped_at[:10] if scraped_at else ""
-
-
 HOURLY_RETENTION_HOURS = 72
 # Ngày đầu tiên mọi bài/comment mới đều có first_seen_at (cột thêm ngày 28/10/2026, deploy giữa ngày).
 FIRST_SEEN_COMPLETE_SINCE = "2026-10-29"

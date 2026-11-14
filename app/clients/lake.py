@@ -44,17 +44,6 @@ async def get_object(key: str) -> bytes:
             return await body.read()
 
 
-async def delete_prefix(prefix: str) -> int:
-    """Xoá mọi object dưới `prefix` (1000 object mỗi request, giới hạn của S3). Trả về số
-    object đã xoá."""
-    keys = await list_keys(prefix)
-    async with _client() as s3:
-        for start in range(0, len(keys), 1000):
-            batch = [{"Key": key} for key in keys[start : start + 1000]]
-            await s3.delete_objects(Bucket=settings.lake_bucket, Delete={"Objects": batch})
-    return len(keys)
-
-
 async def list_keys(prefix: str) -> list[str]:
     keys: list[str] = []
     async with _client() as s3:

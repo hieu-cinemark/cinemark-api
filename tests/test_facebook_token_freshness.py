@@ -1,4 +1,4 @@
-"""Retaining a Facebook recipe must not report an old token as healthy."""
+"""Giữ lại recipe Facebook không được báo token cũ là còn tốt."""
 
 import json
 from unittest.mock import AsyncMock

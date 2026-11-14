@@ -471,8 +471,6 @@ class ProxyProviderUpdate(BaseModel):
 # app/workers/lake_writer/main.py). Tham số retention_days đã bỏ vì lý do đó - trong
 # D1 không còn gì để xoá theo tuổi nữa.
 
-CLEANUP_REASONS_LABEL = "irrelevant_post_purge"
-
 
 class CleanupSettings(BaseModel):
     # "HH:MM", 24 giờ, Asia/Ho_Chi_Minh (xem TIMEZONE trong app/services/crawl/scheduler.py).
@@ -512,7 +510,7 @@ class CleanupRunHistoryEntry(BaseModel):
     error: str | None = None
 
 
-# --- Omar API settings (dev.omar-thing.site) --------------------------------
+# --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
 # Dùng cho crawl video/hashtag thay vì spider-hub khi toggle bật trên dashboard.
 # API key được đọc từ Supabase (bảng omar_api_settings), không từ env.
 

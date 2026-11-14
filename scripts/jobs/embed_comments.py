@@ -1,7 +1,7 @@
 """Tính embedding e5-small cho toàn bộ comment có nội dung (2026-11-05), làm nền cho gom chủ đề riêng từng phim.
 
-D1 không chứa nổi (~2,2 triệu dòng x 384 chiều), nên lưu ở máy chạy job: data/comment_embeddings.sqlite, float16 như
-app/repositories/local/topic_state.py. Comment chỉ có tag tên, icon hay tiếng cười (rule_sentiment) không có nội dung để
+D1 không chứa nổi (~2,2 triệu dòng x 384 chiều), nên lưu ở máy chạy job: data/comment_embeddings.sqlite, float16.
+Comment chỉ có tag tên, icon hay tiếng cười (rule_sentiment) không có nội dung để
 embed nên bỏ qua. Phản hồi được embed kèm bình luận cha để giữ ngữ cảnh (cột with_context). Đọc theo id, con trỏ lưu trong file
 nên dừng rồi chạy lại được.
 

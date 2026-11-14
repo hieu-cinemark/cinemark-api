@@ -728,7 +728,7 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
     return [CleanupRunHistoryEntry(**row) for row in rows]
 
 
-# --- Omar API settings (dev.omar-thing.site) --------------------------------
+# --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
 # Toggle dùng Omar API thay vì spider-hub cho crawl video/hashtag TikTok.
 
 

@@ -503,10 +503,10 @@ def purge_in_progress() -> bool:
 
 
 async def _facebook_crawl_enabled() -> bool:
-    """Background authenticated work requires a separate opt-in AND an enabled schedule.
+    """Việc nền có đăng nhập cần bật riêng VÀ có lịch đang bật.
 
-    Explicit schedule slots use _tick directly. Hourly deep crawl and daily tracked-post
-    refresh must not silently turn one daily slot into many account sessions.
+    Khung giờ khai báo rõ gọi thẳng _tick. Cào sâu hằng giờ và làm mới bài theo dõi hằng ngày
+    không được lặng lẽ biến một khung giờ mỗi ngày thành nhiều phiên tài khoản.
     """
     if not settings.facebook_background_crawl_enabled:
         return False

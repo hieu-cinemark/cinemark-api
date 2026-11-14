@@ -1279,7 +1279,7 @@ async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
         return await cur.fetchall()
 
 
-# --- ai_accuracy_runs --------------------------------------------------------------------------------------
+# --- Bảng ai_accuracy_runs --------------------------------------------------------------------------
 # Mỗi lần chấm độ chính xác của máy (scripts/ml/accuracy_sample.py score --save) so với nhãn người làm một dòng: độ
 # chính xác cảm xúc, F1 từng nhãn, F1 khía cạnh, độ chính xác giai đoạn khán giả. Report Social Topic gắn lần mới
 # nhất vào dashboard_data["accuracy"] để người đọc biết nên tin các con số tới đâu (học từ Kompa).
@@ -1329,7 +1329,7 @@ async def get_latest_accuracy_run() -> dict[str, Any] | None:
         return await cur.fetchone()
 
 
-# --- Omar API settings -----------------------------------------------------
+# --- Cấu hình Omar API -----------------------------------------------------
 # Cấu hình API key cho dev.omar-thing.site - dùng cho crawl video/hashtag thay vì
 # spider-hub khi người vận hành bật toggle trên dashboard. API key được đọc từ
 # bảng này (không bao giờ lưu trong env). Base URL có thể ghi đè bằng

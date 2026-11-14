@@ -2,19 +2,12 @@ from sqlalchemy import select
 
 from app.repositories.d1.press_reviews import press
 from app.repositories.d1.sql import compile_sql
-from app.repositories.d1.topics import snapshots
 
 
 def test_compile_sql_uses_positional_params_in_order():
     sql, params = compile_sql(select(press.c.movie_id).where(press.c.movie_id == "m1", press.c.snapshot_id == "s1"))
     assert sql.count("?") == 2
     assert params == ["m1", "s1"]
-
-
-def test_snapshot_batch_fits_d1_param_limit():
-    from app.repositories.d1.topics import _SNAPSHOT_BATCH
-
-    assert _SNAPSHOT_BATCH * len(snapshots.columns) <= 100
 
 
 def test_compile_sql_handles_ddl():
