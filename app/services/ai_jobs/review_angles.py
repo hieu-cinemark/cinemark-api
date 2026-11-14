@@ -28,7 +28,7 @@ from app.clients import lake
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
-from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.sql import d1_exec, json_values
 from app.repositories.d1.tables import movie_measure_settings, movies
 from app.repositories.d1.tables import posts as posts_table
 from app.services.ai_jobs.channels import channel_of_post, channel_url
@@ -182,8 +182,9 @@ async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
     if not ids:
         return []
     p = posts_table.alias("p")
-    # json_each để truyền cả danh sách id dài bằng MỘT tham số (giới hạn 100 tham số của D1).
-    each = func.json_each(json.dumps(ids, ensure_ascii=False)).table_valued("value")
+    # Danh sách id qua MỘT tham số JSON (giới hạn 100 tham số của D1), dạng `id IN (SELECT value FROM json_each(?))` để SQLite
+    # tra theo khoá chính. 14/11/2026: trước đó là JOIN json_each ... WHERE movie_id = ? - planner duyệt mọi bài của phim cho
+    # từng id, 114 triệu dòng đọc/ngày (truy vấn nặng nhất D1).
     rows = await d1_exec(
         select(
             p.c.id,
@@ -200,8 +201,8 @@ async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
             p.c.quote_count,
             p.c.view_count,
         )
-        .select_from(p.join(each, each.c.value == p.c.id))
-        .where(p.c.movie_id == movie_id)
+        # "+" tắt index movie_id cho điều kiện này: SQLite tra từng id theo khoá chính rồi mới lọc phim (đo EXPLAIN 14/11/2026).
+        .where(p.c.id.in_(json_values(ids)), literal_column(f"+{p.name}.movie_id") == movie_id)
     )
     if rows is None:
         raise RuntimeError("posts unavailable")

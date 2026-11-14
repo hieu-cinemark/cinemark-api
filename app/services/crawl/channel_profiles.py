@@ -38,7 +38,9 @@ from app.services.accounts.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
 
-LOOKBACK_DAYS = 180
+# 14/11/2026: 180 -> 60 ngày. Mỗi lượt chọn kênh quét toàn bộ bài TikTok trong khoảng này (15 giây trên bản chính D1, chặn
+# mọi truy vấn khác); kênh có follower cần cập nhật là kênh đang đăng bài gần đây.
+LOOKBACK_DAYS = 60
 # Trùng mặc định "Số bài tối thiểu" của trang xuất (ChannelExportPage.tsx của cinemark) - đếm theo từng phim.
 CHANNEL_MIN_POSTS = 2
 REFRESH_DAYS = 7

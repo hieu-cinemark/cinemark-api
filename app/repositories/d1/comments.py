@@ -132,8 +132,16 @@ async def ensure_comment_insight_columns() -> None:
 # Comment + comment cha (reply) + bài + phim + từ khoá, cho các danh sách trên dashboard.
 _C, _PARENT = comments.alias("c"), comments.alias("parent")
 _P, _M, _K = posts.alias("p"), movies.alias("m"), keywords.alias("k")
+# Ghép bình luận cha theo (platform, external_id) - có unique index comments_platform_external_id_unique. Trước 14/11/2026
+# ghép theo (post_id, external_id), cặp cột không có index: mỗi dòng dò toàn bộ bình luận của bài (bài TikTok vài nghìn
+# bình luận), một trang danh sách mất tới 35 giây và chặn D1. external_id là duy nhất trong một nền tảng nên kết quả như cũ.
 _WITH_PARENT = _C.outerjoin(
-    _PARENT, and_(_PARENT.c.post_id == _C.c.post_id, _PARENT.c.external_id == _C.c.parent_external_id)
+    _PARENT,
+    and_(
+        _PARENT.c.platform == _C.c.platform,
+        _PARENT.c.external_id == _C.c.parent_external_id,
+        _PARENT.c.post_id == _C.c.post_id,
+    ),
 )
 _COMMENT_FIELDS = [
     "id",
