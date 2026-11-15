@@ -232,3 +232,17 @@ def test_build_context_numbers_documents_and_respects_limit():
     docs = [ScoredDocument(Document(id=str(i), text=f"Đoạn {i} " + "x" * 40), 1.0 - i / 10) for i in range(5)]
     context = build_context(docs, max_chars=120)
     assert context.startswith("[1] Đoạn 0") and "[2] Đoạn 1" in context and "[3]" not in context
+
+
+def test_review_angles_nearest_angle_picks_same_aspect_by_name_overlap():
+    from app.services.ai_jobs.review_angles import _nearest_angle
+
+    angles = [
+        {"id": "a", "aspect": "dien_xuat", "name": "Diễn xuất của mẹ Hạnh", "refs": [1]},
+        {"id": "b", "aspect": "dien_xuat", "name": "Cảnh khóc cuối phim", "refs": [1, 2, 3]},
+        {"id": "c", "aspect": "am_thanh", "name": "Diễn xuất nhạc phim", "refs": [1, 2, 3, 4]},
+    ]
+    assert _nearest_angle(angles, "dien_xuat", "Diễn xuất mẹ Hạnh rất tròn vai")["id"] == "a"
+    # không trùng từ nào: lấy góc nhiều bài nhất trong cùng khía cạnh, không sang khía cạnh khác
+    assert _nearest_angle(angles, "dien_xuat", "xyz")["id"] == "b"
+    assert _nearest_angle(angles, "hinh_anh", "bất kỳ") is None

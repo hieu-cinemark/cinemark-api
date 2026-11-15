@@ -44,6 +44,9 @@ LATE_SCAN_LIMIT = 5000
 ACTIVE_DAYS = 60
 DAILY_BATCH_CAP = 300
 MAX_BATCH_FAILURES = 3
+# Góc nhìn tối đa mỗi khía cạnh (prompt nói 8, ở đây chừa dư): quá số này thì bài được gán vào góc gần nhất thay vì thêm góc mới -
+# chặn việc danh sách góc phình ra từng lô và vụn thành hàng chục góc gần nghĩa.
+MAX_ANGLES_PER_ASPECT = 10
 FOCUS_TICK_SECONDS = 4 * 60
 VN = timedelta(hours=7)
 
@@ -171,6 +174,19 @@ async def _next_batch(movie_id: str, start: str, state: dict[str, Any]) -> list[
     return pending[:BATCH_SIZE]
 
 
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"\w+", text.lower()) if len(w) > 1}
+
+
+def _nearest_angle(angles: list[dict[str, Any]], aspect: str, name: str) -> dict[str, Any] | None:
+    """Góc cùng khía cạnh gần tên nhất (trùng nhiều từ nhất, hoà thì góc đã có nhiều bài nhất)."""
+    same = [a for a in angles if a["aspect"] == aspect]
+    if not same:
+        return None
+    target = _words(name)
+    return max(same, key=lambda a: (len(target & _words(a["name"])) / max(1, len(target | _words(a["name"]))), len(a["refs"])))
+
+
 def _num(value: Any) -> int:
     try:
         return max(0, int(value or 0))
@@ -262,7 +278,17 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
         ai_called = False
         tokens = 0
         if readable:
-            catalog = [{"id": a["id"], "name": a["name"], "aspect": a["aspect"]} for a in state["angles"]]
+            # Gửi kèm mô tả (cắt ngắn) và số bài để model biết góc đã có nói về ý gì mà tái sử dụng, thay vì chỉ thấy tên.
+            catalog = [
+                {
+                    "id": a["id"],
+                    "name": a["name"],
+                    "aspect": a["aspect"],
+                    "description": (a.get("description") or "")[:120],
+                    "posts": len(a["refs"]),
+                }
+                for a in state["angles"]
+            ]
             cache_key = (
                 f"{_PREFIX}batch:"
                 + hashlib.sha256(
@@ -338,6 +364,8 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
         for item in answer["angles"]:
             angle_id = item["id"] or angle_id_of(item["aspect"], item["name"])
             angle = next((a for a in state["angles"] if a["id"] == angle_id), None)
+            if not angle and sum(1 for a in state["angles"] if a["aspect"] == item["aspect"]) >= MAX_ANGLES_PER_ASPECT:
+                angle = _nearest_angle(state["angles"], item["aspect"], item["name"])
             if not angle:
                 angle = {
                     "id": angle_id,
