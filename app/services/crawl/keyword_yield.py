@@ -8,7 +8,7 @@ Hiệu quả = (bài khớp từ khoá / tên phim trong lúc cào) x (bài liê
   không có trong D1;
 - vế sau: bài lưu trong WINDOW_DAYS ngày qua có RELEVANT_POST_SQL (Kira/quy tắc có thể vẫn chấm không liên quan).
 
-Mỗi lượt cào theo lịch (scheduler._trigger_platform) gọi plan_crawl:
+Mỗi lượt cào theo lịch (scheduler/crawl_slots.trigger_platform) gọi plan_crawl:
 - từ khoá có từ MIN_SAMPLE bài mà hiệu quả < PAUSE_BELOW -> tắt (enabled = 0), ghi lý do ở PAUSED_KEY (tab từ khoá
   thấy được, bật lại tay được). Không tắt từ khoá cuối cùng còn bật của phim trên nền tảng đó - chỉ giảm trang;
 - hiệu quả < LOW_BELOW -> chỉ cào LOW_PAGES trang (trang đầu của tìm kiếm là phần tốt nhất);

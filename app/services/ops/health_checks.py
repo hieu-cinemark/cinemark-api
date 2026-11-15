@@ -1,5 +1,5 @@
 """Hai việc kiểm tra định kỳ trước đây chạy qua scripts/trigger_scheduled_crawl.sh (crontab, đã bỏ 02/11/2026) - giờ
-scheduler (app/services/crawl/scheduler.py, _health_checks_tick) gọi:
+scheduler (app/services/crawl/scheduler/, _health_checks_tick) gọi:
 
   - check_account_health(): evaluate_account_health() cho mọi tài khoản + lưu kết quả - bản tự động của nút "Check" trên
     dashboard (POST /settings/accounts/{id}/check). Chỉ cảnh báo Telegram khi tài khoản *chuyển sang* warning/disabled,

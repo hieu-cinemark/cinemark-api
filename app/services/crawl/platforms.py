@@ -269,6 +269,6 @@ def get_comment_mapper(platform: str) -> Callable[[dict[str, Any]], CommentDraft
 # Các nền tảng mà spider-hub thực sự có spider comment (xem COMMENTS_SPIDER_BY_PLATFORM
 # trong crawl_request_consumer.py bên đó) - cùng tập với các key của
 # PLATFORM_COMMENT_MAPPERS, đặt tên riêng vì các chỗ gọi như lịch crawl comment trong
-# app/services/crawl/scheduler.py quan tâm "comment của nền tảng này có crawl được không",
+# app/services/crawl/scheduler/ quan tâm "comment của nền tảng này có crawl được không",
 # không phải bản thân mapper.
 COMMENT_CRAWL_PLATFORMS: set[str] = set(PLATFORM_COMMENT_MAPPERS.keys())

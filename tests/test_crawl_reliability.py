@@ -13,7 +13,8 @@ from app.clients import d1, kafka
 from app.clients.redis import REDIS_KEY_PREFIX
 from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import comment_planner as cp
-from app.services.crawl import crawl_jobs, scheduler
+from app.services.crawl import crawl_jobs
+from app.services.crawl.scheduler import crawl_slots as scheduler
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 
@@ -64,8 +65,8 @@ def slots(monkeypatch):
     published = []
     results = {}
     monkeypatch.setattr(scheduler, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(scheduler, "_crawl_fired", set())
-    monkeypatch.setattr(scheduler, "_crawl_running", set())
+    monkeypatch.setattr(scheduler, "crawl_fired", set())
+    monkeypatch.setattr(scheduler, "crawl_running", set())
 
     async def publish(**kwargs):
         ok = results.get(kwargs["keyword_id"], True)
@@ -90,11 +91,11 @@ def slots(monkeypatch):
 
 
 def _slot():
-    return asyncio.run(scheduler._run_crawl_slot("threads", "2026-11-02", "08:00"))
+    return asyncio.run(scheduler.run_crawl_slot("threads", "2026-11-02", "08:00"))
 
 
 def _claim():
-    return asyncio.run(scheduler._claim_crawl_slot("threads", "2026-11-02", "08:00"))
+    return asyncio.run(scheduler.claim_crawl_slot("threads", "2026-11-02", "08:00"))
 
 
 def test_slot_complete_is_never_refired(slots):
@@ -103,7 +104,7 @@ def test_slot_complete_is_never_refired(slots):
     _slot()
     assert len(published) == 2
     assert _claim() is False
-    scheduler._crawl_fired.clear()  # restart: cờ Redis vẫn chặn
+    scheduler.crawl_fired.clear()  # restart: cờ Redis vẫn chặn
     assert _claim() is False
 
 
@@ -119,13 +120,13 @@ def test_failed_keyword_is_retried_alone_with_same_run_id(slots):
     _slot()
     assert [p["keyword_id"] for p in published] == ["k1"]
     assert _claim() is False  # lease đóng vai khoảng nghỉ trước lần thử lại
-    redis.values.pop(f"{scheduler._CRAWL_LEASE_PREFIX}threads:2026-11-02:08:00")
+    redis.values.pop(f"{scheduler.CRAWL_LEASE_PREFIX}threads:2026-11-02:08:00")
     results["k2"] = True
     assert _claim() is True
     _slot()
     assert [p["keyword_id"] for p in published] == ["k1", "k2"]
     assert _claim() is False
-    assert published[1]["run_id"] == scheduler._SlotProgress("threads:2026-11-02:08:00").run_id("k2")
+    assert published[1]["run_id"] == scheduler.SlotProgress("threads:2026-11-02:08:00").run_id("k2")
 
 
 def test_d1_outage_while_loading_keywords_is_not_a_finished_slot(slots, monkeypatch):
@@ -139,8 +140,8 @@ def test_d1_outage_while_loading_keywords_is_not_a_finished_slot(slots, monkeypa
     monkeypatch.setattr(scheduler, "get_enabled_keywords", empty_on_failure)
     assert _claim() is True
     _slot()
-    assert not redis.values.get(f"{scheduler._CRAWL_FIRED_PREFIX}threads:2026-11-02:08:00")
-    assert not scheduler._crawl_fired
+    assert not redis.values.get(f"{scheduler.CRAWL_FIRED_PREFIX}threads:2026-11-02:08:00")
+    assert not scheduler.crawl_fired
 
 
 def test_threads_hashtag_does_not_keep_slot_incomplete(slots, monkeypatch):
@@ -153,7 +154,7 @@ def test_threads_hashtag_does_not_keep_slot_incomplete(slots, monkeypatch):
     monkeypatch.setattr(scheduler, "get_enabled_keywords", keywords)
     assert _claim() is True
     _slot()
-    assert redis.values.get(f"{scheduler._CRAWL_FIRED_PREFIX}threads:2026-11-02:08:00")
+    assert redis.values.get(f"{scheduler.CRAWL_FIRED_PREFIX}threads:2026-11-02:08:00")
 
 
 def test_scheduler_publish_keeps_stop_but_manual_run_clears_it(monkeypatch):

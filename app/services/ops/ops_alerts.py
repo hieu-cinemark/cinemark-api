@@ -1,4 +1,4 @@
-"""Cảnh báo vận hành qua Telegram - scheduler (app/services/crawl/scheduler.py) gọi run_checks() mỗi
+"""Cảnh báo vận hành qua Telegram - scheduler (app/services/crawl/scheduler/) gọi run_checks() mỗi
 settings.ops_alerts_interval_minutes phút:
 
   1. Omar: đã dùng >= ops_omar_quota_alert_pct % hạn mức ngày; gói hết hạn trong ops_omar_expiry_alert_days ngày (và lần

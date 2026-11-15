@@ -264,7 +264,7 @@ async def _queue_facebook(
 
 async def run_daily(*, include_authenticated_facebook: bool = True) -> dict[str, Any]:
     """Một lượt cào lại mọi bài đang theo dõi (gọi mỗi ngày từ scheduler). include_authenticated_facebook=False khi không
-    được dùng tài khoản Facebook nền (scheduler._facebook_crawl_enabled): post_metrics không đăng nhập vẫn chạy, bài cần
+    được dùng tài khoản Facebook nền (scheduler/core.facebook_crawl_enabled): post_metrics không đăng nhập vẫn chạy, bài cần
     page_feed có tài khoản đợi lượt sau."""
     global _running
     _running = True

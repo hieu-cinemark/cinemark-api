@@ -249,7 +249,7 @@ async def publish_comments_crawl_request(
     comment cho đúng bài này" - để một lần bấm Dừng không liên quan trước đó ở chỗ khác
     không âm thầm nuốt mất nó (xem docstring của publish_action_request). Những chỗ gọi
     cố ý publish RẤT NHIỀU request loại này cùng lúc - lịch quét comment hằng ngày
-    (_trigger_comments_platform trong app/services/crawl/scheduler.py) và backfill hàng loạt
+    (_trigger_comments_platform trong app/services/crawl/scheduler/) và backfill hàng loạt
     bằng tay - thì truyền
     bypass_drain=False, để chính hàng tồn đó là thứ nút Dừng của nền tảng huỷ được. Đã
     xác nhận thực tế khi mọi request comment đều bị gán cứng

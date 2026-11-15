@@ -296,7 +296,7 @@ class Settings(BaseSettings):
     tracked_facebook_logged_out: bool = True
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/relevance/cleanup.py), do
-    # app/services/crawl/scheduler.py chạy lúc irrelevant_post_purge_time (giờ
+    # app/services/crawl/scheduler/ chạy lúc irrelevant_post_purge_time (giờ
     # Asia/Ho_Chi_Minh). Bài gắn nhãn not_related được giữ qua thời gian ân hạn trước để
     # vẫn còn phát hiện được một lượt phân loại sai. Việc giữ các dòng dropped_posts lịch
     # sử đã bỏ - lake writer (app/workers/lake_writer/main.py) giờ lưu trữ mọi quyết định
@@ -316,7 +316,7 @@ class Settings(BaseSettings):
     # Cảnh báo vận hành qua Telegram (app/services/ops/ops_alerts.py), scheduler kiểm tra mỗi ops_alerts_interval_minutes.
     # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói Omar / chi phí Jev mỗi ngày một lần.
     ops_alerts_enabled: bool = True
-    # Bộ lập lịch (app/services/crawl/scheduler.py) + bộ lấy mẫu ops chạy TRONG tiến trình web (mặc định, như trước) hay
+    # Bộ lập lịch (app/services/crawl/scheduler/) + bộ lấy mẫu ops chạy TRONG tiến trình web (mặc định, như trước) hay
     # trong service riêng `python -m app.workers.scheduler.main` (một tác vụ nặng của scheduler không còn làm
     # chậm dashboard). Bật service riêng thì đặt SCHEDULER_IN_WEB=false - không bao giờ chạy cả hai cùng lúc.
     scheduler_in_web: bool = True

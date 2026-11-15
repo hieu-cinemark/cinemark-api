@@ -1,4 +1,4 @@
-"""Cào video TikTok theo hashtag qua Omar API (dev.omar-thing.site,) - chạy MỖI GIỜ (scheduler._omar_tick),
+"""Cào video TikTok theo hashtag qua Omar API (dev.omar-thing.site,) - chạy MỖI GIỜ (scheduler/omar.omar_tick),
 song song với spider TikTok của spider-hub. Video đi qua ĐÚNG đường ingest của spider: publish lên topic raw_posts với
 key "tiktok:<video_id>" và cùng tên trường TikTokVideoItem (map_aweme), nên ingest consumer lọc liên quan, chống trùng,
 cập nhật tương tác và chọn bài cào comment như mọi bài TikTok khác.

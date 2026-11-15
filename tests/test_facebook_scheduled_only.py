@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.repositories.d1 import sql as d1_sql
-from app.services.crawl import scheduler, tracked_posts
+from app.services.crawl import tracked_posts
+from app.services.crawl.scheduler import core, crawl_slots
 
 
 @pytest.mark.parametrize(
@@ -14,18 +15,18 @@ from app.services.crawl import scheduler, tracked_posts
     [(False, True, False), (False, False, False), (True, False, False), (True, True, True)],
 )
 def test_background_work_needs_both_switches(monkeypatch, background, enabled, expected):
-    monkeypatch.setattr(scheduler.settings, "facebook_background_crawl_enabled", background)
+    monkeypatch.setattr(core.settings, "facebook_background_crawl_enabled", background)
     schedules = AsyncMock(return_value=[{"platform": "facebook", "enabled": enabled}])
-    monkeypatch.setattr(scheduler.db, "list_crawl_schedules", schedules)
-    assert asyncio.run(scheduler._facebook_crawl_enabled()) is expected
+    monkeypatch.setattr(core.db, "list_crawl_schedules", schedules)
+    assert asyncio.run(core.facebook_crawl_enabled()) is expected
     assert schedules.call_count == int(background)
 
 
 def test_disabled_background_does_not_disable_the_explicit_daily_slot(monkeypatch):
-    monkeypatch.setattr(scheduler.settings, "facebook_background_crawl_enabled", False)
-    monkeypatch.setattr(scheduler, "datetime", AtSlot)
+    monkeypatch.setattr(core.settings, "facebook_background_crawl_enabled", False)
+    monkeypatch.setattr(crawl_slots, "datetime", AtSlot)
     monkeypatch.setattr(
-        scheduler.db,
+        core.db,
         "list_crawl_schedules",
         AsyncMock(
             return_value=[
@@ -40,11 +41,11 @@ def test_disabled_background_does_not_disable_the_explicit_daily_slot(monkeypatc
         ),
     )
     claim = AsyncMock(side_effect=[True, False])
-    monkeypatch.setattr(scheduler, "_claim_crawl_slot", claim)
+    monkeypatch.setattr(crawl_slots, "claim_crawl_slot", claim)
     jobs = []
-    monkeypatch.setattr(scheduler, "_spawn", lambda coro: (jobs.append(coro), coro.close()))
-    asyncio.run(scheduler._tick())
-    asyncio.run(scheduler._tick())
+    monkeypatch.setattr(crawl_slots, "spawn", lambda coro: (jobs.append(coro), coro.close()))
+    asyncio.run(crawl_slots.crawl_tick())
+    asyncio.run(crawl_slots.crawl_tick())
     assert len(jobs) == 1
     assert claim.call_args.args == ("facebook", "2026-11-04", "19:30")
 
@@ -95,7 +96,7 @@ def test_tracked_posts_keep_logged_out_metrics_without_background_accounts(monke
     assert json.loads(updates[0][1][1]) == ["known"]  # bài chưa được xếp lượt nào không ghi last_queued_at
 
 
-class AtSlot(scheduler.datetime):
+class AtSlot(crawl_slots.datetime):
     @classmethod
     def now(cls, tz=None):
         return cls(2026, 11, 4, 19, 30, tzinfo=tz)
@@ -103,14 +104,14 @@ class AtSlot(scheduler.datetime):
 
 def test_facebook_slot_crawls_without_nurture_even_with_old_flags_enabled(monkeypatch):
     keyword = {"id": "movie", "keyword": "Test movie"}
-    monkeypatch.setattr(scheduler.settings, "facebook_crawl_lanes", False)
-    monkeypatch.setattr(scheduler, "get_enabled_keywords", AsyncMock(return_value=[keyword]))
-    monkeypatch.setattr(scheduler, "plan_keyword_crawl", AsyncMock(return_value=([keyword], {})))
-    monkeypatch.setattr(scheduler, "queue_source_pages", AsyncMock())
+    monkeypatch.setattr(core.settings, "facebook_crawl_lanes", False)
+    monkeypatch.setattr(crawl_slots, "get_enabled_keywords", AsyncMock(return_value=[keyword]))
+    monkeypatch.setattr(crawl_slots, "plan_keyword_crawl", AsyncMock(return_value=([keyword], {})))
+    monkeypatch.setattr(crawl_slots, "queue_source_pages", AsyncMock())
     publish = AsyncMock(return_value=True)
     nurture = AsyncMock(side_effect=AssertionError("Facebook no longer queues nurture jobs"))
-    monkeypatch.setattr(scheduler, "publish_crawl_request", publish)
-    monkeypatch.setattr(scheduler, "publish_nurture_request", nurture)
+    monkeypatch.setattr(crawl_slots, "publish_crawl_request", publish)
+    monkeypatch.setattr(crawl_slots, "publish_nurture_request", nurture)
 
     class Progress(set):
         def run_id(self, identifier):
@@ -120,7 +121,7 @@ def test_facebook_slot_crawls_without_nurture_even_with_old_flags_enabled(monkey
             super().add(value)
 
     assert asyncio.run(
-        scheduler._trigger_platform(
+        crawl_slots.trigger_platform(
             "facebook",
             progress=Progress(),
             nurture_before=True,

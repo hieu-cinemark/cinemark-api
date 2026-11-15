@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.repositories.d1 import sql as d1_sql
-from app.services.crawl import scheduler
 from app.services.crawl import source_pages as sp
+from app.services.crawl.scheduler import comments as scheduler
 
 NOW = datetime(2026, 11, 3, 8, 0, tzinfo=UTC)
 
@@ -154,17 +154,16 @@ def test_since_days_only_shrinks_after_a_complete_read(monkeypatch, last, expect
 
 
 def test_facebook_comment_round_ignores_crawl_schedule_switch(monkeypatch):
-    monkeypatch.setattr(scheduler, "_comment_round_done", {})
+    monkeypatch.setattr(scheduler, "comment_round_done", {})
     monkeypatch.setattr(
         scheduler.db,
         "list_comment_crawl_schedules",
         AsyncMock(return_value=[{"platform": "facebook", "enabled": True, "top_n": 15, "run_time": "08:00"}]),
     )
-    monkeypatch.setattr(scheduler, "_facebook_crawl_enabled", AsyncMock(return_value=False))
     spawned = []
-    monkeypatch.setattr(scheduler, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+    monkeypatch.setattr(scheduler, "spawn", lambda coro: (spawned.append(coro), coro.close()))
     monkeypatch.setattr(scheduler, "datetime", _At)
-    asyncio.run(scheduler._comments_tick())
+    asyncio.run(scheduler.comments_tick())
     assert len(spawned) == 1
 
 

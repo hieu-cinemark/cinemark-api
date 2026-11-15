@@ -13,7 +13,7 @@ Worker ghi tệp khán giả - api/lib/channelNiches.ts của cinemark).
   handle và ghi kết quả vào hash THREADS_RESULTS_KEY; collect_threads_results gom hash đó ở mỗi vòng scheduler.
   Tài khoản Threads hiếm và dễ cháy nên tối đa THREADS_MAX_PER_RUN kênh mỗi lượt.
 
-Scheduler chạy mỗi settings.channel_profiles_interval_hours giờ (app/services/crawl/scheduler.py:_channel_profiles_tick)."""
+Scheduler chạy mỗi settings.channel_profiles_interval_hours giờ (app/services/crawl/scheduler/:_channel_profiles_tick)."""
 
 from __future__ import annotations
 

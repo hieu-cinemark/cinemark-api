@@ -214,7 +214,7 @@ class CrawlScheduleOut(BaseModel):
 
 
 class CrawlScheduleUpdate(BaseModel):
-    # "HH:MM", 24 giờ, được app/services/crawl/scheduler.py hiểu theo giờ Asia/Ho_Chi_Minh - xem
+    # "HH:MM", 24 giờ, được app/services/crawl/scheduler/ hiểu theo giờ Asia/Ho_Chi_Minh - xem
     # module đó để biết vì sao một múi giờ cố định là đủ (một người vận hành, không cần múi
     # giờ riêng theo nền tảng).
     # Client cũ gửi một giờ ở run_time; mới gửi run_times (1-3 giờ). Validator gộp về run_times.
@@ -467,7 +467,7 @@ class ProxyProviderUpdate(BaseModel):
 
 
 class CleanupSettings(BaseModel):
-    # "HH:MM", 24 giờ, Asia/Ho_Chi_Minh (xem TIMEZONE trong app/services/crawl/scheduler.py).
+    # "HH:MM", 24 giờ, Asia/Ho_Chi_Minh (xem TIMEZONE trong app/services/crawl/scheduler/).
     run_time: str = Field(default="03:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     enabled: bool = True
     # Bài được giữ chừng này thời gian sau khi bị gắn nhãn not_related rồi mới đủ điều kiện
@@ -511,7 +511,7 @@ class CleanupRunHistoryEntry(BaseModel):
 
 class DiscoverySettings(BaseModel):
     """Công tắc AI tự thêm nguồn cào (hashtag TikTok, câu tìm kiếm FB/Threads, trang nguồn FB) - xem
-    app/services/scheduler._discovery_enabled. Tắt: chỉ cào các từ khoá / trang đang có."""
+    app/services/scheduler/discovery.discovery_enabled. Tắt: chỉ cào các từ khoá / trang đang có."""
 
     enabled: bool
     updated_at: datetime | None = None

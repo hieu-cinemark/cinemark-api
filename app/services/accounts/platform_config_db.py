@@ -613,7 +613,7 @@ async def delete_filter_keyword(keyword_id: int) -> None:
 
 # --- lịch crawl --------------------------------------------------------
 # crawl_schedules: giờ crawl hằng ngày theo nền tảng, CRUD từ thẻ "Crawl schedule" trên
-# dashboard, được vòng lặp trong tiến trình của app/services/crawl/scheduler.py đọc - xem
+# dashboard, được vòng lặp trong tiến trình của app/services/crawl/scheduler/ đọc - xem
 # comment của bảng này trong scripts/dev_db_schema.sql của spider-hub để biết đầy đủ lý
 # do (thay thế cả một dòng crontab của hệ điều hành lẫn Cloudflare Cron Triggers của
 # cinemark-scraper).
@@ -703,7 +703,7 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
 
 # --- lịch crawl comment -------------------------------------------------
 # comment_crawl_schedules: bật/tắt crawl comment theo nền tảng. Từ 2026-10-08 chạy MỖI GIỜ (xem _comments_tick trong
-# app/services/crawl/scheduler.py và app/services/crawl/comment_planner.py): top_n = số bài nóng mỗi phim được theo dõi, run_time
+# app/services/crawl/scheduler/ và app/services/crawl/comment_planner.py): top_n = số bài nóng mỗi phim được theo dõi, run_time
 # = giờ chạy lượt mẫu phân tầng (và 12 tiếng sau). last_triggered_date không còn dùng cho lượt mỗi giờ.
 
 COMMENT_SCHEDULE_COLUMNS = "platform, run_time, enabled, top_n, last_triggered_date, updated_at"

@@ -20,7 +20,7 @@ của nhóm chủ đề AI, không phải mục này.
 **Luồng:**
 
 ```
-scheduler (_ai_jobs_tick, app/services/crawl/scheduler.py)
+scheduler (_ai_jobs_tick, app/services/crawl/scheduler/)
   ├─ có focus (Redis social_crawler:review_angles:focus) -> run_focus mỗi ~60 giây, chỉ phim đó, tới khi hết tokenBudget
   └─ không focus -> run_tick mỗi ~200 giây: xoay vòng phim đã qua Premiere trong 60 ngày, trần 300 lô/ngày
         └─ analyze_next_batch(movie_id)          app/services/ai_jobs/review_angles.py

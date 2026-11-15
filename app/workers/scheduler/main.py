@@ -1,5 +1,5 @@
 """Bộ lập lịch chạy thành service riêng, tách khỏi tiến trình web: lượt crawl theo lịch, comment mỗi giờ,
-Omar, đối soát thống kê, dọn dẹp, báo cáo... (app/services/crawl/scheduler.py) cùng bộ lấy mẫu ops (ops_metrics). Trước
+Omar, đối soát thống kê, dọn dẹp, báo cáo... (app/services/crawl/scheduler/) cùng bộ lấy mẫu ops (ops_metrics). Trước
 đây chạy trong cinemark-api-web nên một tác vụ nặng làm chậm dashboard, và không chạy được nhiều worker uvicorn (mỗi
 worker sẽ có một bộ lập lịch).
 

@@ -452,7 +452,7 @@ def _crawl_schedule_out(row: dict[str, Any]) -> CrawlScheduleOut:
 @router.put("/crawl-schedule/{platform}", response_model=CrawlScheduleOut)
 async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> CrawlScheduleOut:
     """Upsert - một nền tảng chưa có dòng nào cho tới khi lịch của nó được lưu lần đầu (xem
-    app/services/crawl/scheduler.py, chỗ đó chỉ bỏ qua nền tảng chưa có dòng chứ không coi đó
+    app/services/crawl/scheduler/, chỗ đó chỉ bỏ qua nền tảng chưa có dòng chứ không coi đó
     là "mỗi nửa đêm" hay một mặc định ngầm nào khác)."""
     row = await db.upsert_crawl_schedule(
         platform,
@@ -752,7 +752,7 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
 
 @router.get("/discovery", response_model=DiscoverySettings)
 async def get_discovery_settings() -> DiscoverySettings:
-    """AI có đang tự thêm hashtag / câu tìm kiếm / trang nguồn mới không (scheduler._discovery_enabled)."""
+    """AI có đang tự thêm hashtag / câu tìm kiếm / trang nguồn mới không (scheduler/discovery.discovery_enabled)."""
     return DiscoverySettings(**await db.get_discovery_settings())
 
 

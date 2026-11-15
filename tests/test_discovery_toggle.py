@@ -1,6 +1,6 @@
 import asyncio
 
-from app.services.crawl import scheduler
+from app.services.crawl.scheduler import discovery as scheduler
 
 
 def test_discovery_enabled_reads_the_toggle(monkeypatch):
@@ -14,12 +14,12 @@ def test_discovery_enabled_reads_the_toggle(monkeypatch):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(scheduler.db, "get_discovery_settings", off)
-    assert asyncio.run(scheduler._discovery_enabled()) is False
+    assert asyncio.run(scheduler.discovery_enabled()) is False
     monkeypatch.setattr(scheduler.db, "get_discovery_settings", on)
-    assert asyncio.run(scheduler._discovery_enabled()) is True
+    assert asyncio.run(scheduler.discovery_enabled()) is True
     # Không đọc được: giữ hành vi cũ (bật) thay vì lặng lẽ tắt.
     monkeypatch.setattr(scheduler.db, "get_discovery_settings", broken)
-    assert asyncio.run(scheduler._discovery_enabled()) is True
+    assert asyncio.run(scheduler.discovery_enabled()) is True
 
 
 def test_hashtag_tick_skips_when_disabled(monkeypatch):
@@ -39,11 +39,11 @@ def test_hashtag_tick_skips_when_disabled(monkeypatch):
         return {"enabled": False}
 
     monkeypatch.setattr(scheduler, "get_redis_client", lambda: FakeRedis())
-    monkeypatch.setattr(scheduler, "_is_due", lambda run_time, now: True)
+    monkeypatch.setattr(scheduler, "is_due", lambda run_time, now: True)
     monkeypatch.setattr(scheduler.db, "get_discovery_settings", off)
-    monkeypatch.setattr(scheduler, "_spawn", lambda coro: spawned.append(coro.close()))
+    monkeypatch.setattr(scheduler, "spawn", lambda coro: spawned.append(coro.close()))
     monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", False)
-    asyncio.run(scheduler._hashtag_tick())
+    asyncio.run(scheduler.hashtag_tick())
     assert spawned == []
 
 
@@ -64,15 +64,15 @@ def test_tiktok_hashtags_run_alone_when_general_switch_is_off(monkeypatch):
         ran.append(name)
 
     monkeypatch.setattr(scheduler, "get_redis_client", lambda: FakeRedis())
-    monkeypatch.setattr(scheduler, "_is_due", lambda run_time, now: True)
+    monkeypatch.setattr(scheduler, "is_due", lambda run_time, now: True)
     monkeypatch.setattr(scheduler.db, "get_discovery_settings", off)
     monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", True)
     monkeypatch.setattr(scheduler, "run_discovery", lambda: job("hashtags"))
     monkeypatch.setattr(scheduler, "run_query_discovery", lambda: job("queries"))
     monkeypatch.setattr(scheduler, "review_source_pages", lambda: job("sources"))
     spawned = []
-    monkeypatch.setattr(scheduler, "_spawn", lambda coro: spawned.append(coro))
-    asyncio.run(scheduler._hashtag_tick())
+    monkeypatch.setattr(scheduler, "spawn", lambda coro: spawned.append(coro))
+    asyncio.run(scheduler.hashtag_tick())
     assert len(spawned) == 1
     asyncio.run(spawned[0])
     assert ran == ["hashtags"]  # câu tìm Facebook/Threads và trang nguồn vẫn theo công tắc chung (đang tắt)

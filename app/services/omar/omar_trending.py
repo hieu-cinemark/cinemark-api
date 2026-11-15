@@ -1,6 +1,6 @@
 """Video đang nổi - tốc độ tăng tương tác của video TikTok từng phim, đo qua Omar API.
 
-Mỗi settings.omar_trending_interval_hours giờ (scheduler._omar_trending_tick), refresh_top_videos lấy cho mỗi phim đang
+Mỗi settings.omar_trending_interval_hours giờ (scheduler/omar.omar_trending_tick), refresh_top_videos lấy cho mỗi phim đang
 bật settings.omar_trending_per_movie video TikTok liên quan đăng trong settings.omar_trending_days ngày qua, tương tác cao
 nhất, đọc lại số liệu HIỆN TẠI của từng video qua Omar (GET video_info?video=<id> - trả aweme gốc như hashtag_videos, một
 request mỗi video; đo 13/10/2026) rồi ghi một dòng snapshot vào bảng D1 omar_video_stats. Ngân sách mỗi lượt:

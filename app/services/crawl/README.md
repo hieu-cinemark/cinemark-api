@@ -2,7 +2,7 @@
 
 Điều phối việc cào.
 
-- `scheduler.py`: vòng lặp lịch chạy trong `app.workers.scheduler` (lượt cào theo giờ, bình luận, rollup, job AI...).
+- `scheduler/`: vòng lặp lịch chạy trong `app.workers.scheduler` (lượt cào theo giờ, bình luận, rollup, job AI...).
 - `platforms.py`: danh sách nền tảng và cách chuyển dữ liệu spider-hub sang bảng D1.
 - `crawl_lanes.py`, `keyword_yield.py`: hạn mức và hiệu quả từ khoá Facebook / Threads.
 - `crawl_jobs.py`, `task_queue.py`, `refresh_tracker.py`: trạng thái job và hàng đợi hiển thị trên dashboard.
