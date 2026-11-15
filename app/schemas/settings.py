@@ -311,18 +311,13 @@ class AiPromptOut(BaseModel):
 
 class AiSettingsOut(BaseModel):
     enabled: bool
+    # Model của nhà cung cấp đang chọn (rỗng nếu chưa chọn nhà cung cấp).
     model: str
-    # Dòng "kira" trong ai_providers đã có đủ base_url và api_key chưa - thiếu thì nút
-    # bật/tắt trên dashboard không gọi được provider.
+    # Nhà cung cấp đang chọn đã có đủ base_url, api_key và model chưa.
     configured: bool
     prompts: list[AiPromptOut]
-    # Provider mà phần tạo report topic mạng xã hội của app/ai/tasks/report.py gọi - "kira"
-    # hoặc "bee", độc lập với `enabled` ở trên (cổng đó chỉ dành cho các bộ phân loại lúc
-    # ingest; tạo report là hành động do người vận hành/lịch kích hoạt, cùng nhóm với
-    # import trong Settings).
-    active_report_provider: str
-    # Nhà cung cấp đang dùng cho mọi lời gọi AI ("beeknoee" = Bee, "kira" = Kira).
-    active_provider: str = "beeknoee"
+    # Nhà cung cấp đang chọn - dùng cho MỌI lời gọi AI, rỗng nếu chưa chọn.
+    active_provider: str = ""
     updated_at: datetime | None = None
 
 
@@ -332,10 +327,7 @@ class AiActiveProviderUpdate(BaseModel):
 
 class AiSettingsUpdate(BaseModel):
     enabled: bool
-    model: str = Field(min_length=1, max_length=120)
     prompts: dict[str, str] = Field(default_factory=dict)
-    # Không còn dùng (Kira đã bỏ 2026-10-21, report luôn do Bee viết) - giữ để dashboard cũ gửi lên không bị 422.
-    active_report_provider: str = Field(default="bee", pattern="^(kira|bee)$")
 
 
 class AiProviderOut(BaseModel):
@@ -344,26 +336,28 @@ class AiProviderOut(BaseModel):
     # Có lưu secret hay chưa - không bao giờ trả về api_key thô.
     api_key_set: bool
     model: str
-    chat_path: str = "/chat/completions"
-    image_model: str = ""
-    decisions_path: str = ""
-    comment_model: str = ""
-    post_model: str = ""
+    # Đây có phải nhà cung cấp đang chọn không.
+    active: bool = False
     updated_at: datetime | None = None
 
 
 class AiProviderUpdate(BaseModel):
     base_url: str = Field(min_length=1, max_length=500)
-    # None/rỗng thì giữ nguyên secret đã lưu, để dashboard đổi base_url/model mà không phải
-    # gửi lại key mỗi lần.
+    # None/rỗng thì giữ nguyên secret đã lưu, để đổi base_url/model mà không phải gửi lại key mỗi lần.
     api_key: str | None = Field(default=None, max_length=500)
-    model: str = Field(min_length=1, max_length=120)
-    # Đường gọi chat nối sau base_url; model đọc ảnh; model quyết định (rỗng = không có, phân loại dùng chat). None = giữ.
-    chat_path: str | None = Field(default=None, max_length=200)
-    image_model: str | None = Field(default=None, max_length=120)
-    decisions_path: str | None = Field(default=None, max_length=200)
-    comment_model: str | None = Field(default=None, max_length=120)
-    post_model: str | None = Field(default=None, max_length=120)
+    model: str = Field(default="", max_length=120)
+
+
+class AiModelsRequest(BaseModel):
+    """Lấy danh sách model của một nhà cung cấp để chọn: api_key trống thì dùng key đã lưu của `key`."""
+
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    key: str | None = Field(default=None, max_length=40, pattern="^[a-z0-9_-]+$")
+
+
+class AiModelsOut(BaseModel):
+    models: list[str]
 
 
 class CronJob(BaseModel):

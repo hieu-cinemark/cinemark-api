@@ -1,4 +1,4 @@
-"""Lớp chính sách cho mọi lời gọi LLM.
+"""Lớp chính sách cho mọi lời gọi LLM (luôn qua nhà cung cấp đang chọn).
 
 Đọc cấu hình theo task (bật/tắt, system prompt ghi đè) từ bảng `ai_settings`, rồi gọi provider qua
 `app.ai.providers.client`. Mọi task trong `app.ai` đi qua `call_llm` / `call_llm_json` để dùng chung cấu hình và retry.
@@ -14,15 +14,12 @@ from app.ai.providers.client import call_ai, invalidate_provider_cache, parse_js
 from app.core.logging import get_logger
 
 __all__ = [
-    "AI_PROVIDER",
     "ai_is_enabled",
     "call_llm",
     "invalidate_ai_runtime_cache",
     "load_ai_runtime",
     "parse_json_response",
 ]
-
-AI_PROVIDER = "bee"
 
 logger = get_logger(__name__)
 
@@ -66,7 +63,7 @@ async def load_ai_runtime() -> dict[str, Any]:
 def invalidate_ai_runtime_cache() -> None:
     global _ai_cfg_cache
     _ai_cfg_cache = None
-    invalidate_provider_cache(AI_PROVIDER)
+    invalidate_provider_cache()
 
 
 async def ai_is_enabled() -> bool:
@@ -102,7 +99,6 @@ async def call_llm(
         raise RuntimeError("ai_temporarily_disabled")
     resolved = resolve_system_prompt(task, system_prompt, cfg["prompts"])
     return await call_ai(
-        provider=AI_PROVIDER,
         task=task,
         system_prompt=resolved,
         user_prompt=user_prompt,

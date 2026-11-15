@@ -16,8 +16,6 @@ from app.ai.domain.cinema_visit import cinema_visit_aspect
 from app.ai.domain.movie_context import movie_context_block
 from app.ai.local import visobert
 from app.ai.prompts.sentiment import SENTIMENT_DATA_PROMPT, SENTIMENT_SYSTEM_PROMPT
-from app.ai.providers.decisions import POST, decisions_supported
-from app.ai.providers.jev import classify_comments_jev, use_jev
 from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
 from app.ai.tasks.sentiment_rules import cached_comment_labels, is_tag_or_icon, remember_comment_labels, rule_sentiment
 from app.core.config import settings
@@ -179,24 +177,8 @@ async def classify_comments(
             logger.info("sentiment_routed", **routed)
         return _with_cinema_visits(messages, labels, kind)
 
-    # 4. Ca khó -> model quyết định (settings.classifier = "jev").
-    jev_mode = use_jev()
-    if rest and jev_mode:
-        jev_labels = await classify_comments_jev(
-            [m for _, m in rest],
-            [films[i] if films else None for i, _ in rest],
-            **({"kind": POST} if kind == "post" else {}),
-        )
-        for (i, _), label in zip(rest, jev_labels, strict=True):
-            if label is not None and (parsed := _label(label)) is not None:
-                labels[i] = parsed
-        done = [(m, label) for i, m in rest if (label := labels[i]) is not None]
-        await remember_comment_labels(done)
-        routed["jev"] = len(done)
-        rest = [(i, m) for i, m in rest if labels[i] is None]
-
-    # 5. Chat LLM: khi không dùng model quyết định, provider không có /decisions, hoặc Jev lỗi và bật jev_kira_fallback.
-    if rest and (not jev_mode or settings.jev_kira_fallback or not decisions_supported()) and await ai_is_enabled():
+    # 4. Ca khó -> chat LLM (nhà cung cấp AI đang chọn), chỉ khi AI đang bật.
+    if rest and await ai_is_enabled():
         for start in range(0, len(rest), BATCH_SIZE):
             chunk = rest[start : start + BATCH_SIZE]
             chunk_films = [films[i] if films else None for i, _ in chunk]

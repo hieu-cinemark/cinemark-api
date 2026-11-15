@@ -122,7 +122,7 @@ def test_missing_entry_fails_open_for_that_post_only(monkeypatch, fake_redis) ->
 
 
 def test_daily_cap_counts_posts(monkeypatch, fake_redis) -> None:
-    monkeypatch.setattr(settings, "kira_post_relevance_daily_cap", 2)
+    monkeypatch.setattr(settings, "ai_post_relevance_daily_cap", 2)
     _reply_with(monkeypatch, lambda n: [{"i": i + 1, "classification": "relevant", "score": 0.9} for i in range(n)])
 
     async def run():
@@ -132,7 +132,7 @@ def test_daily_cap_counts_posts(monkeypatch, fake_redis) -> None:
 
 
 def test_cap_zero_disables(monkeypatch, fake_redis) -> None:
-    monkeypatch.setattr(settings, "kira_post_relevance_daily_cap", 0)
+    monkeypatch.setattr(settings, "ai_post_relevance_daily_cap", 0)
     seen: list = []
     _reply_with(monkeypatch, "{}", seen)
     assert asyncio.run(_classify()) is None and seen == []

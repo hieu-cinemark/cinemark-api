@@ -27,7 +27,6 @@ from sqlalchemy import select
 
 from app.ai.providers.client import load_provider
 from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
-from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import (
@@ -230,13 +229,10 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         )
         return "generated"
 
-    # Model thực sự đã viết topics: model của provider đó trong ai_providers (hoặc chính
-    # key của provider nếu dòng đó không có model).
-    provider = topics_result.get("provider") or "bee"
-    provider_cfg = await load_provider(provider)
+    # Model đã viết topics: model của nhà cung cấp AI đang chọn (khoá nhà cung cấp nếu dòng đó không ghi model).
+    provider = topics_result.get("provider") or ""
+    provider_cfg = await load_provider(provider or None)
     model = (provider_cfg.model if provider_cfg else "") or provider
-    if provider == "bee" and settings.bee_report_model.strip():
-        model = settings.bee_report_model.strip()  # report dùng model Bee riêng (config.bee_report_model)
 
     ok = await upsert_social_topic_report(
         movie_id=movie_id,

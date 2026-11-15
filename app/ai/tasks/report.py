@@ -21,10 +21,8 @@ from app.ai.prompts.report import (
     TOPICS_DATA_PROMPT,
     TOPICS_SYSTEM_PROMPT,
 )
-from app.ai.providers.bee import call_bee
-from app.ai.providers.client import JSON_FENCE_RE
-from app.ai.runtime import parse_json_response
-from app.core.config import settings
+from app.ai.providers.client import JSON_FENCE_RE, active_provider_key
+from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 from app.repositories.d1.store import REPORT_POST_TEXT_CHARS
 
@@ -36,24 +34,24 @@ T = TypeVar("T")
 async def _generate(
     *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float, parse: Callable[[str], T]
 ) -> tuple[T, str]:
-    """Bee viết, thử lại một lần khi lỗi. `parse` kiểm tra câu trả lời và raise khi không dùng được, nên câu trả lời bị
-    cắt/sai cấu trúc cũng được thử lại, không chỉ khi lời gọi lỗi. Trả về (kết quả đã parse, "bee"); raise lỗi cuối cùng
+    """Nhà cung cấp AI đang chọn viết, thử lại một lần khi lỗi. `parse` kiểm tra câu trả lời và raise khi không dùng được, nên câu trả lời bị
+    cắt/sai cấu trúc cũng được thử lại, không chỉ khi lời gọi lỗi. Trả về (kết quả đã parse, khoá nhà cung cấp); raise lỗi cuối cùng
     khi cả hai lần đều lỗi."""
     last_error: Exception | None = None
     for attempt in range(2):
         try:
-            response = await call_bee(
+            response = await call_llm(
                 task=task,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=max_tokens,
                 temperature=temperature + 0.1 * attempt,
-                model=settings.bee_report_model.strip() or None,
+                force=True,  # report do người dùng yêu cầu: chạy cả khi công tắc AI ingest đang tắt
             )
-            return parse(response), "bee"
+            return parse(response), await active_provider_key()
         except Exception as exc:
             last_error = exc
-            logger.warning("report_provider_failed", task=task, provider="bee", attempt=attempt + 1, error=str(exc))
+            logger.warning("report_provider_failed", task=task, attempt=attempt + 1, error=str(exc))
     assert last_error is not None
     raise last_error
 

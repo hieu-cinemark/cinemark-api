@@ -48,44 +48,36 @@ def _preview(text: str, limit: int) -> str:
 
 @dataclass
 class ProviderConfig:
+    """Nhà cung cấp AI tương thích OpenAI: chỉ cần base_url, api_key và model. Mọi tác vụ dùng chung nhà cung cấp đang chọn."""
+
     key: str
     base_url: str
     api_key: str
     model: str
-    chat_path: str = "/chat/completions"
-    image_model: str = ""
-    decisions_path: str = ""
-    comment_model: str = ""
-    post_model: str = ""
 
     @property
     def openai_base_url(self) -> str:
-        """base_url cho OpenAI SDK (SDK tự nối "/chat/completions"): đường gọi chat dạng "<tiền tố>/chat/completions" thì
-        tiền tố được nối vào base_url."""
-        path = (self.chat_path or "/chat/completions").strip()
-        prefix = path[: -len("/chat/completions")] if path.endswith("/chat/completions") else ""
-        return f"{self.base_url.rstrip('/')}{prefix.rstrip('/')}"
+        """base_url cho OpenAI SDK (SDK tự nối "/chat/completions"): bỏ dấu "/" cuối và đuôi "/chat/completions" nếu
+        người dùng dán nguyên endpoint."""
+        url = self.base_url.strip().rstrip("/")
+        return url[: -len("/chat/completions")] if url.endswith("/chat/completions") else url
 
 
-# "bee" nghĩa là provider đang chọn (ai_settings.active_provider), ánh xạ sang dòng ai_providers thật.
-ACTIVE_PROVIDER_ALIAS = "bee"
-_ACTIVE_ALIASES = {"bee": "beeknoee"}
 _active_cache: tuple[float, str] | None = None
 
 
 async def active_provider_key() -> str:
-    """Dòng ai_providers đang dùng ("beeknoee" / "kira" / ...); cache như cấu hình provider."""
+    """Khoá nhà cung cấp đang chọn (ai_settings.active_provider), rỗng nếu chưa chọn; cache như cấu hình provider."""
     global _active_cache
     now = time.monotonic()
     if _active_cache is not None and now - _active_cache[0] < _PROVIDER_CACHE_TTL_SECONDS:
         return _active_cache[1]
-    key = "beeknoee"
+    key = ""
     try:
         from app.services.accounts.platform_config_db import get_ai_settings
 
-        value = str((await get_ai_settings()).get("active_provider") or "").strip().lower()
-        key = _ACTIVE_ALIASES.get(value, value) or key
-    except Exception as exc:  # noqa: BLE001 - không đọc được thì giữ lựa chọn cũ / Bee
+        key = str((await get_ai_settings()).get("active_provider") or "").strip().lower()
+    except Exception as exc:  # noqa: BLE001 - không đọc được thì giữ lựa chọn cũ
         logger.warning("ai_active_provider_load_failed", error=str(exc))
         if _active_cache is not None:
             return _active_cache[1]
@@ -153,12 +145,13 @@ def invalidate_provider_cache(key: str | None = None) -> None:
         _provider_cache.pop(key, None)
 
 
-async def load_provider(key: str) -> ProviderConfig | None:
-    """Đọc {key, base_url, api_key, model} từ ai_providers (Supabase), cache vài giây.
-    Trả về None nếu dòng chưa tồn tại hoặc thiếu base_url/api_key - bên gọi coi như
-    "chưa cấu hình", cùng quy ước fail open như mọi chỗ khác trong app/ai. key "bee" = nhà cung cấp đang chọn."""
-    if key == ACTIVE_PROVIDER_ALIAS:
-        key = await active_provider_key()
+async def load_provider(key: str | None = None) -> ProviderConfig | None:
+    """Đọc {key, base_url, api_key, model} từ ai_providers (Supabase), cache vài giây. `key=None` = nhà cung cấp đang chọn.
+    Trả về None nếu chưa chọn / dòng chưa tồn tại / thiếu base_url hoặc api_key - bên gọi coi như "chưa cấu hình", cùng quy
+    ước fail open như mọi chỗ khác trong app/ai."""
+    key = key or await active_provider_key()
+    if not key:
+        return None
     now = time.monotonic()
     cached = _provider_cache.get(key)
     if cached is not None and now - cached[0] < _PROVIDER_CACHE_TTL_SECONDS:
@@ -171,15 +164,7 @@ async def load_provider(key: str) -> ProviderConfig | None:
         row = await get_ai_provider(key)
         if row and row.get("base_url") and row.get("api_key"):
             cfg = ProviderConfig(
-                key=key,
-                base_url=row["base_url"],
-                api_key=row["api_key"],
-                model=(row.get("model") or "").strip(),
-                chat_path=(row.get("chat_path") or "/chat/completions").strip(),
-                image_model=(row.get("image_model") or "").strip(),
-                decisions_path=(row.get("decisions_path") or "").strip(),
-                comment_model=(row.get("comment_model") or "").strip(),
-                post_model=(row.get("post_model") or "").strip(),
+                key=key, base_url=row["base_url"], api_key=row["api_key"], model=(row.get("model") or "").strip()
             )
     except Exception as exc:
         logger.warning("ai_provider_load_failed", provider=key, error=str(exc))
@@ -187,7 +172,7 @@ async def load_provider(key: str) -> ProviderConfig | None:
     return cfg
 
 
-async def is_provider_configured(key: str) -> bool:
+async def is_provider_configured(key: str | None = None) -> bool:
     return (await load_provider(key)) is not None
 
 
@@ -253,7 +238,7 @@ def _invoke(
 
 async def call_ai(
     *,
-    provider: str,
+    provider: str | None = None,
     task: str,
     user_prompt: str,
     system_prompt: str = "",
@@ -262,17 +247,13 @@ async def call_ai(
     max_tokens: int | None = None,
     platform: str | None = None,
 ) -> str:
-    """Một lần chat completion theo dòng ai_providers của `provider`. Retry khi gặp 429
-    có backoff (cùng ngân sách retry mà trước đây mỗi provider tự cài), mỗi provider
-    một semaphore riêng (để Bee gọi dồn dập cũng không làm Kira bị nghẽn và ngược
-    lại - mỗi provider vẫn có semaphore riêng, chỉ là được quản lý theo key ở đây thay
-    vì mỗi client một hằng số riêng ở cấp module).
-    Raise RuntimeError nếu dòng provider thiếu hoặc chưa đủ thông tin, hoặc raise lỗi
-    OpenAI gốc sau khi đã retry hết - mọi bên gọi trong app/ai đều đã bắt
-    rộng và fail open."""
+    """Một lần chat completion qua nhà cung cấp `provider` (mặc định: nhà cung cấp đang chọn). Retry khi gặp 429 có backoff,
+    mỗi nhà cung cấp một semaphore giới hạn số lời gọi đồng thời. Raise RuntimeError nếu chưa cấu hình / thiếu model, hoặc
+    raise lỗi OpenAI gốc sau khi retry hết - mọi bên gọi trong app/ai đều đã bắt rộng và fail open."""
     cfg = await load_provider(provider)
     if cfg is None:
-        raise RuntimeError(f"ai_provider_not_configured:{provider}")
+        raise RuntimeError("ai_provider_not_configured")
+    provider = cfg.key
     resolved_model = (model or cfg.model or "").strip()
     if not resolved_model:
         raise RuntimeError(f"ai_provider_model_not_configured:{provider}")

@@ -21,7 +21,6 @@ from aiokafka.errors import KafkaError
 from redis.exceptions import RedisError
 from sqlalchemy import select
 
-from app.ai.providers.jev import use_jev
 from app.ai.tasks.post_relevance import classify_post_relevance_kira
 from app.clients.d1 import D1Unavailable, d1_strict
 from app.clients.kafka import publish_dead_letter, publish_ingest_decision, start_kafka_producer, stop_kafka_producer
@@ -433,13 +432,13 @@ async def handle_post(payload: dict[str, Any]) -> None:
 
     # Kira phân loại mọi bài đã qua được các quy tắc. Kiểm tra chuỗi con theo từ khoá chỉ
     # là phương án dự phòng khi Kira không đưa ra phán quyết - bị tắt trên dashboard, vượt
-    # settings.kira_post_relevance_daily_cap, hoặc lỗi - để một lần sự cố không bao giờ
+    # settings.ai_post_relevance_daily_cap, hoặc lỗi - để một lần sự cố không bao giờ
     # loại hay giấu đi những bài lẽ ra được giữ.
     relevance_label = None
     relevance_confidence = None
     has_keyword = contains_keyword(draft.get("content"), keyword["keyword"])
 
-    # settings.kira_ingest_relevance tắt: ingest không chờ Kira (qwen có lúc 60-180 giây một lô, đủ làm
+    # settings.ai_ingest_relevance tắt: ingest không chờ Kira (qwen có lúc 60-180 giây một lô, đủ làm
     # Kafka tồn hàng chục nghìn message) - bài vào theo tín hiệu phim/từ khoá như lúc Kira không kết luận, rồi
     # scripts/jobs/relabel_post_relevance.py gán lại nhãn Kira ở nền.
     # Luật trước (model nhà trồng): bài có tín hiệu phim rõ (tên phim đủ / tên rút gọn quanh ngày chiếu / ngữ cảnh phim)
@@ -461,8 +460,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
             platform=platform,
             other_titles=await _tracked_titles(),
         )
-        # Jev (~0,4 giây/bài) đủ nhanh để phân loại ngay ở ingest; Kira chậm nên chỉ khi bật KIRA_INGEST_RELEVANCE.
-        if (settings.kira_ingest_relevance or use_jev())
+        # Phân loại bằng AI ngay ở ingest chỉ khi bật AI_INGEST_RELEVANCE (AI chậm, có lúc 60-180 giây một lô).
+        if settings.ai_ingest_relevance
         and not settings.relevance_rules_only
         and rule_relevant is not True
         else None

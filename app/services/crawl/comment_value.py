@@ -18,7 +18,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.schema import CreateTable
 
-from app.ai.providers.jev import judge_comment_value_jev, use_jev
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values
@@ -71,8 +70,6 @@ async def load_scores(post_ids: list[str]) -> dict[str, int]:
 
 
 async def _judge_movie(title: str, rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    if use_jev():
-        return await judge_comment_value_jev(title, rows)
     lines = []
     for i, row in enumerate(rows, 1):
         caption = " ".join(str(row.get("content") or "").split())[:400]

@@ -15,8 +15,6 @@ from typing import Any
 from app.ai.domain.movie_context import movie_context_block
 from app.ai.local import visobert_relevance
 from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
-from app.ai.providers.decisions import decisions_supported
-from app.ai.providers.jev import classify_post_relevance_jev, use_jev
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -175,7 +173,7 @@ _batcher = _Batcher()
 
 
 async def _within_daily_cap() -> bool:
-    cap = settings.kira_post_relevance_daily_cap
+    cap = settings.ai_post_relevance_daily_cap
     if cap <= 0:
         return False
     from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
@@ -211,13 +209,6 @@ async def classify_post_relevance_kira(
     verdict = await visobert_relevance.decide(content, movie, keyword)
     if verdict is not None:
         return verdict
-    if use_jev() and decisions_supported():
-        verdict = await classify_post_relevance_jev(
-            content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles
-        )
-        # Provider không có /decisions: đi tiếp đường chat bên dưới.
-        if verdict is not None or decisions_supported():
-            return verdict
     if not await _within_daily_cap():
         return None
     future: asyncio.Future[Verdict | None] = asyncio.get_running_loop().create_future()

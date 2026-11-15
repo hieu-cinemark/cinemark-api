@@ -8,6 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -91,20 +92,9 @@ class Settings(BaseSettings):
     # GET/POST/PATCH/DELETE trên /settings/* chỉ trả 502 thay vì app không khởi động được.
     database_url: str | None = None
 
-    # Bộ phân loại LLM Kira (kiraai.vn). Bật/tắt lúc chạy và prompt theo từng task nằm ở
-    # tab AI trong Settings của dashboard (bảng ai_settings trên Supabase) - biến môi
-    # trường này chỉ cung cấp giá trị enabled ban đầu khi dòng đó được tạo lần đầu. Thông
-    # tin đăng nhập (base_url/api_key) và model, của Kira và mọi provider khác (ví dụ
-    # Beeknoee), nằm trong bảng ai_providers trên Supabase - xem app/ai/providers/client.py và
-    # app/services/accounts/platform_config_db.py. Công dụng chính hiện nay: phân loại liên quan,
-    # cảm xúc comment và report topic/narrative (Beeknoee chỉ là tuỳ chọn cho report).
-    kira_enabled: bool = False
-    # Việc PHÂN LOẠI - gán nhãn comment (cảm xúc, khía cạnh, giai đoạn), độ liên quan của bài, giá trị comment của bài:
-    # "jev" = model quyết định của Bee (app/ai/providers/decisions.py, thay cho gọi thẳng TypeSafe), chạy SAU luật và
-    # ViSoBERT - chỉ ca khó; "llm" = chat Bee như trước. Bình luận dùng bee_comment_model, bài viết dùng bee_post_model.
-    classifier: str = "jev"
-    bee_comment_model: str = "typesafe/jev-1.14"
-    bee_post_model: str = "openai/gpt-6-luna-decisions"
+    # Nhà cung cấp AI (base_url, api_key, model) và nhà cung cấp đang chọn nằm ở bảng ai_providers / ai_settings trên Supabase,
+    # sửa ở tab AI của dashboard spider-hub - xem app/ai/providers/client.py. Công tắc bật/tắt AI lúc chạy và prompt theo từng
+    # task cũng ở tab đó (ai_settings).
     # Model nhà trồng (ViSoBERT fine-tune, app/ai/local/visobert.py) chạy trước Bee cho cảm xúc bình luận và nội dung bài: đủ
     # chắc từ mức này thì lấy luôn, không gọi Bee. Thư mục model (gitignore, 374MB) - thiếu / thiếu torch thì bỏ qua bước này.
     visobert_enabled: bool = True
@@ -120,31 +110,22 @@ class Settings(BaseSettings):
     visobert_relevance_model_dir: str = "models/visobert-relevance-relabel"
     visobert_relevance_related_min: float = 0.9
     visobert_relevance_not_related_min: float = 0.95
-    # Comment Jev lỗi thì thử Kira (tắt mặc định: Kira chỉ còn duyệt BFS).
-    jev_kira_fallback: bool = False
-    jev_concurrency: int = 16
-    # Số lời gọi song song tối đa tới MỖI nhà cung cấp AI (Kira, Bee...) trong một tiến trình - xem app/ai/providers/client.py.
-    # Service giữ 2; script backfill (scripts/kira_label_comments.py --concurrency) nâng lên trong tiến trình của nó.
+    # Số lời gọi song song tối đa tới MỖI nhà cung cấp AI trong một tiến trình - xem app/ai/providers/client.py.
+    # Service giữ 2; script backfill (scripts/ml/*.py --concurrency) nâng lên trong tiến trình của nó.
     ai_provider_concurrency: int = 2
-    # Model Bee RIÊNG cho việc viết report Social Topic (app/ai/tasks/report.py) - mọi lời gọi Bee khác dùng model của dòng
-    # "bee" trong ai_providers (Admin › AI). Rỗng = dùng model đó cho cả report.
-    bee_report_model: str = ""
-    # Dưới ngưỡng tự tin: cảm xúc -> neutral, giai đoạn -> khac, khía cạnh -> không gắn.
-    jev_min_confidence: float = 0.6
-    jev_stage_min_confidence: float = 0.5
-    jev_aspect_min_confidence: float = 0.5
+    # AI phân loại độ liên quan của bài lúc ingest (app/ai/tasks/post_relevance.py): tối đa chừng này bài mỗi ngày UTC (mỗi bài
+    # khoảng 330 token khi gom lô). Vượt hạn mức thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 = tắt.
+    # Tên env cũ (KIRA_POST_RELEVANCE_DAILY_CAP) vẫn được đọc để file .env đang chạy không bị đổi hành vi.
+    ai_post_relevance_daily_cap: int = Field(
+        default=30000, validation_alias=AliasChoices("AI_POST_RELEVANCE_DAILY_CAP", "KIRA_POST_RELEVANCE_DAILY_CAP")
+    )
 
-    # Kira là bộ phân loại độ liên quan của bài lúc ingest (app/ai/tasks/post_relevance.py):
-    # tối đa chừng này bài mỗi ngày UTC. Gom lô nên mỗi bài tốn khoảng 330 token (đo
-    # ~2.000 token vào + ~435 token ra cho mỗi lô ~7 bài) - cùng tài khoản Kira còn
-    # chạy cảm xúc comment (app/ai/tasks/sentiment.py), nên giữ chỗ cho task đó. Vượt hạn mức
-    # thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 là tắt Kira cho bài.
-    kira_post_relevance_daily_cap: int = 30000
-
-    # False: ingest consumer KHÔNG hỏi Kira độ liên quan mà lưu bài ngay theo tín hiệu phim/từ khoá (như khi Kira không
-    # kết luận); scripts/jobs/relabel_post_relevance.py --follow gán lại nhãn Kira ở nền. Dùng khi model Kira chậm (qwen có
-    # lúc 60-180 giây một lô) - chờ Kira ngay trong ingest từng làm Kafka tồn hàng chục nghìn message.
-    kira_ingest_relevance: bool = True
+    # False: ingest KHÔNG hỏi AI độ liên quan mà lưu bài ngay theo tín hiệu phim/từ khoá; scripts/jobs/relabel_post_relevance.py
+    # --follow gán lại nhãn ở nền. Dùng khi model chậm (từng làm Kafka tồn hàng chục nghìn message). Tên env cũ
+    # KIRA_INGEST_RELEVANCE vẫn được đọc (VPS đang đặt false).
+    ai_ingest_relevance: bool = Field(
+        default=True, validation_alias=AliasChoices("AI_INGEST_RELEVANCE", "KIRA_INGEST_RELEVANCE")
+    )
 
     # True: lọc bài liên quan hoàn toàn bằng luật, không AI (relevance_rules.mentions_film_manual/no_diacritics_reason):
     # khớp tên phim / viết tắt / từ khoá thì liên quan, phần chữ không có dấu tiếng Việt thì loại thẳng.
@@ -355,7 +336,6 @@ class Settings(BaseSettings):
     # Ví AI hết tiền: cảnh báo nếu lỗi 402/hết số dư gần nhất xảy ra trong chừng này giờ.
     ops_ai_wallet_window_hours: float = 1
     # Chi phí Jev hôm nay (giờ VN, ước từ token đầu vào) vượt mức này (USD).
-    ops_jev_daily_usd_alert: float = 2.0
 
     @property
     def ambiguous_title_movies(self) -> frozenset[str]:

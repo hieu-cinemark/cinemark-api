@@ -20,7 +20,6 @@ def _setup(monkeypatch, predictions):
 
     monkeypatch.setattr(sentiment, "cached_comment_labels", no_cache)
     monkeypatch.setattr(sentiment.visobert, "predict", predict)
-    monkeypatch.setattr(sentiment, "classify_comments_jev", ai_called)
     monkeypatch.setattr(sentiment, "_classify_batch", ai_called)
 
 

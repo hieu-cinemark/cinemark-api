@@ -104,7 +104,7 @@ def build_text(movie: dict[str, Any], scene: dict[str, Any], comments: list[str]
 
 
 async def ask(text: str, image: bytes | None) -> dict[str, Any] | None:
-    cfg = await load_provider("bee")
+    cfg = await load_provider()
     client = _client_for(cfg)
     content: Any = text
     if image:

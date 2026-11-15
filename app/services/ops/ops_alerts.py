@@ -6,15 +6,14 @@ settings.ops_alerts_interval_minutes phút:
   2. Omar: tỉ lệ request lỗi của lượt đang chạy / vừa xong trong 1 giờ qua > ops_omar_error_rate_alert (đủ
      ops_omar_error_min_attempts lần gọi).
   3. Nguồn cạn: không có bài TikTok / comment mới (MAX(scraped_at) trên D1) trong ops_post/comment_drought_hours giờ.
-  4. Ví AI: Kira (app/ai/providers/client.py) / Jev (app/ai/providers/jev.py) trả 402 hoặc lỗi hết số dư - đường gọi AI ghi mốc vào Redis qua
-     note_ai_wallet_error / note_jev_response, ở đây chỉ đọc mốc. Chi phí Jev hôm nay (note_jev_tokens cộng dồn token đầu
-     vào theo ngày giờ VN) vượt ops_jev_daily_usd_alert.
+  4. Ví AI: nhà cung cấp AI (app/ai/providers/client.py) trả 402 hoặc lỗi hết số dư - đường gọi AI ghi mốc vào Redis qua
+     note_ai_wallet_error, ở đây chỉ đọc mốc.
 
 Mỗi cảnh báo chống lặp bằng một khoá Redis SET NX có TTL: lặp lại sau ops_alert_repeat_hours, riêng hạn mức / hạn gói
 Omar / chi phí Jev thì khoá theo ngày (mỗi ngày một lần). Gửi thẳng send_telegram_message: field telegram=True của log
 trong service này chỉ là một field, không có gì đọc nó để gửi Telegram.
 
-Module này chỉ import nhẹ ở đầu (Redis, Telegram, config) vì app/ai/providers/client.py và app/ai/providers/jev.py import nó; phần nặng
+Module này chỉ import nhẹ ở đầu (Redis, Telegram, config) vì app/ai/providers/client.py import nó; phần nặng
 (Omar, D1, Supabase) import trong hàm."""
 
 from __future__ import annotations
@@ -36,11 +35,8 @@ logger = get_logger(__name__)
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 _ALERT_PREFIX = f"{REDIS_KEY_PREFIX}ops_alert:"
 _WALLET_PREFIX = f"{REDIS_KEY_PREFIX}ops:ai_wallet_error:"
-_JEV_TOKENS_PREFIX = f"{REDIS_KEY_PREFIX}ops:jev_input_tokens:"
 _DAY_TTL_SECONDS = 26 * 3600
 _REDIS_TIMEOUT_SECONDS = 2.0
-# Token Jev cộng dồn trong tiến trình rồi mới ghi Redis (Jev chạy hàng chục request song song - không ghi mỗi request).
-_JEV_FLUSH_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -174,34 +170,15 @@ def wallet_alert(provider: str, last_error_at: float | None, now_ts: float, deta
     )
 
 
-def jev_spend_alert(input_tokens: int, usd_per_m_input: float, now: datetime) -> Alert | None:
-    usd = input_tokens / 1e6 * usd_per_m_input
-    if usd <= settings.ops_jev_daily_usd_alert:
-        return None
-    return Alert(
-        f"jev_spend:{vn_date(now)}",
-        _DAY_TTL_SECONDS,
-        f"⚠️ Jev hôm nay đã tốn khoảng ${usd:.2f} ({input_tokens:,} token đầu vào), vượt ngưỡng "
-        f"${settings.ops_jev_daily_usd_alert:g}.",
-    )
+_WALLET_CODES = ("vnd_balance_exhausted", "insufficient_quota", "insufficient_balance")
 
 
-_KIRA_WALLET_CODES = ("vnd_balance_exhausted", "insufficient_quota", "insufficient_balance")
-_JEV_WALLET_WORDS = ("balance", "credit", "quota", "insufficient", "payment")
-
-
-def is_kira_wallet_error(exc: BaseException) -> bool:
+def is_ai_wallet_error(exc: BaseException) -> bool:
     """openai.APIStatusError 402, hoặc mã lỗi hết số dư (OpenAI trả insufficient_quota kèm 429)."""
     if getattr(exc, "status_code", None) == 402:
         return True
     blob = f"{getattr(exc, 'code', '') or ''} {exc}".lower()
-    return any(code in blob for code in _KIRA_WALLET_CODES)
-
-
-def is_jev_wallet_error(status_code: int, body: str) -> bool:
-    if status_code in (402, 403):
-        return True
-    return status_code >= 400 and any(word in (body or "").lower() for word in _JEV_WALLET_WORDS)
+    return any(code in blob for code in _WALLET_CODES)
 
 
 # --- Ghi mốc từ đường gọi AI (không bao giờ raise, không làm chậm lời gọi quá _REDIS_TIMEOUT_SECONDS) ---------------
@@ -219,39 +196,8 @@ async def _record_wallet_error(provider: str, detail: str) -> None:
 
 async def note_ai_wallet_error(provider: str, exc: BaseException) -> None:
     """Gọi trong except của app.ai.providers.client.call_ai."""
-    if settings.ops_alerts_enabled and is_kira_wallet_error(exc):
+    if settings.ops_alerts_enabled and is_ai_wallet_error(exc):
         await _record_wallet_error(provider, f"{getattr(exc, 'status_code', '')} {exc}".strip())
-
-
-async def note_jev_response(status_code: int, body: str) -> None:
-    """Gọi ngay sau mỗi request Jev (body chỉ cần khi status >= 400)."""
-    if settings.ops_alerts_enabled and status_code >= 400 and is_jev_wallet_error(status_code, body):
-        await _record_wallet_error("jev", f"HTTP {status_code} {(body or '')[:120]}")
-
-
-_jev_pending_tokens = 0
-_jev_last_flush = 0.0
-
-
-async def note_jev_tokens(input_tokens: int) -> None:
-    """Cộng token đầu vào của một request Jev vào tổng ngày (giờ VN) trong Redis - ghi dồn mỗi _JEV_FLUSH_SECONDS."""
-    global _jev_pending_tokens, _jev_last_flush
-    if not settings.ops_alerts_enabled:
-        return
-    _jev_pending_tokens += max(0, int(input_tokens or 0))
-    if not _jev_pending_tokens or time.monotonic() - _jev_last_flush < _JEV_FLUSH_SECONDS:
-        return
-    tokens, _jev_pending_tokens = _jev_pending_tokens, 0
-    _jev_last_flush = time.monotonic()
-    key = f"{_JEV_TOKENS_PREFIX}{vn_date(datetime.now(tz=UTC))}"
-    try:
-        pipe = get_redis_client().pipeline()
-        pipe.incrby(key, tokens)
-        pipe.expire(key, 3 * 24 * 3600)
-        await asyncio.wait_for(pipe.execute(), timeout=_REDIS_TIMEOUT_SECONDS)
-    except Exception as exc:  # noqa: BLE001 - để lần ghi sau cộng lại
-        _jev_pending_tokens += tokens
-        logger.warning("ops_jev_tokens_record_failed", error=str(exc)[:200])
 
 
 # --- Lượt kiểm tra (scheduler) -----------------------------------------------------------------------------------
@@ -307,12 +253,16 @@ async def _drought_alerts(now: datetime) -> list[Alert]:
     return alerts
 
 
-async def _ai_alerts(now: datetime) -> list[Alert]:
-    from app.ai.providers.jev import USD_PER_M_INPUT
+async def _wallet_providers(redis: Any) -> list[str]:
+    """Các nhà cung cấp AI đã ghi mốc ví hết tiền (khoá ops:wallet:<nhà cung cấp>)."""
+    keys = [k async for k in redis.scan_iter(match=f"{_WALLET_PREFIX}*")]
+    return sorted(str(k).removeprefix(_WALLET_PREFIX) for k in keys)
 
+
+async def _ai_alerts(now: datetime) -> list[Alert]:
     redis = get_redis_client()
     alerts: list[Alert] = []
-    for provider in ("bee", "jev"):
+    for provider in await _wallet_providers(redis):
         raw = await redis.get(f"{_WALLET_PREFIX}{provider}")
         if not raw:
             continue
@@ -323,10 +273,6 @@ async def _ai_alerts(now: datetime) -> list[Alert]:
             continue
         if alert:
             alerts.append(alert)
-    tokens = int(await redis.get(f"{_JEV_TOKENS_PREFIX}{vn_date(now)}") or 0)
-    spend = jev_spend_alert(tokens, USD_PER_M_INPUT, now)
-    if spend:
-        alerts.append(spend)
     return alerts
 
 

@@ -82,19 +82,12 @@ def test_wallet_error_detection():
             super().__init__("boom")
             self.status_code, self.code = status_code, code
 
-    assert ops_alerts.is_kira_wallet_error(Err(402))
-    assert ops_alerts.is_kira_wallet_error(Err(429, "insufficient_quota"))
-    assert not ops_alerts.is_kira_wallet_error(Err(500))
-    assert ops_alerts.is_jev_wallet_error(402, "")
-    assert ops_alerts.is_jev_wallet_error(400, '{"error": "Insufficient credit"}')
-    assert not ops_alerts.is_jev_wallet_error(400, '{"error": "bad"}')
-    assert not ops_alerts.is_jev_wallet_error(200, "quota")
+    assert ops_alerts.is_ai_wallet_error(Err(402))
+    assert ops_alerts.is_ai_wallet_error(Err(429, "insufficient_quota"))
+    assert not ops_alerts.is_ai_wallet_error(Err(500))
 
 
-def test_jev_spend():
-    assert ops_alerts.jev_spend_alert(10_000_000, 0.042, NOW) is None  # $0.42
-    alert = ops_alerts.jev_spend_alert(60_000_000, 0.042, NOW)  # $2.52
-    assert alert and alert.key == "jev_spend:2026-10-13"
+
 
 
 def test_vn_date_rolls_at_vn_midnight():
@@ -131,10 +124,14 @@ async def test_run_checks_drought_with_mocked_d1(monkeypatch):
 async def test_note_hooks_disabled_and_enabled(monkeypatch):
     redis = AsyncMock()
     monkeypatch.setattr(ops_alerts, "get_redis_client", lambda: redis)
-    await ops_alerts.note_jev_response(402, "")
+
+    class Wallet(Exception):
+        status_code = 402
+
+    await ops_alerts.note_ai_wallet_error("bee", Wallet("payment required"))
     redis.set.assert_not_awaited()  # tắt trong conftest
     monkeypatch.setattr(settings, "ops_alerts_enabled", True)
-    await ops_alerts.note_jev_response(200, "")
+    await ops_alerts.note_ai_wallet_error("bee", Exception("boom"))
     redis.set.assert_not_awaited()
-    await ops_alerts.note_jev_response(402, "payment required")
-    assert redis.set.await_args.args[0].endswith("ai_wallet_error:jev")
+    await ops_alerts.note_ai_wallet_error("bee", Wallet("payment required"))
+    assert redis.set.await_args.args[0].endswith("ai_wallet_error:bee")
