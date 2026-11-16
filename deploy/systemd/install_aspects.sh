@@ -1,6 +1,7 @@
 #!/bin/bash
 # Installs the aspect labelling timer (Review Angles) on the VPS. Prerequisites:
-#   - models/visobert-aspects/ copied to /opt/cinemark-api/models/ (not in git - trained by scripts/ml/aspect_finetune.py)
+#   - models/visobert-aspects/ and models/visobert-stage/ copied to /opt/cinemark-api/models/ (not in git - trained by
+#     scripts/ml/aspect_finetune.py and scripts/ml/stage_finetune.py)
 #   - torch (CPU) + transformers installed in /opt/cinemark-api/.venv (requirements-ml.txt)
 set -euo pipefail
 
@@ -8,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR=/opt/cinemark-api
 
 test -f "$APP_DIR/models/visobert-aspects/aspect_labels.json" || { echo "missing $APP_DIR/models/visobert-aspects - copy the model first"; exit 1; }
+test -f "$APP_DIR/models/visobert-stage/config.json" || { echo "missing $APP_DIR/models/visobert-stage - copy the model first"; exit 1; }
 "$APP_DIR/.venv/bin/python" -c "import torch, transformers" || { echo "torch/transformers not installed in $APP_DIR/.venv"; exit 1; }
 
 sudo cp "$SCRIPT_DIR/cinemark-aspects.service" "$SCRIPT_DIR/cinemark-aspects.timer" /etc/systemd/system/

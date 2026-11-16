@@ -1,5 +1,5 @@
 [Unit]
-Description=cinemark-api aspect labelling for Review Angles (fine-tuned ViSoBERT multi-label, comments of the last few hours)
+Description=cinemark-api comment labelling with local ViSoBERT models: aspects (Review Angles, khía cạnh kéo/dìm) and audience stage (hóng / đã xem), comments of the last few hours
 After=network-online.target
 Wants=network-online.target
 
@@ -10,6 +10,8 @@ EnvironmentFile=/opt/cinemark-api/.env
 # CPU-only VPS: cap torch threads and CPU share so crawling/ingest keep their cores.
 Environment=OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TOKENIZERS_PARALLELISM=false
 ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.aspect_label --days 0.25 --batch-size 32
+# Giai đoạn khán giả (16/11/2026): trước đó chỉ chạy tay theo phim nên bình luận mới đều mang "khac".
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.stage_label --days 0.25 --batch-size 32
 User=app
 Group=app
 Nice=10
