@@ -512,6 +512,10 @@ async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:
     if not columns:
         raise NotFoundError("No fields to update")
     set_clause = ", ".join(f"{c} = %s" for c in columns)
+    # Sửa địa chỉ / thông tin đăng nhập hoặc bật lại: gỡ cờ degraded + cooldown + chuỗi lỗi do cấu hình cũ gây ra (16/11/2026:
+    # username lưu thừa dấu ":" -> 407, sửa đúng rồi proxy vẫn bị khoá thêm vài giờ).
+    if any(c in columns for c in ("proxy_url", "username", "password")) or fields.get("enabled") is True:
+        set_clause += ", status = 'active', consecutive_failures = 0, cooldown_until = NULL"
     values = [fields[c] for c in columns] + [proxy_id]
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:

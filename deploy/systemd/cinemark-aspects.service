@@ -9,7 +9,9 @@ WorkingDirectory=/opt/cinemark-api
 EnvironmentFile=/opt/cinemark-api/.env
 # CPU-only VPS: cap torch threads and CPU share so crawling/ingest keep their cores.
 Environment=OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TOKENIZERS_PARALLELISM=false
-ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.aspect_label --days 0.25 --batch-size 32
+# --reprocess-ai: pipeline cảm xúc (ViSoBERT) ghi sẵn aspects = [] cho bình luận mới, chế độ mặc định (aspects IS NULL) bỏ qua
+# hết - đo 16/11/2026: 56 nghìn / 99 nghìn bình luận 10 ngày qua mang [] mà chưa qua model.
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.aspect_label --days 0.25 --batch-size 32 --reprocess-ai
 # Giai đoạn khán giả (16/11/2026): trước đó chỉ chạy tay theo phim nên bình luận mới đều mang "khac".
 ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.stage_label --days 0.25 --batch-size 32
 User=app

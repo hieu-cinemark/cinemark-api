@@ -5,7 +5,7 @@ from datetime import date, datetime
 from itertools import pairwise
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 FilterKeywordCategory = Literal["movie_relevant", "spam_offtopic"]
 # Người vận hành tự đánh dấu, chỉ để phân biệt khi gán tài khoản: pool không đọc trường này. "rotating" là IP do
@@ -142,6 +142,17 @@ class ProxyOut(BaseModel):
     provider_last_status: str | None = None
 
 
+def _clean_proxy_credential(value: str | None, field: str) -> str | None:
+    """Bỏ khoảng trắng đầu/cuối; username không được chứa ":" (Basic auth tách user:pass ở dấu ":" đầu tiên). 16/11/2026
+    proxy TikTok lưu username "leokelly130:" do tách sai dòng host:port:user:pass -> proxy trả 407 cả buổi."""
+    if value is None:
+        return None
+    value = value.strip()
+    if field == "username" and ":" in value:
+        raise ValueError("Username proxy không được chứa dấu ':' - kiểm tra lại cách tách host:port:user:pass")
+    return value
+
+
 class ProxyCreate(BaseModel):
     platform: str = "all"
     proxy_url: str
@@ -155,6 +166,11 @@ class ProxyCreate(BaseModel):
     # Mã riêng của cổng trong hệ thống nhà cung cấp (placeholder {ref} của link reset).
     provider_ref: str | None = Field(default=None, max_length=200)
 
+    @field_validator("username", "password")
+    @classmethod
+    def _clean_credentials(cls, value, info):
+        return _clean_proxy_credential(value, info.field_name)
+
 
 class ProxyUpdate(BaseModel):
     platform: str | None = None
@@ -166,6 +182,11 @@ class ProxyUpdate(BaseModel):
     enabled: bool | None = None
     provider_key: str | None = Field(default=None, max_length=64)
     provider_ref: str | None = Field(default=None, max_length=200)
+
+    @field_validator("username", "password")
+    @classmethod
+    def _clean_credentials(cls, value, info):
+        return _clean_proxy_credential(value, info.field_name)
 
 
 class FilterKeywordOut(BaseModel):
