@@ -536,6 +536,7 @@ def _ai_provider_out(row: dict, active: str = "") -> AiProviderOut:
         base_url=row.get("base_url") or "",
         api_key_set=bool(row.get("api_key")),
         model=row.get("model") or "",
+        reasoning_effort=row.get("reasoning_effort") or "",
         active=bool(active) and row["key"] == active,
         updated_at=row.get("updated_at"),
     )
@@ -580,7 +581,13 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     if not re.fullmatch(r"[a-z0-9_-]{1,40}", key):
         raise ValidationError("Tên nhà cung cấp chỉ gồm chữ thường, số, gạch ngang, gạch dưới (tối đa 40 ký tự)")
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
-    row = await db.upsert_ai_provider(key, base_url=payload.base_url.strip(), api_key=api_key, model=payload.model.strip())
+    row = await db.upsert_ai_provider(
+        key,
+        base_url=payload.base_url.strip(),
+        api_key=api_key,
+        model=payload.model.strip(),
+        reasoning_effort=payload.reasoning_effort,
+    )
     active = await active_provider_key()
     if not active and row.get("base_url") and row.get("api_key") and row.get("model"):
         await db.set_active_ai_provider(key)

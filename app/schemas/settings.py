@@ -357,6 +357,7 @@ class AiProviderOut(BaseModel):
     # Có lưu secret hay chưa - không bao giờ trả về api_key thô.
     api_key_set: bool
     model: str
+    reasoning_effort: str = ""
     # Đây có phải nhà cung cấp đang chọn không.
     active: bool = False
     updated_at: datetime | None = None
@@ -367,6 +368,8 @@ class AiProviderUpdate(BaseModel):
     # None/rỗng thì giữ nguyên secret đã lưu, để đổi base_url/model mà không phải gửi lại key mỗi lần.
     api_key: str | None = Field(default=None, max_length=500)
     model: str = Field(default="", max_length=120)
+    # Mức suy luận cho model suy luận (vd Meta Muse: minimal, low, medium, high). Rỗng = không gửi; None = giữ giá trị cũ.
+    reasoning_effort: str | None = Field(default=None, max_length=20, pattern="^[a-z]*$")
 
 
 class AiModelsRequest(BaseModel):

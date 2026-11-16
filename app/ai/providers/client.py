@@ -34,6 +34,9 @@ _MAX_RATE_LIMIT_RETRIES = 3
 _RETRY_BASE_SECONDS = 2.0
 # Đọc ai_providers tốn ~3 giây nên cache 60 giây.
 _PROVIDER_CACHE_TTL_SECONDS = 60.0
+# Token cộng thêm vào max_tokens của tác vụ khi provider là model suy luận (có reasoning_effort) - đủ cho mức minimal/low
+# (đo 16/11/2026: 90-300 token nghĩ cho một câu trả lời ngắn).
+REASONING_TOKEN_HEADROOM = 1500
 
 # Token của lần call_ai() gần nhất trong task asyncio hiện tại (ContextVar), để bên gọi tính chi phí.
 last_call_usage: contextvars.ContextVar[AIUsage | None] = contextvars.ContextVar("last_call_usage", default=None)
@@ -54,13 +57,17 @@ class ProviderConfig:
     base_url: str
     api_key: str
     model: str
+    # Model suy luận (Meta Muse...): mức suy luận gửi kèm mỗi lời gọi, rỗng = không gửi (provider thường).
+    reasoning_effort: str = ""
 
     @property
     def openai_base_url(self) -> str:
-        """base_url cho OpenAI SDK (SDK tự nối "/chat/completions"): bỏ dấu "/" cuối và đuôi "/chat/completions" nếu
-        người dùng dán nguyên endpoint."""
+        """base_url cho OpenAI SDK (SDK tự nối "/chat/completions"): bỏ dấu "/" cuối và đuôi "/chat/completions" hoặc
+        "/responses" nếu người dùng dán nguyên endpoint (16/11/2026: dán https://api.meta.ai/v1/responses -> 404)."""
         url = self.base_url.strip().rstrip("/")
-        return url[: -len("/chat/completions")] if url.endswith("/chat/completions") else url
+        for suffix in ("/chat/completions", "/responses"):
+            url = url.removesuffix(suffix)
+        return url
 
 
 _active_cache: tuple[float, str] | None = None
@@ -164,7 +171,11 @@ async def load_provider(key: str | None = None) -> ProviderConfig | None:
         row = await get_ai_provider(key)
         if row and row.get("base_url") and row.get("api_key"):
             cfg = ProviderConfig(
-                key=key, base_url=row["base_url"], api_key=row["api_key"], model=(row.get("model") or "").strip()
+                key=key,
+                base_url=row["base_url"],
+                api_key=row["api_key"],
+                model=(row.get("model") or "").strip(),
+                reasoning_effort=(row.get("reasoning_effort") or "").strip(),
             )
     except Exception as exc:
         logger.warning("ai_provider_load_failed", provider=key, error=str(exc))
@@ -207,6 +218,12 @@ def _invoke(
     }
     if max_tokens is not None:
         params["max_tokens"] = max_tokens
+    if cfg.reasoning_effort:
+        # Model suy luận: phần suy luận ẩn tính vào max_tokens (đo 16/11/2026 với muse-ember-1.0: max_tokens=120 -> nghĩ
+        # 118 token, hết hạn mức trước khi viết chữ nào, nội dung rỗng). Cộng thêm REASONING_TOKEN_HEADROOM cho phần nghĩ.
+        params["reasoning_effort"] = cfg.reasoning_effort
+        if max_tokens is not None:
+            params["max_tokens"] = max_tokens + REASONING_TOKEN_HEADROOM
 
     # Stream rồi ghép lại: gateway cắt request im lặng quá 60 giây, stream giữ kết nối có dữ liệu.
     def consume(params: dict[str, Any]) -> tuple[list[str], Any, Any]:
@@ -310,6 +327,16 @@ async def call_ai(
                     platform=platform,
                 )
                 logger.info("ai_call_finished", **result.as_log_fields())
+                if not content and str(finish_reason) == "length":
+                    # Model suy luận dùng hết max_tokens để nghĩ: tăng max_tokens của tác vụ hoặc hạ reasoning_effort.
+                    logger.warning(
+                        "ai_call_truncated_empty",
+                        provider=provider,
+                        task=task,
+                        model=resolved_model,
+                        max_tokens=max_tokens,
+                        reasoning_effort=cfg.reasoning_effort or None,
+                    )
                 last_call_usage.set(usage)
                 return content
             except openai.RateLimitError as exc:

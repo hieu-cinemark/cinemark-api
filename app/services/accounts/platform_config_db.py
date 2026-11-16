@@ -867,7 +867,8 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[
 # 2026-10) để xoay key hoặc thêm provider mới được
 # từ dashboard mà không cần deploy lại.
 
-AI_PROVIDER_COLUMNS = "key, base_url, api_key, model, updated_at"
+# reasoning_effort (16/11/2026): mức suy luận gửi kèm cho model suy luận (Meta Muse: minimal/low/...), rỗng = không gửi.
+AI_PROVIDER_COLUMNS = "key, base_url, api_key, model, reasoning_effort, updated_at"
 _ai_providers_ready = False
 
 
@@ -887,6 +888,7 @@ async def _ensure_ai_providers_table() -> None:
             )
             """
         )
+        await cur.execute("ALTER TABLE ai_providers ADD COLUMN IF NOT EXISTS reasoning_effort text NOT NULL DEFAULT ''")
         await conn.commit()
     _ai_providers_ready = True
 
@@ -905,10 +907,15 @@ async def get_ai_provider(key: str) -> dict[str, Any] | None:
         return await cur.fetchone()
 
 
-async def upsert_ai_provider(key: str, *, base_url: str, api_key: str | None, model: str) -> dict[str, Any]:
-    """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà không phải gửi lại secret mỗi lần."""
+async def upsert_ai_provider(
+    key: str, *, base_url: str, api_key: str | None, model: str, reasoning_effort: str | None = None
+) -> dict[str, Any]:
+    """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà không phải gửi lại secret mỗi lần.
+    reasoning_effort=None thì giữ giá trị đã lưu."""
     await _ensure_ai_providers_table()
     fields = {"base_url": base_url, "model": model}
+    if reasoning_effort is not None:
+        fields["reasoning_effort"] = reasoning_effort
     if api_key is not None:
         fields["api_key"] = api_key
     columns = ", ".join(fields)
