@@ -1,6 +1,8 @@
 """Job AI chuyển từ Worker (app/services/ai_jobs): tách kênh giống bản TS, kiểm tra câu trả lời AI, một lượt Review Angles."""
 
 import json
+import operator
+import re
 
 import pytest
 
@@ -66,16 +68,22 @@ def _angle(**extra):
 def test_parse_batch_rules():
     ok = tasks.parse_batch({"summary": " Tóm tắt. ", "angles": [_angle()]}, POSTS, [])
     assert ok["summary"] == "Tóm tắt." and ok["angles"][0]["evidence"][0]["postId"] == "p1"
+    # Từ 16/11/2026 phần sai bị bỏ riêng, không loại cả câu trả lời (tests/test_review_angles.py).
     invented = _angle(evidence=[{"postId": "p1", "quote": "Diễn xuất đỉnh nhất năm nay"}])
-    assert tasks.parse_batch({"summary": "x", "angles": [invented]}, POSTS, []) is None
-    assert tasks.parse_batch({"summary": "x", "angles": [_angle(aspect="doanh_thu")]}, POSTS, []) is None
+    assert tasks.parse_batch({"summary": "x", "angles": [invented]}, POSTS, [])["angles"] == []
+    assert tasks.parse_batch({"summary": "x", "angles": [_angle(aspect="doanh_thu")]}, POSTS, [])["angles"] == []
     quote = {"postId": "p2", "quote": "Kịch bản đoạn giữa hơi lê thê"}
     three = [_angle(name=f"Góc {n}", aspect="kich_ban", evidence=[quote]) for n in "abc"]
-    assert tasks.parse_batch({"summary": "x", "angles": three}, POSTS, []) is None
+    assert [a["name"] for a in tasks.parse_batch({"summary": "x", "angles": three}, POSTS, [])["angles"]] == [
+        "Góc a",
+        "Góc b",
+    ]
     catalog = [{"id": "abc", "name": "Diễn xuất tự nhiên", "aspect": "dien_xuat"}]
     reused = tasks.parse_batch({"summary": "x", "angles": [_angle(name="diễn xuất  TỰ NHIÊN")]}, POSTS, catalog)
     assert reused["angles"][0]["id"] == "abc"
-    assert tasks.parse_batch({"summary": "x", "angles": [_angle(id="zzz")]}, POSTS, catalog) is None
+    # id lạ: tìm lại theo tên.
+    assert tasks.parse_batch({"summary": "x", "angles": [_angle(id="zzz")]}, POSTS, catalog)["angles"][0]["id"] == "abc"
+    assert tasks.parse_batch("không phải JSON", POSTS, catalog) is None
 
 
 class FakeRedis:
@@ -130,9 +138,14 @@ def world(monkeypatch):
         if "json_each" in sql:
             wanted = set(json.loads(params[0]))
             return [r for r in rows if r["id"] in wanted]
-        if "p.posted_at >= ?" in sql:
-            since = next(v for v in params if isinstance(v, str) and v[:4].isdigit())
-            return [{k: r[k] for k in ("id", "platform", "posted_at")} for r in rows if r["posted_at"] >= since]
+        if "p.posted_at" in sql and "WHERE" in sql:
+            # Ghép từng điều kiện posted_at (>=, >, <=, <) với tham số ngày theo thứ tự xuất hiện.
+            ops = re.findall(r"p\.posted_at (>=|<=|>|<) \?", sql)
+            dates = [v for v in params if isinstance(v, str) and v[:4].isdigit()]
+            check = {">=": operator.ge, ">": operator.gt, "<=": operator.le, "<": operator.lt}
+            found = [r for r in rows if all(check[op](r["posted_at"], d) for op, d in zip(ops, dates))]
+            found.sort(key=lambda r: r["posted_at"], reverse="DESC" in sql)
+            return [{k: r[k] for k in ("id", "platform", "posted_at")} for r in found]
         return []
 
     async def get_object(key):
@@ -176,11 +189,12 @@ async def test_batch_writes_state_in_worker_format_and_advances(world):
     result = await review_angles.analyze_next_batch("m1")
     assert result["read"] == 4 and result["analyzed"] == 3 and result["ai_called"]
     state = json.loads(lake["analysis/review-angles/v2/m1/state.json"])
-    assert state["version"] == 2 and state["cursor"] == "2026-11-03T04:00:00+00:00"
+    # Bài cũ hơn 24 giờ: đọc lùi trong khoảng cursor..tail (xem review_angles.init_marks).
+    assert state["version"] == 2 and state["tail"] == "2026-11-03T01:00:00+00:00"
     assert sum(state["analyzed"].values()) == 4
     angle = state["angles"][0]
     assert angle["id"] == tasks.angle_id_of("dien_xuat", "Diễn xuất tự nhiên")
-    assert set(angle["refs"][0]) == {"id", "page", "platform", "source", "interactions", "views", "quote"}
+    assert set(angle["refs"][0]) == {"id", "page", "platform", "source", "interactions", "views", "postedAt", "quote"}
     page = json.loads(lake["analysis/review-angles/v2/m1/page-0.json"])
     assert {p["id"] for p in page} == {"p1", "p2", "p4"}  # p3 chỉ có hashtag/emoji: đã đọc, không gửi AI
     assert page[0]["imageUrl"].startswith("/api/social-topic/review-angles/image?movieId=m1&postId=")
@@ -195,17 +209,7 @@ async def test_unparsed_answer_retries_then_skips(world, monkeypatch):
 
     async def bad_ai(**kwargs):
         calls.append(kwargs)
-        return {
-            "summary": "x",
-            "angles": [
-                {
-                    "name": "bịa",
-                    "description": "d",
-                    "aspect": "dien_xuat",
-                    "evidence": [{"postId": "p1", "quote": "không có trong caption"}],
-                }
-            ],
-        }, "{}"
+        return "không phải JSON", "{}"  # trích dẫn sai giờ chỉ bị bỏ riêng; lô chỉ hỏng khi không đọc được câu trả lời
 
     monkeypatch.setattr(review_angles, "call_llm_json", bad_ai)
     for _ in range(2):

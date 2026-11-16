@@ -1,8 +1,16 @@
 """Review Angles: đọc dần bài đăng từ Premiere và gom thành các góc nhìn về phim.
 
-Mỗi lượt đọc một lô 24 bài của một phim; AI gom vào góc đã có hoặc tạo góc mới. Con trỏ theo `posted_at`, mỗi giờ
-quét lại 48 giờ trước con trỏ để nhặt bài về muộn. Phim ưu tiên (Redis `REVIEW_FOCUS_KEY`) đọc liên tục; còn lại xoay
-vòng các phim đã qua Premiere trong 60 ngày, tối đa `DAILY_BATCH_CAP` lô/ngày.
+Mỗi lô 24 bài của một phim; AI gom vào góc đã có hoặc tạo góc mới. Phim ưu tiên (Redis `REVIEW_FOCUS_KEY`) đọc liên tục;
+còn lại xoay vòng các phim đã qua Premiere trong 60 ngày, mỗi lượt đọc liên tiếp tới TICK_SECONDS, tối đa
+settings.review_angles_daily_batches lô/ngày.
+
+Thứ tự đọc (16/11/2026 - trước đó một con trỏ đi từ Premiere tới nay; bài mới về nhanh hơn tốc độ đọc nên sau 3 tuần
+Chị Chị Em Em 3 mới đọc tới 2 ngày sau Premiere). Theo `posted_at`, state giữ ba mốc:
+  - `head`: bài đăng từ đây trở đi là bài mới - đọc TRƯỚC, tăng dần; mỗi giờ quét lại 48 giờ dưới `head` (bài về muộn);
+  - `cursor` .. `tail`: khoảng chưa đọc (cursor là con trỏ cũ) - đọc lùi từ `tail` về `cursor` khi hết bài mới, để các
+    tuần gần đây có trước. `tail` <= `cursor` là đã đọc hết. Trang hiện khoảng này (Worker filmReviewAngles.ts).
+
+YouTube (16/11/2026): đọc tiêu đề + mô tả + đoạn đầu transcript (bảng post_transcripts).
 
 Kết quả ghi R2 `analysis/review-angles/v2/<movieId>/state.json` và `page-N.json` (khoá camelCase vì Worker đọc trực
 tiếp).
@@ -25,7 +33,9 @@ from app.ai.prompts.review_angles import REVIEW_ANGLES_SYSTEM, REVIEW_ASPECTS
 from app.ai.runtime import call_llm_json
 from app.ai.tasks.review_angles import angle_id_of, has_text, js_json, parse_batch
 from app.clients import lake
+from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, json_values
@@ -41,13 +51,20 @@ NEW_SCAN_LIMIT = 200
 LATE_WINDOW = timedelta(hours=48)
 LATE_SCAN_EVERY_MS = 3_600_000
 LATE_SCAN_LIMIT = 5000
+# Lần đầu chạy bản ba mốc: bài trong chừng này giờ gần nhất tính là bài mới, phần trước đó là khoảng đọc lùi.
+NEW_WINDOW = timedelta(hours=24)
 ACTIVE_DAYS = 60
-DAILY_BATCH_CAP = 300
+# YouTube: caption gửi AI = tiêu đề + mô tả (cắt) + đoạn đầu transcript.
+YOUTUBE_TEXT_CHARS = 1500
+TRANSCRIPT_CHARS = 2500
+PLATFORMS = ("facebook", "tiktok", "threads", "youtube")
 MAX_BATCH_FAILURES = 3
 # Góc nhìn tối đa mỗi khía cạnh (prompt nói 8, ở đây chừa dư): quá số này thì bài được gán vào góc gần nhất thay vì thêm góc mới -
 # chặn việc danh sách góc phình ra từng lô và vụn thành hàng chục góc gần nghĩa.
 MAX_ANGLES_PER_ASPECT = 10
 FOCUS_TICK_SECONDS = 4 * 60
+# Lượt thường (scheduler/ai_jobs.py gọi mỗi ~200 giây, không chồng lượt): đọc liên tiếp tới chừng này giây.
+TICK_SECONDS = 170
 VN = timedelta(hours=7)
 
 _PREFIX = f"{REDIS_KEY_PREFIX}review_angles:"
@@ -99,6 +116,9 @@ def empty_state() -> dict[str, Any]:
     return {
         "version": 2,
         "cursor": None,
+        "head": None,
+        "tail": None,
+        "tailIds": [],
         "recent": {},
         "lateScanAt": 0,
         "pages": 0,
@@ -114,11 +134,9 @@ _movies: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _M, _S, _P = movies.alias("m"), movie_measure_settings.alias("s"), posts_table.alias("p")
 _MOVIE_DATES = _M.outerjoin(_S, _S.c.movie_id == _M.c.id)
 # Bài của phim trên các nền tảng Review Angles đọc, theo thời gian đăng.
-_SCAN = (
-    select(_P.c.id, _P.c.platform, _P.c.posted_at)
-    .where(_P.c.platform.in_(("facebook", "tiktok", "threads")), relevant_post(_P))
-    .order_by(_P.c.posted_at, _P.c.id)
-)
+_SCAN_BASE = select(_P.c.id, _P.c.platform, _P.c.posted_at).where(_P.c.platform.in_(PLATFORMS), relevant_post(_P))
+_SCAN = _SCAN_BASE.order_by(_P.c.posted_at, _P.c.id)
+_SCAN_DESC = _SCAN_BASE.order_by(_P.c.posted_at.desc(), _P.c.id.desc())
 
 
 async def load_movie(movie_id: str) -> dict[str, Any] | None:
@@ -153,25 +171,68 @@ def _iso_utc(at: datetime) -> str:
     return at.astimezone(UTC).isoformat(timespec="seconds")
 
 
-async def _next_batch(movie_id: str, start: str, state: dict[str, Any]) -> list[dict[str, Any]]:
-    cursor = state.get("cursor")
-    since = cursor if cursor and cursor > start else start
-    fresh = await d1_exec(_SCAN.where(_P.c.movie_id == movie_id, _P.c.posted_at >= since).limit(NEW_SCAN_LIMIT))
+def init_marks(state: dict[str, Any], start: str, now: datetime | None = None) -> None:
+    """Đặt head/tail/cursor cho state chưa có (state mới, hoặc state của bản một con trỏ trước 16/11/2026)."""
+    if state.get("head"):
+        return
+    # cursor = cận dưới (không tính) của khoảng chưa đọc; state mới thì lùi 1 giây để bài đúng giờ Premiere vẫn được đọc.
+    cursor = state.get("cursor") or _iso_utc(datetime.fromisoformat(start) - timedelta(seconds=1))
+    head = max(cursor, start, _iso_utc((now or datetime.now(tz=UTC)) - NEW_WINDOW))
+    state.update(cursor=cursor, head=head, tail=head, tailIds=[])
+
+
+async def _next_batch(movie_id: str, start: str, state: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    """(bài của lô, "new" | "gap"): bài mới từ head trước, rồi bài về muộn, rồi đọc lùi khoảng cursor..tail."""
+    init_marks(state, start)
+    head, tail, cursor = state["head"], state["tail"], state["cursor"]
+    recent, tail_ids = state["recent"], set(state.get("tailIds") or [])
+    fresh = await d1_exec(_SCAN.where(_P.c.movie_id == movie_id, _P.c.posted_at >= head).limit(NEW_SCAN_LIMIT))
     if fresh is None:
         raise RuntimeError("posts unavailable")
-    recent = state["recent"]
     pending = [post for post in fresh if post["id"] not in recent]
-    if not pending and cursor and time.time() * 1000 - state.get("lateScanAt", 0) > LATE_SCAN_EVERY_MS:
+    if pending:
+        return pending[:BATCH_SIZE], "new"
+    if time.time() * 1000 - state.get("lateScanAt", 0) > LATE_SCAN_EVERY_MS:
         state["lateScanAt"] = int(time.time() * 1000)
-        late_from = max(datetime.fromisoformat(start), datetime.fromisoformat(cursor) - LATE_WINDOW)
+        # Dưới tail là phần đọc lùi lo; từ tail tới head đã đọc - bài nào chưa có là bài về muộn.
+        late_from = max(tail, start, _iso_utc(datetime.fromisoformat(head) - LATE_WINDOW))
         late = await d1_exec(
-            _SCAN.where(
-                _P.c.movie_id == movie_id, _P.c.posted_at >= _iso_utc(late_from), _P.c.posted_at < cursor
-            ).limit(LATE_SCAN_LIMIT),
+            _SCAN.where(_P.c.movie_id == movie_id, _P.c.posted_at >= late_from, _P.c.posted_at < head).limit(
+                LATE_SCAN_LIMIT
+            ),
             timeout=60.0,
         )
-        pending = [post for post in late or [] if post["id"] not in recent]
-    return pending[:BATCH_SIZE]
+        pending = [post for post in late or [] if post["id"] not in recent and post["id"] not in tail_ids]
+        if pending:
+            return pending[:BATCH_SIZE], "new"
+    if tail <= cursor:
+        return [], "new"
+    gap = await d1_exec(
+        _SCAN_DESC.where(_P.c.movie_id == movie_id, _P.c.posted_at > cursor, _P.c.posted_at <= tail).limit(
+            NEW_SCAN_LIMIT
+        )
+    )
+    if gap is None:
+        raise RuntimeError("posts unavailable")
+    pending = [post for post in gap if post["id"] not in tail_ids and post["id"] not in recent]
+    if not pending:
+        state.update(tail=cursor, tailIds=[])  # đã đọc hết khoảng thiếu
+    return pending[:BATCH_SIZE], "gap"
+
+
+def mark_read(state: dict[str, Any], metas: list[dict[str, Any]], kind: str) -> None:
+    """Dời mốc sau một lô: bài mới đẩy head lên; lô đọc lùi kéo tail xuống (nhớ id các bài đúng giờ tail để không đọc lại)."""
+    if kind == "gap":
+        low = min(meta["posted_at"] for meta in metas)
+        same = [meta["id"] for meta in metas if meta["posted_at"] == low]
+        state["tailIds"] = (state.get("tailIds") or []) + same if low == state["tail"] else same
+        state["tail"] = low
+    else:
+        for meta in metas:
+            state["recent"][meta["id"]] = meta["posted_at"]
+            state["head"] = max(state["head"], meta["posted_at"])
+    keep_after = _iso_utc(datetime.fromisoformat(state["head"]) - LATE_WINDOW - timedelta(hours=1))
+    state["recent"] = {pid: at for pid, at in state["recent"].items() if not at or at >= keep_after}
 
 
 def _words(text: str) -> set[str]:
@@ -184,7 +245,9 @@ def _nearest_angle(angles: list[dict[str, Any]], aspect: str, name: str) -> dict
     if not same:
         return None
     target = _words(name)
-    return max(same, key=lambda a: (len(target & _words(a["name"])) / max(1, len(target | _words(a["name"]))), len(a["refs"])))
+    return max(
+        same, key=lambda a: (len(target & _words(a["name"])) / max(1, len(target | _words(a["name"]))), len(a["refs"]))
+    )
 
 
 def _num(value: Any) -> int:
@@ -192,6 +255,27 @@ def _num(value: Any) -> int:
         return max(0, int(value or 0))
     except TypeError, ValueError:
         return 0
+
+
+def youtube_caption(content: str, transcript: str | None) -> str:
+    """Video YouTube: tiêu đề + mô tả (cắt) + đoạn đầu transcript - phần người nói mới là nội dung review."""
+    text = content[:YOUTUBE_TEXT_CHARS].strip()
+    if transcript:
+        text = f"{text}\n\nTranscript: {transcript[:TRANSCRIPT_CHARS].strip()}"
+    return text
+
+
+async def _transcripts(external_ids: list[str]) -> dict[str, str]:
+    """{external_id: transcript} của video YouTube (post_transcripts). Lỗi / chưa có bảng thì rỗng - vẫn đọc tiêu đề."""
+    if not external_ids:
+        return {}
+    rows = await d1_query(
+        f"SELECT external_id, substr(text, 1, {TRANSCRIPT_CHARS}) AS text FROM post_transcripts"
+        " WHERE platform = 'youtube' AND external_id IN (SELECT value FROM json_each(?1))",
+        [json.dumps(external_ids)],
+        quiet=True,
+    )
+    return {row["external_id"]: row["text"] for row in rows or [] if row.get("text")}
 
 
 async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
@@ -204,6 +288,7 @@ async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
     rows = await d1_exec(
         select(
             p.c.id,
+            p.c.external_id,
             p.c.platform,
             p.c.author,
             p.c.url,
@@ -222,12 +307,15 @@ async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
     )
     if rows is None:
         raise RuntimeError("posts unavailable")
+    transcripts = await _transcripts([row["external_id"] for row in rows if row["platform"] == "youtube"])
     result = []
     for row in rows:
         channel = channel_of_post(row)
         likes, comments = _num(row.get("like_count")), _num(row.get("reply_count"))
         shares = _num(row.get("repost_count")) + _num(row.get("reshare_count")) + _num(row.get("quote_count"))
         content = row.get("content") or ""
+        if row["platform"] == "youtube":
+            content = youtube_caption(content, transcripts.get(row["external_id"]))
         views = _num(row.get("view_count"))
         result.append(
             {
@@ -268,7 +356,7 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
     try:
         prefix = _root(movie_id)
         state = await _read_json(f"{prefix}/state.json") or empty_state()
-        metas = await _next_batch(movie_id, premiere_start(movie["premiereDate"]), state)
+        metas, kind = await _next_batch(movie_id, premiere_start(movie["premiereDate"]), state)
         if not metas:
             await _write_json(f"{prefix}/state.json", state)
             return {"movie_id": movie_id, "read": 0}
@@ -386,21 +474,17 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
                             "source": post["source"]["key"],
                             "interactions": post["interactions"],
                             "views": post["views"],
+                            "postedAt": post["postedAt"],
                             "quote": ref["quote"],
                         }
                     )
-        for meta in metas:
-            state["recent"][meta["id"]] = meta["posted_at"]
-            if not state.get("cursor") or meta["posted_at"] > state["cursor"]:
-                state["cursor"] = meta["posted_at"]
+        mark_read(state, metas, kind)
         for post in posts:
             state["analyzed"][post["platform"]] = state["analyzed"].get(post["platform"], 0) + 1
             if post["source"]["key"]:
                 sources = state["sources"].setdefault(post["platform"], [])
                 if post["source"]["key"] not in sources:
                     sources.append(post["source"]["key"])
-        keep_after = _iso_utc(datetime.fromisoformat(state["cursor"]) - LATE_WINDOW - timedelta(hours=1))
-        state["recent"] = {pid: at for pid, at in state["recent"].items() if not at or at >= keep_after}
         state["updatedAt"] = datetime.now(tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         state["failures"] = {}
         await _write_json(f"{prefix}/state.json", state)
@@ -479,9 +563,32 @@ async def run_tick() -> dict[str, Any] | None:
             focus = None
         if isinstance(focus, dict) and focus.get("movieId"):
             return await run_focus(focus)
+    # 16/11/2026: trước đây mỗi lượt (~200 giây) chỉ một lô - tối đa ~430 lô/ngày dù trần cao hơn, không theo kịp bài mới.
+    # Giờ đọc liên tiếp các phim (xoay vòng) tới TICK_SECONDS hoặc hết trần ngày.
+    started = time.monotonic()
+    done: list[dict[str, Any]] = []
+    while time.monotonic() - started < TICK_SECONDS:
+        result = await _one_rotation_step(redis)
+        if result is None:
+            break
+        done.append(result)
+        if result.get("skipped"):
+            break
+    if not done:
+        return None
+    return {
+        "batches": sum(1 for r in done if r.get("ai_called")),
+        "read": sum(r.get("read", 0) for r in done),
+        "movies": sorted({r["movie_id"] for r in done if r.get("movie_id")}),
+        **({"skipped": done[-1]["skipped"]} if done[-1].get("skipped") else {}),
+    }
+
+
+async def _one_rotation_step(redis: Any) -> dict[str, Any] | None:
+    """Một lô của phim kế tiếp có bài chưa đọc (thử tối đa 4 phim). None khi không phim nào có việc."""
     cap_key = f"{_PREFIX}batches:{vn_day()}"
     used = int(await redis.get(cap_key) or 0)
-    if used >= DAILY_BATCH_CAP:
+    if used >= settings.review_angles_daily_batches:
         return {"skipped": "daily_cap", "used": used}
     movie_ids = await _active_movies()
     if not movie_ids:

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     cloudflare_d1_config_database_id: str | None = None
     # Bật các job AI chuyển từ Worker (gắn nhãn tác giả, niche kênh, Review Angles). Tắt = không chạy ở đâu cả.
     ai_jobs_enabled: bool = True
+    # Review Angles: số lô AI (24 bài) tối đa mỗi ngày cho mọi phim (phim đang ưu tiên không tính). 16/11/2026: 300 lô không
+    # theo kịp - Chị Chị Em Em 3 còn ~15 nghìn bài chưa đọc.
+    review_angles_daily_batches: int = 600
 
     # "local" trỏ d1_query() của app.repositories.d1.store vào một file SQLite local thay vì HTTP
     # query API của Cloudflare - không tốn quota đọc dòng hằng ngày của D1 khi dev/test ở
