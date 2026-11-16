@@ -1300,11 +1300,11 @@ async def get_latest_accuracy_run() -> dict[str, Any] | None:
         return await cur.fetchone()
 
 
-# --- Cấu hình Omar API -----------------------------------------------------
-# Cấu hình API key cho dev.omar-thing.site - dùng cho crawl video/hashtag thay vì
+# --- Cấu hình ShortVid API -----------------------------------------------------
+# Cấu hình API key cho ShortVid (api.shortvidapi.com) - dùng cho crawl video/hashtag thay vì
 # spider-hub khi người vận hành bật toggle trên dashboard. API key được đọc từ
 # bảng này (không bao giờ lưu trong env). Base URL có thể ghi đè bằng
-# OMAR_API_BASE_URL env var (app/core/config.py).
+# SHORTVID_API_BASE_URL env var (app/core/config.py).
 
 
 _discovery_settings_ready = False
@@ -1353,34 +1353,34 @@ async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
     return row  # type: ignore[return-value]
 
 
-async def get_omar_api_settings() -> dict[str, Any] | None:
+async def get_shortvid_api_settings() -> dict[str, Any] | None:
     """Trả về {"api_key", "requests_per_minute", "updated_at"} hoặc None nếu chưa có."""
-    await _ensure_omar_api_settings_table()
+    await _ensure_shortvid_api_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT api_key, requests_per_minute, updated_at FROM omar_api_settings WHERE id = 1")
+        await cur.execute("SELECT api_key, requests_per_minute, updated_at FROM shortvid_api_settings WHERE id = 1")
         return await cur.fetchone()
 
 
-_omar_cap = 0
+_shortvid_cap = 0
 
 
-async def omar_requests_cap() -> int:
-    """Trần request/phút người dùng đặt cho Omar (0 = theo gói). Đọc lỗi thì giữ giá trị lần trước."""
-    global _omar_cap
+async def shortvid_requests_cap() -> int:
+    """Trần request/phút người dùng đặt cho ShortVid (0 = theo gói). Đọc lỗi thì giữ giá trị lần trước."""
+    global _shortvid_cap
     try:
-        row = await get_omar_api_settings()
-        _omar_cap = int((row or {}).get("requests_per_minute") or 0)
+        row = await get_shortvid_api_settings()
+        _shortvid_cap = int((row or {}).get("requests_per_minute") or 0)
     except Exception as exc:  # noqa: BLE001 - lỗi đọc cấu hình không được chặn lượt cào
-        logger.warning("omar_requests_cap_read_failed", error=str(exc)[:200])
-    return _omar_cap
+        logger.warning("shortvid_requests_cap_read_failed", error=str(exc)[:200])
+    return _shortvid_cap
 
 
-async def set_omar_requests_per_minute(per_minute: int) -> None:
-    await _ensure_omar_api_settings_table()
+async def set_shortvid_requests_per_minute(per_minute: int) -> None:
+    await _ensure_shortvid_api_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT INTO omar_api_settings (id, requests_per_minute) VALUES (1, %s)
+            INSERT INTO shortvid_api_settings (id, requests_per_minute) VALUES (1, %s)
             ON CONFLICT (id) DO UPDATE SET requests_per_minute = EXCLUDED.requests_per_minute, updated_at = now()
             """,
             (max(0, per_minute),),
@@ -1388,38 +1388,38 @@ async def set_omar_requests_per_minute(per_minute: int) -> None:
         await conn.commit()
 
 
-_omar_api_settings_ready = False
+_shortvid_api_settings_ready = False
 
 
-async def _ensure_omar_api_settings_table() -> None:
-    global _omar_api_settings_ready
-    if _omar_api_settings_ready:
+async def _ensure_shortvid_api_settings_table() -> None:
+    global _shortvid_api_settings_ready
+    if _shortvid_api_settings_ready:
         return
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS omar_api_settings (
+            CREATE TABLE IF NOT EXISTS shortvid_api_settings (
                 id integer PRIMARY KEY CHECK (id = 1),
                 api_key text NOT NULL DEFAULT '',
                 updated_at timestamptz NOT NULL DEFAULT now()
             )
             """
         )
-        # Trần request/phút đặt ở tab Omar (0 = theo gói), thêm 11/11/2026.
+        # Trần request/phút đặt ở tab ShortVid (0 = theo gói), thêm 11/11/2026.
         await cur.execute(
-            "ALTER TABLE omar_api_settings ADD COLUMN IF NOT EXISTS requests_per_minute integer NOT NULL DEFAULT 0"
+            "ALTER TABLE shortvid_api_settings ADD COLUMN IF NOT EXISTS requests_per_minute integer NOT NULL DEFAULT 0"
         )
         await conn.commit()
-    _omar_api_settings_ready = True
+    _shortvid_api_settings_ready = True
 
 
-async def upsert_omar_api_key(api_key: str | None) -> dict[str, Any]:
+async def upsert_shortvid_api_key(api_key: str | None) -> dict[str, Any]:
     """Upsert API key - None/rỗng thì xoá (để toggle không dùng được)."""
-    await _ensure_omar_api_settings_table()
+    await _ensure_shortvid_api_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT INTO omar_api_settings (id, api_key) VALUES (1, %s)
+            INSERT INTO shortvid_api_settings (id, api_key) VALUES (1, %s)
             ON CONFLICT (id) DO UPDATE SET api_key = EXCLUDED.api_key, updated_at = now()
             RETURNING api_key, updated_at
             """,

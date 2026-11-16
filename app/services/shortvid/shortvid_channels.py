@@ -1,13 +1,13 @@
-"""Cào video theo KÊNH TikTok qua Omar API (/posts, từ 2026-10-13) - thay spider channel_videos của spider-hub.
+"""Cào video theo KÊNH TikTok qua ShortVid API (/posts, từ 2026-10-13) - thay spider channel_videos của spider-hub.
 
-Kênh lấy từ chính D1: mọi tài khoản TikTok đã có từ settings.omar_channels_min_posts bài liên quan trong
-settings.omar_channels_lookback_days ngày (trang của phim, nhà phát hành, kênh review, KOL...), nhiều bài nhất trước. Mỗi
-kênh mỗi ngày lật /posts (mới nhất trước) tới khi gặp video cũ hơn settings.omar_channels_days ngày hoặc hết
-settings.omar_channels_max_pages trang - bắt video của các kênh này kể cả khi không gắn hashtag phim.
+Kênh lấy từ chính D1: mọi tài khoản TikTok đã có từ settings.shortvid_channels_min_posts bài liên quan trong
+settings.shortvid_channels_lookback_days ngày (trang của phim, nhà phát hành, kênh review, KOL...), nhiều bài nhất trước. Mỗi
+kênh mỗi ngày lật /posts (mới nhất trước) tới khi gặp video cũ hơn settings.shortvid_channels_days ngày hoặc hết
+settings.shortvid_channels_max_pages trang - bắt video của các kênh này kể cả khi không gắn hashtag phim.
 
 Kênh đăng nhiều thứ ngoài phim, nên chỉ gửi video NHẮC tới một phim đang theo dõi (hashtag trùng từ khoá hashtag của phim,
 hoặc mô tả chứa tên phim) - gắn keyword_id = hashtag đầu tiên của phim đó; video khác bỏ qua (khỏi tốn ingest và Jev).
-Chạy song song trong mỗi lượt Omar (omar_tiktok.run_omar_round) với settings.omar_channels_budget_share ngân sách.
+Chạy song song trong mỗi lượt ShortVid (shortvid_tiktok.run_shortvid_round) với settings.shortvid_channels_budget_share ngân sách.
 """
 
 from __future__ import annotations
@@ -25,23 +25,23 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.repositories.d1.store import d1_query
-from app.services.omar import omar_yield
+from app.services.shortvid import shortvid_yield
 from app.services.relevance.relevance_rules import normalize_title
 
 if TYPE_CHECKING:
-    from app.services.omar.omar_tiktok import Budget, _Pacer
+    from app.services.shortvid.shortvid_tiktok import Budget, _Pacer
 
 logger = get_logger(__name__)
 
 # Hash {handle: ngày (giờ VN) đã cào xong}.
-DONE_KEY = f"{REDIS_KEY_PREFIX}omar:channels:done"
+DONE_KEY = f"{REDIS_KEY_PREFIX}shortvid:channels:done"
 # Hash {handle: create_time (epoch) của video mới nhất đã thấy} - lần sau chỉ lật tới mốc này (trừ 1 ngày), không lật lại
-# cả settings.omar_channels_days ngày mỗi ngày.
-SEEN_UNTIL_KEY = f"{REDIS_KEY_PREFIX}omar:channels:seen_until"
+# cả settings.shortvid_channels_days ngày mỗi ngày.
+SEEN_UNTIL_KEY = f"{REDIS_KEY_PREFIX}shortvid:channels:seen_until"
 # Hash {handle: số lần cào liên tiếp không có video nào về phim đang theo dõi} và {handle: epoch được cào lại} - kênh
-# quá settings.omar_channels_prune_runs lần trắng thì nghỉ settings.omar_channels_rest_days ngày rồi thử lại.
-ZERO_KEY = f"{REDIS_KEY_PREFIX}omar:channels:zero"
-REST_KEY = f"{REDIS_KEY_PREFIX}omar:channels:rest_until"
+# quá settings.shortvid_channels_prune_runs lần trắng thì nghỉ settings.shortvid_channels_rest_days ngày rồi thử lại.
+ZERO_KEY = f"{REDIS_KEY_PREFIX}shortvid:channels:zero"
+REST_KEY = f"{REDIS_KEY_PREFIX}shortvid:channels:rest_until"
 _WORKERS = 4
 
 
@@ -51,17 +51,22 @@ def _squash(text: str | None) -> str:
 
 async def load_channels() -> list[str]:
     """Handle TikTok (không @) có nhiều bài liên quan nhất gần đây, lấy từ URL bài trong D1."""
-    since = (datetime.now(tz=UTC) - timedelta(days=settings.omar_channels_lookback_days)).isoformat()
+    since = (datetime.now(tz=UTC) - timedelta(days=settings.shortvid_channels_lookback_days)).isoformat()
+    # Handle được tính thẳng trong SQL (không qua subquery `rest`) và ép dùng index biểu thức
+    # idx_posts_tiktok_handle2, để GROUP BY chạy theo index thay vì dựng temp B-tree.
+    # Đo 06/11/2026 trên D1 production (90 ngày nhìn lại, 112 nghìn bài TikTok): 9,2 giây -> 144 ms.
     rows = (
         await d1_query(
             f"""
-            SELECT lower(substr(rest, 1, instr(rest || '/', '/') - 1)) AS handle, COUNT(*) AS n
-            FROM (SELECT substr(p.url, instr(p.url, '/@') + 2) AS rest FROM posts p
+            SELECT handle, COUNT(*) AS n
+            FROM (SELECT lower(substr(substr(p.url, instr(p.url, '/@') + 2), 1,
+                                   instr(substr(p.url, instr(p.url, '/@') + 2) || '/', '/') - 1)) AS handle
+                  FROM posts p INDEXED BY idx_posts_tiktok_handle2
                   WHERE p.platform = 'tiktok' AND p.posted_at >= ? AND instr(p.url, '/@') > 0 AND {RELEVANT_POST_SQL})
             GROUP BY handle HAVING n >= ? AND handle != ''
             ORDER BY n DESC LIMIT ?
             """,
-            [since, settings.omar_channels_min_posts, settings.omar_channels_max],
+            [since, settings.shortvid_channels_min_posts, settings.shortvid_channels_max],
             quiet=True,
         )
         or []
@@ -124,11 +129,12 @@ async def crawl_channel(
     stats: dict[str, Any],
     take: Callable[[], bool],
 ) -> bool:
-    """Lật /posts của một kênh tới mốc settings.omar_channels_days ngày. True khi cào xong (không hết ngân sách giữa chừng)."""
-    from app.services.omar.omar_tiktok import map_web_item, next_cursor, omar_get, publish_videos
+    """Lật user/posts của một kênh tới mốc settings.shortvid_channels_days ngày. True khi cào xong (không hết ngân sách giữa chừng)."""
+    from app.clients.shortvid import PAGE_SIZE, map_video, next_cursor, shortvid_get, videos_of
+    from app.services.shortvid.shortvid_tiktok import publish_videos
 
     redis = get_redis_client()
-    cutoff = (datetime.now(tz=UTC) - timedelta(days=settings.omar_channels_days)).timestamp()
+    cutoff = (datetime.now(tz=UTC) - timedelta(days=settings.shortvid_channels_days)).timestamp()
     try:
         seen_until = float(await redis.hget(SEEN_UNTIL_KEY, handle) or 0)
     except Exception:  # noqa: BLE001
@@ -138,21 +144,27 @@ async def crawl_channel(
     newest = 0
     matched_total = 0
     cursor = "0"
-    for _ in range(settings.omar_channels_max_pages):
+    for _ in range(settings.shortvid_channels_max_pages):
         if not take():
             return False
         stats["requests"] = int(stats.get("requests") or 0) + 1
         stats["channel_requests"] = int(stats.get("channel_requests") or 0) + 1
-        await omar_yield.add("channel", requests=1)
-        data = await omar_get(client, pacer, api_key, "posts", {"username": handle, "cursor": cursor})
-        if data is None:
+        await shortvid_yield.add("channel", requests=1)
+        data = await shortvid_get(
+            client,
+            pacer.wait,
+            api_key,
+            "user/posts",
+            {"unique_id": handle, "count": PAGE_SIZE["user/posts"], "cursor": cursor},
+        )
+        if not isinstance(data, dict):
             return True  # kênh không tồn tại / đã đổi tên
-        videos = [v for v in (map_web_item(raw) for raw in data.get("posts") or []) if v]
+        videos = [v for v in (map_video(raw) for raw in videos_of(data)) if v]
         stats["channel_videos"] = int(stats.get("channel_videos") or 0) + len(videos)
         by_keyword: dict[str, list[dict[str, Any]]] = {}
         for video in videos:
             if (keyword_id := match_movie(video, movies)) is not None:
-                by_keyword.setdefault(keyword_id, []).append({**video, "source": "omar_channel"})
+                by_keyword.setdefault(keyword_id, []).append({**video, "source": "shortvid_channel"})
         for keyword_id, matched in by_keyword.items():
             stats["channel_matched"] = int(stats.get("channel_matched") or 0) + len(matched)
             matched_total += len(matched)
@@ -170,18 +182,18 @@ async def crawl_channel(
 
 
 async def _track_zero(handle: str, matched: int) -> None:
-    """Kênh không có video nào về phim đang theo dõi settings.omar_channels_prune_runs lần cào liên tiếp: nghỉ
-    settings.omar_channels_rest_days ngày (không cào), sau đó thử lại."""
+    """Kênh không có video nào về phim đang theo dõi settings.shortvid_channels_prune_runs lần cào liên tiếp: nghỉ
+    settings.shortvid_channels_rest_days ngày (không cào), sau đó thử lại."""
     redis = get_redis_client()
     if matched:
         await redis.hdel(ZERO_KEY, handle)
         return
     streak = int(await redis.hincrby(ZERO_KEY, handle, 1))
-    if streak >= settings.omar_channels_prune_runs:
-        until = datetime.now(tz=UTC) + timedelta(days=settings.omar_channels_rest_days)
+    if streak >= settings.shortvid_channels_prune_runs:
+        until = datetime.now(tz=UTC) + timedelta(days=settings.shortvid_channels_rest_days)
         await redis.hset(REST_KEY, handle, str(until.timestamp()))
         await redis.hdel(ZERO_KEY, handle)
-        logger.info("omar_channel_resting", handle=handle, days=settings.omar_channels_rest_days)
+        logger.info("shortvid_channel_resting", handle=handle, days=settings.shortvid_channels_rest_days)
 
 
 async def run_channels(
@@ -193,7 +205,7 @@ async def run_channels(
     should_stop: Callable[[], bool],
 ) -> None:
     """Mỗi kênh một lần mỗi ngày, _WORKERS kênh song song, trong `budget`."""
-    from app.services.omar.omar_tiktok import OmarStop
+    from app.services.shortvid.shortvid_tiktok import ShortVidStop
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     redis = get_redis_client()
@@ -217,15 +229,15 @@ async def run_channels(
             try:
                 if await crawl_channel(client, pacer, api_key, handle, movies, stats, take):
                     await redis.hset(DONE_KEY, handle, today)
-            except OmarStop as exc:
+            except ShortVidStop as exc:
                 stopped.append(exc)
             except Exception as exc:  # noqa: BLE001 - kênh lỗi: lượt sau thử lại
                 stats["failed"] = int(stats.get("failed") or 0) + 1
-                logger.warning("omar_channel_failed", handle=handle, error=str(exc)[:200])
+                logger.warning("shortvid_channel_failed", handle=handle, error=str(exc)[:200])
 
     await asyncio.gather(*(worker() for _ in range(min(_WORKERS, len(channels)))))
     logger.info(
-        "omar_channels_processed",
+        "shortvid_channels_processed",
         channels=len(channels),
         requests=stats.get("channel_requests", 0),
         videos=stats.get("channel_videos", 0),
@@ -236,7 +248,7 @@ async def run_channels(
 
 
 async def channel_status() -> dict[str, Any]:
-    """Cho tab Omar: số kênh đã từng cào, đã cào hôm nay, và các kênh có video mới gần nhất."""
+    """Cho tab ShortVid: số kênh đã từng cào, đã cào hôm nay, và các kênh có video mới gần nhất."""
     redis = get_redis_client()
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     done = await redis.hgetall(DONE_KEY) or {}
@@ -245,8 +257,8 @@ async def channel_status() -> dict[str, Any]:
     return {
         "tracked": len(seen),
         "done_today": sum(1 for day in done.values() if day == today),
-        "max_channels": settings.omar_channels_max,
-        "days": settings.omar_channels_days,
+        "max_channels": settings.shortvid_channels_max,
+        "days": settings.shortvid_channels_days,
         "latest": [
             {"handle": handle, "newest_video_at": datetime.fromtimestamp(ts, tz=UTC).isoformat() if ts else None}
             for handle, ts in latest
@@ -258,16 +270,16 @@ _manual_tasks: set[asyncio.Task] = set()
 
 
 async def crawl_channel_once(handle: str, max_pages: int | None = None) -> dict[str, Any]:
-    """Cào ngay một kênh qua Omar (không chờ lượt Omar) - dùng cho nút "Cào kênh" và kênh ưu tiên. Trả stats."""
-    from app.services.accounts.platform_config_db import get_omar_api_settings
-    from app.services.omar.omar_tiktok import _Pacer
+    """Cào ngay một kênh qua ShortVid (không chờ lượt ShortVid) - dùng cho nút "Cào kênh" và kênh ưu tiên. Trả stats."""
+    from app.services.accounts.platform_config_db import get_shortvid_api_settings
+    from app.services.shortvid.shortvid_tiktok import _Pacer
 
-    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
+    api_key = ((await get_shortvid_api_settings() or {}).get("api_key") or "").strip()
     if not api_key:
-        logger.warning("omar_channel_manual_no_key", handle=handle)
+        logger.warning("shortvid_channel_manual_no_key", handle=handle)
         return {"no_key": 1}
     stats: dict[str, Any] = {}
-    left = [max_pages or settings.omar_channels_max_pages]
+    left = [max_pages or settings.shortvid_channels_max_pages]
 
     def take() -> bool:
         left[0] -= 1
@@ -277,7 +289,7 @@ async def crawl_channel_once(handle: str, max_pages: int | None = None) -> dict[
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
             await crawl_channel(
                 client,
-                _Pacer(settings.omar_manual_requests_per_minute),
+                _Pacer(settings.shortvid_manual_requests_per_minute),
                 api_key,
                 handle,
                 await load_movie_matchers(),
@@ -285,14 +297,14 @@ async def crawl_channel_once(handle: str, max_pages: int | None = None) -> dict[
                 take,
             )
     except Exception as exc:  # noqa: BLE001
-        logger.error("omar_channel_manual_failed", handle=handle, error=str(exc)[:300])
+        logger.error("shortvid_channel_manual_failed", handle=handle, error=str(exc)[:300])
         stats["error"] = str(exc)[:200]
-    logger.info("omar_channel_manual_finished", handle=handle, **stats)
+    logger.info("shortvid_channel_manual_finished", handle=handle, **stats)
     return stats
 
 
 def crawl_channel_now(username: str, max_pages: int | None = None) -> bool:
-    """Nút "Cào kênh" (POST /tiktok/channels/run): cào ngay một kênh qua Omar, độc lập với lượt đang chạy."""
+    """Nút "Cào kênh" (POST /tiktok/channels/run): cào ngay một kênh qua ShortVid, độc lập với lượt đang chạy."""
     handle = username.strip().lstrip("@").split("/")[0].lower()
     if not handle:
         return False

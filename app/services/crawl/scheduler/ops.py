@@ -33,7 +33,7 @@ async def _guarded(name: str, job) -> None:
 
 
 async def ops_alerts_tick() -> None:
-    """Cảnh báo vận hành (ops_alerts) mỗi settings.ops_alerts_interval_minutes phút; chạy nền vì /usage của Omar và D1 có
+    """Cảnh báo vận hành (ops_alerts) mỗi settings.ops_alerts_interval_minutes phút; chạy nền vì /usage của ShortVid và D1 có
     thể chậm. Trừ một nhịp kiểm tra để lượt kế tiếp không trễ thêm 30 giây mỗi lần."""
     if not settings.ops_alerts_enabled:
         return

@@ -1,9 +1,9 @@
 """Kênh ưu tiên: kênh trong danh sách booking (trang "Xuất thông tin theo kênh" › Nghiệm thu booking của
 cinemark) mà D1 chưa có bài nào - Worker ghi vào bảng D1 priority_channels (api/lib/bookingReport.ts), bên này:
 
-- crawl ngay (mỗi vòng scheduler, tối đa BATCH kênh) kênh TikTok: video của kênh qua Omar /posts (chỉ giữ video nhắc tới
-  phim đang theo dõi, như omar_channels) + follower qua Omar /profile. Facebook / Threads không tự crawl (spider-hub lo).
-- kênh TikTok yêu cầu trong KEEP_DAYS ngày luôn đứng đầu hàng cào kênh của các lượt Omar (omar_channels.load_channels).
+- crawl ngay (mỗi vòng scheduler, tối đa BATCH kênh) kênh TikTok: video của kênh qua ShortVid /posts (chỉ giữ video nhắc tới
+  phim đang theo dõi, như shortvid_channels) + follower qua ShortVid /profile. Facebook / Threads không tự crawl (spider-hub lo).
+- kênh TikTok yêu cầu trong KEEP_DAYS ngày luôn đứng đầu hàng cào kênh của các lượt ShortVid (shortvid_channels.load_channels).
 """
 
 from __future__ import annotations
@@ -85,7 +85,7 @@ async def process_pending() -> dict[str, int]:
         if not rows:
             return {"pending": 0}
         from app.services.crawl import channel_profiles
-        from app.services.omar.omar_channels import crawl_channel_once
+        from app.services.shortvid.shortvid_channels import crawl_channel_once
 
         by_platform: dict[str, list[str]] = {}
         for row in rows:

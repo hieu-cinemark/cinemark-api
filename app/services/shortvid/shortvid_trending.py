@@ -1,18 +1,18 @@
-"""Video đang nổi - tốc độ tăng tương tác của video TikTok từng phim, đo qua Omar API.
+"""Video đang nổi - tốc độ tăng tương tác của video TikTok từng phim, đo qua ShortVid API.
 
-Mỗi settings.omar_trending_interval_hours giờ (scheduler/omar.omar_trending_tick), refresh_top_videos lấy cho mỗi phim đang
-bật settings.omar_trending_per_movie video TikTok liên quan đăng trong settings.omar_trending_days ngày qua, tương tác cao
-nhất, đọc lại số liệu HIỆN TẠI của từng video qua Omar (GET video_info?video=<id> - trả aweme gốc như hashtag_videos, một
-request mỗi video; đo 13/10/2026) rồi ghi một dòng snapshot vào bảng D1 omar_video_stats. Ngân sách mỗi lượt:
-settings.omar_trending_max_requests, và không vượt hạn mức ngày còn lại của key trừ omar_daily_reserve (lượt Omar chính
+Mỗi settings.shortvid_trending_interval_hours giờ (scheduler/shortvid.shortvid_trending_tick), refresh_top_videos lấy cho mỗi phim đang
+bật settings.shortvid_trending_per_movie video TikTok liên quan đăng trong settings.shortvid_trending_days ngày qua, tương tác cao
+nhất, đọc lại số liệu HIỆN TẠI của từng video qua ShortVid (GET video/detail?url=<id> - 10 credit, một
+request mỗi video; đo 13/10/2026) rồi ghi một dòng snapshot vào bảng D1 shortvid_video_stats. Ngân sách mỗi lượt:
+settings.shortvid_trending_max_requests, và không vượt hạn mức ngày còn lại của key trừ shortvid_daily_reserve (lượt ShortVid chính
 ở chế độ liên tục dùng hết phần còn lại, nên lượt này chạy trước thì lấy phần của nó trước).
 
 trending() tính tốc độ từ HAI snapshot gần nhất cách nhau >= 1 giờ: lượt xem/giờ, bình luận/giờ và % tăng lượt xem mỗi
 giờ; cờ `hot` khi lượt xem/giờ nằm trong top 10% (của mọi video có tốc độ) hoặc tăng > 50%/giờ.
 
-Video có bình luận/giờ cao (rising_video_ids) được xếp vào hàng đợi bình luận của Omar (omar_comments.enqueue_videos) -
-lượt Omar kế tiếp cào bình luận của chúng trước phần hashtag, như hàng đợi tuần. Chạy độc lập với lượt Omar chính, nhịp
-gọi riêng (_Pacer(settings.omar_manual_requests_per_minute))."""
+Video có bình luận/giờ cao (rising_video_ids) được xếp vào hàng đợi bình luận của ShortVid (shortvid_comments.enqueue_videos) -
+lượt ShortVid kế tiếp cào bình luận của chúng trước phần hashtag, như hàng đợi tuần. Chạy độc lập với lượt ShortVid chính, nhịp
+gọi riêng (_Pacer(settings.shortvid_manual_requests_per_minute))."""
 
 from __future__ import annotations
 
@@ -31,9 +31,10 @@ from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metadata
 from app.repositories.d1.tables import movies, posts
-from app.services.accounts.platform_config_db import get_omar_api_settings
-from app.services.omar import omar_comments
-from app.services.omar.omar_tiktok import Budget, OmarStop, _Pacer, fetch_usage, map_aweme, omar_get
+from app.services.accounts.platform_config_db import get_shortvid_api_settings
+from app.services.shortvid import shortvid_comments
+from app.clients.shortvid import ShortVidStop, map_video, shortvid_get
+from app.services.shortvid.shortvid_tiktok import Budget, _Pacer, fetch_usage
 
 logger = get_logger(__name__)
 
@@ -48,14 +49,14 @@ _table_ready = False
 _running = False
 
 video_stats = Table(
-    "omar_video_stats",
+    "shortvid_video_stats",
     metadata,
     Column("video_id", Text, nullable=False),
     Column("movie_id", Text),
     Column("at", Text, nullable=False),
     *(Column(name, Integer) for name in ("views", "likes", "comments", "shares")),
-    Index("idx_omar_video_stats_video_at", "video_id", "at"),
-    Index("idx_omar_video_stats_at", "at", "movie_id"),  # trending() lọc theo thời gian (và phim)
+    Index("idx_shortvid_video_stats_video_at", "video_id", "at"),
+    Index("idx_shortvid_video_stats_at", "at", "movie_id"),  # trending() lọc theo thời gian (và phim)
 )
 STAT_COLUMNS = tuple(c.name for c in video_stats.columns)
 
@@ -123,14 +124,14 @@ def mark_hot(
         )
 
 
-# --- Làm mới số liệu qua Omar -----------------------------------------------------------------------------------
+# --- Làm mới số liệu qua ShortVid -----------------------------------------------------------------------------------
 
 
 async def _candidates(since: str, per_movie: int) -> list[dict[str, Any]]:
     """Top `per_movie` video TikTok liên quan của mỗi phim đang bật, đăng từ `since`, theo tương tác (cùng công thức với
     hàng đợi bình luận tuần)."""
     p, m = posts.alias("p"), movies.alias("m")
-    rn = func.row_number().over(partition_by=p.c.movie_id, order_by=omar_comments.video_score(p).desc()).label("rn")
+    rn = func.row_number().over(partition_by=p.c.movie_id, order_by=shortvid_comments.video_score(p).desc()).label("rn")
     ranked = (
         select(p.c.external_id, p.c.movie_id, rn)
         .select_from(p.join(m, and_(m.c.id == p.c.movie_id, m.c.enabled == 1)))
@@ -152,17 +153,17 @@ async def _insert_snapshots(rows: list[tuple[Any, ...]]) -> int:
 
 
 async def refresh_top_videos(*, max_requests: int | None = None) -> dict[str, Any]:
-    """Một lượt làm mới: đọc lại số liệu top video mỗi phim qua Omar và ghi snapshot. OmarStop (key sai / hết hạn mức) được
+    """Một lượt làm mới: đọc lại số liệu top video mỗi phim qua ShortVid và ghi snapshot. ShortVidStop (key sai / hết hạn mức) được
     ném ra sau khi đã lưu các snapshot lấy được."""
     stats: dict[str, Any] = {"candidates": 0, "requests": 0, "saved": 0, "missing": 0, "failed": 0}
-    row = await get_omar_api_settings()
+    row = await get_shortvid_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
     if not api_key:
         return {**stats, "skipped": "no_api_key"}
     await _ensure_table()
-    since = (datetime.now(tz=UTC) - timedelta(days=settings.omar_trending_days)).isoformat()
+    since = (datetime.now(tz=UTC) - timedelta(days=settings.shortvid_trending_days)).isoformat()
     candidates: dict[str, str] = {}
-    for cand in await _candidates(since, settings.omar_trending_per_movie):
+    for cand in await _candidates(since, settings.shortvid_trending_per_movie):
         video_id = str(cand.get("external_id") or "")
         if video_id and video_id not in candidates:  # một video thuộc nhiều phim: đo một lần
             candidates[video_id] = cand["movie_id"]
@@ -171,17 +172,17 @@ async def refresh_top_videos(*, max_requests: int | None = None) -> dict[str, An
         return stats
 
     rows: list[tuple[Any, ...]] = []
-    stopped: list[OmarStop] = []
+    stopped: list[ShortVidStop] = []
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        limit = max_requests if max_requests is not None else settings.omar_trending_max_requests
+        limit = max_requests if max_requests is not None else settings.shortvid_trending_max_requests
         day = ((await fetch_usage(api_key, client)) or {}).get("day") or {}
         if day.get("remaining") is not None:
-            limit = min(limit, max(0, int(day["remaining"]) - settings.omar_daily_reserve))
+            limit = min(limit, max(0, int(day["remaining"]) - settings.shortvid_daily_reserve))
         stats["budget"] = limit
         if limit <= 0:
             return {**stats, "skipped": "no_budget"}
         budget = Budget(limit)
-        pacer = _Pacer(settings.omar_manual_requests_per_minute)
+        pacer = _Pacer(settings.shortvid_manual_requests_per_minute)
         queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
         for item in candidates.items():
             queue.put_nowait(item)
@@ -191,15 +192,15 @@ async def refresh_top_videos(*, max_requests: int | None = None) -> dict[str, An
                 video_id, movie_id = queue.get_nowait()
                 stats["requests"] += 1
                 try:
-                    data = await omar_get(client, pacer, api_key, "video_info", {"video": video_id})
-                except OmarStop as exc:
+                    data = await shortvid_get(client, pacer.wait, api_key, "video/detail", {"url": video_id})
+                except ShortVidStop as exc:
                     stopped.append(exc)
                     return
                 except Exception as exc:  # noqa: BLE001 - một video lỗi: lượt sau thử lại
                     stats["failed"] += 1
-                    logger.warning("omar_trending_video_failed", video_id=video_id, error=str(exc)[:200])
+                    logger.warning("shortvid_trending_video_failed", video_id=video_id, error=str(exc)[:200])
                     continue
-                mapped = map_aweme(data) if data else None
+                mapped = map_video(data) if isinstance(data, dict) else None
                 if mapped is None:
                     stats["missing"] += 1  # đã xoá / riêng tư
                     continue
@@ -215,11 +216,11 @@ async def refresh_top_videos(*, max_requests: int | None = None) -> dict[str, An
                     )
                 )
 
-        workers = max(1, min(settings.omar_concurrency, len(candidates)))
+        workers = max(1, min(settings.shortvid_concurrency, len(candidates)))
         await asyncio.gather(*(worker() for _ in range(workers)))
 
     stats["saved"] = await _insert_snapshots(rows)
-    logger.info("omar_trending_refreshed", **stats)
+    logger.info("shortvid_trending_refreshed", **stats)
     if stopped:
         raise stopped[0]
     return stats
@@ -230,7 +231,7 @@ def is_running() -> bool:
 
 
 async def run_refresh_tracked() -> dict[str, Any]:
-    """Cho scheduler: làm mới snapshot rồi xếp hàng bình luận cho video đang lên. Không chạy chồng; OmarStop chỉ log."""
+    """Cho scheduler: làm mới snapshot rồi xếp hàng bình luận cho video đang lên. Không chạy chồng; ShortVidStop chỉ log."""
     global _running
     if _running:
         return {"skipped": "running"}
@@ -239,12 +240,12 @@ async def run_refresh_tracked() -> dict[str, Any]:
         stats: dict[str, Any]
         try:
             stats = await refresh_top_videos()
-        except OmarStop as exc:
-            logger.warning("omar_trending_stopped", reason=str(exc)[:200])
+        except ShortVidStop as exc:
+            logger.warning("shortvid_trending_stopped", reason=str(exc)[:200])
             stats = {"stopped": str(exc)[:200]}
-        if settings.omar_trending_rising_limit > 0:
-            rising = await rising_video_ids(settings.omar_trending_rising_limit)
-            stats["rising_enqueued"] = await omar_comments.enqueue_videos(rising, reason="omar_trending")
+        if settings.shortvid_trending_rising_limit > 0:
+            rising = await rising_video_ids(settings.shortvid_trending_rising_limit)
+            stats["rising_enqueued"] = await shortvid_comments.enqueue_videos(rising, reason="shortvid_trending")
         return stats
     finally:
         _running = False
@@ -329,17 +330,17 @@ async def trending(movie_id: str | None = None, hours: float = 24, limit: int = 
 
 
 async def rising_video_ids(limit: int) -> list[dict[str, Any]]:
-    """Video đang lên về bình luận (>= settings.omar_trending_rising_comments_per_hour bình luận/giờ, 24 giờ qua), nhiều
-    nhất trước, bỏ video đã cào bình luận trong settings.omar_trending_comments_recrawl_hours giờ qua. Mỗi phần tử có đủ
-    trường cho omar_comments.enqueue_videos: video_id, post_id, reply_count, comments_per_hour."""
+    """Video đang lên về bình luận (>= settings.shortvid_trending_rising_comments_per_hour bình luận/giờ, 24 giờ qua), nhiều
+    nhất trước, bỏ video đã cào bình luận trong settings.shortvid_trending_comments_recrawl_hours giờ qua. Mỗi phần tử có đủ
+    trường cho shortvid_comments.enqueue_videos: video_id, post_id, reply_count, comments_per_hour."""
     items = [
         item
         for item in await _velocities(24)
-        if item["velocity"]["comments_per_hour"] >= settings.omar_trending_rising_comments_per_hour
+        if item["velocity"]["comments_per_hour"] >= settings.shortvid_trending_rising_comments_per_hour
     ]
     items.sort(key=lambda item: item["velocity"]["comments_per_hour"], reverse=True)
     post_by_video = await _post_info([item["video_id"] for item in items])
-    fresh_after = datetime.now(tz=UTC) - timedelta(hours=settings.omar_trending_comments_recrawl_hours)
+    fresh_after = datetime.now(tz=UTC) - timedelta(hours=settings.shortvid_trending_comments_recrawl_hours)
     rising = []
     for item in items:
         post = post_by_video.get(item["video_id"])

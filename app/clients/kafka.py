@@ -470,7 +470,7 @@ RAW_POSTS_TOPIC = "raw_posts"
 
 async def publish_raw_post(*, key: str, value: dict[str, Any]) -> bool:
     """Gửi một bài lên raw_posts như spider-hub làm (key "<platform>:<id>", value {"platform", "keyword_id", ...}) -
-    cho nguồn bài không đi qua spider-hub (app/services/omar/omar_tiktok.py), để ingest consumer xử lý y như bài của spider."""
+    cho nguồn bài không đi qua spider-hub (app/services/shortvid/shortvid_tiktok.py), để ingest consumer xử lý y như bài của spider."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", key=key)
         return False
@@ -487,7 +487,7 @@ RAW_COMMENTS_TOPIC = "raw_comments"
 
 async def publish_raw_comment(*, key: str, value: dict[str, Any]) -> bool:
     """Gửi một bình luận lên raw_comments như spider-hub làm (key "<platform>:<comment_id>", value {"platform",
-    "post_id", ...}) - cho bình luận không đi qua spider-hub (app/services/omar/omar_comments.py)."""
+    "post_id", ...}) - cho bình luận không đi qua spider-hub (app/services/shortvid/shortvid_comments.py)."""
     if _producer is None:
         logger.warning("kafka_producer_not_started", key=key)
         return False

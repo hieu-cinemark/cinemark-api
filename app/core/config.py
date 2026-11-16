@@ -170,11 +170,11 @@ class Settings(BaseSettings):
     # AI duyệt hashtag TikTok chạy cả khi công tắc chung "AI tự thêm nguồn cào" tắt (công tắc đó vẫn giữ câu tìm
     # Facebook/Threads và duyệt trang nguồn). Mục tiêu: gom nhiều video TikTok nhất có thể.
     tiktok_hashtag_discovery: bool = True
-    # AI thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và Omar BFS).
+    # AI thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và ShortVid BFS).
     hashtag_discovery_max_per_movie: int = 15
     hashtag_discovery_max_per_run: int = 150
-    # Ngoài lượt buổi sáng, sau mỗi lượt Omar lại duyệt hashtag BFS mới - cách nhau ít nhất chừng này giờ.
-    hashtag_discovery_after_omar_hours: float = 2
+    # Ngoài lượt buổi sáng, sau mỗi lượt ShortVid lại duyệt hashtag BFS mới - cách nhau ít nhất chừng này giờ.
+    hashtag_discovery_after_shortvid_hours: float = 2
 
     # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài Kira gán "related" cũng phải có
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
@@ -190,89 +190,93 @@ class Settings(BaseSettings):
         "nguoi-duoc-chon,cong-tru-nhan-chia,nguoi-me-xau,hoang-hau-cuoi-cung,bo-sua-bay,yeu-sai-yeu-lai"
     )
 
-    # Omar TikTok API (dev.omar-thing.site) - dùng cho crawl video/hashtag thay vì
-    # spider-hub. API key được đọc từ bảng omar_api_settings trên Supabase (xem
-    # app/services/accounts/platform_config_db.py). Base URL có thể ghi đè trong .env khi dev
-    # local cần trỏ vào instance khác.
-    omar_api_base_url: str = "https://dev.omar-thing.site/api/v1"
-    # Lượt cào hashtag TikTok qua Omar API mỗi giờ (app/services/omar/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt
-    # comment ở phút 5). Mỗi hashtag cào tới hết, con trỏ lưu trong Redis. Ngân sách mỗi giờ = hạn mức ngày còn lại (trừ
-    # omar_daily_reserve để chừa cho chạy tay) chia đều cho số giờ tới lúc reset, trần omar_requests_per_hour (một giờ ở
-    # 10 request/phút làm tối đa ~550). Hashtag đã cào hết được cào lại từ đầu sau omar_recrawl_days ngày.
-    # Giới hạn mỗi phút đọc từ GET /usage của gói mỗi lượt (omar_requests_per_minute chỉ là dự phòng khi không đọc được);
-    # omar_requests_per_hour = 0 nghĩa là không đặt trần riêng - nâng gói Omar thì tự dùng hết, không cần sửa.
-    omar_round_minute: int = 20
-    omar_requests_per_hour: int = 0
-    omar_requests_per_minute: int = 10
-    omar_daily_reserve: int = 50
+    # ShortVid API (api.shortvidapi.com, thay Omar từ 16/11/2026) - nguồn TikTok của cinemark-api (hashtag, tìm kiếm, kênh,
+    # bình luận, số liệu video). Client: app/clients/shortvid.py. API key đọc từ bảng shortvid_api_settings trên Supabase
+    # (nhập ở dashboard › Settings), không để trong .env. Base URL ghi đè được trong .env khi cần.
+    shortvid_api_base_url: str = "https://api.shortvidapi.com/v1"
+    # Tên gói đang dùng (chỉ để hiển thị trên dashboard): free / indie / starter / pro / business.
+    shortvid_plan: str = ""
+    # ShortVid tính tiền theo credit ($1 = 10.000 credit; video 2 credit, bình luận 1, video/detail và challenge/info 10 mỗi
+    # request), KHÔNG có hạn mức request mỗi ngày. Hạn mức ngày tự đặt để khống chế chi phí: shortvid_daily_requests request
+    # (đếm trong Redis theo ngày giờ VN, 0 = không giới hạn, chỉ dừng khi hết credit). Một trang hashtag/tìm kiếm 30 video =
+    # 60 credit, nên 1.000 request/ngày tối đa khoảng 60.000 credit = 6 USD/ngày.
+    shortvid_daily_requests: int = 1000
+    # Lượt cào hashtag TikTok mỗi giờ (app/services/shortvid/shortvid_tiktok.py), ở phút này của mỗi giờ (lệch lượt comment ở
+    # phút 5). Mỗi hashtag cào tới hết, con trỏ lưu trong Redis. Ngân sách: phần còn lại của hạn mức ngày (trừ
+    # shortvid_daily_reserve để chừa cho chạy tay), trần shortvid_requests_per_hour (0 = không trần riêng). Hashtag đã cào hết
+    # được cào lại từ đầu sau shortvid_recrawl_days ngày. Giới hạn mỗi phút theo gói (free 60, indie/starter 120, pro 300,
+    # business 600) - đặt shortvid_requests_per_minute theo gói đang dùng; trần thấp hơn đặt ở tab ShortVid.
+    shortvid_round_minute: int = 20
+    shortvid_requests_per_hour: int = 0
+    shortvid_requests_per_minute: int = 60
+    shortvid_daily_reserve: int = 50
     # False (mặc định): mỗi lượt dùng hết hạn mức còn lại liên tục; True: rải đều hạn mức ngày theo giờ.
-    omar_spread_daily: bool = False
-    # Số request Omar chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
-    omar_concurrency: int = 12
-    # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_tiktok._claim_unseen.
-    omar_republish_hours: float = 48
-    omar_recrawl_days: int = 7
-    # Bình luận TikTok qua Omar (app/services/omar/omar_comments.py): mỗi ngày (omar_comments_cadence="daily", khi
-    # gói lên 50.000 request/ngày) hoặc mỗi tuần vào thứ omar_comments_weekday (0 = thứ Hai), lúc omar_comments_time giờ VN,
-    # mỗi hashtag lấy omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm
-    # trả lời nếu omar_comments_replies). Hàng đợi chạy sau phần video mới của mỗi lượt Omar (ưu tiên video). Chạy mỗi ngày thì chỉ lấy video
-    # Omar chưa cào, hoặc đã cào nhưng số bình luận tăng từ omar_comments_regrowth_min và từ omar_comments_regrowth_ratio
+    shortvid_spread_daily: bool = False
+    # Số request ShortVid chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
+    shortvid_concurrency: int = 8
+    # Video ShortVid đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem shortvid_tiktok._claim_unseen.
+    shortvid_republish_hours: float = 48
+    shortvid_recrawl_days: int = 7
+    # Bình luận TikTok qua ShortVid (app/services/shortvid/shortvid_comments.py): mỗi ngày (shortvid_comments_cadence="daily", khi
+    # gói lên 50.000 request/ngày) hoặc mỗi tuần vào thứ shortvid_comments_weekday (0 = thứ Hai), lúc shortvid_comments_time giờ VN,
+    # mỗi hashtag lấy shortvid_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm
+    # trả lời nếu shortvid_comments_replies). Hàng đợi chạy sau phần video mới của mỗi lượt ShortVid (ưu tiên video). Chạy mỗi ngày thì chỉ lấy video
+    # ShortVid chưa cào, hoặc đã cào nhưng số bình luận tăng từ shortvid_comments_regrowth_min và từ shortvid_comments_regrowth_ratio
     # (tỉ lệ) kể từ lần cào - không lật lại từ đầu video không có gì mới.
-    omar_comments_cadence: str = "daily"
-    omar_comments_regrowth_min: int = 20
-    omar_comments_regrowth_ratio: float = 0.3
-    omar_comments_weekday: int = 0
-    omar_comments_time: str = "01:00"
-    omar_comments_top_per_hashtag: int = 100
-    omar_comments_replies: bool = True
+    shortvid_comments_cadence: str = "daily"
+    shortvid_comments_regrowth_min: int = 20
+    shortvid_comments_regrowth_ratio: float = 0.3
+    shortvid_comments_weekday: int = 0
+    shortvid_comments_time: str = "01:00"
+    shortvid_comments_top_per_hashtag: int = 100
+    shortvid_comments_replies: bool = True
     # Phần ngân sách mỗi lượt tối đa dành cho hàng đợi bình luận tuần - phần còn lại cho hashtag.
-    omar_comments_budget_share: float = 0.5
+    shortvid_comments_budget_share: float = 0.5
     # Hashtag không có trên TikTok (trang 1 luôn lỗi 424) được kiểm tra lại sau chừng này giờ.
-    omar_missing_recheck_hours: float = 24
-    # Tìm theo từ khoá qua Omar (app/services/omar/omar_search.py): mỗi câu (tên phim có dấu / không dấu + câu tìm kiếm
-    # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa omar_search_pages trang, mỗi ngày một lần.
-    omar_search_pages: int = 30
-    omar_search_budget_share: float = 0.2
+    shortvid_missing_recheck_hours: float = 24
+    # Tìm theo từ khoá qua ShortVid (app/services/shortvid/shortvid_search.py): mỗi câu (tên phim có dấu / không dấu + câu tìm kiếm
+    # Facebook/Threads đang bật của phim) tìm cả video lẫn bài ảnh, tối đa shortvid_search_pages trang, mỗi ngày một lần.
+    shortvid_search_pages: int = 30
+    shortvid_search_budget_share: float = 0.2
     # Các kiểu tìm video cho mỗi câu, "date:sort" cách nhau bằng dấu phẩy (date: day/week/month/3months/6months, rỗng = mọi
     # lúc; sort: relevance/likes/newest). Đo 13/10/2026 "trại buôn người": week:newest chỉ ra 82 video rồi hết, không lọc ra
     # 207 video - chạy cả hai để vừa bắt video mới vừa lấy rộng.
-    omar_search_modes: str = "week:newest,:relevance"
-    # Tự sinh câu tìm mỗi ngày từ gợi ý tìm kiếm (search_suggest) và xu hướng VN (trending_searches) của TikTok, tối đa
-    # omar_search_suggest_per_movie câu mỗi phim; câu tự sinh omar_search_prune_days lần tìm liền không ra video mới thì xoá.
-    omar_search_suggest: bool = True
-    omar_search_suggest_per_movie: int = 5
-    omar_search_prune_days: int = 5
-    # Cào theo kênh (app/services/omar/omar_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
-    # omar_channels_max kênh, mỗi ngày lật /posts tới video cũ hơn omar_channels_days ngày (tối đa max_pages trang).
-    omar_channels_budget_share: float = 0.2
-    # Chia ngân sách theo hiệu quả (app/services/omar/omar_yield.py): phần của tìm kiếm / kênh = phần gốc x (bài mới trên mỗi
-    # request của nguồn đó / của hashtag) trong omar_adaptive_days ngày, kẹp trong [min, max].
-    omar_adaptive_budget: bool = True
-    omar_adaptive_days: int = 3
-    omar_adaptive_min_share: float = 0.05
-    omar_adaptive_max_share: float = 0.45
-    omar_channels_min_posts: int = 2
-    omar_channels_lookback_days: int = 90
-    omar_channels_max: int = 300
-    omar_channels_days: int = 30
-    omar_channels_max_pages: int = 10
-    # Kênh omar_channels_prune_runs lần cào liền không có video về phim nào thì nghỉ omar_channels_rest_days ngày.
-    omar_channels_prune_runs: int = 14
-    omar_channels_rest_days: int = 7
-    # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab Omar) - chừa phần còn lại cho lượt đang chạy.
-    omar_manual_requests_per_minute: int = 30
+    shortvid_search_modes: str = "week:newest,:relevance"
+    # Vùng của video/search (mã ISO 2 chữ). Câu tìm tự sinh trước đây (nguồn "suggest") shortvid_search_prune_days lần tìm
+    # liền không ra video mới thì xoá - ShortVid không có API gợi ý tìm kiếm nên không sinh thêm câu mới.
+    shortvid_search_region: str = "VN"
+    shortvid_search_prune_days: int = 5
+    # Cào theo kênh (app/services/shortvid/shortvid_channels.py): kênh có >= min_posts bài liên quan trong lookback_days ngày, tối đa
+    # shortvid_channels_max kênh, mỗi ngày lật /posts tới video cũ hơn shortvid_channels_days ngày (tối đa max_pages trang).
+    shortvid_channels_budget_share: float = 0.2
+    # Chia ngân sách theo hiệu quả (app/services/shortvid/shortvid_yield.py): phần của tìm kiếm / kênh = phần gốc x (bài mới trên mỗi
+    # request của nguồn đó / của hashtag) trong shortvid_adaptive_days ngày, kẹp trong [min, max].
+    shortvid_adaptive_budget: bool = True
+    shortvid_adaptive_days: int = 3
+    shortvid_adaptive_min_share: float = 0.05
+    shortvid_adaptive_max_share: float = 0.45
+    shortvid_channels_min_posts: int = 2
+    shortvid_channels_lookback_days: int = 90
+    shortvid_channels_max: int = 300
+    shortvid_channels_days: int = 30
+    shortvid_channels_max_pages: int = 10
+    # Kênh shortvid_channels_prune_runs lần cào liền không có video về phim nào thì nghỉ shortvid_channels_rest_days ngày.
+    shortvid_channels_prune_runs: int = 14
+    shortvid_channels_rest_days: int = 7
+    # Nhịp gọi khi cào riêng một hashtag (nút "Thêm hashtag" ở tab ShortVid) - chừa phần còn lại cho lượt đang chạy.
+    shortvid_manual_requests_per_minute: int = 30
     # Hashtag đã cào xong chỉ được cào lại từ đầu bằng ngân sách dư sau chừng này giờ - cào lại mỗi giờ làm ingest tồn
     # hàng chục nghìn bài cập nhật.
-    omar_recrawl_min_hours: float = 24
+    shortvid_recrawl_min_hours: float = 24
     # Số request D1 (REST API) đồng thời mỗi tiến trình - xem app/clients/d1.py.
     d1_max_concurrency: int = 8
     # Số liệu tổng video/lượt xem của hashtag (hashtag_info) được làm mới sau chừng này ngày.
-    omar_hashtag_info_days: int = 7
-    # "Video đang nổi" (app/services/omar/omar_trending.py): mỗi omar_trending_interval_hours giờ đọc lại số liệu của
-    # omar_trending_per_movie video TikTok tương tác cao nhất mỗi phim (đăng trong omar_trending_days ngày) qua Omar
-    # video_info (1 request/video, tối đa omar_trending_max_requests mỗi lượt) -> bảng D1 omar_video_stats. Video có
-    # >= omar_trending_rising_comments_per_hour bình luận/giờ (tối đa omar_trending_rising_limit mỗi lượt, chưa cào bình
-    # luận trong omar_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận Omar.
+    shortvid_hashtag_info_days: int = 7
+    # "Video đang nổi" (app/services/shortvid/shortvid_trending.py): mỗi shortvid_trending_interval_hours giờ đọc lại số liệu của
+    # shortvid_trending_per_movie video TikTok tương tác cao nhất mỗi phim (đăng trong shortvid_trending_days ngày) qua ShortVid
+    # video/detail (1 request = 10 credit mỗi video, tối đa shortvid_trending_max_requests mỗi lượt) -> bảng D1 shortvid_video_stats. Video có
+    # >= shortvid_trending_rising_comments_per_hour bình luận/giờ (tối đa shortvid_trending_rising_limit mỗi lượt, chưa cào bình
+    # luận trong shortvid_trending_comments_recrawl_hours giờ) được xếp vào hàng đợi bình luận ShortVid.
     # Follower kênh TikTok cho trang "Xuất thông tin theo kênh" (app/services/crawl/channel_profiles.py) - mỗi chừng này giờ một lượt.
     channel_profiles_interval_hours: float = 6
     # Quét lại page Facebook của phim đang chiếu cho mục "Đang nổi" (app/services/crawl/watch_pages.py). Mỗi lượt tối đa
@@ -282,14 +286,14 @@ class Settings(BaseSettings):
     facebook_watch_pages_per_round: int = 15
     facebook_watch_pages_max_pages: int = 1
     facebook_watch_pages_since_days: float = 14
-    omar_trending_enabled: bool = True
-    omar_trending_interval_hours: float = 3
-    omar_trending_per_movie: int = 30
-    omar_trending_days: int = 7
-    omar_trending_max_requests: int = 600
-    omar_trending_rising_comments_per_hour: float = 20
-    omar_trending_rising_limit: int = 20
-    omar_trending_comments_recrawl_hours: float = 24
+    shortvid_trending_enabled: bool = True
+    shortvid_trending_interval_hours: float = 3
+    shortvid_trending_per_movie: int = 30
+    shortvid_trending_days: int = 7
+    shortvid_trending_max_requests: int = 600
+    shortvid_trending_rising_comments_per_hour: float = 20
+    shortvid_trending_rising_limit: int = 20
+    shortvid_trending_comments_recrawl_hours: float = 24
     # Bài booking Facebook đang theo dõi (app/services/crawl/tracked_posts.py): bài đã có trong D1 được cập nhật số bằng job
     # post_metrics của spider-hub (đọc trang bài không đăng nhập, không tốn tài khoản) thay vì page_feed cả page. Tắt
     # thì quay về page_feed như trước 25/10/2026.
@@ -314,7 +318,7 @@ class Settings(BaseSettings):
     lake_bucket: str = "cinemark-lake"
 
     # Cảnh báo vận hành qua Telegram (app/services/ops/ops_alerts.py), scheduler kiểm tra mỗi ops_alerts_interval_minutes.
-    # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói Omar / chi phí Jev mỗi ngày một lần.
+    # Mỗi cảnh báo chỉ lặp lại sau ops_alert_repeat_hours; hạn mức / hạn gói ShortVid / chi phí Jev mỗi ngày một lần.
     ops_alerts_enabled: bool = True
     # Bộ lập lịch (app/services/crawl/scheduler/) + bộ lấy mẫu ops chạy TRONG tiến trình web (mặc định, như trước) hay
     # trong service riêng `python -m app.workers.scheduler.main` (một tác vụ nặng của scheduler không còn làm
@@ -322,14 +326,14 @@ class Settings(BaseSettings):
     scheduler_in_web: bool = True
     ops_alerts_interval_minutes: int = 15
     ops_alert_repeat_hours: float = 6
-    # Omar: đã dùng >= chừng này % hạn mức ngày; gói hết hạn trong chừng này ngày (và lần nữa khi còn <= 1 ngày).
-    ops_omar_quota_alert_pct: float = 90
-    # Chỉ báo hạn mức Omar khi còn ít nhất chừng này giờ tới lúc reset (cạn sớm).
-    ops_omar_quota_early_hours: float = 6
-    ops_omar_expiry_alert_days: int = 7
-    # Omar: tỉ lệ request lỗi của lượt đang/vừa chạy (trong 1 giờ qua), chỉ xét khi đủ số lần gọi tối thiểu.
-    ops_omar_error_rate_alert: float = 0.3
-    ops_omar_error_min_attempts: int = 50
+    # ShortVid: đã dùng >= chừng này % hạn mức ngày tự đặt; credit còn lại dưới ngưỡng (20.000 credit = 2 USD).
+    ops_shortvid_quota_alert_pct: float = 90
+    # Chỉ báo hạn mức ShortVid khi còn ít nhất chừng này giờ tới lúc reset (cạn sớm).
+    ops_shortvid_quota_early_hours: float = 6
+    ops_shortvid_low_credits: int = 20000
+    # ShortVid: tỉ lệ request lỗi của lượt đang/vừa chạy (trong 1 giờ qua), chỉ xét khi đủ số lần gọi tối thiểu.
+    ops_shortvid_error_rate_alert: float = 0.3
+    ops_shortvid_error_min_attempts: int = 50
     # Không có bài TikTok / comment mới (MAX(scraped_at) trên D1) trong chừng này giờ.
     ops_post_drought_hours: float = 6
     ops_comment_drought_hours: float = 6

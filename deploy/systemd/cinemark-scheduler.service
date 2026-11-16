@@ -1,5 +1,5 @@
 [Unit]
-Description=cinemark-api scheduler (scheduled crawls, comment rounds, Omar, stats reconcile, cleanup, reports)
+Description=cinemark-api scheduler (scheduled crawls, comment rounds, ShortVid, stats reconcile, cleanup, reports)
 # Chạy service này thì web phải có SCHEDULER_IN_WEB=false trong .env - không chạy hai bộ lập lịch cùng lúc.
 After=network-online.target docker.service
 Wants=network-online.target

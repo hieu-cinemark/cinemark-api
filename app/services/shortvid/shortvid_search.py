@@ -1,12 +1,13 @@
-"""Tìm bài TikTok theo TỪ KHOÁ qua Omar API (search_videos + search_photos,) - chạy song song trong mỗi
-lượt Omar (omar_tiktok.run_omar_round), mỗi câu tìm một lần mỗi ngày.
+"""Tìm bài TikTok theo TỪ KHOÁ qua ShortVid API (video/search, vùng VN) - chạy song song trong mỗi
+lượt ShortVid (shortvid_tiktok.run_shortvid_round), mỗi câu tìm một lần mỗi ngày.
 
 Cào hashtag bỏ sót bài không gắn hashtag phim hoặc gắn sai ("#Trại Buôn Người" có dấu cách không thành hashtag) và cả bài
 gắn đúng mà feed hashtag không trả về - đo 12/10/2026 trên 6 bài ảnh đầu của "trại buôn người": 2 bài (1,1 triệu và 2,2
 triệu lượt xem, có bài của trang chính thức) chưa có trong D1.
 
 Câu tìm của mỗi phim đang bật có từ khoá hashtag TikTok: tên phim có dấu, không dấu, và các câu tìm Facebook/Threads đang
-bật của phim (người nhập hoặc AI query discovery). Mỗi câu lật tối đa settings.omar_search_pages trang ở cả hai endpoint.
+bật của phim (người nhập hoặc AI query discovery). Mỗi câu lật tối đa settings.shortvid_search_pages trang mỗi kiểu tìm
+(settings.shortvid_search_modes). video/search của ShortVid trả cả bài video lẫn bài ảnh nên không có lượt tìm ảnh riêng.
 Bài đi đúng đường của spider (raw_posts, keyword_id = hashtag đầu tiên của phim) nên bộ lọc liên quan ở ingest xử lý như
 mọi bài khác."""
 
@@ -30,35 +31,44 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec, metadata
 from app.repositories.d1.tables import keywords, movies
-from app.services.omar import omar_yield
+from app.services.shortvid import shortvid_yield
 from app.services.relevance.relevance_rules import normalize_title
 
 if TYPE_CHECKING:
-    from app.services.omar.omar_tiktok import Budget, _Pacer
+    from app.services.shortvid.shortvid_tiktok import Budget, _Pacer
 
 logger = get_logger(__name__)
 
 # Hash {câu tìm đã chuẩn hoá: ngày (giờ VN) đã tìm xong} - mỗi câu một lần mỗi ngày.
-DONE_KEY = f"{REDIS_KEY_PREFIX}omar:search:done"
-# Hash {câu tìm đã chuẩn hoá: JSON {at, videos, published}} - kết quả lần tìm gần nhất, cho tab Omar.
-STATS_KEY = f"{REDIS_KEY_PREFIX}omar:search:stats"
+DONE_KEY = f"{REDIS_KEY_PREFIX}shortvid:search:done"
+# Hash {câu tìm đã chuẩn hoá: JSON {at, videos, published}} - kết quả lần tìm gần nhất, cho tab ShortVid.
+STATS_KEY = f"{REDIS_KEY_PREFIX}shortvid:search:stats"
 _CUSTOM_TABLE_READY = False
 # Hash {câu tìm đã chuẩn hoá: số lần tìm liên tiếp không ra video mới} - câu tự sinh (gợi ý TikTok) bị xoá khi quá ngưỡng.
-ZERO_KEY = f"{REDIS_KEY_PREFIX}omar:search:zero"
+ZERO_KEY = f"{REDIS_KEY_PREFIX}shortvid:search:zero"
 # Con trỏ trang đang dở của từng (câu, kiểu tìm) khi lượt dừng giữa chừng vì hết ngân sách / hết hạn mức - lượt sau lật
 # tiếp từ đó thay vì từ trang 1. Xoá khi kiểu tìm đó chạy xong.
-CURSOR_KEY = f"{REDIS_KEY_PREFIX}omar:search:cursor"
-# Ngày (giờ VN) đã lấy gợi ý tìm kiếm của TikTok - mỗi ngày một lần.
-SUGGEST_DAY_KEY = f"{REDIS_KEY_PREFIX}omar:search:suggest_day"
-# Gợi ý chứa các cụm này là tìm kiếm nước ngoài (tên phim trùng chữ / phim Việt trên Netflix nước ngoài) - bỏ.
-_FOREIGN = (" espanol ", " de que ", " pelicula ", " netflix ", " sub indo ", " english ", " trata ")
+CURSOR_KEY = f"{REDIS_KEY_PREFIX}shortvid:search:cursor"
 _WORKERS = 4
 
 
+# Kiểu tìm trong settings.shortvid_search_modes ("thời gian:sắp xếp") -> tham số video/search của ShortVid.
+_PUBLISH_TIME = {"": 0, "all": 0, "day": 1, "week": 7, "month": 30, "3months": 90, "6months": 180}
+_SORT_TYPE = {"": 0, "relevance": 0, "likes": 1, "popular": 1, "newest": 3}
+
+
+def mode_params(mode: dict[str, str]) -> dict[str, int]:
+    """{"date": "week", "sort": "newest"} -> {"publish_time": 7, "sort_type": 3}. Giá trị lạ thì về mặc định (mọi lúc, liên quan)."""
+    return {
+        "publish_time": _PUBLISH_TIME.get(mode.get("date", ""), 0),
+        "sort_type": _SORT_TYPE.get(mode.get("sort", ""), 0),
+    }
+
+
 def search_modes() -> list[dict[str, str]]:
-    """settings.omar_search_modes -> [{"date": "week", "sort": "newest"}, {"sort": "relevance"}, ...]."""
+    """settings.shortvid_search_modes -> [{"date": "week", "sort": "newest"}, {"sort": "relevance"}, ...]."""
     modes = []
-    for item in settings.omar_search_modes.split(","):
+    for item in settings.shortvid_search_modes.split(","):
         date, _, sort = item.strip().partition(":")
         mode = {k: v for k, v in (("date", date.strip()), ("sort", sort.strip())) if v}
         if mode not in modes:
@@ -67,7 +77,7 @@ def search_modes() -> list[dict[str, str]]:
 
 
 custom_queries = Table(
-    "omar_search_queries",
+    "shortvid_search_queries",
     metadata,
     Column("id", Text, primary_key=True),
     Column("movie_id", Text, nullable=False),
@@ -79,13 +89,13 @@ custom_queries = Table(
 
 
 async def _ensure_custom_table() -> None:
-    """Câu tìm người dùng tự thêm ở tab Omar (ngoài tên phim và câu tìm Facebook/Threads)."""
+    """Câu tìm người dùng tự thêm ở tab ShortVid (ngoài tên phim và câu tìm Facebook/Threads)."""
     global _CUSTOM_TABLE_READY
     if _CUSTOM_TABLE_READY:
         return
     await d1_exec(CreateTable(custom_queries, if_not_exists=True), quiet=True)
     # Bảng tạo trước khi có cột source: thêm cột (đã có thì lỗi, bỏ qua).
-    await d1_query("ALTER TABLE omar_search_queries ADD COLUMN source TEXT DEFAULT 'custom'", quiet=True)
+    await d1_query("ALTER TABLE shortvid_search_queries ADD COLUMN source TEXT DEFAULT 'custom'", quiet=True)
     _CUSTOM_TABLE_READY = True
 
 
@@ -107,7 +117,7 @@ async def delete_custom_query(query_id: str) -> None:
 
 async def build_queries() -> list[dict[str, Any]]:
     """[{query, key, keyword_id, movie, movie_id, source, id}] cho mọi phim đang bật có từ khoá hashtag TikTok đang bật.
-    source: title (tên phim) | title_plain (không dấu) | social (câu tìm Facebook/Threads) | custom (tự thêm ở tab Omar) |
+    source: title (tên phim) | title_plain (không dấu) | social (câu tìm Facebook/Threads) | custom (tự thêm ở tab ShortVid) |
     suggest (tự sinh từ gợi ý tìm kiếm / xu hướng TikTok - discover_queries)."""
     rows = (
         await d1_exec(
@@ -166,7 +176,7 @@ async def build_queries() -> list[dict[str, Any]]:
 
 
 async def query_status() -> list[dict[str, Any]]:
-    """Mọi câu tìm kèm kết quả lần tìm gần nhất - cho tab Omar."""
+    """Mọi câu tìm kèm kết quả lần tìm gần nhất - cho tab ShortVid."""
     raw = await get_redis_client().hgetall(STATS_KEY) or {}
     out = []
     for query in await build_queries():
@@ -179,20 +189,19 @@ async def query_status() -> list[dict[str, Any]]:
 
 
 class _QuerySearch:
-    """Tìm một câu: video theo từng kiểu trong settings.omar_search_modes, rồi bài ảnh; tối đa settings.omar_search_pages
+    """Tìm một câu theo từng kiểu trong settings.shortvid_search_modes; tối đa settings.shortvid_search_pages
     trang mỗi kiểu. Mỗi lần step() là MỘT trang, để run_search xen kẽ các câu (run_round_robin) thay vì gọi dồn một câu."""
 
     def __init__(self, query: dict[str, Any]) -> None:
         self.query = query
-        self.passes = [("search_videos", mode) for mode in search_modes()] + [("search_photos", {})]
+        self.passes = [("video/search", mode) for mode in search_modes()]
         self.index = 0
         self.cursor: str | None = None
         self.pages = 0
         self.empty_tries = 0
         self.local: dict[str, Any] = {"published": 0, "skipped_seen": 0}
         self.seen_ids: set[str] = set()
-        # False khi một trang lỗi - lượt sau tìm lại câu này (search_videos của Omar hay trả 424 "Video search failed" từng
-        # đợt, đo 12/10/2026). halted: dừng vì hết ngân sách - không tính là đã tìm xong.
+        # False khi một trang lỗi - lượt sau tìm lại câu này. halted: dừng vì hết ngân sách - không tính là đã tìm xong.
         self.complete = True
         self.halted = False
 
@@ -215,14 +224,11 @@ class _QuerySearch:
         self, client: httpx.AsyncClient, pacer: _Pacer, api_key: str, take: Callable[[], bool], stats: dict[str, Any]
     ) -> float | None:
         """Một trang. Trả về số giây chờ trước trang kế của câu này, hoặc None khi câu xong / dừng (self.halted)."""
-        from app.services.omar.omar_tiktok import (
+        from app.clients.shortvid import PAGE_SIZE, ShortVidStop, map_video, next_cursor, shortvid_get, videos_of
+        from app.services.shortvid.shortvid_tiktok import (
             _EMPTY_RETRIES,
             _EMPTY_RETRY_SECONDS,
             _KEYWORD_GAP_SECONDS,
-            OmarStop,
-            map_web_item,
-            next_cursor,
-            omar_get,
             publish_videos,
         )
 
@@ -240,21 +246,27 @@ class _QuerySearch:
             return None
         stats["requests"] = int(stats.get("requests") or 0) + 1
         stats["search_requests"] = int(stats.get("search_requests") or 0) + 1
-        await omar_yield.add("search", requests=1)
-        params = {"query": self.query["query"], "cursor": self.cursor, **mode}
+        await shortvid_yield.add("search", requests=1)
+        params = {
+            "keywords": self.query["query"],
+            "region": settings.shortvid_search_region,
+            "count": PAGE_SIZE["video/search"],
+            "cursor": self.cursor,
+            **mode_params(mode),
+        }
         try:
-            data = await omar_get(client, pacer, api_key, path, params)
-        except OmarStop:
+            data = await shortvid_get(client, pacer.wait, api_key, path, params)
+        except ShortVidStop:
             if self.cursor != "0":
                 await redis.hset(CURSOR_KEY, self._field(), self.cursor)
             raise
         except Exception as exc:  # noqa: BLE001 - trang lỗi: bỏ phần còn lại của kiểu tìm này, hôm sau tìm lại
             stats["failed"] = int(stats.get("failed") or 0) + 1
-            logger.warning("omar_search_failed_page", query=self.query["query"], path=path, error=str(exc)[:200])
+            logger.warning("shortvid_search_failed_page", query=self.query["query"], path=path, error=str(exc)[:200])
             self.complete = False
             await self._next_pass()
             return _KEYWORD_GAP_SECONDS if self.index < len(self.passes) else None
-        results = (data or {}).get("results") or []
+        results = videos_of(data)
         if not results and self.cursor != "0":
             # Rỗng giữa chừng: thường bị giới hạn tạm thời - chờ vài phút gọi lại đúng cursor; vẫn rỗng thì để đó (giữ
             # cursor cho lần tìm sau) và sang kiểu tìm kế.
@@ -265,14 +277,14 @@ class _QuerySearch:
             await self._next_pass(keep_cursor=True)
             return _KEYWORD_GAP_SECONDS if self.index < len(self.passes) else None
         self.empty_tries = 0
-        mapped = [v for v in (map_web_item(raw) for raw in results) if v]
+        mapped = [v for v in (map_video(raw, source="shortvid_search") for raw in results) if v]
         # Các kiểu tìm trùng nhau một phần - chỉ đếm/gửi video chưa gặp trong câu này.
         mapped = [v for v in mapped if v["video_id"] not in self.seen_ids]
         self.seen_ids.update(v["video_id"] for v in mapped)
         await publish_videos(mapped, self.query["keyword_id"], self.local, source="search")
         self.pages += 1
-        following = next_cursor(data or {})
-        if following is None or self.pages >= settings.omar_search_pages:
+        following = next_cursor(data if isinstance(data, dict) else None)
+        if following is None or self.pages >= settings.shortvid_search_pages:
             await self._next_pass()
         else:
             self.cursor = following
@@ -305,7 +317,7 @@ async def _search_one(
     take: Callable[[], bool],
     stats: dict[str, Any],
 ) -> bool:
-    """Tìm hết một câu liền một mạch (tìm ngay một câu từ tab Omar). True khi tìm xong không lỗi."""
+    """Tìm hết một câu liền một mạch (tìm ngay một câu từ tab ShortVid). True khi tìm xong không lỗi."""
     search = _QuerySearch(query)
     while True:
         delay = await search.step(client, pacer, api_key, take, stats)
@@ -318,109 +330,40 @@ async def _search_one(
 
 
 async def _track_zero(query: dict[str, Any], published: int) -> None:
-    """Câu tự sinh không ra video mới settings.omar_search_prune_days lần tìm liên tiếp thì xoá (đỡ tốn ngân sách)."""
+    """Câu tự sinh không ra video mới settings.shortvid_search_prune_days lần tìm liên tiếp thì xoá (đỡ tốn ngân sách)."""
     redis = get_redis_client()
     if published:
         await redis.hdel(ZERO_KEY, query["key"])
         return
     streak = int(await redis.hincrby(ZERO_KEY, query["key"], 1))
-    if streak >= settings.omar_search_prune_days:
+    if streak >= settings.shortvid_search_prune_days:
         await delete_custom_query(query["id"])
         await redis.hdel(ZERO_KEY, query["key"])
-        logger.info("omar_search_query_pruned", query=query["query"], movie=query.get("movie"))
-
-
-def keep_suggestion(text: str, title_plain: str) -> bool:
-    """Gợi ý đáng tìm: chứa tên phim (không dấu), không phải tìm kiếm nước ngoài, không quá dài."""
-    plain = normalize_title(text)
-    padded = f" {plain} "
-    return (
-        title_plain in plain
-        and plain != title_plain
-        and len(plain.split()) <= len(title_plain.split()) + 4
-        and not any(marker in padded for marker in _FOREIGN)
-    )
-
-
-async def discover_queries(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, take: Callable[[], bool]) -> int:
-    """Mỗi ngày một lần: gợi ý tìm kiếm của TikTok (search_suggest) cho tên phim không dấu, và từ khoá xu hướng ở Việt Nam
-    (trending_searches) chứa tên phim -> câu tìm mới (nguồn "suggest"), tối đa settings.omar_search_suggest_per_movie
-    câu mỗi phim. Câu không ra video mới bị tự xoá (_track_zero)."""
-    from app.services.omar.omar_tiktok import omar_get
-
-    redis = get_redis_client()
-    today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
-    if await redis.get(SUGGEST_DAY_KEY) == today:
-        return 0
-    queries = await build_queries()
-    existing = {" ".join(q["query"].lower().split()) for q in queries}
-    per_movie: dict[str, int] = {}
-    for q in queries:
-        if q["source"] == "suggest":
-            per_movie[q["movie_id"]] = per_movie.get(q["movie_id"], 0) + 1
-    titles_by_movie = {q["movie_id"]: q["movie"] for q in queries if q["source"] == "title"}
-    candidates: list[tuple[str, str]] = []
-    for movie_id, title in titles_by_movie.items():
-        title_plain = normalize_title(title)
-        if len(title_plain) < 4 or not take():
-            continue
-        await omar_yield.add("search", requests=1)
-        try:
-            data = await omar_get(client, pacer, api_key, "search_suggest", {"query": title_plain})
-        except Exception as exc:  # noqa: BLE001 - gợi ý lỗi: hôm sau thử lại
-            logger.warning("omar_search_suggest_failed", movie=title, error=str(exc)[:200])
-            continue
-        for item in (data or {}).get("suggestions") or []:
-            text = str(item.get("content") or "").strip()
-            if text and keep_suggestion(text, title_plain):
-                candidates.append((movie_id, text))
-    if take():
-        await omar_yield.add("search", requests=1)
-        try:
-            data = await omar_get(client, pacer, api_key, "trending_searches", {"region": "VN"})
-            for item in (data or {}).get("words") or []:
-                word = str(item.get("trendingSearchWord") or "").strip()
-                for movie_id, title in titles_by_movie.items():
-                    if word and len(normalize_title(title)) >= 6 and normalize_title(title) in normalize_title(word):
-                        candidates.append((movie_id, word))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("omar_trending_searches_failed", error=str(exc)[:200])
-    added = 0
-    for movie_id, text in candidates:
-        key = " ".join(text.lower().split())
-        if key in existing or per_movie.get(movie_id, 0) >= settings.omar_search_suggest_per_movie:
-            continue
-        await add_custom_query(movie_id, text, source="suggest")
-        existing.add(key)
-        per_movie[movie_id] = per_movie.get(movie_id, 0) + 1
-        added += 1
-    await redis.set(SUGGEST_DAY_KEY, today, ex=3 * 24 * 3600)
-    logger.info("omar_search_queries_discovered", added=added, candidates=len(candidates))
-    return added
+        logger.info("shortvid_search_query_pruned", query=query["query"], movie=query.get("movie"))
 
 
 _manual_tasks: set[asyncio.Task] = set()
 
 
 def search_now(query: dict[str, Any]) -> None:
-    """Tìm ngay một câu (vừa thêm ở tab Omar), độc lập với lượt đang chạy."""
-    from app.services.accounts.platform_config_db import get_omar_api_settings
-    from app.services.omar.omar_tiktok import _Pacer
+    """Tìm ngay một câu (vừa thêm ở tab ShortVid), độc lập với lượt đang chạy."""
+    from app.services.accounts.platform_config_db import get_shortvid_api_settings
+    from app.services.shortvid.shortvid_tiktok import _Pacer
 
     async def run() -> None:
-        api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
+        api_key = ((await get_shortvid_api_settings() or {}).get("api_key") or "").strip()
         if not api_key:
             return
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
                 await _search_one(
-                    client, _Pacer(settings.omar_manual_requests_per_minute), api_key, query, lambda: True, {}
+                    client, _Pacer(settings.shortvid_manual_requests_per_minute), api_key, query, lambda: True, {}
                 )
             await get_redis_client().hset(
                 DONE_KEY, query["key"], datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
             )
         except Exception as exc:  # noqa: BLE001
-            logger.error("omar_search_manual_failed", query=query.get("query"), error=str(exc)[:300])
+            logger.error("shortvid_search_manual_failed", query=query.get("query"), error=str(exc)[:300])
 
     task = asyncio.create_task(run())
     _manual_tasks.add(task)
@@ -435,17 +378,10 @@ async def run_search(
     stats: dict[str, Any],
     should_stop: Callable[[], bool],
 ) -> None:
-    from app.services.omar.omar_tiktok import OmarStop, run_round_robin
+    from app.services.shortvid.shortvid_tiktok import ShortVidStop, run_round_robin
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     redis = get_redis_client()
-    if settings.omar_search_suggest:
-        try:
-            await discover_queries(client, pacer, api_key, lambda: not should_stop() and budget.take())
-        except OmarStop:
-            raise
-        except Exception as exc:  # noqa: BLE001 - mở rộng câu tìm lỗi không chặn phần tìm
-            logger.warning("omar_search_discover_failed", error=str(exc)[:200])
     done = await redis.hgetall(DONE_KEY) or {}
     queries = [q for q in await build_queries() if done.get(q["key"]) != today]
     if not queries:
@@ -462,17 +398,17 @@ async def run_search(
     async def step(search: _QuerySearch) -> float | None:
         try:
             delay = await search.step(client, pacer, api_key, take, stats)
-        except OmarStop as exc:
+        except ShortVidStop as exc:
             stopped.append(exc)
             return None
         if delay is None and not search.halted and await search.finish(stats):
             await redis.hset(DONE_KEY, search.query["key"], today)
         return delay
 
-    # Xen kẽ giữa các câu, mỗi lần một trang (không gọi dồn một câu) - xem omar_tiktok.run_round_robin.
+    # Xen kẽ giữa các câu, mỗi lần một trang (không gọi dồn một câu) - xem shortvid_tiktok.run_round_robin.
     await run_round_robin([_QuerySearch(q) for q in queries], step, workers=_WORKERS, should_stop=halted)
     logger.info(
-        "omar_search_processed",
+        "shortvid_search_processed",
         queries=len(queries),
         requests=stats["search_requests"],
         videos=stats["search_videos"],

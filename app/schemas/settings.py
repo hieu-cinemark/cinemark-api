@@ -504,9 +504,9 @@ class CleanupRunHistoryEntry(BaseModel):
     error: str | None = None
 
 
-# --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
+# --- Cấu hình ShortVid API (api.shortvidapi.com) --------------------------------
 # Dùng cho crawl video/hashtag thay vì spider-hub khi toggle bật trên dashboard.
-# API key được đọc từ Supabase (bảng omar_api_settings), không từ env.
+# API key được đọc từ Supabase (bảng shortvid_api_settings), không từ env.
 
 
 class DiscoverySettings(BaseModel):
@@ -521,7 +521,7 @@ class DiscoverySettingsUpdate(BaseModel):
     enabled: bool
 
 
-class OmarApiSettingsOut(BaseModel):
+class ShortVidApiSettingsOut(BaseModel):
     # Có api_key hay chưa - không bao giờ trả về key thô.
     api_key_set: bool
     base_url: str
@@ -530,7 +530,7 @@ class OmarApiSettingsOut(BaseModel):
     updated_at: datetime | None = None
 
 
-class OmarApiSettingsUpdate(BaseModel):
+class ShortVidApiSettingsUpdate(BaseModel):
     api_key: str | None = Field(default=None, max_length=500)
     base_url: str | None = Field(default=None, max_length=200)
     # None = giữ nguyên; 0 = theo giới hạn của gói.

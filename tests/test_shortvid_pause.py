@@ -3,7 +3,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
-from app.services.omar import omar_tiktok as ot
+from app.services.shortvid import shortvid_tiktok as ot
 
 
 class _FakeRedis:
@@ -32,7 +32,7 @@ def _setup(monkeypatch, *, usage=None, key="key-a"):
         return {"api_key": key}
 
     monkeypatch.setattr(ot, "fetch_usage", fake_usage)
-    monkeypatch.setattr(ot, "get_omar_api_settings", fake_settings)
+    monkeypatch.setattr(ot, "get_shortvid_api_settings", fake_settings)
     return redis
 
 
@@ -53,18 +53,18 @@ def test_quota_stop_pauses_until_reset(monkeypatch):
 
 
 def test_exhausted_budget_pauses_only_in_continuous_mode(monkeypatch):
-    redis = _setup(monkeypatch, usage={"day": {"remaining": settings.omar_daily_reserve, "resets_in": 600}})
-    monkeypatch.setattr(settings, "omar_spread_daily", True)
+    redis = _setup(monkeypatch, usage={"day": {"remaining": settings.shortvid_daily_reserve, "resets_in": 600}})
+    monkeypatch.setattr(settings, "shortvid_spread_daily", True)
     asyncio.run(ot._pause_after_round({}, "key-a", None, True))
     assert _pause(redis) is None  # rải đều theo giờ: hết ngân sách giờ là bình thường
-    monkeypatch.setattr(settings, "omar_spread_daily", False)
+    monkeypatch.setattr(settings, "shortvid_spread_daily", False)
     asyncio.run(ot._pause_after_round({}, "key-a", None, True))
     assert _pause(redis)["reason"] == "quota"
 
 
 def test_no_pause_when_quota_left_or_work_done(monkeypatch):
     redis = _setup(monkeypatch, usage={"day": {"remaining": 900, "resets_in": 600}})
-    monkeypatch.setattr(settings, "omar_spread_daily", False)
+    monkeypatch.setattr(settings, "shortvid_spread_daily", False)
     asyncio.run(ot._pause_after_round({}, "key-a", None, True))  # gói vừa được nâng: còn hạn mức
     asyncio.run(ot._pause_after_round({}, "key-a", None, False))  # hết việc trước khi hết ngân sách
     assert _pause(redis) is None

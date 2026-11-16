@@ -22,7 +22,7 @@ _HASHTAG_DISCOVERY_KEY = f"{KEY_PREFIX}hashtag_discovery:last_run"
 
 async def discovery_enabled() -> bool:
     """Công tắc "AI tự thêm nguồn cào" trên dashboard (bảng discovery_settings). Tắt -> không chạy hashtag_discovery,
-    query_discovery, duyệt trang nguồn gợi ý, kể cả bước BFS sau lượt Omar: chỉ cào từ khoá / trang đang có. Đọc lỗi thì
+    query_discovery, duyệt trang nguồn gợi ý, kể cả bước BFS sau lượt ShortVid: chỉ cào từ khoá / trang đang có. Đọc lỗi thì
     coi như bật (hành vi trước khi có công tắc)."""
     try:
         return bool((await db.get_discovery_settings()).get("enabled", True))

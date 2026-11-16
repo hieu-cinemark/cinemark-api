@@ -1,6 +1,6 @@
 """AI tìm thêm hashtag TikTok cho từng phim đang theo dõi (TikTok chỉ tìm bài được qua hashtag).
 
-Mỗi ngày một lượt (và sau mỗi lượt Omar):
+Mỗi ngày một lượt (và sau mỗi lượt ShortVid):
 
 1. Ứng viên: biến thể tự sinh từ tên phim + hashtag đi kèm mà lượt cào đã gom.
 2. Luật trước khi gọi AI: bỏ tag đã là từ khoá (kể cả đã tắt), tag đã quyết, tag chung chung, tag chứa tên phim khác.
@@ -32,14 +32,14 @@ from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec, d1_insert_many, metadata
 from app.repositories.d1.store import add_keyword, enable_keyword, related_hashtags_for_keywords
 from app.repositories.d1.tables import keywords, movies, posts
-from app.services.omar.omar_tiktok import hashtag_exists
+from app.services.shortvid.shortvid_tiktok import hashtag_exists
 from app.services.relevance.relevance_rules import normalize_title, title_acronym
 
 logger = get_logger(__name__)
 
 TASK = "hashtag_discovery"
 # Nới để gom nhiều video: tag AI thêm mà không đem về bài nào vẫn bị tắt sau PRUNE_AFTER_DAYS ngày, nên tag sai chỉ tốn
-# hạn mức Omar trong vài ngày.
+# hạn mức ShortVid trong vài ngày.
 MIN_CONFIDENCE = 70
 MAX_CANDIDATES_PER_MOVIE = 60
 # BFS: tối đa chừng này tầng tính từ từ khoá gốc (người nhập = 0) để không lan sang chủ đề khác.
@@ -320,7 +320,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
         for kw in keyword_rows:
             if kw["movie_id"] != movie["id"]:
                 continue
-            # Hashtag đi kèm (spider + Omar, d1.related_hashtags_for_keywords) - chỉ khi từ khoá cha chưa ở tầng sâu nhất.
+            # Hashtag đi kèm (spider + ShortVid, d1.related_hashtags_for_keywords) - chỉ khi từ khoá cha chưa ở tầng sâu nhất.
             parent_depth = depth_of.get(kw["id"], 0)
             if parent_depth >= BFS_MAX_DEPTH:
                 continue
@@ -349,7 +349,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             and not any(other in tag for other in other_tags)
         }
         # Biến thể tự sinh (HoLinhTrangSiMovie, ChiChiEmEm32026...) phần lớn KHÔNG có trên TikTok - kiểm tra
-        # qua Omar trước khi hỏi Kira; không có thì ghi "rejected" (xét lại sau RECHECK_REJECTED_DAYS ngày). Hashtag đi kèm
+        # qua ShortVid trước khi hỏi Kira; không có thì ghi "rejected" (xét lại sau RECHECK_REJECTED_DAYS ngày). Hashtag đi kèm
         # lấy từ video thật nên không cần kiểm tra.
         for tag, cand in list(cands.items()):
             if cand["source"] != "variant" or await hashtag_exists(cand["display"]) is not False:
@@ -357,7 +357,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             del cands[tag]
             stats["not_on_tiktok"] = stats.get("not_on_tiktok", 0) + 1
             if not dry_run:
-                verdict = {"verdict": "not_on_tiktok", "confidence": 100, "reason": "Không có video trên TikTok (Omar)"}
+                verdict = {"verdict": "not_on_tiktok", "confidence": 100, "reason": "Không có video trên TikTok (ShortVid)"}
                 await _record(movie["id"], cand, verdict, "rejected", None)
         if not cands:
             continue

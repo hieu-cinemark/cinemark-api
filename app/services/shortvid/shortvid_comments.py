@@ -1,15 +1,15 @@
-"""Bình luận TikTok qua Omar API - MỖI NGÀY (settings.omar_comments_cadence,; mỗi tuần).
+"""Bình luận TikTok qua ShortVid API - MỖI NGÀY (settings.shortvid_comments_cadence,; mỗi tuần).
 
-Mỗi ngày (hoặc từ thứ settings.omar_comments_weekday) lúc settings.omar_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
-hashtag TikTok đang bật settings.omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất (thích +
-3 x bình luận + chia sẻ, chỉ bài liên quan và có bình luận), rồi xếp vào hàng đợi Redis (omar:comments:jobs). Mỗi lượt
-Omar (omar_tiktok.run_omar_round) xử lý hàng đợi SAU phần video mới (ưu tiên video): mỗi video lật /comments tới hết, bình luận nào có
-trả lời thì lật /comment_replies tới hết. Con trỏ lưu sau mỗi trang - hết ngân sách / dừng / restart thì lượt sau đi
-tiếp đúng chỗ; xong video thì xoá khỏi hàng đợi và đánh dấu posts.comments_crawled_* (lý do "omar_weekly").
+Mỗi ngày (hoặc từ thứ settings.shortvid_comments_weekday) lúc settings.shortvid_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
+hashtag TikTok đang bật settings.shortvid_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất (thích +
+3 x bình luận + chia sẻ, chỉ bài liên quan và có bình luận), rồi xếp vào hàng đợi Redis (shortvid:comments:jobs). Mỗi lượt
+ShortVid (shortvid_tiktok.run_shortvid_round) xử lý hàng đợi SAU phần video mới (ưu tiên video): mỗi video lật comment/list tới hết, bình luận nào có
+trả lời thì lật comment/reply tới hết. Con trỏ lưu sau mỗi trang - hết ngân sách / dừng / restart thì lượt sau đi
+tiếp đúng chỗ; xong video thì xoá khỏi hàng đợi và đánh dấu posts.comments_crawled_* (lý do "shortvid_weekly").
 
 Bình luận đi ĐÚNG đường của spider: topic raw_comments, key "tiktok:<comment_id>", cùng tên trường TikTokCommentItem
 (map_comment là bản port của spiders/tiktok/features/comments/extract.py), chống trùng qua tập
-tiktok:seen_comment_ids dùng chung với spider - bình luận spider đã gửi thì Omar không gửi lại và ngược lại."""
+tiktok:seen_comment_ids dùng chung với spider - bình luận spider đã gửi thì ShortVid không gửi lại và ngược lại."""
 
 from __future__ import annotations
 
@@ -32,19 +32,20 @@ from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metadata
 from app.repositories.d1.store import get_enabled_keywords
 from app.repositories.d1.tables import posts
-from app.services.omar import omar_yield
+from app.clients.shortvid import PAGE_SIZE, map_comment
+from app.services.shortvid import shortvid_yield
 
 if TYPE_CHECKING:
     from redis.typing import EncodableT, FieldT
 
-    from app.services.omar.omar_tiktok import Budget, _Pacer
+    from app.services.shortvid.shortvid_tiktok import Budget, _Pacer
 
 logger = get_logger(__name__)
 
-JOBS_KEY = f"{REDIS_KEY_PREFIX}omar:comments:jobs"
-WEEK_KEY = f"{REDIS_KEY_PREFIX}omar:comments:week"
-LAST_JOB_KEY = f"{REDIS_KEY_PREFIX}omar:comments:last_job"
-ENQUEUE_LOCK_KEY = f"{REDIS_KEY_PREFIX}omar:comments:enqueuing"
+JOBS_KEY = f"{REDIS_KEY_PREFIX}shortvid:comments:jobs"
+WEEK_KEY = f"{REDIS_KEY_PREFIX}shortvid:comments:week"
+LAST_JOB_KEY = f"{REDIS_KEY_PREFIX}shortvid:comments:last_job"
+ENQUEUE_LOCK_KEY = f"{REDIS_KEY_PREFIX}shortvid:comments:enqueuing"
 _SPIDER_SEEN_COMMENTS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_comment_ids"
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 WINDOW = timedelta(days=7)
@@ -53,30 +54,8 @@ _MAX_PAGES_PER_VIDEO = 2000
 _MAX_REPLY_PAGES = 200
 
 
-def map_comment(raw: dict[str, Any], *, parent_comment_id: str | None = None) -> dict[str, Any] | None:
-    """Một bình luận dạng gốc của TikTok -> tên trường TikTokCommentItem của spider-hub. None khi thiếu id."""
-    cid = raw.get("cid")
-    if not cid:
-        return None
-    user = raw.get("user") or {}
-    reply_id = str(raw.get("reply_id") or "")
-    parent = parent_comment_id or (reply_id if reply_id and reply_id != "0" else None)
-    return {
-        "comment_id": str(cid),
-        "message": raw.get("text"),
-        "timestamp": raw.get("create_time"),
-        "like_count": raw.get("digg_count") or 0,
-        "reply_count": raw.get("reply_comment_total") or 0,
-        "author_id": user.get("uid"),
-        "author_username": user.get("unique_id"),
-        "author_name": user.get("nickname"),
-        "author_avatar_url": ((user.get("avatar_thumb") or {}).get("url_list") or [None])[0],
-        "parent_comment_id": parent,
-    }
-
-
 def _daily() -> bool:
-    return settings.omar_comments_cadence.strip().lower() == "daily"
+    return settings.shortvid_comments_cadence.strip().lower() == "daily"
 
 
 def iso_week(now: datetime) -> str:
@@ -91,21 +70,21 @@ def weekly_due(now: datetime) -> bool:
     """Đã qua mốc giờ của hôm nay (mỗi ngày) / mốc (thứ, giờ) của tuần này (mỗi tuần) chưa - bỏ lỡ mốc (API tắt) thì chạy
     bù khi bật lại trong kỳ."""
     try:
-        hour, minute = (int(part) for part in settings.omar_comments_time.split(":", 1))
+        hour, minute = (int(part) for part in settings.shortvid_comments_time.split(":", 1))
     except ValueError:
         return False
     if _daily():
         return now.hour * 60 + now.minute >= hour * 60 + minute
-    return (now.weekday(), now.hour * 60 + now.minute) >= (settings.omar_comments_weekday, hour * 60 + minute)
+    return (now.weekday(), now.hour * 60 + now.minute) >= (settings.shortvid_comments_weekday, hour * 60 + minute)
 
 
-# Chạy mỗi ngày: bỏ video Omar đã cào hết mà chưa có thêm đủ bình luận. Chỉ tính lần cào của Omar (lý do "omar_..."):
-# spider cũng ghi comments_crawled_* nhưng chỉ quét vài trang đầu (comment_planner), video đó vẫn cần Omar cào hết.
+# Chạy mỗi ngày: bỏ video ShortVid đã cào hết mà chưa có thêm đủ bình luận. Chỉ tính lần cào của ShortVid (lý do "shortvid_..."):
+# spider cũng ghi comments_crawled_* nhưng chỉ quét vài trang đầu (comment_planner), video đó vẫn cần ShortVid cào hết.
 _P = posts.alias("p")
 
 
 def video_score(p):
-    """Thứ tự "nhiều tương tác" của video TikTok (bình luận nặng gấp 3) - cũng dùng ở omar_trending."""
+    """Thứ tự "nhiều tương tác" của video TikTok (bình luận nặng gấp 3) - cũng dùng ở shortvid_trending."""
     return (
         func.coalesce(p.c.like_count, 0)
         + 3 * func.coalesce(p.c.reply_count, 0)
@@ -116,24 +95,24 @@ def video_score(p):
 
 _VIDEO_SCORE = video_score(_P)
 keyword_table = Table(
-    "omar_comment_keywords",
+    "shortvid_comment_keywords",
     metadata,
     Column("keyword_id", Text, primary_key=True),
     Column("created_at", Text, nullable=False),
 )
 options_table = Table(
-    "omar_comment_options", metadata, Column("key", Text, primary_key=True), Column("value", Text, nullable=False)
+    "shortvid_comment_options", metadata, Column("key", Text, primary_key=True), Column("value", Text, nullable=False)
 )
 
 
 def _needs_crawl():
-    """Chưa cào bằng Omar, hoặc bình luận đã tăng đủ (regrowth) từ lần cào trước."""
+    """Chưa cào bằng ShortVid, hoặc bình luận đã tăng đủ (regrowth) từ lần cào trước."""
     crawled = func.coalesce(_P.c.comments_crawled_replies, 0)
     return or_(
-        func.coalesce(_P.c.comments_crawl_reason, "").not_like("omar%"),
+        func.coalesce(_P.c.comments_crawl_reason, "").not_like("shortvid%"),
         and_(
-            _P.c.reply_count - crawled >= settings.omar_comments_regrowth_min,
-            _P.c.reply_count >= crawled * (1 + settings.omar_comments_regrowth_ratio),
+            _P.c.reply_count - crawled >= settings.shortvid_comments_regrowth_min,
+            _P.c.reply_count >= crawled * (1 + settings.shortvid_comments_regrowth_ratio),
         ),
     )
 
@@ -194,8 +173,8 @@ async def _ensure_options_table() -> None:
 
 
 async def all_videos_enabled() -> bool:
-    """Tuỳ chọn "toàn bộ video" ở tab Omar: ngoài top video 7 ngày, xếp hàng MỌI video có bình luận của các từ khoá đã
-    chọn (mọi thời điểm) mà Omar chưa cào. Chỉ áp dụng cho từ khoá chọn tay - danh sách trống (mặc định mọi hashtag)
+    """Tuỳ chọn "toàn bộ video" ở tab ShortVid: ngoài top video 7 ngày, xếp hàng MỌI video có bình luận của các từ khoá đã
+    chọn (mọi thời điểm) mà ShortVid chưa cào. Chỉ áp dụng cho từ khoá chọn tay - danh sách trống (mặc định mọi hashtag)
     thì bỏ qua, tránh xếp hàng hàng chục nghìn video một lúc."""
     await _ensure_options_table()
     rows = await d1_exec(select(options_table.c.value).where(options_table.c.key == "all_videos"), quiet=True) or []
@@ -207,13 +186,13 @@ async def set_all_videos(enabled: bool) -> bool:
     await d1_insert_many(
         options_table, [{"key": "all_videos", "value": "1" if enabled else "0"}], conflict=["key"], quiet=True
     )
-    logger.info("omar_comment_all_videos_set", enabled=enabled)
+    logger.info("shortvid_comment_all_videos_set", enabled=enabled)
     return enabled
 
 
 async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """Mọi video TikTok liên quan, có bình luận, của các từ khoá này mà Omar chưa cào xong (comments_crawl_reason không
-    bắt đầu bằng "omar") - nhiều tương tác trước. Video Omar đã cào thì lịch tuần (top 7 ngày) lo phần bình luận mới."""
+    """Mọi video TikTok liên quan, có bình luận, của các từ khoá này mà ShortVid chưa cào xong (comments_crawl_reason không
+    bắt đầu bằng "shortvid") - nhiều tương tác trước. Video ShortVid đã cào thì lịch tuần (top 7 ngày) lo phần bình luận mới."""
     if not keyword_ids:
         return {}
     rows = (
@@ -224,7 +203,7 @@ async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]
                 _P.c.keyword_id.in_(json_values(keyword_ids)),
                 _P.c.reply_count > 0,
                 relevant_post(_P),
-                or_(_P.c.comments_crawl_reason.is_(None), _P.c.comments_crawl_reason.not_like("omar%")),
+                or_(_P.c.comments_crawl_reason.is_(None), _P.c.comments_crawl_reason.not_like("shortvid%")),
             )
             .order_by(_P.c.keyword_id, _VIDEO_SCORE.desc()),
             quiet=True,
@@ -239,7 +218,7 @@ async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]
 
 
 async def selected_keyword_ids() -> list[str]:
-    """Từ khoá người dùng chọn để cào bình luận (tab Omar). Rỗng = mặc định: mọi hashtag TikTok đang bật."""
+    """Từ khoá người dùng chọn để cào bình luận (tab ShortVid). Rỗng = mặc định: mọi hashtag TikTok đang bật."""
     await _ensure_keyword_table()
     rows = await d1_exec(select(keyword_table.c.keyword_id).order_by(keyword_table.c.created_at), quiet=True) or []
     return [str(row["keyword_id"]) for row in rows]
@@ -253,7 +232,7 @@ async def set_selected_keyword_ids(keyword_ids: list[str]) -> list[str]:
     now = datetime.now(tz=UTC).isoformat()
     await d1_exec(delete(keyword_table), quiet=True)
     await d1_insert_many(keyword_table, [{"keyword_id": k, "created_at": now} for k in wanted], quiet=True)
-    logger.info("omar_comment_keywords_set", count=len(wanted))
+    logger.info("shortvid_comment_keywords_set", count=len(wanted))
     return wanted
 
 
@@ -279,7 +258,7 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
     added, per_hashtag = 0, {}
     jobs: dict[FieldT, EncodableT] = {}
     keyword_ids = [str(kw["id"]) for kw in keywords]
-    top = await _top_videos(keyword_ids, since, settings.omar_comments_top_per_hashtag)
+    top = await _top_videos(keyword_ids, since, settings.shortvid_comments_top_per_hashtag)
     all_videos = bool(await selected_keyword_ids()) and await all_videos_enabled()
     rest = await _all_videos(keyword_ids) if all_videos else {}
     for kw in keywords:
@@ -296,7 +275,7 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
                     "post_id": row["id"],
                     "hashtag": kw["keyword"],
                     "rank": rank,
-                    "reason": "omar_daily" if _daily() else "omar_weekly",
+                    "reason": "shortvid_daily" if _daily() else "shortvid_weekly",
                     "reply_count": int(row.get("reply_count") or 0),
                     "cursor": "0",
                     "pages": 0,
@@ -323,7 +302,7 @@ async def enqueue_weekly_job(*, week: str | None = None, trigger: str = "schedul
         "published": 0,
     }
     await redis.set(LAST_JOB_KEY, json.dumps(info))
-    logger.info("omar_comments_enqueued", **{k: v for k, v in info.items() if k != "finished_at"})
+    logger.info("shortvid_comments_enqueued", **{k: v for k, v in info.items() if k != "finished_at"})
     return info
 
 
@@ -341,7 +320,7 @@ async def weekly_enqueue_due(now_local: datetime) -> bool:
 
 async def enqueue_videos(videos: list[dict[str, Any]], *, reason: str, hashtag: str = "trending") -> int:
     """Xếp thêm từng video ({video_id, post_id, reply_count}) vào CÙNG hàng đợi với job tuần - dùng cho video đang lên
-    (app/services/omar/omar_trending.py). Video đã có trong hàng đợi giữ nguyên con trỏ. Không đụng LAST_JOB_KEY / WEEK_KEY nên
+    (app/services/shortvid/shortvid_trending.py). Video đã có trong hàng đợi giữ nguyên con trỏ. Không đụng LAST_JOB_KEY / WEEK_KEY nên
     lịch tuần không đổi. Trả số video thêm mới."""
     redis = get_redis_client()
     existing = {key.decode() if isinstance(key, bytes) else key for key in await redis.hkeys(JOBS_KEY) or []}
@@ -365,7 +344,7 @@ async def enqueue_videos(videos: list[dict[str, Any]], *, reason: str, hashtag: 
         )
     if jobs:
         await redis.hset(JOBS_KEY, mapping=jobs)
-        logger.info("omar_comments_videos_enqueued", reason=reason, videos=len(jobs))
+        logger.info("shortvid_comments_videos_enqueued", reason=reason, videos=len(jobs))
     return len(jobs)
 
 
@@ -381,7 +360,7 @@ async def pending_jobs() -> list[dict[str, Any]]:
 
 
 async def job_status() -> dict[str, Any]:
-    """Cho tab Omar: lần xếp hàng gần nhất + số video còn trong hàng đợi."""
+    """Cho tab ShortVid: lần xếp hàng gần nhất + số video còn trong hàng đợi."""
     redis = get_redis_client()
     raw = await redis.get(LAST_JOB_KEY)
     last = json.loads(raw) if raw else None
@@ -424,7 +403,7 @@ async def _publish(video_id: str, comments: list[dict[str, Any]]) -> int:
         else:
             await redis.srem(_SPIDER_SEEN_COMMENTS_KEY, comment["comment_id"])  # chưa tới Kafka: lần sau gửi lại
     # Bình luận chỉ gửi khi chưa từng thấy, nên số gửi = số mới.
-    await omar_yield.add("comments", sent=sent, new=sent)
+    await shortvid_yield.add("comments", sent=sent, new=sent)
     return sent
 
 
@@ -436,9 +415,9 @@ async def process_queue(
     stats: dict[str, Any],
     should_stop: Callable[[], bool],
 ) -> None:
-    """Cào bình luận các video trong hàng đợi trên settings.omar_concurrency worker song song (mỗi video một worker),
-    trong `budget` dùng chung với lượt. OmarStop được ném ra cho run_omar_round dừng lượt."""
-    from app.services.omar.omar_tiktok import OmarStop, next_cursor, omar_get
+    """Cào bình luận các video trong hàng đợi trên settings.shortvid_concurrency worker song song (mỗi video một worker),
+    trong `budget` dùng chung với lượt. ShortVidStop được ném ra cho run_shortvid_round dừng lượt."""
+    from app.clients.shortvid import ShortVidStop, next_cursor, shortvid_get
 
     jobs = await pending_jobs()
     if not jobs:
@@ -453,13 +432,14 @@ async def process_queue(
     def halted() -> bool:
         return bool(stopped) or should_stop() or budget.exhausted
 
-    async def get(path: str, params: dict[str, str]) -> dict[str, Any] | None:
+    async def get(path: str, params: dict[str, Any]) -> dict[str, Any] | None:
         if not budget.take():
             return None
         stats["requests"] += 1
         stats["comment_requests"] += 1
-        await omar_yield.add("comments", requests=1)
-        return await omar_get(client, pacer, api_key, path, params)
+        await shortvid_yield.add("comments", requests=1)
+        data = await shortvid_get(client, pacer.wait, api_key, path, params)
+        return data if isinstance(data, dict) else None
 
     async def replies_of(video_id: str, comment_id: str) -> bool:
         """Mọi trả lời của một bình luận. False khi hết ngân sách giữa chừng."""
@@ -467,10 +447,14 @@ async def process_queue(
         for _ in range(_MAX_REPLY_PAGES):
             if halted():
                 return False
-            data = await get("comment_replies", {"video": video_id, "comment_id": comment_id, "cursor": cursor})
+            data = await get(
+                "comment/reply",
+                {"url": video_id, "comment_id": comment_id, "count": PAGE_SIZE["comment/reply"], "cursor": cursor},
+            )
             if data is None:
                 return not budget.exhausted
-            mapped = [c for c in (map_comment(r, parent_comment_id=comment_id) for r in data.get("replies") or []) if c]
+            raw = [r for r in data.get("comments") or [] if isinstance(r, dict)]
+            mapped = [c for c in (map_comment(r, parent_comment_id=comment_id) for r in raw) if c]
             stats["comment_replies"] += len(mapped)
             sent = await _publish(video_id, mapped)
             stats["comments_published"] += sent
@@ -486,7 +470,7 @@ async def process_queue(
         for _ in range(_MAX_PAGES_PER_VIDEO - int(job.get("pages") or 0)):
             if halted():
                 return
-            data = await get("comments", {"video": video_id, "cursor": cursor})
+            data = await get("comment/list", {"url": video_id, "count": PAGE_SIZE["comment/list"], "cursor": cursor})
             if data is None and budget.exhausted:
                 return
             raw = list((data or {}).get("comments") or [])
@@ -495,7 +479,7 @@ async def process_queue(
             sent = await _publish(video_id, mapped)
             stats["comments_published"] += sent
             await _update_last_job(comments=len(mapped), published=sent)
-            if settings.omar_comments_replies:
+            if settings.shortvid_comments_replies:
                 # Bình luận đã lấy hết trả lời ở trang này - hết ngân sách giữa trang thì lượt sau làm lại trang nhưng
                 # bỏ qua chúng (bình luận đã gửi thì dedupe bỏ qua).
                 replied = set(job.get("replied") or [])
@@ -525,8 +509,8 @@ async def process_queue(
             .values(
                 comments_crawled_at=datetime.now(tz=UTC).isoformat(),
                 comments_crawled_replies=job.get("reply_count") or 0,
-                # "omar_trending": xếp hàng từ omar_trending (enqueue_videos)
-                comments_crawl_reason=job.get("reason") or "omar_weekly",
+                # "shortvid_trending": xếp hàng từ shortvid_trending (enqueue_videos)
+                comments_crawl_reason=job.get("reason") or "shortvid_weekly",
             ),
             quiet=True,
         )
@@ -536,15 +520,15 @@ async def process_queue(
             job = queue.get_nowait()
             try:
                 await crawl(job)
-            except OmarStop as exc:
+            except ShortVidStop as exc:
                 stopped.append(exc)
             except Exception as exc:  # noqa: BLE001 - một video lỗi: giữ trong hàng đợi, lượt sau thử lại
                 stats["failed"] += 1
-                logger.warning("omar_comments_video_failed", video_id=job["video_id"], error=str(exc)[:200])
+                logger.warning("shortvid_comments_video_failed", video_id=job["video_id"], error=str(exc)[:200])
 
-    await asyncio.gather(*(worker() for _ in range(max(1, min(settings.omar_concurrency, len(jobs))))))
+    await asyncio.gather(*(worker() for _ in range(max(1, min(settings.shortvid_concurrency, len(jobs))))))
     logger.info(
-        "omar_comments_processed",
+        "shortvid_comments_processed",
         videos=stats["comment_videos"],
         requests=stats["comment_requests"],
         comments=stats["comments"],

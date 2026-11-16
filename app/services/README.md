@@ -7,7 +7,7 @@ Nghiệp vụ của service, gọi xuống `repositories`, `clients` và `ai`.
 | `crawl/` | Lịch cào, làn Facebook, hàng đợi, bình luận, trang nguồn, bài booking |
 | `ai_jobs/` | Job AI nền: nhãn tác giả, niche kênh, Review Angles |
 | `discovery/` | AI tìm thêm hashtag và câu tìm kiếm |
-| `omar/` | Cào TikTok qua Omar API |
+| `shortvid/` | Cào TikTok qua ShortVid API |
 | `accounts/` | Tài khoản, proxy, phiên đăng nhập, sức khoẻ tài khoản |
 | `relevance/` | Luật độ liên quan, dọn bài không liên quan |
 | `reports/` | Report Social Topic |

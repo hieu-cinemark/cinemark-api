@@ -1,8 +1,10 @@
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
-from app.services.omar import omar_search as os_
-from app.services.omar import omar_tiktok as ot
+from app.clients import shortvid as sv
+from app.services.shortvid import shortvid_search as os_
+from app.services.shortvid import shortvid_tiktok as ot
 
 
 def test_round_robin_interleaves_items():
@@ -36,7 +38,7 @@ def test_search_retries_empty_mid_page_same_cursor(monkeypatch):
     redis = _FakeRedis()
     monkeypatch.setattr(os_, "get_redis_client", lambda: redis)
     monkeypatch.setattr(os_, "search_modes", lambda: [{}])
-    monkeypatch.setattr(os_.settings, "omar_search_pages", 10)
+    monkeypatch.setattr(os_.settings, "shortvid_search_pages", 10)
 
     async def no_yield(*_a, **_k):
         return None
@@ -44,32 +46,33 @@ def test_search_retries_empty_mid_page_same_cursor(monkeypatch):
     async def no_publish(*_a, **_k):
         return None
 
-    monkeypatch.setattr(os_.omar_yield, "add", no_yield)
+    monkeypatch.setattr(os_.shortvid_yield, "add", no_yield)
     monkeypatch.setattr(ot, "publish_videos", no_publish)
-    monkeypatch.setattr(ot, "map_web_item", lambda raw: {"video_id": raw["id"]})
+    monkeypatch.setattr(sv, "map_video", lambda raw, source="": {"video_id": raw["id"]})
     pages = iter(
         [
-            {"results": [{"id": "1"}], "has_more": True, "next_cursor": "20"},
-            {"results": [], "has_more": True, "next_cursor": "40"},  # giới hạn tạm thời
-            {"results": [], "has_more": True, "next_cursor": "40"},
-            {"results": [{"id": "2"}], "has_more": False},
+            {"videos": [{"id": "1"}], "hasMore": True, "cursor": "20"},
+            {"videos": [], "hasMore": True, "cursor": "40"},  # giới hạn tạm thời
+            {"videos": [], "hasMore": True, "cursor": "40"},
+            {"videos": [{"id": "2"}], "hasMore": False},
         ]
     )
     cursors: list[str] = []
 
-    async def fake_get(_client, _pacer, _key, path, params):
-        if path == "search_videos":
+    async def fake_get(_client, _wait, _key, path, params):
+        if path == "video/search":
             cursors.append(params["cursor"])
             return next(pages)
-        return {"results": [], "has_more": False}
+        return {"videos": [], "hasMore": False}
 
-    monkeypatch.setattr(ot, "omar_get", fake_get)
+    monkeypatch.setattr(sv, "shortvid_get", fake_get)
     search = os_._QuerySearch({"query": "q", "key": "q", "keyword_id": "k"})
     delays = []
 
     async def run():
-        unused: Any = None  # client/pacer: step() trong test không gọi HTTP thật
-        while (delay := await search.step(unused, unused, "key", lambda: True, {})) is not None:
+        unused: Any = None  # client: step() trong test không gọi HTTP thật
+        pacer: Any = SimpleNamespace(wait=None)
+        while (delay := await search.step(unused, pacer, "key", lambda: True, {})) is not None:
             delays.append(delay)
 
     asyncio.run(run())

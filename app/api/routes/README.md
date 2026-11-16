@@ -10,4 +10,4 @@ Mỗi file một nhóm route. Route chỉ kiểm tra đầu vào, gọi `app/ser
 | `settings.py` | Tài khoản, proxy, lịch cào, cấu hình AI |
 | `jobs.py`, `logs.py`, `stats.py` | Hàng đợi, log, thống kê cho dashboard |
 | `token_refresh.py` | Làm mới phiên đăng nhập |
-| `omar.py`, `research.py`, `cron.py`, `auth.py`, `health.py` | Omar API, tin báo chí, danh sách cron, kiểm tra khoá, health |
+| `shortvid.py`, `research.py`, `cron.py`, `auth.py`, `health.py` | ShortVid API, tin báo chí, danh sách cron, kiểm tra khoá, health |

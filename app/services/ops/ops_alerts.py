@@ -1,20 +1,20 @@
 """Cảnh báo vận hành qua Telegram - scheduler (app/services/crawl/scheduler/) gọi run_checks() mỗi
 settings.ops_alerts_interval_minutes phút:
 
-  1. Omar: đã dùng >= ops_omar_quota_alert_pct % hạn mức ngày; gói hết hạn trong ops_omar_expiry_alert_days ngày (và lần
+  1. ShortVid: đã dùng >= ops_shortvid_quota_alert_pct % hạn mức ngày; gói hết hạn trong ops_shortvid_expiry_alert_days ngày (và lần
      nữa khi còn <= 1 ngày, hoặc đã hết hạn).
-  2. Omar: tỉ lệ request lỗi của lượt đang chạy / vừa xong trong 1 giờ qua > ops_omar_error_rate_alert (đủ
-     ops_omar_error_min_attempts lần gọi).
+  2. ShortVid: tỉ lệ request lỗi của lượt đang chạy / vừa xong trong 1 giờ qua > ops_shortvid_error_rate_alert (đủ
+     ops_shortvid_error_min_attempts lần gọi).
   3. Nguồn cạn: không có bài TikTok / comment mới (MAX(scraped_at) trên D1) trong ops_post/comment_drought_hours giờ.
   4. Ví AI: nhà cung cấp AI (app/ai/providers/client.py) trả 402 hoặc lỗi hết số dư - đường gọi AI ghi mốc vào Redis qua
      note_ai_wallet_error, ở đây chỉ đọc mốc.
 
 Mỗi cảnh báo chống lặp bằng một khoá Redis SET NX có TTL: lặp lại sau ops_alert_repeat_hours, riêng hạn mức / hạn gói
-Omar / chi phí Jev thì khoá theo ngày (mỗi ngày một lần). Gửi thẳng send_telegram_message: field telegram=True của log
+ShortVid / chi phí Jev thì khoá theo ngày (mỗi ngày một lần). Gửi thẳng send_telegram_message: field telegram=True của log
 trong service này chỉ là một field, không có gì đọc nó để gửi Telegram.
 
 Module này chỉ import nhẹ ở đầu (Redis, Telegram, config) vì app/ai/providers/client.py import nó; phần nặng
-(Omar, D1, Supabase) import trong hàm."""
+(ShortVid, D1, Supabase) import trong hàm."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def parse_time(value: Any) -> datetime | None:
 # --- Hàm quyết định (thuần, không I/O - tests/test_ops_alerts.py) ---------------------------------------------------
 
 
-def omar_quota_alerts(usage: dict[str, Any] | None, now: datetime) -> list[Alert]:
+def shortvid_quota_alerts(usage: dict[str, Any] | None, now: datetime) -> list[Alert]:
     if not usage:
         return []
     alerts: list[Alert] = []
@@ -93,38 +93,37 @@ def omar_quota_alerts(usage: dict[str, Any] | None, now: datetime) -> list[Alert
         resets_in = float(day.get("resets_in") or 0)
     except TypeError, ValueError:
         resets_in = 0.0
-    # Chế độ chạy liên tục cố ý dùng hết hạn mức mỗi ngày - chỉ báo khi CẠN SỚM (còn hơn ops_omar_quota_early_hours giờ
+    # Chế độ chạy liên tục cố ý dùng hết hạn mức mỗi ngày - chỉ báo khi CẠN SỚM (còn hơn ops_shortvid_quota_early_hours giờ
     # mới reset), tức hạn mức không đủ cho cả ngày.
-    early = resets_in >= settings.ops_omar_quota_early_hours * 3600
-    if limit > 0 and early and used * 100 >= settings.ops_omar_quota_alert_pct * limit:
+    early = resets_in >= settings.ops_shortvid_quota_early_hours * 3600
+    if limit > 0 and early and used * 100 >= settings.ops_shortvid_quota_alert_pct * limit:
         alerts.append(
             Alert(
-                f"omar_quota:{today}",
+                f"shortvid_quota:{today}",
                 _DAY_TTL_SECONDS,
-                f"⚠️ Omar: đã dùng {used:,}/{limit:,} request hôm nay ({used * 100 // limit}%) mà còn "
-                f"{resets_in / 3600:.0f} giờ nữa mới reset - hạn mức không đủ cho cả ngày, cân nhắc nâng gói.",
+                f"⚠️ ShortVid: đã dùng {used:,}/{limit:,} request hôm nay ({used * 100 // limit}%) mà còn "
+                f"{resets_in / 3600:.0f} giờ nữa mới reset - hạn mức tự đặt (shortvid_daily_requests) không đủ cho cả ngày.",
             )
         )
-    expires = parse_time(usage.get("expires_at"))
-    if expires is not None:
-        days_left = (expires - now).total_seconds() / 86400
-        when = expires.astimezone(TIMEZONE).strftime("%H:%M %d/%m/%Y")
-        if days_left <= 0:
-            tier, text = "expired", f"🚨 Gói Omar ({usage.get('plan') or '?'}) ĐÃ HẾT HẠN lúc {when}. Gia hạn ngay."
-        elif days_left <= 1:
-            tier, text = "1d", f"🚨 Gói Omar ({usage.get('plan') or '?'}) hết hạn trong vòng 1 ngày ({when})."
-        elif days_left <= settings.ops_omar_expiry_alert_days:
-            tier = f"{settings.ops_omar_expiry_alert_days}d"
-            text = f"⚠️ Gói Omar ({usage.get('plan') or '?'}) hết hạn sau {int(days_left)} ngày ({when})."
-        else:
-            tier, text = None, ""
-        if tier:
-            alerts.append(Alert(f"omar_expiry:{tier}:{today}", _DAY_TTL_SECONDS, text))
+    # ShortVid trả trước theo credit: báo khi số credit còn lại (header x-credits-remaining) xuống dưới ngưỡng, và lần nữa
+    # khi đã hết (mọi request bị từ chối, lượt cào dừng).
+    credits = usage.get("credits_remaining")
+    if isinstance(credits, int):
+        if credits <= 0:
+            alerts.append(Alert(f"shortvid_credits:empty:{today}", _DAY_TTL_SECONDS, "🚨 ShortVid ĐÃ HẾT credit - lượt cào TikTok dừng. Nạp thêm ngay."))
+        elif credits < settings.ops_shortvid_low_credits:
+            alerts.append(
+                Alert(
+                    f"shortvid_credits:low:{today}",
+                    _DAY_TTL_SECONDS,
+                    f"⚠️ ShortVid còn {credits:,} credit (~{credits / 10_000:.2f} USD) - sắp hết, cần nạp thêm.",
+                )
+            )
     return alerts
 
 
-def omar_error_alert(status: dict[str, Any] | None, now: datetime) -> Alert | None:
-    """Lượt Omar đang chạy, hoặc kết thúc trong 1 giờ qua, có tỉ lệ request lỗi cao."""
+def shortvid_error_alert(status: dict[str, Any] | None, now: datetime) -> Alert | None:
+    """Lượt ShortVid đang chạy, hoặc kết thúc trong 1 giờ qua, có tỉ lệ request lỗi cao."""
     if not status:
         return None
     if not status.get("running"):
@@ -134,14 +133,14 @@ def omar_error_alert(status: dict[str, Any] | None, now: datetime) -> Alert | No
     stats = status.get("stats") or {}
     ok, failed = int(stats.get("requests") or 0), int(stats.get("failed") or 0)
     attempts = ok + failed
-    if attempts < settings.ops_omar_error_min_attempts or failed / attempts <= settings.ops_omar_error_rate_alert:
+    if attempts < settings.ops_shortvid_error_min_attempts or failed / attempts <= settings.ops_shortvid_error_rate_alert:
         return None
     return Alert(
-        "omar_error_rate",
+        "shortvid_error_rate",
         _repeat_ttl(),
-        f"⚠️ Omar: {failed}/{attempts} request lỗi ({failed * 100 // attempts}%) trong lượt "
+        f"⚠️ ShortVid: {failed}/{attempts} request lỗi ({failed * 100 // attempts}%) trong lượt "
         f"{'đang chạy' if status.get('running') else 'vừa xong'} (bắt đầu {status.get('started_at') or '?'}, "
-        f"đã gửi {int(stats.get('published') or 0)} video). Kiểm tra key/gói Omar hoặc API Omar.",
+        f"đã gửi {int(stats.get('published') or 0)} video). Kiểm tra key/gói ShortVid hoặc API ShortVid.",
     )
 
 
@@ -154,7 +153,7 @@ def drought_alert(kind: str, label: str, last: Any, now: datetime, hours: float)
     return Alert(
         f"drought:{kind}",
         _repeat_ttl(),
-        f"⚠️ Không có {label} mới trong {hours:g} giờ qua (lần cuối: {since}). Kiểm tra crawler/Omar/ingest consumer.",
+        f"⚠️ Không có {label} mới trong {hours:g} giờ qua (lần cuối: {since}). Kiểm tra crawler/ShortVid/ingest consumer.",
     )
 
 
@@ -212,17 +211,17 @@ async def _fire(alert: Alert) -> bool:
     return True
 
 
-async def _omar_alerts(now: datetime) -> list[Alert]:
-    from app.services.accounts.platform_config_db import get_omar_api_settings
-    from app.services.omar import omar_tiktok
+async def _shortvid_alerts(now: datetime) -> list[Alert]:
+    from app.services.accounts.platform_config_db import get_shortvid_api_settings
+    from app.services.shortvid import shortvid_tiktok
 
     alerts: list[Alert] = []
-    error = omar_error_alert(omar_tiktok.round_status(), now)
+    error = shortvid_error_alert(shortvid_tiktok.round_status(), now)
     if error:
         alerts.append(error)
-    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
+    api_key = ((await get_shortvid_api_settings() or {}).get("api_key") or "").strip()
     if api_key:
-        alerts += omar_quota_alerts(await omar_tiktok.fetch_usage(api_key), now)
+        alerts += shortvid_quota_alerts(await shortvid_tiktok.fetch_usage(api_key), now)
     return alerts
 
 
@@ -280,7 +279,7 @@ async def run_checks() -> int:
     """Chạy mọi nhóm kiểm tra (nhóm này lỗi không chặn nhóm khác). Trả về số cảnh báo đã gửi."""
     now = datetime.now(tz=UTC)
     sent = 0
-    for name, check in (("omar", _omar_alerts), ("drought", _drought_alerts), ("ai", _ai_alerts)):
+    for name, check in (("shortvid", _shortvid_alerts), ("drought", _drought_alerts), ("ai", _ai_alerts)):
         try:
             for alert in await check(now):
                 sent += int(await _fire(alert))

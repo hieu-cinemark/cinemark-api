@@ -91,17 +91,17 @@ __all_reexports__ = (
 
 
 # Redis khoá chung với spider-hub (cùng prefix social_crawler:). Spider: list top hashtag đi kèm sau mỗi lượt crawl
-# (constants/tiktok.py RELATED_HASHTAGS_KEY_TMPL). Omar: hash hashtag -> số video, cộng dồn qua các lượt
-# (app/services/omar/omar_tiktok.py) - giữ nguyên dấu, chữ thường.
+# (constants/tiktok.py RELATED_HASHTAGS_KEY_TMPL). ShortVid: hash hashtag -> số video, cộng dồn qua các lượt
+# (app/services/shortvid/shortvid_tiktok.py) - giữ nguyên dấu, chữ thường.
 SPIDER_RELATED_KEY_TMPL = f"{REDIS_KEY_PREFIX}tiktok:related_hashtags:{{keyword_id}}"
-OMAR_COOCCUR_KEY_TMPL = f"{REDIS_KEY_PREFIX}omar:cooccur:{{keyword_id}}"
-# Hashtag Omar thấy đi kèm từ chừng này video trở lên mới tính là liên quan; tối đa chừng này mỗi từ khoá.
-OMAR_RELATED_MIN_VIDEOS = 3
-OMAR_RELATED_PER_KEYWORD = 15
+SHORTVID_COOCCUR_KEY_TMPL = f"{REDIS_KEY_PREFIX}shortvid:cooccur:{{keyword_id}}"
+# Hashtag ShortVid thấy đi kèm từ chừng này video trở lên mới tính là liên quan; tối đa chừng này mỗi từ khoá.
+SHORTVID_RELATED_MIN_VIDEOS = 3
+SHORTVID_RELATED_PER_KEYWORD = 15
 
 
 async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """Hashtag TikTok xuất hiện cùng hashtag của từng từ khoá - gộp từ spider-hub (list sau mỗi lượt crawl) và Omar
+    """Hashtag TikTok xuất hiện cùng hashtag của từng từ khoá - gộp từ spider-hub (list sau mỗi lượt crawl) và ShortVid
     (số video cộng dồn), cùng tag (không phân biệt hoa thường) lấy count lớn hơn. Dùng chung cho chip duyệt trên
     dashboard (stats_summary) và ứng viên Kira duyệt (hashtag_discovery). Thiếu Redis / key rỗng = chưa có gì."""
     if not keyword_ids:
@@ -111,13 +111,13 @@ async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, lis
         values = await client.mget([SPIDER_RELATED_KEY_TMPL.format(keyword_id=kid) for kid in keyword_ids])
         pipe = client.pipeline()
         for kid in keyword_ids:
-            pipe.hgetall(OMAR_COOCCUR_KEY_TMPL.format(keyword_id=kid))
-        omar_values = await pipe.execute()
+            pipe.hgetall(SHORTVID_COOCCUR_KEY_TMPL.format(keyword_id=kid))
+        shortvid_values = await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - Redis lỗi thì coi như chưa có hashtag liên quan
         logger.warning("related_hashtags_redis_failed", error=str(exc))
         return {}
     out: dict[str, list[dict[str, Any]]] = {}
-    for kid, raw, omar_raw in zip(keyword_ids, values or [], omar_values or [], strict=False):
+    for kid, raw, shortvid_raw in zip(keyword_ids, values or [], shortvid_values or [], strict=False):
         merged: dict[str, dict[str, Any]] = {}
         try:
             parsed = json.loads(raw) if raw else []
@@ -133,12 +133,12 @@ async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, lis
                 "count": int(item.get("count") or 0),
                 "bfs_depth": int(item.get("bfs_depth") or 1),
             }
-        omar_items = sorted(
-            ((tag.decode() if isinstance(tag, bytes) else tag, int(n)) for tag, n in (omar_raw or {}).items()),
+        shortvid_items = sorted(
+            ((tag.decode() if isinstance(tag, bytes) else tag, int(n)) for tag, n in (shortvid_raw or {}).items()),
             key=lambda pair: -pair[1],
         )
-        for tag, count in [pair for pair in omar_items if pair[1] >= OMAR_RELATED_MIN_VIDEOS][
-            :OMAR_RELATED_PER_KEYWORD
+        for tag, count in [pair for pair in shortvid_items if pair[1] >= SHORTVID_RELATED_MIN_VIDEOS][
+            :SHORTVID_RELATED_PER_KEYWORD
         ]:
             entry = merged.setdefault(tag.lower(), {"id": "", "title": tag, "count": 0, "bfs_depth": 1})
             entry["count"] = max(entry["count"], count)

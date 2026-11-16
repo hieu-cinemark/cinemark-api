@@ -1,9 +1,9 @@
-"""Hiệu quả từng nguồn cào Omar: mỗi ngày (giờ VN) đếm cho từng nguồn - hashtag, search (tìm theo từ
+"""Hiệu quả từng nguồn cào ShortVid: mỗi ngày (giờ VN) đếm cho từng nguồn - hashtag, search (tìm theo từ
 khoá), channel (cào theo kênh), comments (bình luận tuần) - số request, số video/bình luận gửi lên pipeline và số MỚI THẬT
-(chưa từng thấy - lần đầu vào tập chống trùng dùng chung với spider). Số liệu cho tab Omar và để chia ngân sách lượt Omar
+(chưa từng thấy - lần đầu vào tập chống trùng dùng chung với spider). Số liệu cho tab ShortVid và để chia ngân sách lượt ShortVid
 theo hiệu quả (adaptive_share): nguồn mang về nhiều bài mới trên mỗi request hơn hashtag thì được phần lớn hơn.
 
-Redis hash omar:yield:<YYYY-MM-DD>, trường "<nguồn>:requests" / "<nguồn>:sent" / "<nguồn>:new", giữ 30 ngày."""
+Redis hash shortvid:yield:<YYYY-MM-DD>, trường "<nguồn>:requests" / "<nguồn>:sent" / "<nguồn>:new", giữ 30 ngày."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ MIN_REQUESTS = 200
 
 
 def _key(day: str) -> str:
-    return f"{REDIS_KEY_PREFIX}omar:yield:{day}"
+    return f"{REDIS_KEY_PREFIX}shortvid:yield:{day}"
 
 
 def _today() -> str:
@@ -45,7 +45,7 @@ async def add(source: str, *, requests: int = 0, sent: int = 0, new: int = 0) ->
         pipe.expire(key, _TTL)
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_yield_record_failed", error=str(exc)[:200])
+        logger.warning("shortvid_yield_record_failed", error=str(exc)[:200])
 
 
 def _empty() -> dict[str, int]:
@@ -83,24 +83,24 @@ def totals(days: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 def share_for(source: str, base: float, measured: dict[str, dict[str, Any]]) -> float:
     """Phần ngân sách của `source` (search/channel): base nhân tỷ lệ hiệu quả của nó so với hashtag, kẹp trong
-    [settings.omar_adaptive_min_share, settings.omar_adaptive_max_share]. Chưa đủ số liệu thì giữ base."""
+    [settings.shortvid_adaptive_min_share, settings.shortvid_adaptive_max_share]. Chưa đủ số liệu thì giữ base."""
     mine, ref = measured.get(source) or {}, measured.get("hashtag") or {}
     if (mine.get("requests") or 0) < MIN_REQUESTS or (ref.get("requests") or 0) < MIN_REQUESTS:
         return base
     mine_rate = mine["new"] / mine["requests"]
     ref_rate = ref["new"] / ref["requests"]
     ratio = 2.5 if ref_rate <= 0 else min(2.5, max(0.25, mine_rate / ref_rate))
-    return round(min(settings.omar_adaptive_max_share, max(settings.omar_adaptive_min_share, base * ratio)), 3)
+    return round(min(settings.shortvid_adaptive_max_share, max(settings.shortvid_adaptive_min_share, base * ratio)), 3)
 
 
 async def adaptive_shares() -> dict[str, float]:
-    """{"search": phần, "channel": phần} theo hiệu quả settings.omar_adaptive_days ngày gần nhất (tắt thì trả base)."""
-    base = {"search": settings.omar_search_budget_share, "channel": settings.omar_channels_budget_share}
-    if not settings.omar_adaptive_budget:
+    """{"search": phần, "channel": phần} theo hiệu quả settings.shortvid_adaptive_days ngày gần nhất (tắt thì trả base)."""
+    base = {"search": settings.shortvid_search_budget_share, "channel": settings.shortvid_channels_budget_share}
+    if not settings.shortvid_adaptive_budget:
         return base
     try:
-        measured = totals(await daily(settings.omar_adaptive_days))
+        measured = totals(await daily(settings.shortvid_adaptive_days))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_yield_read_failed", error=str(exc)[:200])
+        logger.warning("shortvid_yield_read_failed", error=str(exc)[:200])
         return base
     return {source: share_for(source, share, measured) for source, share in base.items()}

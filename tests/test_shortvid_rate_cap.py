@@ -1,8 +1,8 @@
-"""Trần request/phút của Omar đặt ở tab Omar: _Pacer dùng số nhỏ hơn giữa gói và trần, đọc lại trần mỗi phút."""
+"""Trần request/phút của ShortVid đặt ở tab ShortVid: _Pacer dùng số nhỏ hơn giữa gói và trần, đọc lại trần mỗi phút."""
 
 import asyncio
 
-from app.services.omar import omar_tiktok
+from app.services.shortvid import shortvid_tiktok
 
 _real_sleep = asyncio.sleep
 
@@ -11,9 +11,9 @@ def _gap_after_two_waits(monkeypatch, plan: int, cap: int) -> float:
     async def fake_cap() -> int:
         return cap
 
-    monkeypatch.setattr(omar_tiktok, "omar_requests_cap", fake_cap)
-    monkeypatch.setattr(omar_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
-    pacer = omar_tiktok._Pacer(plan)
+    monkeypatch.setattr(shortvid_tiktok, "shortvid_requests_cap", fake_cap)
+    monkeypatch.setattr(shortvid_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
+    pacer = shortvid_tiktok._Pacer(plan)
 
     async def run() -> float:
         await pacer.wait()
@@ -39,10 +39,10 @@ def test_cap_change_applies_within_a_running_round(monkeypatch):
     async def fake_cap() -> int:
         return next(caps)
 
-    monkeypatch.setattr(omar_tiktok, "omar_requests_cap", fake_cap)
-    monkeypatch.setattr(omar_tiktok, "_CAP_REFRESH_SECONDS", 0.0)
-    monkeypatch.setattr(omar_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
-    pacer = omar_tiktok._Pacer(150)
+    monkeypatch.setattr(shortvid_tiktok, "shortvid_requests_cap", fake_cap)
+    monkeypatch.setattr(shortvid_tiktok, "_CAP_REFRESH_SECONDS", 0.0)
+    monkeypatch.setattr(shortvid_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
+    pacer = shortvid_tiktok._Pacer(150)
 
     async def run() -> float:
         await pacer.wait()
