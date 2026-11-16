@@ -42,6 +42,7 @@ from app.repositories.d1.store import (
 )
 from app.repositories.d1.tables import keywords
 from app.repositories.d1.tables import movies as movies_table
+from app.repositories.d1.transcripts import transcript_has_film_context
 from app.services.crawl.platforms import get_comment_mapper, get_post_mapper
 from app.services.crawl.tracked_posts import tracked_keyword_for
 from app.services.relevance.relevance_rules import (
@@ -406,6 +407,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi Kira.
     movie = (await _tracked_movies()).get(keyword.get("movie_id") or "") or {"title": keyword.get("movie_title")}
     movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
+    # Phim "chặt" (cần tín hiệu gắn đúng phim): video có transcript nhắc phim đúng nghĩa phim chiếu rạp (tên phim cạnh từ điện
+    # ảnh, tên đạo diễn/diễn viên...) thì coi như đủ tín hiệu, dù tiêu đề/mô tả không có (16/11/2026).
+    strict = settings.is_strict_movie(movie.get("slug"), platform) and not transcript_has_film_context(draft, movie)
     mentions = mentions_film_manual if settings.relevance_rules_only else mentions_keyword_or_title
     if not mentions(draft.get("content"), movie_keywords, keyword.get("movie_title")) and not mentions_short_title(
         draft.get("content"), movie, draft.get("posted_at")
@@ -449,7 +453,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         draft.get("content"),
         movie,
         has_keyword=has_keyword,
-        strict=settings.is_strict_movie(movie.get("slug"), platform),
+        strict=strict,
         full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
         posted_at=draft.get("posted_at"),
     )
@@ -462,9 +466,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             other_titles=await _tracked_titles(),
         )
         # Phân loại bằng AI ngay ở ingest chỉ khi bật AI_INGEST_RELEVANCE (AI chậm, có lúc 60-180 giây một lô).
-        if settings.ai_ingest_relevance
-        and not settings.relevance_rules_only
-        and rule_relevant is not True
+        if settings.ai_ingest_relevance and not settings.relevance_rules_only and rule_relevant is not True
         else None
     )
     if verdict is not None:
@@ -522,9 +524,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if settings.relevance_rules_only:
         # Đã qua cổng tên phim/viết tắt/từ khoá ở trên - chế độ thủ công coi vậy là liên quan.
         # Phim "chặt" (kể cả chỉ trên YouTube): đủ tên phim chưa đủ, phải có tín hiệu gắn đúng phim - không có thì lưu ẩn.
-        strict_without_context = settings.is_strict_movie(movie.get("slug"), platform) and not has_film_context(
-            draft.get("content"), movie
-        )
+        strict_without_context = strict and not has_film_context(draft.get("content"), movie)
         ai_relevant, relevance_label, context = (
             (False, "not_related", "hashtag_only")
             if hashtag_only
@@ -538,7 +538,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             draft.get("content"),
             movie,
             has_keyword=has_keyword,
-            strict=settings.is_strict_movie(movie.get("slug"), platform),
+            strict=strict,
             hashtag_only=hashtag_only,
             confidence=relevance_confidence,
             full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,

@@ -161,6 +161,15 @@ class Settings(BaseSettings):
     # bình luận Threads vẫn dùng tài khoản.
     threads_channels_enabled: bool = True
     threads_channel_interval_hours: int = 6
+    # Tác vụ public (không tài khoản) chạy liên tục khi hàng đợi trống (16/11/2026, người vận hành chọn - lấy nhiều dữ liệu nhất):
+    # - kênh Threads: hết kênh tới hạn thì nạp thêm kênh đã đọc lâu nhất, cách lần xếp trước ít nhất chừng này phút
+    #   (giống facebook_public_pages_min_gap_minutes của page Facebook);
+    # - YouTube: hàng đợi tìm kiếm + bình luận đều trống thì mỗi nhịp scheduler xếp youtube_continuous_batch phim chạy lâu
+    #   nhất, mỗi phim cách lần trước ít nhất youtube_continuous_min_gap_hours giờ.
+    # Bật/tắt từng loại ở dashboard (proxy_settings: youtube_continuous, threads_channels_continuous).
+    threads_channels_min_gap_minutes: int = 60
+    youtube_continuous_batch: int = 3
+    youtube_continuous_min_gap_hours: float = 3
     # Tự thêm tác giả Threads có nhiều bài liên quan (mỗi ngày, không dùng AI); 0 = tắt.
     threads_channels_auto_add: int = 20
 

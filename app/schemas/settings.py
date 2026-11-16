@@ -437,6 +437,14 @@ class ProxySettings(BaseModel):
     public_pages_gap_seconds: float = Field(default=3.0, ge=0, le=600)
     threads_channel_workers: int = Field(default=4, ge=0, le=16)
     facebook_account_page_feed: bool = False
+    # Bật/tắt trên dashboard (16/11/2026): TikTok mỗi job chạy cả feed hashtag lẫn tìm từ khoá rồi gộp (spider-hub
+    # consumer/jobs/search.py); tác vụ public chạy liên tục khi hàng đợi trống - YouTube (crawl/public_continuous.py) và
+    # kênh Threads không đăng nhập (crawl/threads_channels.py).
+    tiktok_combine_search: bool = True
+    youtube_continuous: bool = True
+    threads_channels_continuous: bool = True
+    # spider-hub consumer/jobs/youtube.py lấy transcript cho video mới (lưu post_transcripts, dùng khi lọc liên quan).
+    youtube_transcripts: bool = True
     # Phía cinemark-api (scheduler)
     public_pages_queue_target: int = Field(default=20, ge=0, le=500)
     threads_channels_queue_target: int = Field(default=8, ge=0, le=200)

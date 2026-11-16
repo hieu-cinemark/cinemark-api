@@ -147,6 +147,8 @@ def _map_youtube_post(payload: dict[str, Any]) -> PostDraft:
         "reshare_count": 0,
         "view_count": payload.get("view_count") or 0,
         "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        # Phụ đề (16/11/2026) - persist_post ghi vào post_transcripts, không vào posts.raw_json.
+        "transcript": payload.get("transcript") if isinstance(payload.get("transcript"), dict) else None,
         "raw": payload,
     }
 

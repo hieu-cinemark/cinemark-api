@@ -22,9 +22,9 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from app.core.logging import get_logger
-from app.services.crawl import crawl_lanes, threads_channels
+from app.services.crawl import crawl_lanes, public_continuous, threads_channels
 from app.services.crawl.comment_planner import apply_comment_completions
-from app.services.crawl.scheduler import ai_jobs, cleanup, comments, crawl_slots, discovery, shortvid, ops, refresh
+from app.services.crawl.scheduler import ai_jobs, cleanup, comments, crawl_slots, discovery, ops, refresh, shortvid
 from app.services.crawl.scheduler.cleanup import purge_in_progress, run_purge_now
 from app.services.crawl.scheduler.core import POLL_INTERVAL_SECONDS, TIMEZONE, facebook_crawl_enabled
 from app.services.crawl.scheduler.shortvid import trigger_shortvid_now
@@ -57,6 +57,7 @@ TICKS: list[tuple[str, Callable[[], Awaitable[None]], bool]] = [
     ("comments", comments.comments_tick, True),
     ("public_pages", fill_public_pages_queue, False),
     ("threads_channels", threads_channels.fill_queue, False),
+    ("youtube_continuous", public_continuous.youtube_idle_tick, False),
     ("hashtag", discovery.hashtag_tick, False),
     ("shortvid", shortvid.shortvid_tick, False),
     ("shortvid_trending", shortvid.shortvid_trending_tick, False),

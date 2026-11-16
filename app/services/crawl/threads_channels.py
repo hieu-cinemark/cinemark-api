@@ -75,6 +75,13 @@ def _due(source: dict[str, Any], now: datetime) -> bool:
         return True
 
 
+def _queued_before(source: dict[str, Any], cutoff: datetime) -> bool:
+    try:
+        return datetime.fromisoformat(str(source.get("last_queued_at") or "")) <= cutoff
+    except ValueError:
+        return True
+
+
 async def _sync_quiet_runs(source: dict[str, Any]) -> None:
     last = await _last_run(source["url"])
     if not last or last.get("status") != "ok":
@@ -128,20 +135,26 @@ async def fill_queue(now: datetime | None = None) -> int:
     if room <= 0:
         return 0
     await _ensure_table()
-    due = []
+    due, idle = [], []
+    continuous = bool(await crawl_setting("threads_channels_continuous"))
+    min_gap = timedelta(minutes=settings.threads_channels_min_gap_minutes)
     for row in await d1_exec(_ENABLED_CHANNELS, quiet=True) or []:
         await _sync_quiet_runs(row)
         if _due(row, now):
             due.append(row)
+        elif continuous and _queued_before(row, now - min_gap):
+            idle.append(row)
     due.sort(
         key=lambda r: (int(r.get("quiet_runs") or 0), 0 if r.get("movie_id") else 1, str(r.get("last_queued_at") or ""))
     )
+    # Chạy liên tục (16/11/2026): hết kênh tới hạn thì đọc tiếp kênh đọc lâu nhất (đã quá min_gap) thay vì để worker rảnh.
+    idle.sort(key=lambda r: str(r.get("last_queued_at") or ""))
     queued = 0
-    for row in due[:room]:
+    for row in (due + idle)[:room]:
         if await queue_channel(row, now):
             queued += 1
     if queued:
-        logger.info("threads_channels_queued", queued=queued, due=len(due))
+        logger.info("threads_channels_queued", queued=queued, due=len(due), idle=len(idle))
     return queued
 
 

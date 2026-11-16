@@ -92,7 +92,7 @@ def world(monkeypatch):
     monkeypatch.setattr(threads_channels.settings, "threads_channels_enabled", True)
 
     async def target(name):
-        return {"threads_channels_queue_target": 4}[name]
+        return {"threads_channels_queue_target": 4, "threads_channels_continuous": True}[name]
 
     monkeypatch.setattr(threads_channels, "crawl_setting", target)
     return redis, updates
@@ -109,6 +109,30 @@ def test_fill_queues_due_channels_with_narrow_window(world):
     assert all(r["type"] == "threads_channel" and r["keyword_id"] is None for r in requests)
     # Lần đọc trước của @b có bài mới -> quiet_runs về 0.
     assert ("b", {"quiet_runs": 0}) in updates
+
+
+def test_continuous_mode_reads_oldest_channel_after_due_ones(world, monkeypatch):
+    redis, _ = world
+    # @c chưa tới hạn (đọc 2 giờ trước, lịch 6 giờ) nhưng đã quá min_gap 60 phút -> chạy liên tục thì đọc tiếp.
+    rows_c = {"last_queued_at": (NOW - timedelta(hours=2)).isoformat()}
+
+    async def fake_exec(stmt, **_):
+        base = [
+            {"id": "a", "url": "https://www.threads.com/@a", "movie_id": None, "last_queued_at": None, "quiet_runs": 0},
+            {"id": "c", "url": "https://www.threads.com/@c", "movie_id": None, "quiet_runs": 0, **rows_c},
+        ]
+        return base
+
+    monkeypatch.setattr(threads_channels, "d1_exec", fake_exec)
+    assert asyncio.run(threads_channels.fill_queue(NOW)) == 2
+    assert json.loads(redis.list[0])["page_url"] == "https://www.threads.com/@c"  # lpush: xếp sau cùng nằm đầu
+
+    async def switch_off(name):
+        return {"threads_channels_queue_target": 4, "threads_channels_continuous": False}[name]
+
+    redis.list.clear()
+    monkeypatch.setattr(threads_channels, "crawl_setting", switch_off)
+    assert asyncio.run(threads_channels.fill_queue(NOW)) == 1  # tắt: chỉ kênh tới hạn
 
 
 def test_full_queue_adds_nothing(world, monkeypatch):

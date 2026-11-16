@@ -37,6 +37,8 @@ uvicorn==0.54.0
 uvloop==0.22.1
 watchfiles==1.2.0
 websockets==17.0.1
+# Chỉ scripts/tools/backfill_youtube_transcripts.py (transcript mới do spider-hub lấy).
+youtube-transcript-api==1.2.5
 ruff==0.16.4
 aioboto3==13.4.0
 orjson==3.13.0

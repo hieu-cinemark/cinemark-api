@@ -898,6 +898,7 @@ class PostRepository:
                 logger.warning("d1_post_insert_failed", platform=platform, external_id=external_id)
                 return False
             await _snapshot(post_id, scraped_at, engagement)
+            await _save_transcript(platform, external_id, draft)
             from app.services.stats.stats_summary import record_post
 
             await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=True)
@@ -945,10 +946,19 @@ class PostRepository:
             return False
         if changed:
             await _snapshot(post_id, scraped_at, engagement)
+        await _save_transcript(platform, external_id, draft)
         from app.services.stats.stats_summary import record_post
 
         await record_post(platform=platform, keyword_id=keyword_id, scraped_at=scraped_at, is_new=False)
         return True
+
+
+async def _save_transcript(platform: str, external_id: str, draft: PostDraft) -> None:
+    """Phụ đề video đi kèm bài (YouTube, xem repositories/d1/transcripts.py). Ghi lỗi không làm hỏng việc lưu bài."""
+    if draft.get("transcript"):
+        from app.repositories.d1.transcripts import save_transcript
+
+        await save_transcript(platform, external_id, draft["transcript"])
 
 
 post_repo = PostRepository()
