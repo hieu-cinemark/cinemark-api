@@ -79,7 +79,7 @@ docker exec $R redis-cli DEL social_crawler:review_angles:focus
 ```
 
 **Đọc nhanh state của một phim** (trên Mac, chỉ đọc R2):
-
+ 
 ```bash
 cd cinemark-api && TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID= .venv/bin/python - <<'EOF'
 import asyncio, json
@@ -98,11 +98,20 @@ cinemark-api, Worker chỉ đọc. Nhớ sửa lại tài liệu đó.
 
 ### 1.2 Việc còn lại
 
+> **Cập nhật 16/11/2026** (mục 1.1 mô tả bản cũ, phần này ghi đè):
+> - Thứ tự đọc: bài mới trước (`head`), rồi đọc lùi khoảng thiếu `cursor..tail`; mỗi lượt đọc liên tiếp ~170 giây; trần
+>   `REVIEW_ANGLES_DAILY_BATCHES` (600). Trang hiện khoảng chưa đọc (`unreadGap`).
+> - Đọc thêm YouTube (tiêu đề + mô tả + transcript `post_transcripts`).
+> - Mỗi ref có thêm `postedAt` và `stance` (`khen | che | trung_tinh`); trang hiện "x khen · y chê".
+> - `parse_batch` bỏ riêng phần sai thay vì cả lô.
+> - Việc A làm bằng AI thay vì embedding: `scripts/tools/review_angles_cleanup.py --apply` gộp khía cạnh > 8 góc và gắn
+>   stance cho ref cũ (chạy tay khi thấy góc vụn lại). Trần 10 góc mỗi khía cạnh trong job chặn vụn từ 15/11.
+
 | # | Việc | Vì sao | Độ khó |
 |---|---|---|---|
-| A | Gộp góc trùng ý | 185 góc vụn, trang không dùng được | Vừa |
-| B | Gửi AI catalog gọn | Catalog càng dài thì AI càng ít dùng lại id, prompt càng tốn token | Nhỏ |
-| C | Chia lượt công bằng giữa các phim | Focus dồn lượt cho một phim, phim khác mới đọc ~100 bài | Nhỏ |
+| A | Gộp góc trùng ý | **Xong 16/11** (cleanup tool, xem trên). Muốn tự động: chạy tool theo lịch | — |
+| B | Gửi AI catalog gọn | Một phần xong (catalog có mô tả + số bài, trần góc). Còn: giới hạn 60 góc lớn nhất | Nhỏ |
+| C | Chia lượt công bằng giữa các phim | Một phần xong (đọc nhiều lô mỗi lượt). Còn: focus nhường 1/4 lượt | Nhỏ |
 | D | So sánh giữa các lần đo | File Social Topic v4 yêu cầu góc tăng/giảm theo lịch đo | Vừa |
 | E | So sánh nhiều phim | Đặt các phim cạnh nhau theo khía cạnh chung | Nhỏ (Worker) |
 | F | Danh sách tên riêng do đội truyền thông duyệt | Bắt các góc hẹp (nhân vật, bài hát, câu thoại) | Vừa, cần đội truyền thông |
@@ -383,8 +392,9 @@ app/services/attack/
 app/services/ai_jobs/attack_detect.py   run_tick(): mỗi giờ, cho từng phim đang chiếu
 ```
 
-- Gắn vào `_ai_jobs_tick` trong `scheduler.py` như `review_angles` (`_AI_JOB_EVERY["attack_detect"] = 3600`), chạy
-  sau khi embedding cập nhật (phút 15 mỗi giờ nếu timer embed chạy phút 0).
+- Gắn vào `ai_jobs_tick` trong `app/services/crawl/scheduler/ai_jobs.py` như `channel_niches`
+  (`AI_JOB_EVERY["attack_detect"] = 3600`, dùng `claim(...)` để chỉ một tiến trình chạy), chạy sau khi embedding cập
+  nhật (phút 15 mỗi giờ nếu timer embed chạy phút 0).
 - Chế độ `--dry-run` để chạy tay: in trạng thái và dấu hiệu, không ghi D1:
   `python -m app.services.ai_jobs.attack_detect --movie-id <id> --dry-run`.
 - AI (dấu hiệu E và câu `summary`) chỉ gọi khi trạng thái là `suspicious` hoặc `coordinated`. Lượt bình thường không
@@ -449,3 +459,454 @@ app/services/ai_jobs/attack_detect.py   run_tick(): mỗi giờ, cho từng phim
   trúc JSON trên R2 thì deploy cinemark-api trước, Worker sau, và Worker phải đọc được cả bản cũ.
 - **Không đọc lại toàn bộ dữ liệu cũ trên D1 giờ cao điểm:** backfill (bù `postedAt` cho ref, backtest Attack) chạy ban đêm,
   theo lô nhỏ, có con trỏ để dừng rồi chạy tiếp.
+
+---
+
+## 4. Thực hành: tự làm Attack Detection từng bước
+
+Mục này là bài thực hành cho Bước 0 → 3 của bảng 2.10. Mỗi bước gồm: làm gì, file nào, khung code (đủ để chạy, chỗ
+`TODO` là phần tự viết), cách chạy thử, cách biết là xong. Làm xong bước nào thì commit bước đó rồi mới sang bước sau.
+
+### 4.0 Chuẩn bị (một lần)
+
+```bash
+cd cinemark-api
+git pull && git checkout -b attack-detection        # làm trên nhánh riêng, xong mới gộp vào main
+.venv/bin/python -m pytest -q                       # phải xanh hết trước khi bắt đầu
+export TELEGRAM_BOT_TOKEN= TELEGRAM_CHAT_ID=        # chạy tay ở Mac không gửi Telegram thật
+```
+
+**Hai chỗ đặt lịch chạy** (cinemark-api không dùng crontab):
+
+| Loại việc | Chỗ đặt | Ví dụ có sẵn |
+|---|---|---|
+| Nhẹ, gọi D1/Redis/AI, chạy thường xuyên | Thêm một dòng vào `TICKS` trong `app/services/crawl/scheduler/__init__.py` (chạy trong service `cinemark-scheduler`). Hàm tự quyết định tới giờ chưa bằng `claim(name, giây)` (`scheduler/core.py`) | `("trend_posts", refresh.trend_posts_tick, False)` |
+| Nặng (model ML, nhiều CPU/RAM), hoặc cần đúng giờ | Cặp file `deploy/systemd/<tên>.service` + `.timer`, cài bằng `install_<tên>.sh` | `cinemark-aspects.*` |
+
+Job AI hằng giờ (Attack) gắn vào `ai_jobs_tick` (`scheduler/ai_jobs.py`); embedding (nặng CPU) dùng systemd timer.
+
+### 4.1 Bước 0: embedding bình luận tự động trên VPS
+
+**Mục tiêu:** bình luận mới của phim đang chiếu có embedding trong ≤ 1 giờ, trên VPS.
+
+**a) Thêm tuỳ chọn `--showing` cho `scripts/jobs/embed_comments.py`.** Hiện script có hai chế độ: con trỏ chung theo id
+(bỏ sót bình luận mới vì id là uuid) và `--movie-id` (quét lại mọi bình luận của một phim). Thêm chế độ thứ ba: với mỗi
+phim đang chiếu, chỉ lấy bình luận có `first_seen_at` trong N giờ qua.
+
+```python
+# scripts/jobs/embed_comments.py
+
+async def _recent_pages(movie_id: str, hours: float):
+    """--showing: bình luận về trong `hours` giờ qua của một phim (theo nhóm bài, qua index post_id như _movie_pages)."""
+    since = (datetime.now(tz=UTC) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    # TODO: chép _movie_pages, thêm điều kiện c.c.first_seen_at >= since vào .where(...)
+    ...
+
+# trong main():
+    if args.showing:
+        from app.services.relevance.trend_posts import showing_movies
+        for movie in await showing_movies(datetime.now(tz=UTC)):
+            async for rows in _recent_pages(movie["id"], args.hours):
+                ...  # giống vòng `async for rows in pages()` hiện có: lọc done, embed_texts, save_page
+
+# argparse:
+    parser.add_argument("--showing", action="store_true", help="chỉ phim đang chiếu, bình luận về trong --hours giờ qua")
+    parser.add_argument("--hours", type=float, default=6)
+```
+
+Kiểm tra cột `first_seen_at` có trên bảng `comments` trước khi dùng
+(`app/repositories/d1/tables.py`, hoặc `PRAGMA table_info(comments)`). Không có thì dùng `posted_at`.
+
+Chạy thử ở Mac (chỉ đọc D1, ghi file SQLite local):
+
+```bash
+.venv/bin/python -m scripts.jobs.embed_comments --showing --hours 2
+sqlite3 data/comment_embeddings.sqlite "SELECT movie_id, COUNT(*) FROM comment_embeddings GROUP BY 1 ORDER BY 2 DESC LIMIT 5"
+```
+
+**b) Systemd timer.** Chép mẫu `cinemark-aspects`:
+
+```ini
+# deploy/systemd/cinemark-embed.service
+[Unit]
+Description=cinemark-api comment embeddings (e5-small) for showing films, comments of the last hours
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cinemark-api
+EnvironmentFile=/opt/cinemark-api/.env
+Environment=OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TOKENIZERS_PARALLELISM=false
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.embed_comments --showing --hours 2
+User=app
+Group=app
+Nice=10
+CPUQuota=200%
+MemoryMax=3G
+TimeoutStartSec=50min
+StandardOutput=journal
+StandardError=journal
+```
+
+```ini
+# deploy/systemd/cinemark-embed.timer
+[Unit]
+Description=Run cinemark-embed every hour
+
+[Timer]
+# mỗi giờ phút 0 (các timer khác: :20 ViSoBERT, :40 ảnh bìa, :50 aspects) - Attack đọc lúc phút 15
+OnCalendar=*-*-* *:00:00
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+`deploy/systemd/install_embed.sh`: chép `install_aspects.sh`, đổi tên file, kiểm tra model e5 thay cho ViSoBERT
+(`"$APP_DIR/.venv/bin/python" -c "from app.ai.local.embedding import embed_texts; print(embed_texts(['thử']).shape)"`).
+
+**c) Chép dữ liệu cũ lên VPS một lần** (khỏi embed lại 2 triệu bình luận):
+
+```bash
+# trên Mac
+scp -P 7076 data/comment_embeddings.sqlite root@<vps>:/opt/cinemark-api/data/
+# trên VPS
+sudo chown app:app /opt/cinemark-api/data/comment_embeddings.sqlite
+```
+
+**d) Cài và kiểm tra trên VPS:**
+
+```bash
+cd /opt/cinemark-api && sudo -u app git pull && bash deploy/systemd/install_embed.sh
+sudo systemctl start cinemark-embed.service          # chạy ngay một lượt
+journalctl -u cinemark-embed -n 30 --no-pager        # xem số dòng/giây, lỗi bộ nhớ
+systemctl list-timers cinemark-embed.timer           # lượt kế tiếp
+```
+
+**Xong khi:** log báo ≥ 50 dòng/giây, không có `MemoryMax`/`Killed`, và sau 2 giờ số dòng của phim đang chiếu trong
+`comment_embeddings` tăng.
+
+### 4.2 Bước 1a: bảng đếm bình luận theo giờ
+
+**Mục tiêu:** bảng `movie_comment_hourly (movie_id, hour, total, negative, run)`, cập nhật mỗi 10 phút cho 3 giờ gần
+nhất.
+
+Đọc kỹ `app/repositories/d1/comment_rollup.py` trước (`ensure_rollup_schema`, `rebuild_day`): cùng một mẫu
+"upsert theo `run` rồi xoá dòng cũ", nên không lúc nào bảng trống.
+
+```python
+# app/repositories/d1/comment_hourly.py
+"""Bình luận theo phim x giờ (giờ Việt Nam của posted_at) cho Attack Detection - dấu hiệu A (chê dồn dập)."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from app.clients.d1 import d1_query
+from app.repositories.d1.posts import RELEVANT_POST_SQL
+
+_ready = False
+
+
+async def ensure_schema() -> bool:
+    global _ready
+    if not _ready:
+        ok = await d1_query(
+            """CREATE TABLE IF NOT EXISTS movie_comment_hourly (
+                movie_id TEXT NOT NULL, hour TEXT NOT NULL, total INTEGER NOT NULL, negative INTEGER NOT NULL,
+                run TEXT NOT NULL, PRIMARY KEY (movie_id, hour))""",
+            timeout=60.0,
+        )
+        _ready = ok is not None
+    return _ready
+
+
+async def rebuild_hours(start: datetime, end: datetime) -> bool:
+    """Tính lại các giờ trong [start, end) (UTC) cho mọi phim. hour = 'YYYY-MM-DDTHH' giờ VN."""
+    if not await ensure_schema():
+        return False
+    run = uuid.uuid4().hex[:12]
+    s, e = start.astimezone(UTC).isoformat(timespec="seconds"), end.astimezone(UTC).isoformat(timespec="seconds")
+    vn = lambda at: (at.astimezone(UTC) + timedelta(hours=7)).strftime("%Y-%m-%dT%H")  # noqa: E731
+    upsert = await d1_query(
+        f"""INSERT INTO movie_comment_hourly (movie_id, hour, total, negative, run)
+            SELECT p.movie_id, strftime('%Y-%m-%dT%H', c.posted_at, '+7 hours'), COUNT(*),
+                   SUM(c.sentiment = 'negative' AND COALESCE(c.sentiment_source, '') != 'rule'), ?3
+            FROM comments c JOIN posts p ON p.id = c.post_id
+            WHERE c.posted_at >= ?1 AND c.posted_at < ?2 AND p.movie_id IS NOT NULL AND {RELEVANT_POST_SQL}
+            GROUP BY 1, 2
+            ON CONFLICT (movie_id, hour) DO UPDATE SET total = excluded.total, negative = excluded.negative,
+                run = excluded.run""",
+        [s, e, run],
+        timeout=120.0,
+    )
+    if upsert is None:
+        return False
+    # Giờ không còn bình luận nào (bài bị ẩn/xoá) thì xoá dòng cũ của giờ đó.
+    await d1_query(
+        "DELETE FROM movie_comment_hourly WHERE hour >= ?1 AND hour < ?2 AND run != ?3", [vn(start), vn(end), run]
+    )
+    return True
+```
+
+Trước khi chạy, kiểm tra giá trị thật của cột `sentiment` (có phải `'negative'` không):
+
+```bash
+.venv/bin/python - <<'EOF'
+import asyncio
+from app.clients.d1 import d1_query
+print(asyncio.run(d1_query("SELECT sentiment, COUNT(*) n FROM comments WHERE posted_at >= datetime('now','-1 day') GROUP BY 1")))
+EOF
+```
+
+**Gắn lịch** (nhẹ, chạy trong scheduler): thêm vào `app/services/crawl/scheduler/ops.py` hoặc file mới
+`scheduler/attack.py`:
+
+```python
+async def comment_hourly_tick() -> None:
+    """Mỗi 10 phút tính lại 3 giờ gần nhất (bình luận về muộn vẫn được đếm đúng giờ đăng)."""
+    if not await claim("comment_hourly", 600):
+        return
+    now = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    await rebuild_hours(now - timedelta(hours=3), now + timedelta(hours=1))
+```
+
+rồi thêm một dòng vào `TICKS` trong `scheduler/__init__.py`: `("comment_hourly", attack.comment_hourly_tick, False),`.
+
+**Dựng 30 ngày cũ một lần** (ban đêm, từng ngày một để D1 không quá tải):
+
+```bash
+.venv/bin/python - <<'EOF'
+import asyncio
+from datetime import UTC, datetime, timedelta
+from app.repositories.d1.comment_hourly import rebuild_hours
+async def main():
+    end = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    for d in range(30, 0, -1):
+        start = end - timedelta(days=d)
+        print(start.date(), await rebuild_hours(start, start + timedelta(days=1)))
+        await asyncio.sleep(5)
+asyncio.run(main())
+EOF
+```
+
+**Xong khi:** `SELECT hour, total, negative FROM movie_comment_hourly WHERE movie_id = ? ORDER BY hour DESC LIMIT 24`
+ra 24 giờ có số, và số cộng theo ngày gần khớp `movie_comment_daily` của ngày đó.
+
+### 4.3 Bước 1b: dấu hiệu A - chê dồn dập
+
+**Mục tiêu:** hàm thuần `find_spikes` + test + lệnh dry-run in được đợt tăng của phim cũ.
+
+```python
+# app/services/attack/signals.py
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+@dataclass
+class Signal:
+    key: str
+    fired: bool
+    strong: bool
+    score: float
+    window: tuple[str, str] | None = None
+    evidence: list[dict] = field(default_factory=list)
+    detail: dict = field(default_factory=dict)
+```
+
+```python
+# app/services/attack/spikes.py
+"""Dấu hiệu A: số bình luận chê của một giờ cao bất thường so với cùng giờ đó trong 14 ngày trước."""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from statistics import median
+
+BASELINE_DAYS = 14
+EVENT_WINDOW = timedelta(hours=6)
+
+
+def find_spikes(
+    hours: list[dict], events: list[str], *, min_count: int = 30, ratio: float = 3.0, share_ratio: float = 1.5
+) -> list[dict]:
+    """hours: [{"hour": "YYYY-MM-DDTHH", "total", "negative"}] liên tục từng giờ (giờ trống = 0), cũ -> mới.
+    events: các mốc 'YYYY-MM-DDTHH' (premiere, khởi chiếu, mốc tay)."""
+    marks = [datetime.fromisoformat(e) for e in events]
+    spikes = []
+    for i in range(BASELINE_DAYS * 24, len(hours)):
+        now = hours[i]
+        past = [hours[i - 24 * k] for k in range(1, BASELINE_DAYS + 1)]  # cùng giờ-trong-ngày
+        base = median(h["negative"] for h in past)
+        base_share = sum(h["negative"] for h in past) / max(1, sum(h["total"] for h in past))
+        share = now["negative"] / max(1, now["total"])
+        if now["negative"] < min_count or now["negative"] < ratio * max(base, 1):
+            continue
+        if share < share_ratio * base_share:  # chỉ tổng tăng (bài viral) - không tính
+            continue
+        at = datetime.fromisoformat(now["hour"])
+        near = any(abs(at - mark) <= EVENT_WINDOW for mark in marks)
+        spikes.append({**now, "baseline": base, "share": share, "base_share": base_share, "near_event": near,
+                       "strong": not near})
+    return spikes
+```
+
+`fromisoformat("2026-11-16T08")` chạy được từ Python 3.11. Test (`tests/test_attack_spikes.py`), tự viết thêm ca:
+
+```python
+from app.services.attack.spikes import find_spikes
+
+
+def _hours(days, spike_at=None, spike=0):
+    rows = []
+    for d in range(days):
+        for h in range(24):
+            hour = f"2026-11-{1 + d:02d}T{h:02d}"
+            rows.append({"hour": hour, "total": 100, "negative": 10 + (spike if hour == spike_at else 0)})
+    return rows
+
+
+def test_spike_found_and_flagged_strong():
+    spikes = find_spikes(_hours(16, "2026-11-16T20", 60), [])
+    assert [s["hour"] for s in spikes] == ["2026-11-16T20"] and spikes[0]["strong"]
+
+
+def test_spike_near_event_is_not_strong():
+    spikes = find_spikes(_hours(16, "2026-11-16T20", 60), ["2026-11-16T18"])
+    assert spikes and not spikes[0]["strong"]
+
+# TODO tự viết: ca tổng tăng cùng tỷ lệ (total 1000, negative 100) -> không phải spike; ca dưới min_count.
+```
+
+**Đọc dữ liệu** (`app/services/attack/data.py`): một hàm `async def load_hours(movie_id, days=16)` đọc
+`movie_comment_hourly` của phim, rồi **điền giờ trống bằng 0** (vòng từ giờ đầu tới giờ cuối, `timedelta(hours=1)`).
+Thiếu bước điền thì `hours[i - 24*k]` lệch giờ.
+
+**Dry-run** (`app/services/ai_jobs/attack_detect.py`):
+
+```python
+async def dry_run(movie_id: str) -> None:
+    hours = await load_hours(movie_id, days=60)
+    events = await load_events(movie_id)     # premiere_date / released_at -> 'YYYY-MM-DDT00'
+    for spike in find_spikes(hours, events):
+        print(spike["hour"], spike["negative"], "vs", spike["baseline"], "sự kiện" if spike["near_event"] else "")
+
+if __name__ == "__main__":
+    import argparse, asyncio
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--movie-id", required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(dry_run(args.movie_id))
+```
+
+```bash
+.venv/bin/python -m app.services.ai_jobs.attack_detect --movie-id <id Bò Sữa Bay> --dry-run
+```
+
+**Xong khi:** test xanh; dry-run trên Bò Sữa Bay / Án Mạng Xém Hoàn Hảo in vài giờ, và khi mở các bình luận của giờ đó
+thấy đúng là lúc chê dồn (đọc tay 5 giờ).
+
+### 4.4 Bước 2: dấu hiệu B - bình luận chê giống nhau
+
+**Mục tiêu:** hàm thuần `similar_clusters` + dry-run in cụm và số tài khoản.
+
+Đọc embedding từ SQLite (cùng file với Bước 0):
+
+```python
+import sqlite3
+import numpy as np
+from scripts.jobs.embed_comments import DB_PATH
+
+def load_vectors(comment_ids: list[str]) -> dict[str, np.ndarray]:
+    conn = sqlite3.connect(DB_PATH)
+    out = {}
+    for i in range(0, len(comment_ids), 500):   # SQLite giới hạn số tham số
+        chunk = comment_ids[i : i + 500]
+        marks = ",".join("?" * len(chunk))
+        for cid, blob in conn.execute(f"SELECT comment_id, embedding FROM comment_embeddings WHERE comment_id IN ({marks})", chunk):
+            out[cid] = np.frombuffer(blob, dtype=np.float16).astype(np.float32)
+    return out
+```
+
+Khung hàm cụm (union-find giống mục 1.3):
+
+```python
+def similar_clusters(rows: list[dict], vectors: np.ndarray, *, sim: float = 0.92, min_size: int = 5) -> list[dict]:
+    """rows: [{"id","author_id","post_id","platform","posted_at","message"}], vectors (n, 384) đã chuẩn hoá, cùng thứ tự."""
+    n = len(rows)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    sims = vectors @ vectors.T
+    for i, j in zip(*np.where(np.triu(sims, 1) >= sim)):
+        parent[find(i)] = find(j)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    clusters = []
+    for members in groups.values():
+        if len(members) < min_size:
+            continue
+        items = [rows[i] for i in members]
+        # TODO: số tài khoản khác nhau (author_id), số bài, số nền tảng,
+        #       độ dồn = tỷ lệ bình luận nằm trong cửa sổ 2 giờ dày nhất (sắp posted_at, cửa sổ trượt),
+        #       độ giống trung bình = trung bình sims[i, j] trong cụm
+        clusters.append({"size": len(items), "items": items})
+    return sorted(clusters, key=lambda c: -c["size"])
+```
+
+Trước khi gọi `similar_clusters`, gộp trước các câu trùng chữ (chuẩn hoá bằng `app.ai.tasks.review_angles.fold`, bỏ
+dấu câu/emoji/@tag) để ma trận nhỏ lại. Hơn 5.000 câu thì chia theo bài.
+
+Test: 6 câu gần như y hệt từ 6 tài khoản → 1 cụm, `accounts == 6`; 6 câu khác ý → không cụm nào. Vector giả: tạo
+một vector ngẫu nhiên, cộng nhiễu nhỏ cho 6 câu giống, chuẩn hoá lại (`v / np.linalg.norm(v)`).
+
+**Xong khi:** dry-run in được cụm lớn nhất của Bò Sữa Bay kèm số tài khoản, độ dồn; đọc tay 3 cụm thấy đúng là câu
+giống nhau.
+
+### 4.5 Bước 3: trạng thái + lưu + chạy hằng giờ
+
+1. `app/services/attack/verdict.py`: `decide(signals, coverage) -> (status, confidence, reasons)` theo bảng 2.5. Viết test
+   trước cho 4 trạng thái và ca "hai dấu hiệu mạnh nhưng không chồng thời gian → `suspicious`" (so `window` bằng
+   `a_start < b_end and b_start < a_end`).
+2. `app/services/attack/store.py`: tạo bảng `attack_signals` (mục 2.6) như `ensure_schema` ở 4.2; `save(row)` bằng
+   `insert(...)` + `d1_exec`; xoá dòng cũ hơn 60 ngày.
+3. `app/services/ai_jobs/attack_detect.py` thêm `async def run_tick()`: với mỗi phim từ `showing_movies(now)`, đọc dữ
+   liệu → A, B → `decide` → `save`. Chưa gọi AI ở bước này.
+4. Gắn lịch trong `app/services/crawl/scheduler/ai_jobs.py`:
+
+   ```python
+   from app.services.ai_jobs import attack_detect
+   AI_JOB_EVERY = {..., "attack_detect": 3600}
+
+   # trong ai_jobs_tick():
+       if datetime.now(tz=UTC).minute >= 15 and await claim("attack_detect", AI_JOB_EVERY["attack_detect"]):
+           _run("attack_detect", attack_detect.run_tick)
+   ```
+
+5. Chưa hiện trên trang. Để chạy vài ngày, đọc bảng:
+   `SELECT movie_id, computed_at, status, confidence FROM attack_signals ORDER BY computed_at DESC LIMIT 20`.
+
+**Xong khi:** mỗi giờ có một dòng cho mỗi phim đang chiếu; phần lớn là `clear`; các dòng `suspicious` đọc tay có lý.
+Sau đó làm Bước 4 (thử ngưỡng, mục 2.9) trước khi làm giao diện.
+
+### 4.6 Khi bị kẹt
+
+| Hiện tượng | Xem gì |
+|---|---|
+| D1 báo `7429 overloaded` | Câu đang quét quá rộng. Thêm điều kiện theo index (`posted_at`, `post_id`, `movie_id`), chia nhỏ khoảng thời gian |
+| Truy vấn trả `None` im lặng | `d1_query` trả None khi lỗi - đọc log `d1_*` ngay trên dòng đó; kiểm tra biến trùng tên bảng (mục 3) |
+| Tick không chạy | Log scheduler: `journalctl -u cinemark-scheduler -n 100 --no-pager \| grep <tên tick>`; khoá `claim` còn sống trong Redis: `redis-cli TTL social_crawler:scheduler:<tên>` |
+| Timer không chạy | `systemctl list-timers`, `systemctl status <tên>.service`, `journalctl -u <tên> -n 50` |
+| Test đỏ sau khi sửa | Chạy riêng file: `.venv/bin/python -m pytest -q tests/test_attack_spikes.py -x` |
+| Muốn hỏi lại thiết kế | Mục 2.4-2.5 là quy tắc đã chốt; ngưỡng chỉ đổi sau khi thử trên dữ liệu cũ (2.9) |

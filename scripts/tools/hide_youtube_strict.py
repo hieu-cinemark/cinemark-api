@@ -16,19 +16,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 from collections import Counter
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 
 from app.core.config import settings
-from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import d1_query
+from app.repositories.d1.sql import d1_exec, json_values
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
 from app.services.relevance.relevance_rules import has_film_context
 
-UPDATE_CHUNK = 90  # D1 tối đa 100 tham số mỗi câu
+UPDATE_CHUNK = 500  # id đi qua một tham số JSON (json_values), lô vừa phải cho mỗi câu UPDATE
 
 
 async def run(args: argparse.Namespace) -> None:
@@ -60,9 +58,8 @@ async def run(args: argparse.Namespace) -> None:
     ids = [row["id"] for row in hide]
     for start in range(0, len(ids), UPDATE_CHUNK):
         chunk = ids[start : start + UPDATE_CHUNK]
-        result = await d1_query(
-            "UPDATE posts SET relevance_label = 'uncertain' WHERE id IN (SELECT value FROM json_each(?1))",
-            [json.dumps(chunk)],
+        result = await d1_exec(
+            update(posts_table).where(posts_table.c.id.in_(json_values(chunk))).values(relevance_label="uncertain"),
             timeout=60.0,
         )
         if result is None:

@@ -39,7 +39,7 @@ def test_save_transcript_upserts_once_table_ready(monkeypatch):
         calls.append((sql.split()[0], params))
         return []
 
-    monkeypatch.setattr(transcripts, "d1_query", fake_query)
+    monkeypatch.setattr("app.repositories.d1.sql.d1_query", fake_query)
     monkeypatch.setattr(transcripts, "_ready", False)
     ok = asyncio.run(
         transcripts.save_transcript("youtube", "v1", {"language": "vi", "text": " abc ", "char_count": 90})

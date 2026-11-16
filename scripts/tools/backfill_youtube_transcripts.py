@@ -19,12 +19,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
-from app.clients.d1 import d1_query
+from sqlalchemy import and_, exists, func, or_, select, update
+
 from app.core.config import settings
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import MOVIE_CONTEXT_FIELDS
-from app.repositories.d1.transcripts import ensure_table, save_transcript, transcript_has_film_context
+from app.repositories.d1.tables import movies
+from app.repositories.d1.tables import posts as posts_table
+from app.repositories.d1.transcripts import ensure_table, post_transcripts, save_transcript, transcript_has_film_context
 from app.services.relevance.relevance_rules import has_film_context
 
 # Bị chặn (429 / RequestBlocked) liên tiếp chừng này video thì dừng - chạy lại sau hoặc từ máy khác.
@@ -60,24 +64,29 @@ def _fetch(video_id: str) -> dict | None:
 
 async def _candidates(days: int, limit: int) -> list[dict]:
     await ensure_table()
-    return (
-        await d1_query(
-            "SELECT p.id, p.external_id, p.movie_id, p.content, p.relevance_label FROM posts p"
-            " WHERE p.platform = 'youtube' AND COALESCE(p.first_seen_at, p.scraped_at) >= datetime('now', ?1)"
-            " AND (p.relevance_label IN ('related', 'uncertain') OR (p.relevance_label IS NULL AND p.keyword_match > 0))"
-            " AND NOT EXISTS (SELECT 1 FROM post_transcripts t WHERE t.platform = 'youtube'"
-            " AND t.external_id = p.external_id)"
-            " ORDER BY COALESCE(p.first_seen_at, p.scraped_at) DESC LIMIT ?2",
-            [f"-{days} days", limit],
-            timeout=90.0,
+    p, t = posts_table, post_transcripts
+    seen_at = func.coalesce(p.c.first_seen_at, p.c.scraped_at)
+    since = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat()
+    stmt = (
+        select(p.c.id, p.c.external_id, p.c.movie_id, p.c.content, p.c.relevance_label)
+        .where(
+            p.c.platform == "youtube",
+            seen_at >= since,
+            or_(
+                p.c.relevance_label.in_(("related", "uncertain")),
+                and_(p.c.relevance_label.is_(None), p.c.keyword_match > 0),
+            ),
+            ~exists().where(t.c.platform == "youtube", t.c.external_id == p.c.external_id),
         )
-        or []
+        .order_by(seen_at.desc())
+        .limit(limit)
     )
+    return await d1_exec(stmt, timeout=90.0) or []
 
 
 async def _movies() -> dict[str, dict]:
-    fields = ", ".join(("id", "slug", *MOVIE_CONTEXT_FIELDS))
-    return {row["id"]: row for row in await d1_query(f"SELECT {fields} FROM movies") or []}
+    columns = (movies.c.id, movies.c.slug, *(movies.c[f] for f in MOVIE_CONTEXT_FIELDS))
+    return {row["id"]: row for row in await d1_exec(select(*columns)) or []}
 
 
 def _new_label(row: dict, movie: dict, transcript: dict | None) -> str | None:
@@ -90,7 +99,7 @@ def _new_label(row: dict, movie: dict, transcript: dict | None) -> str | None:
 
 
 async def run(args: argparse.Namespace) -> None:
-    movies = await _movies()
+    films = await _movies()
     rows = await _candidates(args.days, args.limit if args.apply else args.sample)
     print(f"{len(rows)} bài YouTube chưa có transcript")
     sem = asyncio.Semaphore(args.concurrency)
@@ -111,7 +120,7 @@ async def run(args: argparse.Namespace) -> None:
                 print(f"  lỗi {row['external_id']}: {type(exc).__name__}: {str(exc).splitlines()[0][:100]}")
                 return
         stats["có transcript" if transcript else "không có phụ đề"] += 1
-        movie = movies.get(row["movie_id"]) or {}
+        movie = films.get(row["movie_id"]) or {}
         label = _new_label(row, movie, transcript)
         title = " ".join(str(row["content"] or "").split())[:70]
         if label:
@@ -124,9 +133,10 @@ async def run(args: argparse.Namespace) -> None:
         if transcript:
             await save_transcript("youtube", row["external_id"], transcript)
         if label:
-            await d1_query(
-                "UPDATE posts SET relevance_label = ?1, relevance_labeled_at = ?2 WHERE id = ?3",
-                [label, datetime.now(tz=UTC).isoformat(), row["id"]],
+            await d1_exec(
+                update(posts_table)
+                .where(posts_table.c.id == row["id"])
+                .values(relevance_label=label, relevance_labeled_at=datetime.now(tz=UTC).isoformat())
             )
 
     await asyncio.gather(*(one(row) for row in rows))

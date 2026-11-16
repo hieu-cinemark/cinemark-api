@@ -33,7 +33,6 @@ from app.ai.prompts.review_angles import REVIEW_ANGLES_SYSTEM, REVIEW_ASPECTS
 from app.ai.runtime import call_llm_json
 from app.ai.tasks.review_angles import angle_id_of, has_text, js_json, parse_batch
 from app.clients import lake
-from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -41,6 +40,7 @@ from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, json_values
 from app.repositories.d1.tables import movie_measure_settings, movies
 from app.repositories.d1.tables import posts as posts_table
+from app.repositories.d1.transcripts import load_texts as load_transcripts
 from app.services.ai_jobs.channels import channel_of_post, channel_url
 
 logger = get_logger(__name__)
@@ -267,15 +267,7 @@ def youtube_caption(content: str, transcript: str | None) -> str:
 
 async def _transcripts(external_ids: list[str]) -> dict[str, str]:
     """{external_id: transcript} của video YouTube (post_transcripts). Lỗi / chưa có bảng thì rỗng - vẫn đọc tiêu đề."""
-    if not external_ids:
-        return {}
-    rows = await d1_query(
-        f"SELECT external_id, substr(text, 1, {TRANSCRIPT_CHARS}) AS text FROM post_transcripts"
-        " WHERE platform = 'youtube' AND external_id IN (SELECT value FROM json_each(?1))",
-        [json.dumps(external_ids)],
-        quiet=True,
-    )
-    return {row["external_id"]: row["text"] for row in rows or [] if row.get("text")}
+    return await load_transcripts("youtube", external_ids, TRANSCRIPT_CHARS)
 
 
 async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:

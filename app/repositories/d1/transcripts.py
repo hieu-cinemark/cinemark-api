@@ -14,21 +14,26 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
-from app.clients.d1 import d1_query
+from sqlalchemy import Column, Integer, Table, Text, func, select
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.schema import CreateTable
+
 from app.core.logging import get_logger
+from app.repositories.d1.sql import d1_exec, json_values, metadata
 
 logger = get_logger(__name__)
 
-TABLE_SQL = """CREATE TABLE IF NOT EXISTS post_transcripts (
-  platform TEXT NOT NULL,
-  external_id TEXT NOT NULL,
-  language TEXT,
-  generated INTEGER,
-  text TEXT NOT NULL,
-  char_count INTEGER,
-  fetched_at TEXT NOT NULL,
-  PRIMARY KEY (platform, external_id)
-)"""
+post_transcripts = Table(
+    "post_transcripts",
+    metadata,
+    Column("platform", Text, primary_key=True),
+    Column("external_id", Text, primary_key=True),
+    Column("language", Text),
+    Column("generated", Integer),
+    Column("text", Text, nullable=False),
+    Column("char_count", Integer),
+    Column("fetched_at", Text, nullable=False),
+)
 
 _ready = False
 _lock = asyncio.Lock()
@@ -39,7 +44,7 @@ async def ensure_table() -> None:
     if _ready:
         return
     async with _lock:
-        if not _ready and await d1_query(TABLE_SQL, quiet=True) is not None:
+        if not _ready and await d1_exec(CreateTable(post_transcripts, if_not_exists=True), quiet=True) is not None:
             _ready = True
 
 
@@ -65,23 +70,35 @@ async def save_transcript(platform: str, external_id: str, transcript: dict[str,
     if not text or not external_id:
         return False
     await ensure_table()
-    result = await d1_query(
-        "INSERT INTO post_transcripts (platform, external_id, language, generated, text, char_count, fetched_at)"
-        " VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
-        " ON CONFLICT(platform, external_id) DO UPDATE SET language = excluded.language,"
-        " generated = excluded.generated, text = excluded.text, char_count = excluded.char_count,"
-        " fetched_at = excluded.fetched_at",
-        [
-            platform,
-            str(external_id),
-            transcript.get("language"),
-            int(bool(transcript.get("generated"))),
-            text,
-            int(transcript.get("char_count") or len(text)),
-            datetime.now(tz=UTC).isoformat(),
-        ],
+    stmt = insert(post_transcripts).values(
+        platform=platform,
+        external_id=str(external_id),
+        language=transcript.get("language"),
+        generated=int(bool(transcript.get("generated"))),
+        text=text,
+        char_count=int(transcript.get("char_count") or len(text)),
+        fetched_at=datetime.now(tz=UTC).isoformat(),
     )
-    if result is None:
+    new = stmt.excluded
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[post_transcripts.c.platform, post_transcripts.c.external_id],
+        set_={name: new[name] for name in ("language", "generated", "text", "char_count", "fetched_at")},
+    )
+    if await d1_exec(stmt) is None:
         logger.warning("transcript_save_failed", platform=platform, external_id=external_id)
         return False
     return True
+
+
+async def load_texts(platform: str, external_ids: list[str], chars: int) -> dict[str, str]:
+    """{external_id: `chars` ký tự đầu của transcript}. Lỗi / chưa có bảng thì rỗng (chỗ gọi vẫn đọc tiêu đề)."""
+    if not external_ids:
+        return {}
+    t = post_transcripts
+    rows = await d1_exec(
+        select(t.c.external_id, func.substr(t.c.text, 1, chars).label("text")).where(
+            t.c.platform == platform, t.c.external_id.in_(json_values(external_ids))
+        ),
+        quiet=True,
+    )
+    return {row["external_id"]: row["text"] for row in rows or [] if row.get("text")}
