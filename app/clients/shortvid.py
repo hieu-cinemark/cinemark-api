@@ -178,11 +178,21 @@ def _hashtags(item: dict[str, Any]) -> list[str]:
     return re.findall(r"#([^\s#.,!?;:]+)", str(item.get("title") or ""))
 
 
+def video_id_of(item: dict[str, Any]) -> str | None:
+    """Id số của video TikTok. `aweme_id` của ShortVid KHÔNG phải id video (đo 16/11/2026: "v0f044gc0000cn0i..." là mã file
+    video), id thật ở `video_id` (video/detail: `id`). Chỉ nhận chuỗi toàn chữ số để link /video/<id> mở được."""
+    for key in ("video_id", "id", "aweme_id"):
+        value = str(item.get(key) or "").strip()
+        if value.isdigit():
+            return value
+    return None
+
+
 def map_video(item: dict[str, Any], source: str = "shortvid") -> dict[str, Any] | None:
     """Một video ShortVid -> cùng tên trường với TikTokVideoItem của spider-hub (spiders/tiktok/features/hashtag_search/
     extract.py), để ingest consumer xử lý như bài của spider. None khi thiếu id. ShortVid chỉ trả id/unique_id/nickname/avatar
     của tác giả - không có follower, tick xanh, tài khoản business (để None/False)."""
-    video_id = str(item.get("aweme_id") or item.get("video_id") or item.get("id") or "").strip()
+    video_id = video_id_of(item)
     if not video_id:
         return None
     author = item.get("author") or {}

@@ -2,7 +2,8 @@ from app.clients.shortvid import hashtag_info, map_comment, map_video, next_curs
 
 # Video dạng ShortVid (challenge/posts, video/search, user/posts, video/detail đều trả cùng dạng này).
 VIDEO = {
-    "aweme_id": "7301",
+    # Response thật 16/11/2026: aweme_id là mã file video, id video ở video_id.
+    "aweme_id": "v0f044gc0000cn0ijh7og65r84nc68u0",
     "video_id": "7301",
     "region": "VN",
     "title": "Review phim mới #traibuonnguoi #phimhay",
@@ -49,6 +50,13 @@ def test_map_video_photo_branded_and_hashtag_list():
 
 def test_map_video_missing_id():
     assert map_video({"title": "x"}) is None
+    # aweme_id không phải số thì không dùng làm id.
+    assert map_video({"aweme_id": "v0f044gc0000cn0ijh7og65r84nc68u0", "author": {"unique_id": "a"}}) is None
+    # video/detail trả id ở "id".
+    assert (
+        map_video({"id": "7332187682480590112", "aweme_id": "v0f0", "author": {"unique_id": "a"}})["video_id"]
+        == "7332187682480590112"
+    )
     assert map_video({"video_id": "9", "author": {}})["url"] is None
 
 
