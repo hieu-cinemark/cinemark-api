@@ -187,8 +187,13 @@ class Settings(BaseSettings):
     # liên quan chỉ vì có đủ tên phim (resolve_relevance, quy tắc full_title - 2026-10-16). Khác strict: không đụng bài
     # bộ phân loại đã gán "related".
     ambiguous_title_movie_slugs: str = (
-        "nguoi-duoc-chon,cong-tru-nhan-chia,nguoi-me-xau,hoang-hau-cuoi-cung,bo-sua-bay,yeu-sai-yeu-lai"
+        "nguoi-duoc-chon,cong-tru-nhan-chia,nguoi-me-xau,hoang-hau-cuoi-cung,bo-sua-bay,yeu-sai-yeu-lai,"
+        "con-mat-thu-ba,chuyen-di-nho-doi,me-min"
     )
+    # Phim "chặt" CHỈ trên YouTube (16/11/2026): tìm theo tên phim trên YouTube ra cả video chỉ trùng cụm từ trong tiêu đề
+    # ("mở con mắt thứ ba", gameshow "Chuyến Đi Nhớ Đời", truyện cổ tích "mẹ mìn") - mẫu 1 ngày: ~5/6 video Con Mắt Thứ Ba
+    # đang hiện là tâm linh. Không bật cho nền tảng khác vì ở đó 20-50% bài thật không có tín hiệu phim (xem strict ở trên).
+    youtube_strict_movie_slugs: str = "con-mat-thu-ba,chuyen-di-nho-doi,me-min,nguoi-me-xau"
 
     # ShortVid API (api.shortvidapi.com, thay Omar từ 16/11/2026) - nguồn TikTok của cinemark-api (hashtag, tìm kiếm, kênh,
     # bình luận, số liệu video). Client: app/clients/shortvid.py. API key đọc từ bảng shortvid_api_settings trên Supabase
@@ -348,6 +353,14 @@ class Settings(BaseSettings):
     @property
     def strict_relevance_movies(self) -> frozenset[str]:
         return frozenset(slug.strip() for slug in self.strict_relevance_movie_slugs.split(",") if slug.strip())
+
+    @property
+    def youtube_strict_movies(self) -> frozenset[str]:
+        return frozenset(slug.strip() for slug in self.youtube_strict_movie_slugs.split(",") if slug.strip())
+
+    def is_strict_movie(self, slug: str | None, platform: str | None) -> bool:
+        """Phim "chặt" (cần tín hiệu gắn đúng phim mới hiện): mọi nền tảng, hoặc chỉ YouTube (youtube_strict_movie_slugs)."""
+        return slug in self.strict_relevance_movies or (platform == "youtube" and slug in self.youtube_strict_movies)
 
     @property
     def cors_origins_list(self) -> list[str]:

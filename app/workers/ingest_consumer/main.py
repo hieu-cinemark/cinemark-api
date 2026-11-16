@@ -47,6 +47,7 @@ from app.services.crawl.tracked_posts import tracked_keyword_for
 from app.services.relevance.relevance_rules import (
     find_film,
     foreign_language_reason,
+    has_film_context,
     hashtag_only_mention,
     mentions_film_manual,
     mentions_keyword_or_title,
@@ -448,7 +449,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         draft.get("content"),
         movie,
         has_keyword=has_keyword,
-        strict=movie.get("slug") in settings.strict_relevance_movies,
+        strict=settings.is_strict_movie(movie.get("slug"), platform),
         full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
         posted_at=draft.get("posted_at"),
     )
@@ -520,8 +521,16 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # Kira "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
     if settings.relevance_rules_only:
         # Đã qua cổng tên phim/viết tắt/từ khoá ở trên - chế độ thủ công coi vậy là liên quan.
+        # Phim "chặt" (kể cả chỉ trên YouTube): đủ tên phim chưa đủ, phải có tín hiệu gắn đúng phim - không có thì lưu ẩn.
+        strict_without_context = settings.is_strict_movie(movie.get("slug"), platform) and not has_film_context(
+            draft.get("content"), movie
+        )
         ai_relevant, relevance_label, context = (
-            (False, "not_related", "hashtag_only") if hashtag_only else (True, "related", "manual_rules")
+            (False, "not_related", "hashtag_only")
+            if hashtag_only
+            else (False, "uncertain", "strict_no_context")
+            if strict_without_context
+            else (True, "related", "manual_rules")
         )
     else:
         ai_relevant, relevance_label, context = resolve_relevance(
@@ -529,7 +538,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             draft.get("content"),
             movie,
             has_keyword=has_keyword,
-            strict=movie.get("slug") in settings.strict_relevance_movies,
+            strict=settings.is_strict_movie(movie.get("slug"), platform),
             hashtag_only=hashtag_only,
             confidence=relevance_confidence,
             full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
