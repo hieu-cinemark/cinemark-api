@@ -194,7 +194,17 @@ async def test_batch_writes_state_in_worker_format_and_advances(world):
     assert sum(state["analyzed"].values()) == 4
     angle = state["angles"][0]
     assert angle["id"] == tasks.angle_id_of("dien_xuat", "Diễn xuất tự nhiên")
-    assert set(angle["refs"][0]) == {"id", "page", "platform", "source", "interactions", "views", "postedAt", "quote"}
+    assert set(angle["refs"][0]) == {
+        "id",
+        "page",
+        "platform",
+        "source",
+        "interactions",
+        "views",
+        "postedAt",
+        "quote",
+        "stance",
+    }
     page = json.loads(lake["analysis/review-angles/v2/m1/page-0.json"])
     assert {p["id"] for p in page} == {"p1", "p2", "p4"}  # p3 chỉ có hashtag/emoji: đã đọc, không gửi AI
     assert page[0]["imageUrl"].startswith("/api/social-topic/review-angles/image?movieId=m1&postId=")

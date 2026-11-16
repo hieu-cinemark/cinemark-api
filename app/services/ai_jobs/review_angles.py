@@ -476,6 +476,7 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
                             "views": post["views"],
                             "postedAt": post["postedAt"],
                             "quote": ref["quote"],
+                            "stance": ref.get("stance"),
                         }
                     )
         mark_read(state, metas, kind)

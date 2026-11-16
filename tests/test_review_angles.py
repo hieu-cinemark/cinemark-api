@@ -145,3 +145,73 @@ def test_post_keeps_at_most_two_angles():
 
     parsed = parse_batch({"summary": "s", "angles": [angle(1), angle(2), angle(3)]}, POSTS, [])
     assert [a["name"] for a in parsed["angles"]] == ["Góc 1", "Góc 2"]
+
+
+# --- khen/chê + gộp góc (16/11/2026) ---
+
+
+def test_stance_kept_on_evidence_and_unknown_values_become_none():
+    raw = {
+        "summary": "s",
+        "angles": [
+            {
+                "name": "Kết vội",
+                "description": "d",
+                "aspect": "kich_ban",
+                "evidence": [{"postId": "b", "quote": "đoạn cuối hơi vội", "stance": "chê"}],
+            },
+            {
+                "name": "Diễn xuất",
+                "description": "d",
+                "aspect": "dien_xuat",
+                "evidence": [{"postId": "a", "quote": "rất tự nhiên và cảm động", "stance": "tuyệt"}],
+            },
+        ],
+    }
+    parsed = parse_batch(raw, POSTS, [])
+    assert [a["evidence"][0]["stance"] for a in parsed["angles"]] == ["che", None]
+
+
+def _ref(i):
+    return {"id": i, "page": 0, "platform": "tiktok", "source": "", "interactions": 1, "views": None, "quote": "q"}
+
+
+ANGLES = [
+    {"id": "k1", "name": "Kịch bản hay", "description": "", "aspect": "kich_ban", "refs": [_ref("p1"), _ref("p2")]},
+    {
+        "id": "k2",
+        "name": "Cốt truyện cuốn",
+        "description": "",
+        "aspect": "kich_ban",
+        "refs": [_ref("p2"), _ref("p3"), _ref("p4")],
+    },
+    {"id": "k3", "name": "Kết vội", "description": "", "aspect": "kich_ban", "refs": [_ref("p5")]},
+    {"id": "d1", "name": "Diễn xuất tốt", "description": "", "aspect": "dien_xuat", "refs": [_ref("p1")]},
+]
+
+
+def test_merge_keeps_biggest_id_and_dedupes_refs():
+    from app.ai.tasks.review_angles import merge_groups
+
+    raw = {"groups": [{"name": "Kịch bản cuốn hút", "description": "Khen kịch bản", "ids": ["k1", "k2", "lạ", "d1"]}]}
+    merged = merge_groups(ANGLES, "kich_ban", raw)
+    assert [a["id"] for a in merged] == ["k2", "k3", "d1"]  # k3 bị bỏ sót -> giữ riêng; d1 khác khía cạnh không đụng
+    k2 = merged[0]
+    assert k2["name"] == "Kịch bản cuốn hút"
+    assert [r["id"] for r in k2["refs"]] == ["p2", "p3", "p4", "p1"]
+    assert merge_groups(ANGLES, "kich_ban", {"groups": [{"ids": ["k1"]}]}) is None  # không gộp gì
+    assert merge_groups(ANGLES, "kich_ban", "x") is None
+
+
+def test_parse_stances_keeps_valid_items_only():
+    from app.ai.tasks.review_angles import parse_stances
+
+    raw = {
+        "stances": [
+            {"i": 0, "stance": "khen"},
+            {"i": 1, "stance": "?"},
+            {"i": 9, "stance": "che"},
+            {"i": 2, "stance": "neutral"},
+        ]
+    }
+    assert parse_stances(raw, 3) == {0: "khen", 2: "trung_tinh"}

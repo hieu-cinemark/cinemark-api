@@ -12,7 +12,15 @@ import re
 import unicodedata
 from typing import Any
 
-from app.ai.prompts.review_angles import REVIEW_ASPECTS
+from app.ai.prompts.review_angles import REVIEW_ASPECTS, STANCES
+
+
+def stance_of(value: Any) -> str | None:
+    """'khen' | 'che' | 'trung_tinh', hoặc None khi model trả giá trị lạ / thiếu (trang tính là chưa rõ)."""
+    text = str(value or "").strip().lower().replace(" ", "_")
+    aliases = {"chê": "che", "trung_tính": "trung_tinh", "neutral": "trung_tinh", "positive": "khen", "negative": "che"}
+    text = aliases.get(text, text)
+    return text if text in STANCES else None
 
 
 def fold(value: str) -> str:
@@ -94,7 +102,7 @@ def parse_batch(raw: Any, posts: list[dict[str, Any]], catalog: list[dict[str, A
                 continue
             used.add(key)
             seen.add(post_id)
-            refs.append({"postId": post_id, "quote": quote})
+            refs.append({"postId": post_id, "quote": quote, "stance": stance_of(ref.get("stance"))})
         if not refs:
             continue
         angles.append(
@@ -121,3 +129,64 @@ def js_json(value: Any) -> str:
 
 def angle_id_of(aspect: str, name: str) -> str:
     return hashlib.sha256(js_json({"aspect": aspect, "name": fold(name)}).encode()).hexdigest()[:24]
+
+
+# --- dọn góc cũ (scripts/tools/review_angles_cleanup.py) ---
+
+
+def merge_groups(angles: list[dict[str, Any]], aspect: str, raw: Any) -> list[dict[str, Any]] | None:
+    """Danh sách góc mới sau khi gộp các góc của `aspect` theo nhóm AI trả, hoặc None khi câu trả lời không dùng được.
+
+    Nhóm giữ id của góc nhiều dẫn chứng nhất (link/bộ nhớ đệm trỏ tới id đó vẫn đúng), tên/mô tả theo AI; dẫn chứng gộp,
+    bỏ trùng theo bài. Id AI bỏ sót giữ nguyên là góc riêng; id lạ hoặc id nằm ở hai nhóm bị bỏ qua. Góc khía cạnh khác
+    không đổi, thứ tự giữ như cũ."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("groups"), list):
+        return None
+    by_id = {a["id"]: a for a in angles if a["aspect"] == aspect}
+    used: set[str] = set()
+    merged: dict[str, dict[str, Any]] = {}  # id góc giữ lại -> góc sau gộp
+    absorbed: set[str] = set()
+    for group in raw["groups"]:
+        if not isinstance(group, dict) or not isinstance(group.get("ids"), list):
+            continue
+        ids = [i for i in dict.fromkeys(group["ids"]) if isinstance(i, str) and i in by_id and i not in used]
+        if len(ids) < 2:
+            used.update(ids)
+            continue
+        used.update(ids)
+        members = sorted((by_id[i] for i in ids), key=lambda a: -len(a["refs"]))
+        keep = members[0]
+        refs: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for member in members:
+            for ref in member["refs"]:
+                if ref["id"] not in seen:
+                    seen.add(ref["id"])
+                    refs.append(ref)
+        name = group.get("name")
+        description = group.get("description")
+        merged[keep["id"]] = {
+            **keep,
+            "name": name.strip()[:150] if isinstance(name, str) and name.strip() else keep["name"],
+            "description": description.strip()[:1000]
+            if isinstance(description, str) and description.strip()
+            else keep.get("description", ""),
+            "refs": refs,
+        }
+        absorbed.update(m["id"] for m in members[1:])
+    if not merged:
+        return None
+    return [merged.get(a["id"], a) for a in angles if a["id"] not in absorbed]
+
+
+def parse_stances(raw: Any, count: int) -> dict[int, str]:
+    """{i: stance} hợp lệ từ câu trả lời gắn stance (mục thiếu / lạ bị bỏ, lần chạy sau thử lại)."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("stances"), list):
+        return {}
+    result: dict[int, str] = {}
+    for item in raw["stances"]:
+        if isinstance(item, dict) and isinstance(item.get("i"), int) and 0 <= item["i"] < count:
+            stance = stance_of(item.get("stance"))
+            if stance:
+                result[item["i"]] = stance
+    return result
