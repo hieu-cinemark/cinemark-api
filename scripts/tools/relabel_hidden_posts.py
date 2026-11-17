@@ -85,6 +85,8 @@ DEFAULT_REASONS = "title_hashtag,phim_title,strong_near_title,quoted_title,full_
 
 
 async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: set[str]) -> None:
+    """Xét lại mọi bài đang ẩn bằng luật liên quan hiện hành của ingest và nâng bài có tín hiệu phim lên "liên quan",
+    để đổi luật cũng áp cho bài cũ. Chạy lại an toàn; `--dry-run` chỉ in."""
     movies = await load_movies()
     if only:
         movies = {mid: m for mid, m in movies.items() if m.get("slug") in only}

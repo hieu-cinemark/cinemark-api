@@ -14,6 +14,10 @@ ProxyIpType = Literal["unknown", "static", "rotating"]
 
 
 class AccountOut(BaseModel):
+    """Một tài khoản nền tảng trả về dashboard. Các trường bí mật (mật khẩu, cookie, token, TOTP...) luôn rỗng ở đây
+    (xem `masked`); giá trị thật chỉ lấy qua `GET /settings/accounts/{id}/credentials`. Các cột pool/cooldown do
+    spider-hub ghi, ở đây chỉ đọc và đều cho phép null để một dòng cũ không làm cả danh sách lỗi 500."""
+
     id: int
     platform: str
     account_id: str
@@ -400,6 +404,11 @@ class CronJob(BaseModel):
 
 
 class ProxySettings(BaseModel):
+    """Mọi cài đặt cào chỉnh được từ dashboard (bảng `proxy_settings`): circuit-breaker proxy, health check, API xoay
+    IP, backoff khi hết proxy, TikTok synthetic, số làn/độ sâu cào... Spider-hub đọc lại trong vòng một phút nên
+    không cần restart. Thêm khoá mới thì phải thêm cả mặc định ở `social_crawler/db/proxy_settings.py` của
+    spider-hub."""
+
     # Ghim proxy cố định (services/pool.py)
     repin_after_consecutive_failures: int = Field(default=5, ge=1, le=100)
     # Cooldown của circuit-breaker: base * 2^failures, có trần (db/proxies.py)
@@ -452,6 +461,11 @@ class ProxySettings(BaseModel):
     public_pages_queue_target: int = Field(default=20, ge=0, le=500)
     threads_channels_queue_target: int = Field(default=8, ge=0, le=200)
     youtube_comments_per_round: int = Field(default=1000, ge=0, le=10000)
+    # Bình luận công khai Facebook (spider-hub spiders/facebook/auth/public_comments.py): proxy `public` ghim theo id.
+    public_comments_proxy_id: int = Field(default=29, ge=1)
+    public_comments_daily_cap: int = Field(default=400, ge=1, le=100000)
+    public_comments_interval_seconds: float = Field(default=5.0, ge=1, le=600)
+    public_comments_max_requests: int = Field(default=400, ge=1, le=100000)
 
 
 class ProxySettingsOut(BaseModel):

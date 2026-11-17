@@ -179,6 +179,8 @@ async def save(rows: list[dict[str, Any]]) -> bool:
 async def process_chunk(
     clf: CinemaFrameClassifier, chunk: list[dict[str, Any]], images: list[bytes | None], dry_run: bool
 ) -> Counter[str]:
+    """Xử lý một lô bài: phân loại ảnh bìa bằng `clf`, tải ảnh lên R2 và ghi nhãn ảnh vào D1 (`dry_run` thì không
+    ghi). Trả bộ đếm kết quả (đã xử lý, ảnh lỗi...)."""
     tally: Counter[str] = Counter()
     ready: list[tuple[dict[str, Any], bytes, Any]] = []
     out_rows: list[dict[str, Any]] = []
@@ -365,6 +367,8 @@ async def movies_with_screens(since: str | None) -> list[str]:
 
 
 async def main() -> None:
+    """Điểm vào dòng lệnh: chọn bài liên quan chưa có ảnh bìa, tải và phân loại theo lô, rồi tính lại cảnh được bàn
+    nhiều; chạy thường xuyên bằng timer `cinemark-visuals`."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--hours", type=float, default=6, help="bài thu trong chừng này giờ qua")
     parser.add_argument("--limit", type=int, default=3000)

@@ -175,6 +175,8 @@ def _split(rows: list[dict]) -> np.ndarray:
 
 
 def train(rows: list[dict], vectors: np.ndarray, name: str) -> dict:
+    """Huấn luyện thử bộ nhận diện khía cạnh bằng embedding cố định + lớp tuyến tính từ nhãn AI cũ (mẫu âm là comment
+    AI đã xử lý mà không thấy khía cạnh), in chỉ số để so với model fine-tune cả mạng."""
     support = Counter(label for r in rows for label in r["labels"])
     labels = sorted(label for label, n in support.items() if n >= MIN_SUPPORT)
     index = {label: i for i, label in enumerate(labels)}

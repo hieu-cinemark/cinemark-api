@@ -290,6 +290,10 @@ async def _drop(*, platform: str | None, post_id: Any, reason: str, keyword_id: 
 
 
 async def handle_post(payload: dict[str, Any]) -> None:
+    """Xử lý MỘT message bài từ Kafka `raw_posts` (xem luồng ở docs/FLOW.md mục 2.2): message `kind=metrics` chỉ cập
+    nhật số liệu bài đã có; còn lại map payload thô -> `PostDraft`, tìm từ khoá/phim (bài theo dõi, bài trang nguồn
+    chung), áp luật liên quan, chuyển phim khác nếu bài nêu phim khác, quyết định nhãn liên quan rồi ghi D1 và gửi
+    dòng quyết định. Bài bị loại có chủ đích thì `_drop`; lỗi thử lại được thì ném lên cho vòng consumer xử lý."""
     platform: str = payload.get("platform") or ""
     # Payload TikTok mang id ở trường video_id - không có phương án dự phòng này thì mọi
     # quyết định ingest của TikTok đều gửi đi với post_id=None và không bao giờ join lại

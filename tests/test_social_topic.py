@@ -114,7 +114,9 @@ async def test_happy_path_upserts_with_sql_computed_percentages_not_llm_guessed(
         patch("app.services.reports.social_topic._latest_accuracy", AsyncMock(return_value=ACCURACY)),
         patch("app.services.reports.social_topic.generate_topics_and_verbatims", AsyncMock(return_value=TOPICS_RESULT)),
         patch("app.services.reports.social_topic.generate_narrative", AsyncMock(return_value="Nhìn chung tích cực.")),
-        patch("app.services.reports.social_topic.upsert_social_topic_report", AsyncMock(return_value=True)) as mock_upsert,
+        patch(
+            "app.services.reports.social_topic.upsert_social_topic_report", AsyncMock(return_value=True)
+        ) as mock_upsert,
     ):
         result = await generate_report_for_movie(MOVIE, dry_run=False)
 

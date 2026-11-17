@@ -19,14 +19,18 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import httpx
+from sqlalchemy import select
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.store import d1_query
-from app.services.shortvid import shortvid_yield
+from app.repositories.d1.tables import keywords as keywords_table
+from app.repositories.d1.tables import movies as movies_table
 from app.services.relevance.relevance_rules import normalize_title
+from app.services.shortvid import shortvid_yield
 
 if TYPE_CHECKING:
     from app.services.shortvid.shortvid_tiktok import Budget, _Pacer
@@ -87,13 +91,13 @@ async def load_channels() -> list[str]:
 
 async def load_movie_matchers() -> list[dict[str, Any]]:
     """[{keyword_id, title_key, tags}] cho mọi phim đang bật có hashtag TikTok - để biết video kênh nói về phim nào."""
+    k, m = keywords_table.alias("k"), movies_table.alias("m")
     rows = (
-        await d1_query(
-            """
-            SELECT k.id, k.movie_id, k.keyword, m.title FROM keywords k JOIN movies m ON m.id = k.movie_id
-            WHERE k.platform = 'tiktok' AND k.enabled = 1 AND m.enabled = 1 AND k.keyword LIKE '#%'
-            ORDER BY k.created_at
-            """,
+        await d1_exec(
+            select(k.c.id, k.c.movie_id, k.c.keyword, m.c.title)
+            .select_from(k.join(m, m.c.id == k.c.movie_id))
+            .where(k.c.platform == "tiktok", k.c.enabled == 1, m.c.enabled == 1, k.c.keyword.like("#%"))
+            .order_by(k.c.created_at),
             quiet=True,
         )
         or []

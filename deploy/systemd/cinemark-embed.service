@@ -1,0 +1,21 @@
+[Unit]
+Description=cinemark-api comment embeddings (e5-small) for showing films, comments of the last hours - Attack Detection signal B
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cinemark-api
+EnvironmentFile=/opt/cinemark-api/.env
+# CPU-only VPS: cap torch threads and CPU share so crawling/ingest keep their cores.
+Environment=OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 TOKENIZERS_PARALLELISM=false
+# --hours 2 every hour: overlap of one hour catches comments that arrived late in the previous run.
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.embed_comments --showing --hours 2
+User=app
+Group=app
+Nice=10
+CPUQuota=200%
+MemoryMax=3G
+TimeoutStartSec=50min
+StandardOutput=journal
+StandardError=journal

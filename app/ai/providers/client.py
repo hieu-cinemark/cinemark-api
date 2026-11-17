@@ -183,10 +183,6 @@ async def load_provider(key: str | None = None) -> ProviderConfig | None:
     return cfg
 
 
-async def is_provider_configured(key: str | None = None) -> bool:
-    return (await load_provider(key)) is not None
-
-
 def _client_for(cfg: ProviderConfig) -> OpenAI:
     cache_key = (cfg.openai_base_url, cfg.api_key)
     client = _openai_clients.get(cache_key)

@@ -127,6 +127,8 @@ async def _unclassified_authors(movie_id: str) -> list[dict[str, Any]]:
 
 
 async def suggest_author_tiers(movie_id: str, wanted: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Hỏi AI tầng cho danh sách tác giả `wanted` của một phim: lấy tối đa 5 caption mẫu mỗi tác giả từ bài liên quan
+    gần đây, gọi `call_llm_json` và trả danh sách đề xuất (handle, tầng, độ tự tin)."""
     platforms = sorted({a["platform"] for a in wanted if a.get("platform")})
     query = (
         select(_P.c.platform, _P.c.author, _P.c.url, func.substr(_P.c.content, 1, 400).label("content"))
@@ -186,6 +188,9 @@ async def suggest_author_tiers(movie_id: str, wanted: list[dict[str, Any]]) -> l
 
 
 async def classify_movie_authors(movie_id: str) -> dict[str, Any]:
+    """Một lượt tự gắn tầng cho tác giả chưa phân loại của một phim: bỏ tác giả đã được AI duyệt gần đây, hỏi AI theo
+    lô (`BATCHES_PER_RUN` lô, mỗi lô `SUGGEST_BATCH` tác giả), tự áp nhãn đủ tự tin (`AUTO_APPLY_CONFIDENCE`) nhưng
+    không đè nhãn gắn tay, ghi lại lịch sử duyệt. Trả số liệu lượt chạy."""
     await _ensure_tables()
     review_rows = await d1_exec(
         select(review.c.handle, review.c.applied, review.c.reviewed_at), database="app", timeout=60.0

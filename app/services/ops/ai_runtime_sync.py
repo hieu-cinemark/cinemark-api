@@ -25,7 +25,13 @@ logger = get_logger(__name__)
 _TEXT_COLUMNS = (
     "base_url", "chat_path", "api_key", "model", "image_model", "decisions_path", "comment_model", "post_model",
 )  # fmt: skip
-_LEGACY_FIXED = {"chat_path": "/chat/completions", "image_model": "", "decisions_path": "", "comment_model": "", "post_model": ""}
+_LEGACY_FIXED = {
+    "chat_path": "/chat/completions",
+    "image_model": "",
+    "decisions_path": "",
+    "comment_model": "",
+    "post_model": "",
+}
 ai_runtime = Table(
     "ai_runtime",
     metadata,
@@ -49,7 +55,10 @@ async def sync_ai_runtime() -> int:
             [
                 {
                     "key": row["key"],
-                    **{name: _LEGACY_FIXED[name] if name in _LEGACY_FIXED else (row.get(name) or "") for name in _TEXT_COLUMNS},
+                    **{
+                        name: _LEGACY_FIXED[name] if name in _LEGACY_FIXED else (row.get(name) or "")
+                        for name in _TEXT_COLUMNS
+                    },
                     "active": int(row["key"] == active),
                     "updated_at": now,
                 }

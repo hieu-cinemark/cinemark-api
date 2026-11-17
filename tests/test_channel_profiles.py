@@ -127,9 +127,10 @@ def test_collect_threads_results_upserts_and_clears(monkeypatch) -> None:
     _patch(monkeypatch, redis, calls)
     assert asyncio.run(cp.collect_threads_results()) == {"collected": 2, "found": 1}
     sql, params = calls[0]
-    assert "INSERT INTO channel_profiles" in sql and "!= 'manual'" in sql
-    assert params[2] == "threads"
-    rows = {row["handle"]: row for row in json.loads(params[0])}
+    # Câu dựng bằng SQLAlchemy (17/11/2026): hằng số đi qua tham số, danh sách kênh là một tham số JSON (json_each).
+    assert "INSERT INTO channel_profiles" in sql and "ON CONFLICT" in sql and "followers_source" in sql
+    assert params[0] == "threads" and "manual" in params
+    rows = {row["handle"]: row for row in json.loads(next(p for p in params if str(p).startswith("[")))}
     assert rows["_ph.hp04_"] == {"handle": "_ph.hp04_", "followers": 80, "name": "Hoàng Phúc"}
     assert rows["ghost"] == {"handle": "ghost", "followers": None, "name": None}
     assert redis.hashes[cp.THREADS_RESULTS_KEY] == {}
@@ -140,4 +141,3 @@ def test_collect_threads_results_empty_is_noop(monkeypatch) -> None:
     _patch(monkeypatch, FakeRedis(), calls)
     assert asyncio.run(cp.collect_threads_results()) == {"collected": 0}
     assert not calls
-

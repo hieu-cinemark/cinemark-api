@@ -80,6 +80,8 @@ async def ensure_source_column() -> None:
 
 
 def train(rows: list[dict[str, str]], args: argparse.Namespace, unseen_ids: set[str] | None = None) -> None:
+    """Fine-tune ViSoBERT cảm xúc bằng nhãn AI đã có trong D1, đánh giá trên tập giữ riêng và lưu model ở
+    models/visobert-cinemark/."""
     import torch
     from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast
 

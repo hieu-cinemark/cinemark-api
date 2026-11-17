@@ -15,6 +15,10 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
+    """Toàn bộ cấu hình của cinemark-api: mỗi thuộc tính là một biến môi trường (hoặc dòng trong `.env` của repo). Chỉ
+    đọc qua instance `settings`; thêm biến mới thì khai báo ở đây kèm giá trị mặc định, đừng gọi `os.getenv` rải
+    rác."""
+
     # Đường dẫn tuyệt đối để uvicorn/ingest khởi động từ thư mục khác vẫn đọc đúng .env
     # của repo này (".env" tương đối sẽ bỏ sót DB_MODE đặt rõ trong đó).
     model_config = SettingsConfigDict(
@@ -182,6 +186,9 @@ class Settings(BaseSettings):
     # AI duyệt hashtag TikTok chạy cả khi công tắc chung "AI tự thêm nguồn cào" tắt (công tắc đó vẫn giữ câu tìm
     # Facebook/Threads và duyệt trang nguồn). Mục tiêu: gom nhiều video TikTok nhất có thể.
     tiktok_hashtag_discovery: bool = True
+    # AI duyệt hashtag TikTok (hashtag_discovery: lượt buổi sáng + lượt sau mỗi đợt ShortVid). Tạm tắt 17/11/2026 theo yêu
+    # cầu - bật lại bằng HASHTAG_AI_REVIEW=true. Tắt thì hai lượt đó bỏ hẳn phần hashtag, không gọi AI.
+    hashtag_ai_review: bool = False
     # AI thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và ShortVid BFS).
     hashtag_discovery_max_per_movie: int = 15
     hashtag_discovery_max_per_run: int = 150

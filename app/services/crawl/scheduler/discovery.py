@@ -32,14 +32,19 @@ async def discovery_enabled() -> bool:
 
 
 async def tiktok_hashtags_enabled() -> bool:
-    """AI duyệt hashtag TikTok: bật riêng bằng settings.tiktok_hashtag_discovery, hoặc theo công tắc chung."""
+    """AI duyệt hashtag TikTok: tắt hẳn khi settings.hashtag_ai_review tắt (17/11/2026); bật thì theo
+    settings.tiktok_hashtag_discovery hoặc công tắc chung."""
+    if not settings.hashtag_ai_review:
+        return False
     return settings.tiktok_hashtag_discovery or await discovery_enabled()
 
 
 async def _run_discovery(*, everything: bool) -> None:
     # everything=False (công tắc chung tắt): chỉ hashtag TikTok. Kênh Threads tự thêm theo số bài liên quan, không dùng AI -
     # chạy cả khi công tắc chung tắt. Lỗi một phần không chặn phần kia.
-    jobs = [("hashtag_discovery", run_discovery), ("threads_channels_auto_add", threads_channels.auto_add_authors)]
+    jobs = [("threads_channels_auto_add", threads_channels.auto_add_authors)]
+    if settings.hashtag_ai_review:
+        jobs.insert(0, ("hashtag_discovery", run_discovery))
     if everything:
         jobs += [("query_discovery", run_query_discovery), ("source_page_review", review_source_pages)]
     for name, job in jobs:

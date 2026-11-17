@@ -36,6 +36,8 @@ def ids_to_update(rows: list[dict[str, Any]]) -> list[str]:
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Gán `audience_stage='hong'` cho comment cũ chỉ có tag tên hoặc icon, chỉ đụng dòng giai đoạn còn trống hoặc
+    'khac'. Đọc theo id với con trỏ lưu trong file nên dừng rồi chạy lại được; nên chạy giờ vắng."""
     last_id = CURSOR_FILE.read_text().strip() if CURSOR_FILE.exists() else ""
     read = updated = 0
     while True:

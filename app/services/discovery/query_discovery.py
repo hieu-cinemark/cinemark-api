@@ -361,6 +361,9 @@ async def _backfill_threads_templates(
 
 
 async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = None) -> dict[str, Any]:
+    """Chạy một lượt AI thêm câu truy vấn tìm kiếm Facebook/Threads cho các phim đang hoạt động (ưu tiên phim gần ngày
+    chiếu, tối đa `MAX_GENERATE_PER_RUN` phim sinh câu mới), hỏi AI chấm từng câu, thêm từ khoá cho nền tảng tương
+    ứng và ghi quyết định. `dry_run` chỉ ghi log. Trả thống kê lượt chạy."""
     await _ensure_table()
     pruned = await _prune(dry_run)
     revived = await _revive_upcoming(dry_run)

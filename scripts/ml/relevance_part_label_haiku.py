@@ -154,6 +154,8 @@ async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, A
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh: lấy bài của các phim có phần trước (chia theo năm), nhờ AI gán nhãn "phần này hay phần cũ"
+    và lưu kết quả một lần để dùng lại."""
     settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/providers/client.py đọc lúc gọi đầu tiên
     movies = await _load_movies()
     missing = set(FRANCHISES) - {m["slug"] for m in movies.values()}

@@ -35,7 +35,10 @@ async def _run_shortvid_round(trigger: str) -> None:
     try:
         redis = get_redis_client()
         last = float(await redis.get(_BFS_DISCOVERY_KEY) or 0)
-        if time.time() - last >= settings.hashtag_discovery_after_shortvid_hours * 3600 and await tiktok_hashtags_enabled():
+        if (
+            time.time() - last >= settings.hashtag_discovery_after_shortvid_hours * 3600
+            and await tiktok_hashtags_enabled()
+        ):
             await redis.set(_BFS_DISCOVERY_KEY, str(time.time()), ex=7 * 24 * 3600)
             logger.info("hashtag_discovery_after_shortvid")
             await run_discovery()

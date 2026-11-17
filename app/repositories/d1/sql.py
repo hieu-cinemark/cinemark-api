@@ -68,3 +68,10 @@ def json_values(values: Iterable[Any]) -> Select:
     """Danh sách cho `cột.in_(...)` qua MỘT tham số JSON (json_each) - không vướng giới hạn 100 tham số của D1."""
     each = func.json_each(json.dumps(list(values), ensure_ascii=False)).table_valued("value")
     return select(each.c.value)
+
+
+def json_rows(rows: Iterable[dict[str, Any]]) -> Any:
+    """Bảng ảo từ một danh sách dict qua MỘT tham số JSON (json_each): `src.c.value.op("->>")("khoá")` lấy một trường.
+    Dùng cho INSERT ... SELECT nhiều dòng một câu (insert().from_select) mà không vướng 100 tham số của D1. Lưu ý SQLite:
+    INSERT ... SELECT ... ON CONFLICT cần SELECT có WHERE (đặt `.where(true())` nếu không lọc gì) để khỏi nhầm cú pháp."""
+    return func.json_each(json.dumps(list(rows), ensure_ascii=False)).table_valued("value")

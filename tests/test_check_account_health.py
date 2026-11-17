@@ -19,7 +19,9 @@ def _account(**overrides: object) -> dict[str, object]:
 
 async def test_transition_into_warning_alerts_once() -> None:
     with (
-        patch("app.services.ops.health_checks.list_accounts", AsyncMock(return_value=[_account(last_check_status="ok")])),
+        patch(
+            "app.services.ops.health_checks.list_accounts", AsyncMock(return_value=[_account(last_check_status="ok")])
+        ),
         patch("app.services.ops.health_checks.evaluate_account_health", AsyncMock(return_value="warning")),
         patch("app.services.ops.health_checks.update_account_check_result", AsyncMock()) as mock_update,
         patch("app.services.ops.health_checks.send_telegram_message", AsyncMock()) as mock_telegram,
@@ -64,7 +66,9 @@ async def test_first_ever_check_landing_on_warning_still_alerts() -> None:
     """previous_status là None (chưa từng kiểm tra) - vẫn là chuyển sang trạng thái xấu đi,
     không phải thứ coi là "đã biết rồi"."""
     with (
-        patch("app.services.ops.health_checks.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])),
+        patch(
+            "app.services.ops.health_checks.list_accounts", AsyncMock(return_value=[_account(last_check_status=None)])
+        ),
         patch("app.services.ops.health_checks.evaluate_account_health", AsyncMock(return_value="disabled")),
         patch("app.services.ops.health_checks.update_account_check_result", AsyncMock()),
         patch("app.services.ops.health_checks.send_telegram_message", AsyncMock()) as mock_telegram,

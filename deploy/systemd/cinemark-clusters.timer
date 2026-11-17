@@ -1,0 +1,11 @@
+[Unit]
+Description=Run cinemark-clusters nightly
+
+[Timer]
+# 03:30 Vietnam time: after the 01:30 reports and the hourly embeddings; runs a missed night after a reboot
+OnCalendar=*-*-* 03:30:00 Asia/Ho_Chi_Minh
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

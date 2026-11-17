@@ -82,6 +82,8 @@ async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, A
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh: gán lại nhãn related / not_related cho các bài AI từng để "uncertain" trong dữ liệu huấn
+    luyện, độ do dự nằm ở điểm số."""
     settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/providers/client.py đọc lúc gọi đầu tiên
     rows = [json.loads(line) for line in DATA_FILE.read_text(encoding="utf-8").split("\n") if line]
     done = set()

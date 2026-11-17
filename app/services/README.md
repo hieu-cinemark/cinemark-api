@@ -1,11 +1,12 @@
 # app/services
 
-Nghiệp vụ của service, gọi xuống `repositories`, `clients` và `ai`.
+Nghiệp vụ của service, gọi xuống `repositories`, `clients` và `ai`. Luồng tổng thể và cách sửa: [../../docs/FLOW.md](../../docs/FLOW.md).
 
 | Thư mục | Nội dung |
 |---|---|
 | `crawl/` | Lịch cào, làn Facebook, hàng đợi, bình luận, trang nguồn, bài booking |
-| `ai_jobs/` | Job AI nền: nhãn tác giả, niche kênh, Review Angles |
+| `ai_jobs/` | Job AI nền: nhãn tác giả, niche kênh, Review Angles, Attack Detection hằng giờ |
+| `attack/` | Attack Detection: dấu hiệu chê dồn dập / chê giống nhau, quy tắc trạng thái, bảng `attack_signals` |
 | `discovery/` | AI tìm thêm hashtag và câu tìm kiếm |
 | `shortvid/` | Cào TikTok qua ShortVid API |
 | `accounts/` | Tài khoản, proxy, phiên đăng nhập, sức khoẻ tài khoản |
@@ -17,8 +18,6 @@ Nghiệp vụ của service, gọi xuống `repositories`, `clients` và `ai`.
 
 Các file ở gốc (`google_news.py`, `news_articles.py`, `news_images.py`, `press_groups.py`, `post_release_news.py`)
 thuộc tính năng tin báo chí sau công chiếu, mô tả bên dưới.
-
-## Tin sau công chiếu (Google Search + News Light, lưu D1)
 
 ## Tin sau công chiếu (Google Search + News Light, lưu D1)
 

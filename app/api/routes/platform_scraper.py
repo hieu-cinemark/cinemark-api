@@ -33,6 +33,9 @@ logger = get_logger(__name__)
 
 
 def build_run_route(router: APIRouter, platform: str) -> None:
+    """Gắn route `POST /run` vào `router` của một nền tảng: kích hoạt cào theo `keyword_id` hoặc mọi từ khoá đang bật
+    (lọc theo `movie_id`), mỗi từ khoá một message `crawl_requests`. Trả số từ khoá và số message gửi được."""
+
     @router.post("/run", response_model=RunScraperResponse)
     async def run_scraper(payload: RunScraperRequest = RunScraperRequest()) -> RunScraperResponse:
         if payload.keyword_id is not None:

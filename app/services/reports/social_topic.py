@@ -160,6 +160,9 @@ async def get_movie_for_report(movie_id: str) -> dict | None:
 
 
 async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> ReportResult:
+    """Tạo báo cáo Social Topic bằng AI cho một phim: bỏ qua nếu chưa đủ bình luận đã phân loại (`insufficient_data`),
+    lấy mẫu bình luận/bài, dựng top 10 chủ đề kèm trích dẫn, tính tỉ lệ cảm xúc và khía cạnh, viết phần phân tích
+    và lưu. `dry_run` không ghi. Trả `ReportResult` (trạng thái)."""
     movie_id, movie_title = movie["id"], movie["title"]
 
     counts = await get_movie_sentiment_counts(movie_id)

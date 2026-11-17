@@ -194,6 +194,8 @@ async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
 async def run(
     since: str, movie_id: str | None, limit: int | None, dry_run: bool, follow: bool, sentiment_pass: bool = True
 ) -> None:
+    """Gán lại nhãn độ liên quan cho bài chưa được AI kết luận (`relevance_confidence IS NULL`): luật trước, ca khó
+    mới gọi AI, theo lô."""
     logger.info("relabel_started", since=since, movie_id=movie_id, limit=limit, dry_run=dry_run, follow=follow)
     if settings.relevance_rules_only:
         # Chế độ lọc thủ công: không gọi Kira cho độ liên quan. Chạy dạng service (--follow) thì đứng chờ thay vì thoát,
@@ -256,7 +258,9 @@ if __name__ == "__main__":
     parser.add_argument("--follow", action="store_true", help="Keep running, picking up new posts as they arrive")
     parser.add_argument("--rules", action="store_true", help="Apply the manual (no-AI) rules to pending posts instead")
     parser.add_argument(
-        "--no-sentiment", action="store_true", help="Skip the post sentiment pass (ingest labels new posts; saves the model's RAM)"
+        "--no-sentiment",
+        action="store_true",
+        help="Skip the post sentiment pass (ingest labels new posts; saves the model's RAM)",
     )
     args = parser.parse_args()
     if args.rules:

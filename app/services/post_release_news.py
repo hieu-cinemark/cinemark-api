@@ -61,6 +61,10 @@ async def read_news(movie_id: str) -> dict | None:
 
 
 async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
+    """Lấy (hoặc dùng lại) tin sau công chiếu của một phim và lưu D1. Khoá Redis chống chạy trùng (đang có người chạy
+    thì trả bản cache, không có thì `ConflictError`). Còn hạn (`nextRefreshAt`) và đúng phiên bản nhóm thì trả
+    cache (bổ sung trích nội dung bài nếu bản cũ chưa có); `force=True` hoặc hết hạn thì tải lại, nhóm bài và lưu
+    snapshot mới."""
     movie = await movie_for_news(movie_id)
     await press_reviews.ensure_table()
     cache = get_redis_client()

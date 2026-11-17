@@ -96,6 +96,8 @@ def build_prompt(title: str, aspect: str, sides: dict[str, list[dict[str, Any]]]
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh thử tổng kết chủ đề bình luận của một phim: lấy bình luận gốc nhiều like nhất, gán chủ đề
+    bằng model khía cạnh rồi mỗi chủ đề một lời gọi AI; ghi kết quả vào data/summaries/ (chỉ đọc D1)."""
     c = comments_table.alias("c")
     p = posts_table.alias("p")
     m = movies_table.alias("m")

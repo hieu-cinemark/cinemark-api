@@ -45,6 +45,9 @@ async def _has_saved_session(platform: str, account: dict) -> bool:
 
 
 def build_token_refresh_routes(router: APIRouter, platform: str) -> None:
+    """Gắn vào `router` các route phiên đăng nhập của một nền tảng: nhập cookie, khôi phục phiên đã lưu, xem trạng
+    thái token và WebSocket tiến độ lần làm mới. Mỗi lần chỉ một lượt làm mới được chạy (`refresh_tracker`)."""
+
     @router.post("/import-cookies", response_model=TriggerTokenRefreshResponse)
     async def import_cookies(payload: ImportCookiesRequest) -> TriggerTokenRefreshResponse:
         account = await get_account(payload.account_id)

@@ -338,6 +338,9 @@ async def _load_posts(movie_id: str, ids: list[str]) -> list[dict[str, Any]]:
 
 
 async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
+    """Đọc tiếp MỘT lô bài Premiere của phim (khoá Redis chống chạy trùng): lấy lô kế tiếp theo thứ tự đầu/khe, hỏi AI
+    gom vào góc nhìn đã có hoặc tạo góc mới (có cache theo nội dung lô), cập nhật `state.json` trên R2 (góc, bài đã
+    đọc, nguồn). Trả `{read, analyzed, ai_called, tokens}` hoặc lý do bỏ qua (`not_available`, `busy`)."""
     movie = await load_movie(movie_id)
     if not _available(movie):
         return {"movie_id": movie_id, "read": 0, "reason": "not_available"}

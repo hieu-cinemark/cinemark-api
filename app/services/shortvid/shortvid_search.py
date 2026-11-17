@@ -378,6 +378,9 @@ async def run_search(
     stats: dict[str, Any],
     should_stop: Callable[[], bool],
 ) -> None:
+    """Chạy phần tìm theo từ khoá của một lượt ShortVid: bỏ câu đã xong hôm nay (`DONE_KEY`), tìm xen kẽ các câu còn
+    lại cho tới khi hết ngân sách (`budget`), bị dừng (`should_stop`) hoặc ShortVid báo dừng; câu nào chạy xong thì
+    đánh dấu đã làm hôm nay. Số liệu cộng vào `stats`."""
     from app.services.shortvid.shortvid_tiktok import ShortVidStop, run_round_robin
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()

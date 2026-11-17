@@ -38,6 +38,8 @@ EXTRA_COLUMNS = ("positive INTEGER", "negative INTEGER", "neutral INTEGER", "sum
 
 
 async def run(movie_id: str) -> None:
+    """Đọc `<movie_id>.final.json` (đã gộp/lọc/tổng kết) và thay toàn bộ nhóm bình luận cũ của phim trong D1 bằng nhóm
+    mới để Social Topic hiển thị. Tham số dòng lệnh xem docstring đầu file."""
     groups = json.loads((OUT_DIR / f"{movie_id}.final.json").read_text(encoding="utf-8"))
     for sql in SCHEMA:
         # Giữ SQL thuần: CREATE TABLE/ALTER TABLE là DDL.

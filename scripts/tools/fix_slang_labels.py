@@ -36,6 +36,8 @@ SLANG_LIKE = (
 
 
 async def run(movie_id: str, dry_run: bool) -> None:
+    """Áp luật tiếng lóng khen (`sentiment_rules.slang_positive`) cho bình luận đã có nhãn của một phim: đổi cảm xúc
+    negative -> positive và khía cạnh ":-" -> ":+" khi khớp. Đọc theo nhóm bài; `--dry-run` chỉ in số lượng."""
     post_rows = await d1_exec(
         select(posts_table.c.id).where(posts_table.c.movie_id == movie_id), timeout=90.0, quiet=True
     )

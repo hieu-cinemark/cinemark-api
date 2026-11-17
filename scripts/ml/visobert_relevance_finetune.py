@@ -47,6 +47,8 @@ FETCH_PAGE = 5000
 
 
 async def download() -> list[dict[str, str]]:
+    """Tải từ D1 các bài đã có nhãn độ liên quan do AI gán (relevance_confidence trong (0, 1)) làm dữ liệu huấn luyện,
+    phân trang theo id, trả danh sách dòng văn bản + nhãn."""
     rows: list[dict[str, str]] = []
     last_id = ""
     while True:
@@ -126,6 +128,8 @@ def split_by_film(rows: list[dict[str, str]], args: argparse.Namespace, rng: ran
 
 
 def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
+    """Fine-tune ViSoBERT thành model độ liên quan của bài từ dữ liệu đã tải, đánh giá trên tập giữ riêng và lưu model
+    cùng chỉ số."""
     import torch
     from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast
 

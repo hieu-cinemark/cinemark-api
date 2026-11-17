@@ -26,6 +26,9 @@ class KeywordCreateRequest(BaseModel):
 
 
 def build_keyword_routes(router: APIRouter, platform: str) -> None:
+    """Gắn vào `router` các route từ khoá dùng chung cho một nền tảng: liệt kê, tạo (Threads không nhận hashtag),
+    bật/tắt, và (với nền tảng trong `YIELD_PLATFORMS`) xem hiệu quả từng từ khoá 14 ngày."""
+
     @router.get("/keywords", response_model=list[KeywordOut])
     async def keywords() -> list[KeywordOut]:
         rows = await list_keywords(platform)

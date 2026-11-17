@@ -16,7 +16,8 @@ def test_normalize_page_url():
 
 
 @pytest.mark.parametrize(
-    "url", ["", "https://www.facebook.com/groups/abc", "https://www.tiktok.com/@x", "https://www.facebook.com/watch/?v=1"]
+    "url",
+    ["", "https://www.facebook.com/groups/abc", "https://www.tiktok.com/@x", "https://www.facebook.com/watch/?v=1"],
 )
 def test_normalize_rejects_non_pages(url):
     with pytest.raises(ValidationError):

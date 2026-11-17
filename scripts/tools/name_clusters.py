@@ -46,6 +46,8 @@ def build_prompt(title: str, clusters: list[dict]) -> str:
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh: đọc cụm bình luận của `--movie-id` từ data/clusters, nhờ AI đặt tên các cụm trong một lời
+    gọi cho cả phim (để tên phân biệt được và chỉ ra cụm trùng ý) rồi ghi `.names.json` và `.names.md`."""
     clusters = json.loads((OUT_DIR / f"{args.movie_id}.json").read_text(encoding="utf-8"))
     # force: công tắc AI đang tắt cho ingest; đây là bản thử người vận hành yêu cầu.
     text = await call_llm(

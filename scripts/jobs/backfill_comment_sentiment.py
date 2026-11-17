@@ -43,6 +43,8 @@ async def backfill(
     insights: bool = False,
     movie_id: str | None = None,
 ) -> None:
+    """Phân loại cảm xúc cho bình luận mà lượt quét ingest (chỉ xem 48 giờ gần nhất) không tới được; chỉ đụng dòng
+    `sentiment IS NULL` nên chạy lại an toàn."""
     # Chỉ comment cũ hơn cửa sổ của lượt quét (48 giờ): không chấm trùng với ingest consumer đang chạy.
     before = datetime.now(tz=UTC) - timedelta(hours=older_than_hours) if older_than_hours else None
     logger.info(

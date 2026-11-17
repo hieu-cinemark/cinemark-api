@@ -83,6 +83,8 @@ async def _copy_table(d1_query, conn: sqlite3.Connection, table_name: str) -> No
 
 
 async def pull() -> None:
+    """Kéo bản sao SQLite local đầy đủ từ D1 thật để dùng `DB_MODE=local` khi dev/test mà không tốn quota đọc dòng của
+    D1."""
     # Xem docstring module - chạy script này khi server của app.main đang chạy trên cùng
     # local_db_path gây ra vấn đề thật, đã xác nhận (tranh khoá trong lúc dựng lại, âm thầm
     # lệch sau đó).

@@ -14,7 +14,14 @@ from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.store import get_or_create_keyword, set_keyword_enabled
 from app.services.accounts.platform_config_db import get_shortvid_api_settings
-from app.services.shortvid import shortvid_channels, shortvid_comments, shortvid_search, shortvid_tiktok, shortvid_trending, shortvid_yield
+from app.services.shortvid import (
+    shortvid_channels,
+    shortvid_comments,
+    shortvid_search,
+    shortvid_tiktok,
+    shortvid_trending,
+    shortvid_yield,
+)
 
 logger = get_logger(__name__)
 
@@ -25,6 +32,8 @@ EXISTS_CHECK_SECONDS = 8.0
 
 @router.get("/status")
 async def shortvid_status() -> dict[str, Any]:
+    """Trả trạng thái tab ShortVid cho dashboard: key đã đặt chưa, hạn mức, lượt đang chạy, tiến độ hashtag/kênh/bình
+    luận, trạng thái tạm dừng và cấu hình lịch. Các nguồn độc lập (D1, Redis, API ShortVid) được gọi song song."""
     row = await get_shortvid_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
 
@@ -201,7 +210,10 @@ async def shortvid_yield_summary(days: int = 7) -> dict[str, Any]:
         "days": per_day,
         "totals": shortvid_yield.totals(per_day),
         "shares": await shortvid_yield.adaptive_shares(),
-        "base_shares": {"search": settings.shortvid_search_budget_share, "channel": settings.shortvid_channels_budget_share},
+        "base_shares": {
+            "search": settings.shortvid_search_budget_share,
+            "channel": settings.shortvid_channels_budget_share,
+        },
     }
 
 

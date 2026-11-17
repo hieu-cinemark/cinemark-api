@@ -24,6 +24,8 @@ MAX_TOKENS = 128
 
 
 def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:
+    """Fine-tune model giai đoạn khán giả (hong / da_xem / khac) từ nhãn Haiku, khởi tạo từ model cảm xúc đã quen bình
+    luận phim và thay đầu phân loại 3 nhãn; lưu model sau khi đánh giá trên `--eval-size` câu giữ riêng."""
     import torch
     from transformers import AutoModelForSequenceClassification, PreTrainedTokenizerFast
 

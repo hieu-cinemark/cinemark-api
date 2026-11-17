@@ -10,6 +10,16 @@ def _no_ops_alert_writes(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_telegram(monkeypatch):
+    """Không test nào được gửi tin Telegram thật: `.env` của máy dev có token thật nên cảnh báo trong test từng bắn vào nhóm vận
+    hành. Tắt ở tầng cấu hình của client - `telegram_enabled()` thành False; test cần Telegram thì tự mock `send_telegram_message`."""
+    from app.clients import telegram
+
+    monkeypatch.setattr(telegram, "TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setattr(telegram, "TELEGRAM_CHAT_ID", "")
+
+
+@pytest.fixture(autouse=True)
 def _no_visobert(monkeypatch):
     """Không nạp model ViSoBERT thật (374MB, có thể có sẵn ở máy dev) trong test - test riêng tự mock app.ai.local.visobert."""
     monkeypatch.setattr(settings, "visobert_enabled", False)

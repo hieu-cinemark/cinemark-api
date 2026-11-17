@@ -129,6 +129,8 @@ async def post_details(movie_id: str) -> dict[str, dict[str, Any]]:
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh: lấy embedding bình luận gốc có nội dung của một phim, gom cụm và ghi cụm (số lượng, câu
+    mẫu) ra data/clusters/<movie_id>.json. Chỉ đọc D1, chưa đặt tên cụm."""
     ids, x = load_vectors(args.movie_id)
     details = await comment_details(args.movie_id)
     posts = await post_details(args.movie_id)

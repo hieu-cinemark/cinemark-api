@@ -136,6 +136,9 @@ async def ask(text: str, image: bytes | None) -> dict[str, Any] | None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Đặt tên "Cảnh được bàn nhiều" của một phim bằng AI: mỗi cảnh một lần gọi kèm ảnh tiêu biểu, chú thích bài và
+    bình luận nhiều like; không đủ căn cứ thì ghi "Chưa rõ cảnh". Nhãn lưu ở `movie_scene_labels` theo bài đại
+    diện."""
     movie, scenes = await scene_context(args.movie_id)
     if not args.dry_run:
         # Giữ SQL thuần: CREATE TABLE IF NOT EXISTS là DDL.

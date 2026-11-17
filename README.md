@@ -55,4 +55,5 @@ Push lên `main` thì GitHub Actions deploy lên VPS (`deploy/vps/deploy-repo.sh
 | `deploy/` | systemd và script deploy |
 | `tests/` | Test (pytest) |
 
-Mỗi thư mục có README riêng.
+Mỗi thư mục có README riêng. **Đọc [docs/FLOW.md](docs/FLOW.md) trước** (luồng từ lịch cào tới D1, job nền, quy ước D1, công thức sửa thường gặp);
+hướng dẫn làm tiếp Review Angles / Attack Detection ở [docs/review-angles-va-attack.md](docs/review-angles-va-attack.md).

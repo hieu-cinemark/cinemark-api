@@ -123,12 +123,14 @@ async def _movie_pages(movie_id: str, since: str | None = None):
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh: tính embedding e5-small cho bình luận có nội dung chưa có vector và lưu vào
+    data/comment_embeddings.sqlite (float16); bình luận chỉ có tag/icon/tiếng cười được bỏ qua."""
     conn = connect()
     row = conn.execute("SELECT last_id FROM embed_cursor WHERE id = 1").fetchone()
     cursor_id = "" if not row else row[0]
     last_id = "" if args.restart else cursor_id
-    # Con trỏ chung chỉ tiến ở chế độ mặc định; 
-    
+    # Con trỏ chung chỉ tiến ở chế độ mặc định;
+
     by_movie = bool(args.movie_id or args.showing)
     read = saved = 0
     started = time.monotonic()

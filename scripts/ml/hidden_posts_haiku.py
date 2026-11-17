@@ -127,6 +127,8 @@ async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, A
 
 
 async def label(args: argparse.Namespace) -> None:
+    """Bước `label`: đọc bài đang ẩn từ D1, gọi AI theo lô 10 bài (nhiều lô song song, `--concurrency`), ghi nối vào
+    tệp kết quả và bỏ qua id đã làm nên chạy lại được."""
     settings.ai_provider_concurrency = args.concurrency  # semaphore của app/ai/providers/client.py đọc lúc gọi đầu tiên
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     done = set()

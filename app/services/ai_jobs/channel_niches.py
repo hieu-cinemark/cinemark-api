@@ -10,14 +10,14 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, true
+from sqlalchemy.dialects.sqlite import insert
 
 from app.ai.prompts.channel_niches import CHANNEL_NICHES_SYSTEM, DEFAULT_NICHES
 from app.ai.runtime import call_llm_json
-from app.clients.d1 import d1_query
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
-from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.sql import d1_exec, json_rows
 from app.repositories.d1.tables import channel_profiles, config_settings, posts
 from app.services.ai_jobs.channels import channel_of_post
 
@@ -50,7 +50,47 @@ async def _niches() -> list[dict[str, Any]]:
     return [n for n in niches if isinstance(n, dict) and n.get("key") and n.get("active") is not False]
 
 
+async def save_niches(rows: list[dict[str, Any]], stamp: str) -> None:
+    """Ghi niche AI cho một lô kênh ({platform, handle, name, niche, confidence, reason}) - một câu INSERT ... SELECT qua
+    json_each. Niche nhập tay (niche_source = 'manual') không bị ghi đè; tên đã có thì giữ."""
+    t = channel_profiles
+    src = json_rows(rows)
+    field = src.c.value.op("->>")
+    stmt = insert(t).from_select(
+        ["platform", "handle", "name", "niche", "niche_confidence", "niche_reason", "niche_source", "niche_at"],
+        select(
+            field("platform"),
+            field("handle"),
+            field("name"),
+            field("niche"),
+            field("confidence"),
+            field("reason"),
+            literal("ai"),
+            literal(stamp),
+        ).where(true()),
+    )
+    new = stmt.excluded
+    # Niche nhập tay (niche_source = 'manual') không bị AI ghi đè; tên đã có thì giữ.
+    await d1_exec(
+        stmt.on_conflict_do_update(
+            index_elements=[t.c.platform, t.c.handle],
+            set_={
+                "name": func.coalesce(t.c.name, new.name),
+                "niche": new.niche,
+                "niche_confidence": new.niche_confidence,
+                "niche_reason": new.niche_reason,
+                "niche_source": "ai",
+                "niche_at": new.niche_at,
+            },
+            where=func.coalesce(t.c.niche_source, "") != "manual",
+        )
+    )
+
+
 async def process_channel_niches() -> dict[str, Any]:
+    """Một lượt gắn tệp khán giả cho kênh: lấy mẫu bài 14 ngày, chọn kênh chưa có niche (hoặc niche quá
+    `RECHECK_DAYS`, trừ nhãn gắn tay), hỏi AI theo lô và ghi `channel_profiles`. Trả số kênh đã kiểm tra/gắn nhãn,
+    hoặc lý do bỏ qua (`no_niches`, `d1_unavailable`)."""
     niches = await _niches()
     if not niches:
         return {"checked": 0, "labelled": 0, "skipped": "no_niches"}
@@ -141,16 +181,5 @@ async def process_channel_niches() -> dict[str, Any]:
                     "reason": str(hit.get("reason") or "")[:200],
                 }
             )
-        await d1_query(
-            """INSERT INTO channel_profiles (platform, handle, name, niche, niche_confidence, niche_reason, niche_source, niche_at)
-               SELECT value ->> 'platform', value ->> 'handle', value ->> 'name', value ->> 'niche', value ->> 'confidence',
-                      value ->> 'reason', 'ai', ?
-               FROM json_each(?) WHERE true
-               ON CONFLICT(platform, handle) DO UPDATE SET
-                 name = COALESCE(channel_profiles.name, excluded.name), niche = excluded.niche,
-                 niche_confidence = excluded.niche_confidence, niche_reason = excluded.niche_reason, niche_source = 'ai',
-                 niche_at = excluded.niche_at
-               WHERE COALESCE(channel_profiles.niche_source, '') != 'manual'""",
-            [stamp, json.dumps(rows, ensure_ascii=False)],
-        )
+        await save_niches(rows, stamp)
     return {"checked": len(queue), "labelled": labelled}

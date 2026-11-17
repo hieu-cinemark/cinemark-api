@@ -37,8 +37,20 @@ def test_refresh_due_by_age_gap_and_growth():
     crawled = (NOW - timedelta(hours=4)).isoformat()
     young_grown = _post(1, hours_ago=10, replies=40, comments_crawled_at=crawled, comments_crawled_replies=20)
     young_flat = _post(2, hours_ago=10, replies=22, comments_crawled_at=crawled, comments_crawled_replies=20)
-    too_soon = _post(3, hours_ago=10, replies=80, comments_crawled_at=(NOW - timedelta(hours=1)).isoformat(), comments_crawled_replies=20)
-    too_old = _post(4, hours_ago=100, replies=900, comments_crawled_at=(NOW - timedelta(hours=30)).isoformat(), comments_crawled_replies=20)
+    too_soon = _post(
+        3,
+        hours_ago=10,
+        replies=80,
+        comments_crawled_at=(NOW - timedelta(hours=1)).isoformat(),
+        comments_crawled_replies=20,
+    )
+    too_old = _post(
+        4,
+        hours_ago=100,
+        replies=900,
+        comments_crawled_at=(NOW - timedelta(hours=30)).isoformat(),
+        comments_crawled_replies=20,
+    )
     assert cp.refresh_due(_post(5), NOW)  # chưa từng quét
     assert cp.refresh_due(young_grown, NOW)
     assert not cp.refresh_due(young_flat, NOW)  # tăng 2 < 5
@@ -47,7 +59,11 @@ def test_refresh_due_by_age_gap_and_growth():
 
 
 def test_pick_hot_limits_per_movie_and_skips_posts_without_comments():
-    rows = [_post(i, likes=100 * i) for i in range(1, 6)] + [_post(9, movie="m2", likes=50)] + [_post(10, movie="m2", replies=0, likes=999)]
+    rows = (
+        [_post(i, likes=100 * i) for i in range(1, 6)]
+        + [_post(9, movie="m2", likes=50)]
+        + [_post(10, movie="m2", replies=0, likes=999)]
+    )
     picks = cp.pick_hot(rows, per_movie=2, now=NOW)
     by_movie = {}
     for pick in picks:
@@ -58,7 +74,13 @@ def test_pick_hot_limits_per_movie_and_skips_posts_without_comments():
 
 
 def test_pick_hot_refresh_uses_fewer_pages():
-    row = _post(1, hours_ago=10, replies=60, comments_crawled_at=(NOW - timedelta(hours=5)).isoformat(), comments_crawled_replies=20)
+    row = _post(
+        1,
+        hours_ago=10,
+        replies=60,
+        comments_crawled_at=(NOW - timedelta(hours=5)).isoformat(),
+        comments_crawled_replies=20,
+    )
     [pick] = cp.pick_hot([row], per_movie=5, now=NOW)
     assert pick.reason == "hot_refresh" and pick.max_pages == cp.HOT_REFRESH_PAGES
 
@@ -86,9 +108,27 @@ def test_pick_sample_spreads_over_slots_and_sources():
 
 def test_young_post_refreshes_every_six_hours_even_without_reply_count_update():
     # reply_count không đổi (lượt crawl bài chưa tìm lại bài này) nhưng bài < 24h, đã 6 giờ từ lần quét trước
-    stale = _post(1, hours_ago=12, replies=20, comments_crawled_at=(NOW - timedelta(hours=6)).isoformat(), comments_crawled_replies=20)
-    recent = _post(2, hours_ago=12, replies=20, comments_crawled_at=(NOW - timedelta(hours=4)).isoformat(), comments_crawled_replies=20)
-    older = _post(3, hours_ago=40, replies=20, comments_crawled_at=(NOW - timedelta(hours=13)).isoformat(), comments_crawled_replies=20)
+    stale = _post(
+        1,
+        hours_ago=12,
+        replies=20,
+        comments_crawled_at=(NOW - timedelta(hours=6)).isoformat(),
+        comments_crawled_replies=20,
+    )
+    recent = _post(
+        2,
+        hours_ago=12,
+        replies=20,
+        comments_crawled_at=(NOW - timedelta(hours=4)).isoformat(),
+        comments_crawled_replies=20,
+    )
+    older = _post(
+        3,
+        hours_ago=40,
+        replies=20,
+        comments_crawled_at=(NOW - timedelta(hours=13)).isoformat(),
+        comments_crawled_replies=20,
+    )
     assert cp.refresh_due(stale, NOW)
     assert not cp.refresh_due(recent, NOW)  # mới 4 giờ, reply_count không đổi
     assert not cp.refresh_due(older, NOW)  # bài > 24h vẫn cần reply_count tăng

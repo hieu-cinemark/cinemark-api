@@ -161,6 +161,8 @@ def calibrate(
 
 
 def main() -> None:
+    """Điểm vào dòng lệnh fine-tune cả model ViSoBERT nhiều nhãn nhận diện khía cạnh khen/chê ("key:+/-") từ dữ liệu
+    AI đã gán; chia train/eval, huấn luyện, chọn ngưỡng và lưu model cùng chỉ số."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--neg", type=int, default=30000, help="số mẫu âm (không khía cạnh) dùng")

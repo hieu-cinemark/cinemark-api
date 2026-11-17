@@ -23,14 +23,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from sqlalchemy import and_, func, literal_column, or_, select
+from sqlalchemy import and_, func, literal, literal_column, or_, select, true
+from sqlalchemy.dialects.sqlite import insert
 
 from app.clients.kafka import publish_threads_profiles_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
-from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.sql import d1_exec, json_rows
 from app.repositories.d1.store import d1_query
 from app.repositories.d1.tables import channel_profiles
 from app.repositories.d1.tables import posts as posts_table
@@ -150,15 +151,25 @@ async def _candidates(platform: str, limit: int) -> list[dict[str, Any]]:
 async def _upsert(platform: str, rows: list[dict[str, Any]], now: str) -> None:
     """rows: {handle, name, followers}. Không tìm thấy (followers None) vẫn ghi followers_at để không hỏi lại tới lượt
     REFRESH_DAYS sau; follower nhập tay (followers_source='manual') không bao giờ bị ghi đè."""
+    t = channel_profiles
     for start in range(0, len(rows), 200):
-        await d1_query(
-            """INSERT INTO channel_profiles (platform, handle, name, followers, followers_at)
-            SELECT ?3, value ->> 'handle', value ->> 'name', value ->> 'followers', ?2 FROM json_each(?1) WHERE true
-            ON CONFLICT(platform, handle) DO UPDATE SET
-              followers = COALESCE(excluded.followers, channel_profiles.followers),
-              name = COALESCE(excluded.name, channel_profiles.name), followers_at = excluded.followers_at
-            WHERE COALESCE(channel_profiles.followers_source, '') != 'manual'""",
-            [json.dumps(rows[start : start + 200], ensure_ascii=False), now, platform],
+        src = json_rows(rows[start : start + 200])
+        field = src.c.value.op("->>")
+        stmt = insert(t).from_select(
+            ["platform", "handle", "name", "followers", "followers_at"],
+            select(literal(platform), field("handle"), field("name"), field("followers"), literal(now)).where(true()),
+        )
+        new = stmt.excluded
+        await d1_exec(
+            stmt.on_conflict_do_update(
+                index_elements=[t.c.platform, t.c.handle],
+                set_={
+                    "followers": func.coalesce(new.followers, t.c.followers),
+                    "name": func.coalesce(new.name, t.c.name),
+                    "followers_at": new.followers_at,
+                },
+                where=func.coalesce(t.c.followers_source, "") != "manual",
+            ),
             timeout=60.0,
         )
 

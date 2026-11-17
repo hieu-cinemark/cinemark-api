@@ -425,6 +425,17 @@ app/services/ai_jobs/attack_detect.py   run_tick(): mỗi giờ, cho từng phim
 
 ### 2.10 Thứ tự làm
 
+> **Trạng thái 17/11/2026 (nhánh `attack-detection`):** Bước 0–3 đã có code + test, chưa chạy trên production.
+> - Bước 0: `embed_comments.py --showing` + `deploy/systemd/cinemark-embed.*` + `install_embed.sh`.
+> - Bước 1: `app/repositories/d1/comment_hourly.py` (SQLAlchemy), nhịp `comment_hourly` (scheduler/attack.py),
+>   `scripts/tools/backfill_comment_hourly.py`; dấu hiệu A `app/services/attack/spikes.py`.
+> - Bước 2: dấu hiệu B `app/services/attack/similar.py`.
+> - Bước 3: `verdict.py`, `store.py` (bảng `attack_signals`, có thêm cột `reasons_json`), job
+>   `app/services/ai_jobs/attack_detect.py` (chạy hằng giờ từ phút 15, nhịp `attack_detect` - không qua ai_jobs vì chưa
+>   dùng AI). Worker: `GET /api/social-topic/attack?movieId=` (apps/api/src/services/socialTopic/attack.ts).
+> - Khác thiết kế: `suspicious` cần ít nhất một dấu hiệu `strong`; dấu hiệu chỉ `fired` vẫn là `clear` nhưng ghi lý do.
+> - Chưa làm: Bước 4 (thử ngưỡng), C, D, E, câu tóm tắt AI, mốc sự kiện tay, Telegram.
+
 | Bước | Việc | Xong khi |
 |---|---|---|
 | 0 | Embedding tự động trên VPS (2.3) | Bình luận mới của phim đang chiếu có embedding trong ≤ 1 giờ |

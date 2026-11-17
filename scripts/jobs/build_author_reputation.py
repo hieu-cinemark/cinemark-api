@@ -46,6 +46,8 @@ ROWS_PER_INSERT_BATCH = 15
 
 
 async def main() -> None:
+    """Dựng/làm mới bảng `author_reputation`: kiểm tra lại bài liên quan chỉ bằng tín hiệu mạnh của hashtag phim và
+    đếm số phim khác nhau mỗi tác giả được xác nhận theo từng (platform, author)."""
     confirmed_movies: dict[tuple[str, str], set[str]] = defaultdict(set)
     confirmed_posts: dict[tuple[str, str], int] = defaultdict(int)
 

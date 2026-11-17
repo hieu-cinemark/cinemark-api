@@ -68,7 +68,9 @@ def test_rebuild_day_replaces_stale_rows(db):
     asyncio.run(cr.rebuild_day("2026-10-29"))
     db.execute("UPDATE comments SET sentiment = 'positive' WHERE id = 'c2'")
     asyncio.run(cr.rebuild_day("2026-10-29"))
-    rows = db.execute("SELECT stage, sentiment, n FROM movie_comment_daily WHERE platform='tiktok' ORDER BY 1, 2").fetchall()
+    rows = db.execute(
+        "SELECT stage, sentiment, n FROM movie_comment_daily WHERE platform='tiktok' ORDER BY 1, 2"
+    ).fetchall()
     assert rows == [("", "neutral", 1), ("", "positive", 1), ("da_xem", "positive", 1)]
 
 

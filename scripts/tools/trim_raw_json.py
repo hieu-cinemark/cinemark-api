@@ -82,6 +82,8 @@ async def archive(client: Any, table: str, rows: list[dict[str, Any]]) -> str:
 
 
 async def main(args: argparse.Namespace) -> None:
+    """Điểm vào dòng lệnh dọn `raw_json` cũ trên D1: chép bản gốc lên R2 (archive/raw_json/), kiểm tra đã có rồi mới
+    bỏ phần không còn được đọc khỏi D1."""
     client = boto3.client(
         "s3",
         endpoint_url=settings.r2_endpoint,

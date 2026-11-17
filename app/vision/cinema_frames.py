@@ -48,6 +48,10 @@ def shrink_jpeg(data: bytes) -> tuple[bytes, Image.Image]:
 
 
 class CinemaFrameClassifier:
+    """Phân loại ảnh bìa bằng SigLIP (phần đọc ảnh) + lớp logistic regression đã train sẵn trong `PROBE_PATH`. Chọn
+    thiết bị cuda/mps/cpu; trên CPU của VPS tắt oneDNN để khỏi chết SIGFPE. `embed` trả vector đã chuẩn hoá theo
+    lô, `classify` trả nhãn cho từng ảnh."""
+
     def __init__(self, batch_size: int = 32) -> None:
         import torch
         from transformers import AutoImageProcessor, SiglipVisionModel

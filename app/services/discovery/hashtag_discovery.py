@@ -267,6 +267,9 @@ async def _prune(dry_run: bool) -> int:
 
 
 async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -> dict[str, Any]:
+    """Chạy một lượt AI tìm hashtag TikTok cho các phim đang bật (hoặc một `movie_id`): dọn tag cũ không hiệu quả,
+    dựng ứng viên (biến thể tên phim + hashtag đi kèm), lọc bằng luật, hỏi AI, thêm từ khoá `#tag` và gửi lệnh cào
+    cho tag được nhận. `dry_run` chỉ ghi log. Trả thống kê lượt chạy."""
     await _ensure_table()
     pruned = await _prune(dry_run)
     movie_rows = await d1_exec(ENABLED_MOVIES, quiet=True) or []
@@ -357,7 +360,11 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             del cands[tag]
             stats["not_on_tiktok"] = stats.get("not_on_tiktok", 0) + 1
             if not dry_run:
-                verdict = {"verdict": "not_on_tiktok", "confidence": 100, "reason": "Không có video trên TikTok (ShortVid)"}
+                verdict = {
+                    "verdict": "not_on_tiktok",
+                    "confidence": 100,
+                    "reason": "Không có video trên TikTok (ShortVid)",
+                }
                 await _record(movie["id"], cand, verdict, "rejected", None)
         if not cands:
             continue

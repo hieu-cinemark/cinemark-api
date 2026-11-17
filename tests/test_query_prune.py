@@ -8,8 +8,16 @@ from app.services.discovery import query_discovery as qd
 
 def _row(kid, days_old, found):
     at = (datetime.now(tz=UTC) - timedelta(days=days_old)).isoformat()
-    return {"movie_id": "m1", "tag": f"threads:{kid}", "display": kid, "source": "query", "seen": 0,
-            "keyword_id": kid, "decided_at": at, "found": found}
+    return {
+        "movie_id": "m1",
+        "tag": f"threads:{kid}",
+        "display": kid,
+        "source": "query",
+        "seen": 0,
+        "keyword_id": kid,
+        "decided_at": at,
+        "found": found,
+    }
 
 
 def _run(monkeypatch, rows, yields):

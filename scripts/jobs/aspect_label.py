@@ -208,6 +208,8 @@ async def _save(table: str, aspects: dict[str, list[str]], reprocess_empty: bool
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Gán khía cạnh (`aspects` dạng "key:+/-") cho bình luận bằng model ViSoBERT nhiều nhãn, ghi lại các comment
+    mới/thiếu nhãn theo lô."""
     from datetime import UTC, datetime, timedelta
 
     if not args.model.exists():

@@ -13,6 +13,7 @@ của một nhịp không chặn các nhịp sau. Việc nặng được chạy 
 | refresh.py | Bài trend, page phim đang chiếu, bài booking, follower kênh |
 | ops.py | Cảnh báo, sức khoẻ tài khoản, đối soát thống kê, report theo lịch, đồng bộ AI sang D1 |
 | ai_jobs.py | Job AI nền (tác giả, niche kênh, Review Angles) |
+| attack.py | Đếm chê theo giờ (10 phút) và Attack Detection (hằng giờ) |
 """
 
 from __future__ import annotations
@@ -24,7 +25,17 @@ from datetime import datetime
 from app.core.logging import get_logger
 from app.services.crawl import crawl_lanes, public_continuous, threads_channels
 from app.services.crawl.comment_planner import apply_comment_completions
-from app.services.crawl.scheduler import ai_jobs, cleanup, comments, crawl_slots, discovery, ops, refresh, shortvid
+from app.services.crawl.scheduler import (
+    ai_jobs,
+    attack,
+    cleanup,
+    comments,
+    crawl_slots,
+    discovery,
+    ops,
+    refresh,
+    shortvid,
+)
 from app.services.crawl.scheduler.cleanup import purge_in_progress, run_purge_now
 from app.services.crawl.scheduler.core import POLL_INTERVAL_SECONDS, TIMEZONE, facebook_crawl_enabled
 from app.services.crawl.scheduler.shortvid import trigger_shortvid_now
@@ -74,6 +85,8 @@ TICKS: list[tuple[str, Callable[[], Awaitable[None]], bool]] = [
     ("news", _news_tick, False),
     ("stats_reconcile", ops.stats_reconcile_tick, False),
     ("deep_crawl", _deep_crawl_tick, False),
+    ("comment_hourly", attack.comment_hourly_tick, False),
+    ("attack_detect", attack.attack_detect_tick, False),
 ]
 
 

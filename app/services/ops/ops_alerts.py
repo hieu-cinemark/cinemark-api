@@ -74,6 +74,9 @@ def parse_time(value: Any) -> datetime | None:
 
 
 def shortvid_quota_alerts(usage: dict[str, Any] | None, now: datetime) -> list[Alert]:
+    """Sinh cảnh báo Telegram từ `usage` của ShortVid: dùng quá `ops_shortvid_quota_alert_pct`% hạn mức ngày khi còn
+    lâu mới reset (chạy liên tục dùng hết hạn mức là bình thường), credit còn lại dưới ngưỡng và khi đã hết. Mỗi
+    cảnh báo có khoá chống lặp theo ngày."""
     if not usage:
         return []
     alerts: list[Alert] = []
@@ -110,7 +113,13 @@ def shortvid_quota_alerts(usage: dict[str, Any] | None, now: datetime) -> list[A
     credits = usage.get("credits_remaining")
     if isinstance(credits, int):
         if credits <= 0:
-            alerts.append(Alert(f"shortvid_credits:empty:{today}", _DAY_TTL_SECONDS, "🚨 ShortVid ĐÃ HẾT credit - lượt cào TikTok dừng. Nạp thêm ngay."))
+            alerts.append(
+                Alert(
+                    f"shortvid_credits:empty:{today}",
+                    _DAY_TTL_SECONDS,
+                    "🚨 ShortVid ĐÃ HẾT credit - lượt cào TikTok dừng. Nạp thêm ngay.",
+                )
+            )
         elif credits < settings.ops_shortvid_low_credits:
             alerts.append(
                 Alert(
@@ -133,7 +142,10 @@ def shortvid_error_alert(status: dict[str, Any] | None, now: datetime) -> Alert 
     stats = status.get("stats") or {}
     ok, failed = int(stats.get("requests") or 0), int(stats.get("failed") or 0)
     attempts = ok + failed
-    if attempts < settings.ops_shortvid_error_min_attempts or failed / attempts <= settings.ops_shortvid_error_rate_alert:
+    if (
+        attempts < settings.ops_shortvid_error_min_attempts
+        or failed / attempts <= settings.ops_shortvid_error_rate_alert
+    ):
         return None
     return Alert(
         "shortvid_error_rate",

@@ -77,7 +77,9 @@ async def test_facebook_active_account_with_expired_session_is_warning() -> None
 
 
 async def test_facebook_non_active_account_is_unknown() -> None:
-    with patch("app.services.accounts.account_health.get_token_status", AsyncMock(return_value=("some_other_account", 3600))):
+    with patch(
+        "app.services.accounts.account_health.get_token_status", AsyncMock(return_value=("some_other_account", 3600))
+    ):
         status = await evaluate_account_health(_account(platform="facebook", account_id="main"))
 
     assert status == "unknown"

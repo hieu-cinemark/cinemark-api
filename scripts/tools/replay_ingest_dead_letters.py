@@ -33,6 +33,8 @@ def _replayable(record: dict) -> bool:
 
 
 async def replay(*, dry_run: bool, reason: str | None, max_messages: int | None) -> Counter:
+    """Phát lại các message trong `ingest_dead_letters` về topic gốc (raw_posts / raw_comments) để ingest xử lý như
+    message mới. Offset chỉ commit sau khi broker nhận bản phát lại nên dừng giữa chừng không mất gì."""
     consumer = AIOKafkaConsumer(
         INGEST_DEAD_LETTER_TOPIC,
         bootstrap_servers=settings.kafka_bootstrap_servers,

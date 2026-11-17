@@ -181,6 +181,8 @@ async def run_recent(args: argparse.Namespace) -> None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Gán `audience_stage` (hong / da_xem / khac) cho bình luận của một phim bằng model local visobert-stage; bình
+    luận chỉ có tag/icon do luật xử lý."""
     if args.days:
         await run_recent(args)
         return

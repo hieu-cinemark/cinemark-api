@@ -99,6 +99,8 @@ def _new_label(row: dict, movie: dict, transcript: dict | None) -> str | None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Lấy bù transcript cho bài YouTube cũ (trong `--days` ngày, đang hiện hoặc bị ẩn 'uncertain') chưa có dòng
+    `post_transcripts`, rồi xét lại nhãn liên quan của phim "chặt" bằng transcript đó."""
     films = await _movies()
     rows = await _candidates(args.days, args.limit if args.apply else args.sample)
     print(f"{len(rows)} bài YouTube chưa có transcript")

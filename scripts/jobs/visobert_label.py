@@ -204,6 +204,8 @@ async def evaluate(clf: Classifier, table: str, n: int) -> None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    """Gán cảm xúc hàng loạt bằng ViSoBERT chạy tại máy cho dòng `sentiment IS NULL`, chỉ ghi khi model đủ chắc
+    (`--min-conf`) cùng `sentiment_source='visobert'`."""
     from datetime import UTC, datetime, timedelta
 
     if args.model is None and not FINETUNED_DIR.exists() and not args.eval:
