@@ -4,6 +4,7 @@ Mỗi phim: đọc số chê theo giờ (16 ngày) + bình luận chê 48 giờ 
 verdict.decide -> một dòng attack_signals. Không gọi AI (dấu hiệu E và câu tóm tắt chưa làm).
 
 Lịch: scheduler/ai_jobs.py (AI_JOB_EVERY["attack_detect"]). Chạy tay:
+    python -m app.services.ai_jobs.attack_detect --backfill-days 30 --step-hours 6   # tính lại quá khứ, GHI D1 (chạy lại không trùng)
     python -m app.services.ai_jobs.attack_detect --all                               # mọi phim đang chiếu, GHI D1 (như một nhịp)
     python -m app.services.ai_jobs.attack_detect --movie-id <id> --dry-run           # in kết quả, không ghi
     python -m app.services.ai_jobs.attack_detect --movie-id <id> --dry-run --at 2026-11-05T14:00:00+00:00   # thử mốc cũ
@@ -75,7 +76,67 @@ async def run_tick() -> dict[str, Any]:
     return counts
 
 
+def backfill_points(start: datetime, end: datetime, step: timedelta, done: list[datetime]) -> list[datetime]:
+    """Các mốc tính lại từ `start` tới `end` mỗi `step`, bỏ mốc đã có dòng cách nó dưới nửa `step` (chạy lại không tạo trùng)."""
+    points, at = [], start
+    while at <= end:
+        if all(abs(at - d) >= step / 2 for d in done):
+            points.append(at)
+        at += step
+    return points
+
+
+async def backfill(
+    days: float, step_hours: float, movie_id: str | None = None, *, dry_run: bool = False, pause: float = 3.0
+) -> dict[str, int]:
+    """Tính lại Attack Detection cho quá khứ: mỗi `step_hours` giờ trong `days` ngày qua, cho mọi phim đang chiếu ở mốc đó
+    (hoặc một `movie_id`), ghi như một nhịp thật với computed_at = mốc đó. Cần movie_comment_hourly đã dựng đủ `days` + 16 ngày
+    (scripts/tools/backfill_comment_hourly.py); dấu hiệu B chỉ có khi máy chạy có embedding của bình luận cũ."""
+    from sqlalchemy import select
+
+    from app.repositories.d1.sql import d1_exec
+    from app.services.relevance.trend_posts import showing_movies
+
+    end = datetime.now(tz=UTC).replace(minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=days)
+    step = timedelta(hours=step_hours)
+    await store.ensure_table()
+    t = store.attack_signals
+    rows = (
+        await d1_exec(select(t.c.movie_id, t.c.computed_at).where(t.c.computed_at >= start.isoformat()), timeout=60.0)
+        or []
+    )
+    done: dict[str, list[datetime]] = {}
+    for row in rows:
+        done.setdefault(row["movie_id"], []).append(datetime.fromisoformat(row["computed_at"]))
+    counts: dict[str, int] = {}
+    at = start
+    while at <= end:
+        movies = [{"id": movie_id}] if movie_id else await showing_movies(at)
+        for movie in movies:
+            if not backfill_points(at, at, step, done.get(movie["id"], [])):
+                counts["skipped"] = counts.get("skipped", 0) + 1
+                continue
+            try:
+                result = await detect(movie["id"], at)
+                if dry_run or await store.save(result):
+                    counts[result["status"]] = counts.get(result["status"], 0) + 1
+            except Exception as exc:  # noqa: BLE001 - một mốc lỗi không dừng cả lượt
+                counts["failed"] = counts.get("failed", 0) + 1
+                logger.warning("attack_backfill_failed", movie_id=movie["id"], at=at.isoformat(), error=str(exc)[:300])
+            await asyncio.sleep(pause)  # D1 báo 7429 (quá tải) khi tính liền nhiều phim - nhường chỗ cho ingest
+        print(at.isoformat(timespec="minutes"), counts, flush=True)
+        at += step
+    return counts
+
+
 async def _cli(args: argparse.Namespace) -> None:
+    if args.backfill_days:
+        print(
+            "xong:",
+            await backfill(args.backfill_days, args.step_hours, args.movie_id, dry_run=args.dry_run, pause=args.pause),
+        )
+        return
     if args.all:
         print("đã ghi theo trạng thái:", await run_tick())  # đúng một lượt của scheduler: mọi phim đang chiếu, ghi D1
         return
@@ -93,8 +154,15 @@ if __name__ == "__main__":
     parser.add_argument("--movie-id", help="một phim (bắt buộc nếu không dùng --all)")
     parser.add_argument("--all", action="store_true", help="chạy ngay một lượt cho MỌI phim đang chiếu và GHI D1")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--backfill-days", type=float, help="tính lại cho N ngày qua (mọi phim đang chiếu ở từng mốc, hoặc --movie-id)"
+    )
+    parser.add_argument(
+        "--step-hours", type=float, default=6.0, help="khoảng cách giữa các mốc khi --backfill-days (mặc định 6)"
+    )
+    parser.add_argument("--pause", type=float, default=3.0, help="giây nghỉ giữa hai lần tính khi --backfill-days")
     parser.add_argument("--at", help="thời điểm tính (ISO, mặc định bây giờ) - để thử trên dữ liệu cũ")
     parsed = parser.parse_args()
-    if not parsed.all and not parsed.movie_id:
+    if not parsed.all and not parsed.movie_id and not parsed.backfill_days:
         parser.error("cần --movie-id hoặc --all")
     asyncio.run(_cli(parsed))
