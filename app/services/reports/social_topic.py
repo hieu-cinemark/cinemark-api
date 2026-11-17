@@ -28,15 +28,15 @@ from sqlalchemy import select
 from app.ai.providers.client import load_provider
 from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatims
 from app.core.logging import get_logger
-from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import (
+from app.repositories.d1.movies import MOVIE_CONTEXT_FIELDS
+from app.repositories.d1.report_data import (
     MIN_COMMENTS_FOR_REPORT,
-    MOVIE_CONTEXT_FIELDS,
     get_movie_aspect_stats,
     get_movie_sentiment_counts,
     get_report_sample_for_movie,
     upsert_social_topic_report,
 )
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
 
 logger = get_logger(__name__)

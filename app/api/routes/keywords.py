@@ -12,8 +12,8 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
+from app.repositories.d1.keywords import get_or_create_keyword, list_keywords, set_keyword_enabled
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import get_or_create_keyword, list_keywords, set_keyword_enabled
 from app.repositories.d1.tables import movies
 from app.schemas.scraper import KeywordEnabledUpdate, KeywordOut
 from app.services.crawl.keyword_yield import PLATFORMS as YIELD_PLATFORMS

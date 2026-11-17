@@ -13,7 +13,7 @@ from collections import Counter
 from unittest.mock import AsyncMock, patch
 
 from app.ai.tasks.report import _restore_ids, build_topics_payload
-from app.repositories.d1.store import (
+from app.repositories.d1.report_data import (
     CHANNEL_MIN_POSTS,
     MIN_COMMENTS_FOR_REPORT,
     REPORT_COMMENTS_PER_POST,

@@ -1,4 +1,4 @@
-"""AI tự thêm nguồn cào mỗi ngày một lần ở settings.hashtag_discovery_time: hashtag TikTok, câu tìm Facebook/Threads, trang
+"""AI tự thêm nguồn cào mỗi ngày một lần ở settings.hashtag_discovery_time: câu tìm Facebook/Threads, trang
 nguồn gợi ý (app/services/discovery/*, app/services/crawl/source_pages.py)."""
 
 from __future__ import annotations
@@ -12,17 +12,18 @@ from app.services.accounts import platform_config_db as db
 from app.services.crawl import threads_channels
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, is_due, spawn
 from app.services.crawl.source_pages import review_suggestions as review_source_pages
-from app.services.discovery.hashtag_discovery import run_discovery
 from app.services.discovery.query_discovery import run_query_discovery
 
 logger = get_logger(__name__)
 
-_HASHTAG_DISCOVERY_KEY = f"{KEY_PREFIX}hashtag_discovery:last_run"
+_DISCOVERY_KEY = (
+    f"{KEY_PREFIX}hashtag_discovery:last_run"  # tên khoá giữ nguyên để không chạy lặp trong ngày triển khai
+)
 
 
 async def discovery_enabled() -> bool:
-    """Công tắc "AI tự thêm nguồn cào" trên dashboard (bảng discovery_settings). Tắt -> không chạy hashtag_discovery,
-    query_discovery, duyệt trang nguồn gợi ý, kể cả bước BFS sau lượt ShortVid: chỉ cào từ khoá / trang đang có. Đọc lỗi thì
+    """Công tắc "AI tự thêm nguồn cào" trên dashboard (bảng discovery_settings). Tắt -> không chạy
+    query_discovery và duyệt trang nguồn gợi ý: chỉ cào từ khoá / trang đang có. Đọc lỗi thì
     coi như bật (hành vi trước khi có công tắc)."""
     try:
         return bool((await db.get_discovery_settings()).get("enabled", True))
@@ -31,20 +32,9 @@ async def discovery_enabled() -> bool:
         return True
 
 
-async def tiktok_hashtags_enabled() -> bool:
-    """AI duyệt hashtag TikTok: tắt hẳn khi settings.hashtag_ai_review tắt (17/11/2026); bật thì theo
-    settings.tiktok_hashtag_discovery hoặc công tắc chung."""
-    if not settings.hashtag_ai_review:
-        return False
-    return settings.tiktok_hashtag_discovery or await discovery_enabled()
-
-
 async def _run_discovery(*, everything: bool) -> None:
-    # everything=False (công tắc chung tắt): chỉ hashtag TikTok. Kênh Threads tự thêm theo số bài liên quan, không dùng AI -
-    # chạy cả khi công tắc chung tắt. Lỗi một phần không chặn phần kia.
+    # Kênh Threads tự thêm theo số bài liên quan, không dùng AI - chạy cả khi công tắc chung tắt. Lỗi một phần không chặn phần kia.
     jobs = [("threads_channels_auto_add", threads_channels.auto_add_authors)]
-    if settings.hashtag_ai_review:
-        jobs.insert(0, ("hashtag_discovery", run_discovery))
     if everything:
         jobs += [("query_discovery", run_query_discovery), ("source_page_review", review_source_pages)]
     for name, job in jobs:
@@ -61,12 +51,9 @@ async def hashtag_tick() -> None:
         return
     today = now.date().isoformat()
     redis = get_redis_client()
-    if await redis.get(_HASHTAG_DISCOVERY_KEY) == today:
+    if await redis.get(_DISCOVERY_KEY) == today:
         return
-    await redis.set(_HASHTAG_DISCOVERY_KEY, today, ex=3 * 24 * 3600)
+    await redis.set(_DISCOVERY_KEY, today, ex=3 * 24 * 3600)
     everything = await discovery_enabled()
-    if not everything and not settings.tiktok_hashtag_discovery:
-        logger.info("hashtag_discovery_skipped_disabled", run_time=run_time)
-        return
-    logger.info("hashtag_discovery_firing", run_time=run_time, tiktok_only=not everything)
+    logger.info("discovery_firing", run_time=run_time, everything=everything)
     spawn(_run_discovery(everything=everything))

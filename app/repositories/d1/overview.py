@@ -27,7 +27,7 @@ SHORTVID_RELATED_PER_KEYWORD = 15
 async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
     """Hashtag TikTok xuất hiện cùng hashtag của từng từ khoá - gộp từ spider-hub (list sau mỗi lượt crawl) và ShortVid
     (số video cộng dồn), cùng tag (không phân biệt hoa thường) lấy count lớn hơn. Dùng chung cho chip duyệt trên
-    dashboard (stats_summary) và ứng viên AI duyệt (hashtag_discovery). Thiếu Redis / key rỗng = chưa có gì."""
+    dashboard (stats_summary) (AI duyệt hashtag đã bỏ 17/11/2026). Thiếu Redis / key rỗng = chưa có gì."""
     if not keyword_ids:
         return {}
     try:

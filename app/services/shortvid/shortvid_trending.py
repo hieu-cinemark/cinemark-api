@@ -26,6 +26,7 @@ import httpx
 from sqlalchemy import Column, Index, Integer, Table, Text, and_, func, select
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from app.clients.shortvid import ShortVidStop, map_video, shortvid_get
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
@@ -33,7 +34,6 @@ from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metada
 from app.repositories.d1.tables import movies, posts
 from app.services.accounts.platform_config_db import get_shortvid_api_settings
 from app.services.shortvid import shortvid_comments
-from app.clients.shortvid import ShortVidStop, map_video, shortvid_get
 from app.services.shortvid.shortvid_tiktok import Budget, _Pacer, fetch_usage
 
 logger = get_logger(__name__)

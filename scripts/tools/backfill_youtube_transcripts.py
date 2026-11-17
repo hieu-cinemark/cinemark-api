@@ -24,8 +24,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import and_, exists, func, or_, select, update
 
 from app.core.config import settings
+from app.repositories.d1.movies import MOVIE_CONTEXT_FIELDS
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import MOVIE_CONTEXT_FIELDS
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
 from app.repositories.d1.transcripts import ensure_table, post_transcripts, save_transcript, transcript_has_film_context

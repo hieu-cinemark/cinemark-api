@@ -19,7 +19,8 @@ from fastapi import APIRouter, HTTPException, Query
 from app.clients.kafka import DEFAULT_COMMENTS_MAX_PAGES, publish_comments_crawl_request, publish_crawl_request
 from app.core.errors import NotFoundError, UpstreamError
 from app.core.logging import get_logger
-from app.repositories.d1.store import get_enabled_keywords, get_keyword, get_post
+from app.repositories.d1.keywords import get_enabled_keywords, get_keyword
+from app.repositories.d1.posts import get_post
 from app.schemas.scraper import (
     JobStatus,
     RunCommentsResponse,
@@ -37,7 +38,8 @@ def build_run_route(router: APIRouter, platform: str) -> None:
     (lọc theo `movie_id`), mỗi từ khoá một message `crawl_requests`. Trả số từ khoá và số message gửi được."""
 
     @router.post("/run", response_model=RunScraperResponse)
-    async def run_scraper(payload: RunScraperRequest = RunScraperRequest()) -> RunScraperResponse:
+    async def run_scraper(payload: RunScraperRequest | None = None) -> RunScraperResponse:
+        payload = payload or RunScraperRequest()
         if payload.keyword_id is not None:
             keyword = await get_keyword(payload.keyword_id, platform=platform)
             if keyword is None:

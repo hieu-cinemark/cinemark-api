@@ -9,10 +9,10 @@ Tự động: review_suggestions() (mỗi sáng, sau hashtag/query discovery) ch
 có nhiều bài liên quan nhất 30 ngày qua (suggestions()) kèm bài mẫu của chính trang - thành "trang của phim X", "trang
 chung" hoặc loại; trang được duyệt tự thêm vào danh sách (added_by='ai').
 
-Tần suất: lượt cào Facebook theo lịch gọi queue_enabled_sources(), chỉ xếp trang đã quá hạn - trang của phim mỗi
+Tần suất: nhịp đọc page công khai (fill_public_pages_queue) chỉ xếp trang đã quá hạn - trang của phim mỗi
 FILM_INTERVAL_HOURS, trang chung mỗi SHARED_INTERVAL_HOURS; lượt cào trước không có bài mới (spider ghi
-page_feed_last:<url> trong Redis) thì giãn gấp đôi, tối đa x MAX_BACKOFF. Spider facebook_page_feed đọc bảng tin mới nhất
-trước, dừng ở bài đã có / cũ hơn SINCE_DAYS / MAX_PAGES trang.
+page_feed_last:<url> trong Redis) thì giãn gấp đôi, tối đa x MAX_BACKOFF. Job public_page đọc bảng tin mới nhất
+trước, dừng ở bài đã có / cũ hơn SINCE_DAYS.
 
 Bài cần keyword_id để ingest biết phim: trang của phim dùng từ khoá Facebook là tên phim (get_or_create_keyword).
 """
@@ -30,18 +30,19 @@ from sqlalchemy import Column, Integer, Table, Text, delete, func, select, updat
 from sqlalchemy.dialects.sqlite import insert
 
 from app.ai.runtime import call_llm, parse_json_response
-from app.clients.kafka import publish_action_request
+from app.clients import crawl_queues as queues
+from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, metadata
-from app.repositories.d1.store import d1_query, get_or_create_keyword
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts.platform_config_db import crawl_setting
-from app.services.crawl.task_queue import enqueue_published, list_pending
+from app.services.crawl.task_queue import enqueue_published
 from app.services.relevance.relevance_rules import normalize_title
 
 logger = get_logger(__name__)
@@ -89,8 +90,6 @@ async def _movie_title(movie_id: str) -> str | None:
     return rows[0]["title"] if rows else None
 
 
-# Mỗi trang bảng tin xin 10 bài (spider) - 50 trang ~ 500 bài; dừng sớm ở bài đã có nên lượt sau chỉ tốn vài trang.
-MAX_PAGES = 50
 SINCE_DAYS = 60
 FILM_INTERVAL_HOURS = 6
 SHARED_INTERVAL_HOURS = 24
@@ -99,7 +98,6 @@ MAX_BACKOFF = 8
 # trống: mỗi lượt xếp tối đa MAX_QUEUE_PER_ROUND trang (trang của phim / trang hay có bài trước), và bỏ hẳn lượt khi còn
 # từ MAX_PENDING_PAGE_FEED job page_feed của lượt trước chưa chạy (hàng đợi đang dồn).
 MAX_QUEUE_PER_ROUND = 40
-MAX_PENDING_PAGE_FEED = 10
 # AI duyệt trang gợi ý
 REVIEW_TASK = "source_page_review"
 REVIEW_BATCH = 10
@@ -255,46 +253,6 @@ async def delete_source(source_id: str) -> None:
     await d1_exec(delete(source_pages).where(source_pages.c.id == source_id))
 
 
-async def queue_source(
-    source: dict[str, Any], *, bypass_drain: bool = False, overrides: dict[str, Any] | None = None
-) -> bool:
-    """Xếp một yêu cầu page_feed cho trang (từ khoá Facebook là tên phim làm keyword_id). `overrides`: tham số job riêng của
-    chỗ gọi, vd. lượt quét lại chỉ đọc trang mới nhất (app/services/crawl/watch_pages.py)."""
-    keyword_id = None
-    if source.get("movie_id"):
-        title = await _movie_title(source["movie_id"])
-        if title is None:
-            return False
-        keyword = await get_or_create_keyword(source["movie_id"], "facebook", title)
-        if keyword is None:
-            return False
-        keyword_id = keyword["id"]
-    ok = await publish_action_request(
-        "facebook",
-        "page_feed",
-        {
-            "page_url": source["url"],
-            "page_id": source.get("page_id") or _page_id_from_url(source["url"]),
-            # None với trang chung - ingest tự tìm phim theo nội dung bài.
-            "keyword_id": keyword_id,
-            "max_pages": MAX_PAGES,
-            "since_days": SINCE_DAYS,
-            "run_id": str(uuid.uuid4()),
-            **(overrides or {}),
-        },
-        bypass_drain=bypass_drain,
-    )
-    if ok:
-        await _set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat())
-    return ok
-
-
-def _page_id_from_url(url: str) -> str | None:
-    """Trang kiểu mới (facebook.com/profile.php?id=615...) mang sẵn id trong URL - không phải tốn một request dò id."""
-    match = re.search(r"[?&]id=(\d{6,})", url or "")
-    return match.group(1) if match else None
-
-
 def _due(source: dict[str, Any], now: datetime) -> bool:
     base = FILM_INTERVAL_HOURS if source.get("movie_id") else SHARED_INTERVAL_HOURS
     interval = base * min(MAX_BACKOFF, 2 ** int(source.get("quiet_runs") or 0))
@@ -325,32 +283,8 @@ async def _update_quiet_runs(source: dict[str, Any]) -> None:
         source["quiet_runs"] = quiet
 
 
-async def queue_enabled_sources() -> int:
-    """Gọi từ mỗi lượt cào Facebook theo lịch: xếp các trang đang bật đã tới hạn (xem docstring module)."""
-    await _ensure_table()
-    rows = await d1_exec(_ENABLED_SOURCES, quiet=True)
-    now = datetime.now(tz=UTC)
-    queued = 0
-    due = []
-    for row in rows or []:
-        await _update_quiet_runs(row)
-        if _due(row, now):
-            due.append(row)
-    # hạn mức request FB/ngày - trang hay có bài mới (quiet_runs thấp) và trang của phim xếp trước.
-    due.sort(key=lambda row: (int(row.get("quiet_runs") or 0), 0 if row.get("movie_id") else 1))
-    pending = [item for item in await list_pending("facebook") if item.get("type") == "page_feed"]
-    if len(pending) >= MAX_PENDING_PAGE_FEED:
-        logger.info("source_pages_skipped_backlog", pending_page_feed=len(pending), due=len(due))
-        return 0
-    for row in due[:MAX_QUEUE_PER_ROUND]:
-        if await queue_source(row):
-            queued += 1
-    logger.info("source_pages_queued", queued=queued, total=len(rows or []))
-    return queued
-
-
 # Đọc page không đăng nhập: chạy liên tục kể cả khi không có tài khoản (spider-hub job public_page, worker song song).
-_PUBLIC_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_public_pages:facebook"
+_PUBLIC_QUEUE_KEY = queues.PUBLIC_PAGES_FACEBOOK
 _PUBLIC_PAUSED_KEY = f"{REDIS_KEY_PREFIX}facebook:public_pages:paused"  # spider-hub đặt khi hết proxy dùng được
 _PUBLIC_PLAN_REFRESH = timedelta(minutes=10)
 _public_plan: list[dict[str, Any]] = []
@@ -454,24 +388,22 @@ async def run_source(source_id: str) -> bool:
         from app.services.crawl.threads_channels import queue_channel
 
         return await queue_channel(source, datetime.now(tz=UTC))
-    if not await crawl_setting("facebook_account_page_feed"):
-        # "Chạy ngay" khi đường tài khoản tắt: xếp thẳng vào hàng đọc không tài khoản.
-        request = {
-            "type": "public_page",
-            "platform": "facebook",
-            "page_url": source["url"],
-            "keyword_id": None,
-            "run_id": str(uuid.uuid4()),
-            "published_at": datetime.now(tz=UTC).timestamp(),
-        }
-        if source.get("movie_id") and (title := await _movie_title(source["movie_id"])):
-            keyword = await get_or_create_keyword(source["movie_id"], "facebook", title)
-            request["keyword_id"] = keyword["id"] if keyword else None
-        await enqueue_published(request)
-        await get_redis_client().rpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
-        await _set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat(), quiet=True)
-        return True
-    return await queue_source(source, bypass_drain=True)
+    # "Chạy ngay": xếp thẳng vào hàng đọc không tài khoản.
+    request = {
+        "type": "public_page",
+        "platform": "facebook",
+        "page_url": source["url"],
+        "keyword_id": None,
+        "run_id": str(uuid.uuid4()),
+        "published_at": datetime.now(tz=UTC).timestamp(),
+    }
+    if source.get("movie_id") and (title := await _movie_title(source["movie_id"])):
+        keyword = await get_or_create_keyword(source["movie_id"], "facebook", title)
+        request["keyword_id"] = keyword["id"] if keyword else None
+    await enqueue_published(request)
+    await get_redis_client().rpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
+    await _set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat(), quiet=True)
+    return True
 
 
 def _page_from_post_url(url: str | None) -> str | None:

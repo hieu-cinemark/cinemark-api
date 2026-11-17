@@ -84,7 +84,7 @@ _LOCK_TTL_SECONDS = 2 * 60 * 60
 async def _run(sql: str, params: list[Any]) -> list[dict[str, Any]]:
     """Chạy câu đã dựng bằng SQLAlchemy (compile_sql ở _run_stmt) - đây là ngõ duy nhất của module này
     gọi D1, nên timeout và cách báo lỗi giống nhau cho mọi câu."""
-    from app.repositories.d1.store import d1_query
+    from app.clients.d1 import d1_query
 
     rows = await d1_query(sql, params, timeout=60.0)
     if rows is None:

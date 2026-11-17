@@ -15,8 +15,8 @@ import asyncio
 import json
 from datetime import UTC, datetime
 
+from app.clients.d1 import d1_query
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import d1_query
 from app.repositories.d1.tables import comment_cluster_members, comment_cluster_topics
 from scripts.tools.cluster_film_comments import OUT_DIR
 

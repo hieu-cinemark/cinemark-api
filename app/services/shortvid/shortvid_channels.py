@@ -21,12 +21,12 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy import select
 
+from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import RELEVANT_POST_SQL
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import d1_query
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import movies as movies_table
 from app.services.relevance.relevance_rules import normalize_title
@@ -209,7 +209,7 @@ async def run_channels(
     should_stop: Callable[[], bool],
 ) -> None:
     """Mỗi kênh một lần mỗi ngày, _WORKERS kênh song song, trong `budget`."""
-    from app.services.shortvid.shortvid_tiktok import ShortVidStop
+    from app.clients.shortvid import ShortVidStop
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     redis = get_redis_client()

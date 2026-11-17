@@ -54,7 +54,7 @@ async def load_ai_runtime() -> dict[str, Any]:
             "prompts": _normalize_prompts(row.get("prompts")),
             "updated_at": row.get("updated_at"),
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - đọc cài đặt AI lỗi thì dùng bản cache, không làm hỏng lời gọi AI
         logger.warning("ai_settings_load_failed", error=str(exc))
     _ai_cfg_cache = (now, cfg)
     return cfg

@@ -171,20 +171,9 @@ class Settings(BaseSettings):
     # Tự thêm tác giả Threads có nhiều bài liên quan (mỗi ngày, không dùng AI); 0 = tắt.
     threads_channels_auto_add: int = 20
 
-    # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm hashtag TikTok cho các phim mỗi ngày (app/services/discovery/hashtag_discovery.py) -
-    # trước giờ crawl buổi sáng để hashtag mới được cào ngay trong ngày. Rỗng = tắt.
+    # Giờ (Asia/Ho_Chi_Minh) AI tìm thêm câu tìm kiếm Facebook/Threads và duyệt trang nguồn mỗi ngày
+    # (app/services/discovery/query_discovery.py) - trước giờ crawl buổi sáng. Rỗng = tắt. (Phần AI duyệt hashtag TikTok đã bỏ 17/11/2026.)
     hashtag_discovery_time: str = "05:30"
-    # AI duyệt hashtag TikTok chạy cả khi công tắc chung "AI tự thêm nguồn cào" tắt (công tắc đó vẫn giữ câu tìm
-    # Facebook/Threads và duyệt trang nguồn). Mục tiêu: gom nhiều video TikTok nhất có thể.
-    tiktok_hashtag_discovery: bool = True
-    # AI duyệt hashtag TikTok (hashtag_discovery: lượt buổi sáng + lượt sau mỗi đợt ShortVid). Tạm tắt 17/11/2026 theo yêu
-    # cầu - bật lại bằng HASHTAG_AI_REVIEW=true. Tắt thì hai lượt đó bỏ hẳn phần hashtag, không gọi AI.
-    hashtag_ai_review: bool = False
-    # AI thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và ShortVid BFS).
-    hashtag_discovery_max_per_movie: int = 15
-    hashtag_discovery_max_per_run: int = 150
-    # Ngoài lượt buổi sáng, sau mỗi lượt ShortVid lại duyệt hashtag BFS mới - cách nhau ít nhất chừng này giờ.
-    hashtag_discovery_after_shortvid_hours: float = 2
 
     # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài AI gán "related" cũng phải có
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
@@ -307,10 +296,6 @@ class Settings(BaseSettings):
     shortvid_trending_rising_comments_per_hour: float = 20
     shortvid_trending_rising_limit: int = 20
     shortvid_trending_comments_recrawl_hours: float = 24
-    # Bài booking Facebook đang theo dõi (app/services/crawl/tracked_posts.py): bài đã có trong D1 được cập nhật số bằng job
-    # post_metrics của spider-hub (đọc trang bài không đăng nhập, không tốn tài khoản) thay vì page_feed cả page. Tắt
-    # thì quay về page_feed như trước 25/10/2026.
-    tracked_facebook_logged_out: bool = True
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/relevance/cleanup.py), do
     # app/services/crawl/scheduler/ chạy lúc irrelevant_post_purge_time (giờ

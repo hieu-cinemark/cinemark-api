@@ -2,8 +2,8 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.core.config import settings
 from app.clients.shortvid import next_cursor
+from app.core.config import settings
 from app.services.shortvid.shortvid_comments import iso_week, weekly_due
 from app.services.shortvid.shortvid_tiktok import Budget
 

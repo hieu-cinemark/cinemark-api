@@ -10,7 +10,7 @@ from typing import Any
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import SHORTVID_COOCCUR_KEY_TMPL
+from app.repositories.d1.overview import SHORTVID_COOCCUR_KEY_TMPL
 
 logger = get_logger(__name__)
 
@@ -63,7 +63,7 @@ async def _forget_seen(video_id: str) -> None:
 
 
 # BFS: hashtag đi kèm trong video ShortVid lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày. d1.related_hashtags_for_keywords
-# gộp với hashtag liên quan của spider - cùng một nguồn cho chip duyệt trên dashboard và cho AI duyệt (hashtag_discovery).
+# gộp với hashtag liên quan của spider - cùng một nguồn cho chip duyệt trên dashboard.
 _COOCCUR_TTL_SECONDS = 14 * 24 * 3600
 
 

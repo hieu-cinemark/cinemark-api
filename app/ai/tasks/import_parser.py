@@ -240,7 +240,7 @@ async def parse_import(target: ImportTarget, format_hint: str, content: str) -> 
     )
     parsed = parse_json_response(response)
     if not isinstance(parsed, list):
-        raise ValueError(f"Expected a JSON array of rows, got {type(parsed).__name__}")
+        raise TypeError(f"Expected a JSON array of rows, got {type(parsed).__name__}")
 
     fields = _FIELDS[target]
     rows: list[dict[str, Any]] = []

@@ -53,8 +53,6 @@ from app.schemas.settings import (
     ImportParseResponse,
     NurtureRequest,
     NurtureResponse,
-    ShortVidApiSettingsOut,
-    ShortVidApiSettingsUpdate,
     ProxyCreate,
     ProxyOut,
     ProxyProviderOut,
@@ -62,6 +60,8 @@ from app.schemas.settings import (
     ProxySettings,
     ProxySettingsOut,
     ProxyUpdate,
+    ShortVidApiSettingsOut,
+    ShortVidApiSettingsUpdate,
     TotpCodeResponse,
     parse_run_times,
 )
@@ -608,13 +608,13 @@ async def list_ai_models(payload: AiModelsRequest) -> AiModelsOut:
     if not api_key:
         raise ValidationError("Cần nhập API key (hoặc chọn nhà cung cấp đã lưu key) để lấy danh sách model")
     url = payload.base_url.strip().rstrip("/")
-    url = url[: -len("/chat/completions")] if url.endswith("/chat/completions") else url
+    url = url.removesuffix("/chat/completions")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
             resp = await client.get(f"{url}/models", headers={"Authorization": f"Bearer {api_key}"})
         resp.raise_for_status()
         data = resp.json()
-    except Exception as exc:  # noqa: BLE001 - mọi lỗi mạng / định dạng đều báo gọn cho người dùng
+    except Exception as exc:
         raise UpstreamError(f"Không lấy được danh sách model từ {url}/models ({type(exc).__name__})") from exc
     items = data.get("data") if isinstance(data, dict) else data
     ids = sorted({str(item.get("id")) for item in items or [] if isinstance(item, dict) and item.get("id")})
@@ -661,7 +661,7 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
             else:
                 await db.create_proxy(fields)
             created += 1
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - một dòng nhập lỗi chỉ tính vào số dòng thất bại, các dòng khác vẫn lưu
             logger.warning("import_commit_row_failed", target=payload.target, error=str(exc))
             failed += 1
     return ImportCommitResponse(created=created, failed=failed)

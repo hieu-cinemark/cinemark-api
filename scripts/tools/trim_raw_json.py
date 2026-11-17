@@ -25,7 +25,7 @@ from sqlalchemy import Update, select
 
 from app.core.config import settings
 from app.repositories.d1.comments import trim_comment_raw
-from app.repositories.d1.posts import trim_post_raw
+from app.repositories.d1.post_raw import trim_post_raw
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import posts as posts_table

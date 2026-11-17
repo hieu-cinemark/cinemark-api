@@ -15,8 +15,9 @@ app/workers/ingest_consumer, app/api/routes/platform_scraper.py - cần sửa.""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 # Dạng chuẩn hoá mà mọi mapper nền tảng bên dưới phải sinh ra - cùng các trường với
 # kiểu PostDraft của cinemark-scraper (src/scrapers/types.ts), để persist_post() trong
@@ -60,7 +61,7 @@ def _map_facebook_post(payload: dict[str, Any]) -> PostDraft:
         # Reels của trang (message kind="metrics", xem handle_post). Bài không phải video gửi None -> 0, và persist_post
         # giữ số đã có khi lần crawl lại gửi 0.
         "view_count": payload.get("view_count") or 0,
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 
@@ -87,7 +88,7 @@ def _map_threads_post(payload: dict[str, Any]) -> PostDraft:
         "quote_count": payload.get("quote_count") or 0,
         "reshare_count": 0,
         "view_count": 0,
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 
@@ -117,7 +118,7 @@ def _map_tiktok_post(payload: dict[str, Any]) -> PostDraft:
         "quote_count": 0,
         "reshare_count": 0,
         "view_count": payload.get("play_count") or 0,
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 
@@ -146,7 +147,7 @@ def _map_youtube_post(payload: dict[str, Any]) -> PostDraft:
         "quote_count": 0,
         "reshare_count": 0,
         "view_count": payload.get("view_count") or 0,
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         # Phụ đề (16/11/2026) - persist_post ghi vào post_transcripts, không vào posts.raw_json.
         "transcript": payload.get("transcript") if isinstance(payload.get("transcript"), dict) else None,
         "raw": payload,
@@ -188,7 +189,7 @@ def _map_facebook_comment(payload: dict[str, Any]) -> CommentDraft:
         "reactions_count": payload.get("reactions_count") or 0,
         "replies_count": payload.get("replies_count") or 0,
         "parent_external_id": payload.get("parent_comment_id"),
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 
@@ -212,7 +213,7 @@ def _map_threads_comment(payload: dict[str, Any]) -> CommentDraft:
         "reactions_count": payload.get("like_count") or 0,
         "replies_count": payload.get("reply_count") or 0,
         "parent_external_id": payload.get("parent_reply_id"),
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 
@@ -232,7 +233,7 @@ def _map_tiktok_comment(payload: dict[str, Any]) -> CommentDraft:
         "reactions_count": payload.get("like_count") or 0,
         "replies_count": payload.get("reply_count") or 0,
         "parent_external_id": payload.get("parent_comment_id"),
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 
@@ -251,7 +252,7 @@ def _map_youtube_comment(payload: dict[str, Any]) -> CommentDraft:
         "reactions_count": payload.get("like_count") or 0,
         "replies_count": payload.get("reply_count") or 0,
         "parent_external_id": payload.get("parent_comment_id"),
-        "posted_at": datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat() if timestamp else None,
+        "posted_at": datetime.fromtimestamp(timestamp, tz=UTC).isoformat() if timestamp else None,
         "raw": payload,
     }
 

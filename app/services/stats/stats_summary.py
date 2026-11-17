@@ -99,8 +99,8 @@ async def _q(
 ) -> list[dict[str, Any]] | None:
     """Mọi câu của module đi qua đây (test vá hàm này). Nhận chuỗi SQL hoặc câu dựng bằng SQLAlchemy."""
     # Import lười: repositories gọi vào module này từ persist_*/get_*.
+    from app.clients.d1 import d1_query
     from app.repositories.d1.sql import compile_sql
-    from app.repositories.d1.store import d1_query
 
     if not isinstance(sql, str):
         sql, params = compile_sql(sql)
@@ -315,7 +315,7 @@ async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
 
 async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
     """Cùng dạng response với phép join toàn bảng cũ, lấy dữ liệu từ bảng tổng hợp theo ngày."""
-    from app.repositories.d1.store import related_hashtags_for_keywords
+    from app.repositories.d1.overview import related_hashtags_for_keywords
 
     await ensure_stats_tables()
     from app.repositories.d1.tables import keywords, movies

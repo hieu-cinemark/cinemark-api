@@ -1,4 +1,4 @@
-"""AI thêm câu truy vấn tìm kiếm Facebook/Threads cho từng phim, chạy ngay sau hashtag_discovery mỗi
+"""AI thêm câu truy vấn tìm kiếm Facebook/Threads cho từng phim, chạy cùng lượt khám phá hằng ngày (scheduler/discovery.py) mỗi
 sáng. Mỗi phim trước đó chỉ có 1-2 câu truy vấn, mà ô tìm kiếm của Facebook/Threads chỉ trả một phần nhỏ bài cho mỗi
 câu - mỗi câu khác nhau trả về một tập bài khác. Kompa (đo ~120 lần số bài của mình cho Trại Buôn Người)
 đếm cả bài nhắc tên phim kèm từ ngữ cảnh phim (review, đi xem...) hoặc tên diễn viên.
@@ -29,14 +29,14 @@ from sqlalchemy import func, select
 from app.ai.domain.movie_context import cast_list, movie_context_block
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import add_keyword, enable_keyword
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import add_keyword, enable_keyword
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import movies as movies_table
 from app.repositories.d1.tables import posts
 from app.services.crawl.keyword_yield import keyword_yields
-from app.services.discovery.hashtag_discovery import (
+from app.services.discovery.decisions import (
     ALL_KEYWORDS,
     ENABLED_MOVIES,
     RECHECK_REJECTED_DAYS,

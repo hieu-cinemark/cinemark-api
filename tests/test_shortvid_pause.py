@@ -3,7 +3,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
-from app.services.shortvid import shortvid_pause as pause
+from app.services.shortvid import shortvid_pause as pause_mod
 from app.services.shortvid import shortvid_tiktok as ot
 
 
@@ -24,7 +24,7 @@ class _FakeRedis:
 
 def _setup(monkeypatch, *, usage=None, key="key-a"):
     redis = _FakeRedis()
-    monkeypatch.setattr(pause, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(pause_mod, "get_redis_client", lambda: redis)
 
     async def fake_usage(*_args, **_kwargs):
         return usage
@@ -33,12 +33,12 @@ def _setup(monkeypatch, *, usage=None, key="key-a"):
         return {"api_key": key}
 
     monkeypatch.setattr(ot, "fetch_usage", fake_usage)
-    monkeypatch.setattr(pause, "get_shortvid_api_settings", fake_settings)
+    monkeypatch.setattr(pause_mod, "get_shortvid_api_settings", fake_settings)
     return redis
 
 
 def _pause(redis):
-    raw = redis.values.get(ot._PAUSE_KEY)
+    raw = redis.values.get(pause_mod._PAUSE_KEY)
     return json.loads(raw) if raw else None
 
 
@@ -50,7 +50,7 @@ def test_quota_stop_pauses_until_reset(monkeypatch):
     assert pause["reason"] == "quota"
     until = datetime.fromisoformat(pause["until"])
     assert timedelta(minutes=59) < until - datetime.now(tz=UTC) < timedelta(minutes=62)
-    assert asyncio.run(ot.pause_over(pause)) is False
+    assert asyncio.run(pause_mod.pause_over(pause)) is False
 
 
 def test_exhausted_budget_pauses_until_reset(monkeypatch):
@@ -72,12 +72,12 @@ def test_key_error_pause_ends_when_key_changes(monkeypatch):
     pause = _pause(redis)
     assert pause is not None
     assert pause["reason"] == "key"
-    assert asyncio.run(ot.pause_over(pause)) is False
+    assert asyncio.run(pause_mod.pause_over(pause)) is False
     _setup(monkeypatch, key="key-b")
-    assert asyncio.run(ot.pause_over(pause)) is True
+    assert asyncio.run(pause_mod.pause_over(pause)) is True
 
 
 def test_pause_over_after_until():
     past = {"reason": "quota", "until": (datetime.now(tz=UTC) - timedelta(seconds=1)).isoformat()}
-    assert asyncio.run(ot.pause_over(past)) is True
-    assert asyncio.run(ot.pause_over({"reason": "quota"})) is True  # dữ liệu hỏng: không kẹt mãi
+    assert asyncio.run(pause_mod.pause_over(past)) is True
+    assert asyncio.run(pause_mod.pause_over({"reason": "quota"})) is True  # dữ liệu hỏng: không kẹt mãi

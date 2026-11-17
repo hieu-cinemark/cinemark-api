@@ -31,8 +31,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec, metadata
 from app.repositories.d1.tables import keywords, movies
-from app.services.shortvid import shortvid_yield
 from app.services.relevance.relevance_rules import normalize_title
+from app.services.shortvid import shortvid_yield
 
 if TYPE_CHECKING:
     from app.services.shortvid.shortvid_tiktok import Budget, _Pacer
@@ -381,7 +381,8 @@ async def run_search(
     """Chạy phần tìm theo từ khoá của một lượt ShortVid: bỏ câu đã xong hôm nay (`DONE_KEY`), tìm xen kẽ các câu còn
     lại cho tới khi hết ngân sách (`budget`), bị dừng (`should_stop`) hoặc ShortVid báo dừng; câu nào chạy xong thì
     đánh dấu đã làm hôm nay. Số liệu cộng vào `stats`."""
-    from app.services.shortvid.shortvid_tiktok import ShortVidStop, run_round_robin
+    from app.clients.shortvid import ShortVidStop
+    from app.services.shortvid.shortvid_tiktok import run_round_robin
 
     today = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date().isoformat()
     redis = get_redis_client()

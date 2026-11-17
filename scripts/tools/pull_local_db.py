@@ -94,7 +94,7 @@ async def pull() -> None:
         warning="stop any server using DB_MODE=local against this path first, and restart it after this finishes",
     )
     settings.db_mode = "remote"  # xem docstring module - không bao giờ đọc file local ở đây
-    from app.repositories.d1.store import d1_query  # import sau khi đã ép remote, không phải lúc nạp module
+    from app.clients.d1 import d1_query
 
     if not (settings.cloudflare_account_id and settings.cloudflare_api_token and settings.cloudflare_d1_database_id):
         raise RuntimeError(

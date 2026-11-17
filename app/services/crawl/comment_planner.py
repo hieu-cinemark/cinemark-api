@@ -26,11 +26,12 @@ from sqlalchemy import case, func, select, update
 
 from app.clients.kafka import publish_comments_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.services.accounts.platform_config_db import crawl_setting
 from app.core.logging import get_logger
-from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post, reputable_authors
+from app.repositories.d1.author_reputation import reputable_authors
+from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies, posts
+from app.services.accounts.platform_config_db import crawl_setting
 from app.services.crawl.comment_value import judge_new_posts, load_scores
 
 logger = get_logger(__name__)
@@ -97,7 +98,7 @@ def _parse_time(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

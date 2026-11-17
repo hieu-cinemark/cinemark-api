@@ -23,16 +23,16 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, insert, select
 
-from app.repositories.d1.posts import (
+from app.repositories.d1.author_reputation import (
     MIN_MOVIES_FOR_REPUTABLE_AUTHOR,
     author_reputation,
     ensure_author_reputation_table,
-    movie_hashtag_present,
 )
+from app.repositories.d1.post_matching import movie_hashtag_present
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import movies as movies_table
@@ -98,7 +98,7 @@ async def main() -> None:
     await ensure_author_reputation_table()
     await d1_exec(delete(author_reputation))
 
-    now = datetime.now(tz=timezone.utc).isoformat()
+    now = datetime.now(tz=UTC).isoformat()
     all_rows = [
         (platform, author, len(movies), confirmed_posts[(platform, author)], now)
         for (platform, author), movies in confirmed_movies.items()

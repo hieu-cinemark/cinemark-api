@@ -13,7 +13,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -82,7 +82,7 @@ def _parse_log_line(line: str) -> tuple[str, str | None, str | None] | None:
 
 
 def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat()
+    return datetime.now(tz=UTC).isoformat()
 
 
 @dataclass
@@ -274,7 +274,7 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
         )
     except asyncio.CancelledError:
         return
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - theo dõi log lỗi thì đánh dấu lượt làm mới thất bại, không làm sập tiến trình
         logger.error("refresh_tracker_tail_failed", platform=platform, error=str(exc))
         state.status = "failed"
         state.finished_at = _now_iso()

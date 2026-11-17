@@ -12,11 +12,12 @@ from pydantic import BaseModel
 from app.core.config import settings
 from app.core.errors import UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.repositories.d1.store import get_or_create_keyword, set_keyword_enabled
+from app.repositories.d1.keywords import get_or_create_keyword, set_keyword_enabled
 from app.services.accounts.platform_config_db import get_shortvid_api_settings
 from app.services.shortvid import (
     shortvid_channels,
     shortvid_comments,
+    shortvid_pause,
     shortvid_search,
     shortvid_tiktok,
     shortvid_trending,
@@ -45,7 +46,7 @@ async def shortvid_status() -> dict[str, Any]:
         shortvid_tiktok.hashtag_progress(),
         _usage(),
         shortvid_tiktok.round_status_full(),
-        shortvid_tiktok.get_pause(),
+        shortvid_pause.get_pause(),
         shortvid_channels.channel_status(),
         shortvid_comments.job_status(),
     )
@@ -82,7 +83,7 @@ async def shortvid_run() -> dict[str, bool]:
     from app.services.crawl.scheduler import trigger_shortvid_now
 
     # Bấm "Chạy ngay" là bỏ trạng thái dừng (vd. vừa nâng gói / đổi key) - lượt tự kiểm tra lại hạn mức.
-    await shortvid_tiktok.clear_pause()
+    await shortvid_pause.clear_pause()
     started = trigger_shortvid_now()
     logger.info("shortvid_manual_run", started=started)
     return {"started": started}

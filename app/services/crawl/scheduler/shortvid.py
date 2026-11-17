@@ -1,29 +1,25 @@
 """ShortVid API: lượt hashtag TikTok mỗi giờ (app/services/shortvid/shortvid_tiktok.py), bình luận tuần, "video đang nổi"
-(shortvid_trending) và bước BFS hashtag sau mỗi lượt."""
+(shortvid_trending) (không còn bước AI duyệt hashtag sau mỗi lượt, bỏ 17/11/2026)."""
 
 from __future__ import annotations
 
-import time
 from datetime import datetime
 
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, claim, cycle_ttl, spawn
-from app.services.crawl.scheduler.discovery import tiktok_hashtags_enabled
-from app.services.discovery.hashtag_discovery import run_discovery
 from app.services.shortvid import shortvid_comments, shortvid_trending
+from app.services.shortvid.shortvid_pause import clear_pause as clear_shortvid_pause
+from app.services.shortvid.shortvid_pause import get_pause as get_shortvid_pause
+from app.services.shortvid.shortvid_pause import pause_over as shortvid_pause_over
 from app.services.shortvid.shortvid_tiktok import claim_round as claim_shortvid_round
-from app.services.shortvid.shortvid_tiktok import clear_pause as clear_shortvid_pause
-from app.services.shortvid.shortvid_tiktok import get_pause as get_shortvid_pause
 from app.services.shortvid.shortvid_tiktok import is_running as shortvid_is_running
-from app.services.shortvid.shortvid_tiktok import pause_over as shortvid_pause_over
 from app.services.shortvid.shortvid_tiktok import run_shortvid_round_tracked
 
 logger = get_logger(__name__)
 
 _SHORTVID_ROUND_KEY = f"{KEY_PREFIX}shortvid_round:last_hour"
-_BFS_DISCOVERY_KEY = f"{KEY_PREFIX}hashtag_discovery:after_shortvid_at"
 
 
 async def _run_shortvid_round(trigger: str) -> None:
@@ -31,19 +27,6 @@ async def _run_shortvid_round(trigger: str) -> None:
         await run_shortvid_round_tracked(trigger)
     except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để giờ sau chạy lại
         logger.error("shortvid_round_failed", error=str(exc)[:300])
-    # BFS: AI duyệt hashtag đi kèm mà lượt ShortVid vừa đếm, không đợi tới sáng hôm sau.
-    try:
-        redis = get_redis_client()
-        last = float(await redis.get(_BFS_DISCOVERY_KEY) or 0)
-        if (
-            time.time() - last >= settings.hashtag_discovery_after_shortvid_hours * 3600
-            and await tiktok_hashtags_enabled()
-        ):
-            await redis.set(_BFS_DISCOVERY_KEY, str(time.time()), ex=7 * 24 * 3600)
-            logger.info("hashtag_discovery_after_shortvid")
-            await run_discovery()
-    except Exception as exc:  # noqa: BLE001
-        logger.error("hashtag_discovery_after_shortvid_failed", error=str(exc)[:300])
 
 
 async def _enqueue_weekly_comments(week: str) -> None:

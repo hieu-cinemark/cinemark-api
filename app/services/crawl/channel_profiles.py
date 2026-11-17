@@ -26,13 +26,14 @@ import httpx
 from sqlalchemy import and_, func, literal, literal_column, or_, select, true
 from sqlalchemy.dialects.sqlite import insert
 
+from app.clients import crawl_queues as queues
+from app.clients.d1 import d1_query
 from app.clients.kafka import publish_threads_profiles_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, json_rows
-from app.repositories.d1.store import d1_query
 from app.repositories.d1.tables import channel_profiles
 from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts.platform_config_db import get_shortvid_api_settings
@@ -53,7 +54,7 @@ THREADS_FILL_LIMIT = 5000
 
 # Trùng PROFILE_QUEUE_REDIS_KEY/PROFILE_RESULTS_REDIS_KEY ở constants/threads.py của spider-hub (RedisCache bên đó tự thêm
 # prefix social_crawler:).
-THREADS_QUEUE_KEY = f"{REDIS_KEY_PREFIX}threads:profile_queue"
+THREADS_QUEUE_KEY = queues.THREADS_PROFILES
 THREADS_RESULTS_KEY = f"{REDIS_KEY_PREFIX}threads:profile_results"
 
 # Giống CHANNEL_PROFILES_SQL ở api/lib/channelNiches.ts (cinemark) - bên nào chạy trước thì tạo bảng.

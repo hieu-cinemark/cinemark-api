@@ -17,13 +17,12 @@ from app.clients.kafka import publish_crawl_request, publish_nurture_request
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import get_enabled_keywords
+from app.repositories.d1.keywords import get_enabled_keywords
 from app.schemas.settings import parse_run_times
 from app.services.accounts import platform_config_db as db
 from app.services.crawl import crawl_lanes
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, is_due, spawn
-from app.services.crawl.source_pages import queue_enabled_sources as queue_source_pages
 
 logger = get_logger(__name__)
 
@@ -157,20 +156,6 @@ async def trigger_platform(
                 published += 1
             else:
                 complete = False
-        # Trang nguồn: mỗi ngày một lượt (lượt đầu) khi chạy theo phần - xếp lại bảng tin mọi trang nguồn ở cả 6 lượt bài
-        # mới là gấp 6 lần request page_feed.
-        if (
-            platform == "facebook"
-            and await db.crawl_setting("facebook_account_page_feed")
-            and (not fresh_lane or slot_index == 0)
-        ):
-            try:
-                if "source_pages" not in progress:
-                    await queue_source_pages()
-                    await progress.add("source_pages")
-            except Exception as exc:  # noqa: BLE001 - lỗi trang nguồn không chặn lượt tìm kiếm
-                complete = False
-                logger.warning("source_pages_queue_failed", error=str(exc)[:200])
         logger.info(
             "scheduled_crawl_triggered",
             platform=platform,
@@ -193,8 +178,8 @@ async def ensure_youtube_keywords() -> int:
     người vận hành đã tắt thì không tạo lại (phim đó vẫn có dòng). Trả số từ khoá mới."""
     from sqlalchemy import select
 
+    from app.repositories.d1.keywords import get_or_create_keyword
     from app.repositories.d1.sql import d1_exec
-    from app.repositories.d1.store import get_or_create_keyword
     from app.repositories.d1.tables import keywords as keywords_table
     from app.repositories.d1.tables import movies as movies_table
 

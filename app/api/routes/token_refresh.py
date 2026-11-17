@@ -95,5 +95,5 @@ def build_token_refresh_routes(router: APIRouter, platform: str) -> None:
             refresh_tracker.unsubscribe(platform, queue)
             try:
                 await websocket.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - đóng WebSocket đã đứt có thể ném bất kỳ lỗi nào
+                logger.debug("websocket_close_failed", platform=platform, error=str(exc)[:200])

@@ -30,9 +30,9 @@ from sqlalchemy import case, func, select
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import enable_keyword
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import enable_keyword
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import posts
 
@@ -164,7 +164,7 @@ async def plan_crawl(
     for keyword in keywords:
         stats = yields.get(str(keyword["id"]))
         try:
-            made = datetime.fromisoformat(created.get(str(keyword["id"]), "").replace("Z", "+00:00"))
+            made = datetime.fromisoformat(created.get(str(keyword["id"]), ""))
             old_enough = now - (made if made.tzinfo else made.replace(tzinfo=UTC)) >= MIN_AGE
         except ValueError:
             old_enough = True

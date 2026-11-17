@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 
 from app.clients.telegram import send_telegram_message
 from app.core.logging import get_logger
-from app.repositories.d1.store import get_post_timeseries
+from app.repositories.d1.overview import get_post_timeseries
 from app.services.accounts.account_health import evaluate_account_health
 from app.services.accounts.platform_config_db import list_accounts, update_account_check_result
 

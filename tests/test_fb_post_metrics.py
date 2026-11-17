@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
-from app.core.config import settings
 from app.repositories.d1 import posts as posts_repo
 from app.repositories.d1 import sql as d1_sql
 from app.services.crawl import tracked_posts
@@ -100,7 +99,7 @@ class _FakeRedis:
         self.pushed.insert(0, {**json.loads(value), "_queue": key.rsplit(":", 1)[0].rsplit(":", 1)[-1]})
 
 
-async def _queue(rows, matched, *, logged_out=True):
+async def _queue(rows, matched):
     redis = _FakeRedis()
     stats: dict = {}
 
@@ -111,7 +110,6 @@ async def _queue(rows, matched, *, logged_out=True):
     with (
         patch.object(d1_sql, "d1_query", fake_d1),
         patch.object(tracked_posts, "get_redis_client", lambda: redis),
-        patch.object(settings, "tracked_facebook_logged_out", logged_out),
     ):
         await tracked_posts._queue_facebook(rows, stats)
     return list(reversed(redis.pushed)), stats  # thứ tự spider-hub lấy ra (RPOP)
@@ -130,25 +128,14 @@ ROWS = [
 MATCHED = {"e1": "https://www.facebook.com/a23/posts/pfbid0abc", "e2": "https://www.facebook.com/reel/988965410142997/"}
 
 
-async def test_known_posts_go_to_post_metrics_with_page_fallback() -> None:
+async def test_known_posts_go_to_post_metrics_and_unknown_posts_are_deferred() -> None:
     pushed, stats = await _queue(ROWS, MATCHED)
-    # post_metrics vào hàng đợi rảnh (không giữ tài khoản), page_feed vào làn ưu tiên
-    assert [(r["type"], r["_queue"]) for r in pushed] == [
-        ("post_metrics", "crawl_idle"),
-        ("page_feed", "crawl_priority"),
-    ]
+    # post_metrics vào hàng đợi rảnh (không giữ tài khoản); bài chưa có trong D1 chưa xếp được (không có đường có tài khoản nữa)
+    assert [(r["type"], r["_queue"]) for r in pushed] == [("post_metrics", "crawl_idle")]
     metrics = pushed[0]
     assert [(p["external_id"], p["url"], p["page_url"]) for p in metrics["posts"]] == [
         ("e1", MATCHED["e1"], "https://www.facebook.com/a23"),
         ("e2", MATCHED["e2"], "https://www.facebook.com/a23"),  # slug lấy qua tên page của dòng khác
     ]
-    assert list(metrics["fallback_page_feeds"]) == ["https://www.facebook.com/a23"]
-    assert metrics["fallback_page_feeds"]["https://www.facebook.com/a23"]["type"] == "page_feed"
-    assert pushed[1]["page_url"] == "https://www.facebook.com/galaxy"  # bài chưa có trong D1 -> page_feed ngay
-    assert stats == {"facebook_metrics_posts": 2, "facebook_pages_queued": 1}
-
-
-async def test_switch_off_falls_back_to_page_feed_only() -> None:
-    pushed, _ = await _queue(ROWS, MATCHED, logged_out=False)
-    assert sorted(r["page_url"] for r in pushed) == ["https://www.facebook.com/a23", "https://www.facebook.com/galaxy"]
-    assert all(r["type"] == "page_feed" for r in pushed)
+    assert "fallback_page_feeds" not in metrics
+    assert stats["facebook_metrics_posts"] == 2

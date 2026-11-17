@@ -1,6 +1,6 @@
 import json
 
-from app.repositories.d1.posts import trim_post_raw
+from app.repositories.d1.post_raw import trim_post_raw
 from app.repositories.d1.sql import compile_sql
 from scripts.tools import trim_raw_json
 

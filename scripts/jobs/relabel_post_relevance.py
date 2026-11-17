@@ -29,7 +29,8 @@ from sqlalchemy import func, select, update
 from app.ai.tasks.post_relevance import classify_post_relevance
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import MIN_CONTENT_LENGTH, contains_keyword
+from app.repositories.d1.post_matching import contains_keyword
+from app.repositories.d1.posts import MIN_CONTENT_LENGTH
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import posts as posts_table

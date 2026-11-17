@@ -21,12 +21,13 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert
 
+from app.clients import crawl_queues as queues
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import get_or_create_keyword
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts.platform_config_db import crawl_setting
@@ -35,7 +36,7 @@ from app.services.crawl.task_queue import enqueue_published
 
 logger = get_logger(__name__)
 
-QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_public_pages:threads"
+QUEUE_KEY = queues.PUBLIC_PAGES_THREADS
 LAST_KEY_TMPL = f"{REDIS_KEY_PREFIX}threads_channel_last:{{url}}"
 SINCE_DAYS = 30
 MAX_BACKOFF = 8

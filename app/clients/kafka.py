@@ -186,7 +186,7 @@ async def publish_crawl_request(
 
 async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
     """Tên phim của từ khoá (và phần trước dấu ":" nếu tên có phụ đề, vd. "Thám Tử Kiên") - cho bộ lọc lạc đề của spider."""
-    from app.repositories.d1.store import movie_of_keyword
+    from app.repositories.d1.keywords import movie_of_keyword
 
     try:
         movie = await movie_of_keyword(keyword_id)
@@ -207,7 +207,7 @@ async def _movie_context_for_keyword(keyword_id: str) -> str | None:
     """Khối thông tin phim (app/ai/domain/movie_context.py) của phim sở hữu từ khoá này, hoặc None khi không tra được -
     thiếu nó thì spider vẫn chạy, chỉ là AI chấm hashtag kém hơn."""
     from app.ai.domain.movie_context import movie_context_block
-    from app.repositories.d1.store import movie_of_keyword
+    from app.repositories.d1.keywords import movie_of_keyword
 
     try:
         movie = await movie_of_keyword(keyword_id)
@@ -412,7 +412,7 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
     consumer = AIOKafkaConsumer(bootstrap_servers=settings.kafka_bootstrap_servers, group_id=None)
     try:
         await admin.start()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broker không kết nối được thì trả dòng 'broker_unreachable' thay vì làm lỗi trang
         logger.warning("kafka_lag_admin_connect_failed", error=str(exc))
         return [
             {"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "broker_unreachable"}
@@ -420,7 +420,7 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
         ]
     try:
         await consumer.start()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - broker không kết nối được thì trả dòng 'broker_unreachable' thay vì làm lỗi trang
         logger.warning("kafka_lag_consumer_connect_failed", error=str(exc))
         await admin.close()
         return [
@@ -456,7 +456,7 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
                     committed_offset = meta.offset if meta and meta.offset >= 0 else 0
                     lag += max(0, end - committed_offset)
                 results.append({"label": label, "topic": topic, "group_id": group_id, "lag": lag, "error": None})
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - một nhóm consumer đo lỗi không chặn các nhóm khác
                 logger.warning("kafka_lag_query_failed", label=label, topic=topic, group_id=group_id, error=str(exc))
                 results.append({"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": str(exc)})
     finally:

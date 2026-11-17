@@ -22,80 +22,43 @@ def test_discovery_enabled_reads_the_toggle(monkeypatch):
     assert asyncio.run(scheduler.discovery_enabled()) is True
 
 
-def test_hashtag_tick_skips_when_disabled(monkeypatch):
-    class FakeRedis:
-        def __init__(self):
-            self.kv = {}
+class _FakeRedis:
+    def __init__(self):
+        self.kv = {}
 
-        async def get(self, key):
-            return self.kv.get(key)
+    async def get(self, key):
+        return self.kv.get(key)
 
-        async def set(self, key, value, ex=None):
-            self.kv[key] = value
-
-    spawned = []
-
-    async def off():
-        return {"enabled": False}
-
-    monkeypatch.setattr(scheduler, "get_redis_client", lambda: FakeRedis())
-    monkeypatch.setattr(scheduler, "is_due", lambda run_time, now: True)
-    monkeypatch.setattr(scheduler.db, "get_discovery_settings", off)
-    monkeypatch.setattr(scheduler, "spawn", lambda coro: spawned.append(coro.close()))
-    monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", False)
-    asyncio.run(scheduler.hashtag_tick())
-    assert spawned == []
+    async def set(self, key, value, ex=None):
+        self.kv[key] = value
 
 
-def test_tiktok_hashtags_run_alone_when_general_switch_is_off(monkeypatch):
-    class FakeRedis:
-        async def get(self, key):
-            return None
+def _tick(monkeypatch, *, enabled):
+    ran, spawned = [], []
 
-        async def set(self, key, value, ex=None):
-            pass
-
-    ran = []
-
-    async def off():
-        return {"enabled": False}
+    async def settings_row():
+        return {"enabled": enabled}
 
     async def job(name):
         ran.append(name)
 
-    monkeypatch.setattr(scheduler, "get_redis_client", lambda: FakeRedis())
+    monkeypatch.setattr(scheduler, "get_redis_client", lambda: _FakeRedis())
     monkeypatch.setattr(scheduler, "is_due", lambda run_time, now: True)
-    monkeypatch.setattr(scheduler.db, "get_discovery_settings", off)
-    monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", True)
-    monkeypatch.setattr(scheduler.settings, "hashtag_ai_review", True)
+    monkeypatch.setattr(scheduler.db, "get_discovery_settings", settings_row)
     monkeypatch.setattr(scheduler.threads_channels, "auto_add_authors", lambda: job("threads"))
-    monkeypatch.setattr(scheduler, "run_discovery", lambda: job("hashtags"))
     monkeypatch.setattr(scheduler, "run_query_discovery", lambda: job("queries"))
     monkeypatch.setattr(scheduler, "review_source_pages", lambda: job("sources"))
-    spawned = []
     monkeypatch.setattr(scheduler, "spawn", lambda coro: spawned.append(coro))
     asyncio.run(scheduler.hashtag_tick())
-    assert len(spawned) == 1
-    asyncio.run(spawned[0])
-    assert ran == ["hashtags", "threads"]  # câu tìm Facebook/Threads và trang nguồn vẫn theo công tắc chung (đang tắt)
+    for coro in spawned:
+        asyncio.run(coro)
+    return ran
 
 
-def test_hashtag_ai_review_off_skips_ai_hashtag_jobs(monkeypatch):
-    ran = []
+def test_daily_tick_runs_everything_when_the_switch_is_on(monkeypatch):
+    assert _tick(monkeypatch, enabled=True) == ["threads", "queries", "sources"]
 
-    async def job(name):
-        ran.append(name)
 
-    async def on():
-        return {"enabled": True}
-
-    monkeypatch.setattr(scheduler.settings, "hashtag_ai_review", False)
-    monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", True)
-    monkeypatch.setattr(scheduler.db, "get_discovery_settings", on)
-    monkeypatch.setattr(scheduler, "run_discovery", lambda: job("hashtags"))
-    monkeypatch.setattr(scheduler, "run_query_discovery", lambda: job("queries"))
-    monkeypatch.setattr(scheduler, "review_source_pages", lambda: job("sources"))
-    monkeypatch.setattr(scheduler.threads_channels, "auto_add_authors", lambda: job("threads"))
-    assert asyncio.run(scheduler.tiktok_hashtags_enabled()) is False  # lượt sau ShortVid cũng không chạy
-    asyncio.run(scheduler._run_discovery(everything=True))
-    assert ran == ["threads", "queries", "sources"]
+def test_daily_tick_only_adds_threads_channels_when_the_switch_is_off(monkeypatch):
+    # Kênh Threads tự thêm theo số bài liên quan (không dùng AI) nên vẫn chạy; câu tìm kiếm và trang nguồn theo công tắc chung.
+    assert _tick(monkeypatch, enabled=False) == ["threads"]

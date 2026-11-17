@@ -20,7 +20,6 @@ xác nhận đây là bài booking của phim. Theo dõi tới TRACK_DAYS_AFTER_
 from __future__ import annotations
 
 import json
-import math
 import re
 import time
 import uuid
@@ -33,15 +32,16 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy import Column, Integer, Table, Text, select, update
 
+from app.clients import crawl_queues as queues
 from app.clients.kafka import publish_raw_post
-from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.redis import get_redis_client
+from app.clients.shortvid import ShortVidStop, map_video, shortvid_get
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.sql import d1_exec, json_values, metadata
-from app.repositories.d1.store import get_or_create_keyword
 from app.repositories.d1.tables import movies, posts
 from app.services.accounts.platform_config_db import get_shortvid_api_settings
-from app.clients.shortvid import ShortVidStop, map_video, shortvid_get
 from app.services.shortvid.shortvid_tiktok import _Pacer
 
 logger = get_logger(__name__)
@@ -58,11 +58,7 @@ tracked = Table(
 )
 
 TRACK_DAYS_AFTER_RELEASE = 30
-PRIORITY_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_priority:facebook"
-IDLE_QUEUE_KEY = f"{REDIS_KEY_PREFIX}crawl_idle:facebook"
-# Page đăng dày chỉ ~13 bài/ngày (3 bài/trang bảng tin) - trần để một page không ngốn cả tài khoản mỗi ngày.
-FB_MAX_PAGES = 150
-FB_POSTS_PER_DAY_GUESS = 4
+IDLE_QUEUE_KEY = queues.IDLE_FACEBOOK
 _NOT_A_PAGE = {
     "photo",
     "photo.php",
@@ -165,33 +161,10 @@ async def _refresh_tiktok(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
             stats["tiktok_sent"] = stats.get("tiktok_sent", 0) + int(ok)
 
 
-def _page_feed_request(slug: str, oldest_day: str) -> dict[str, Any]:
-    try:
-        since_days = max(3, (_today() - date.fromisoformat(oldest_day)).days + 2)
-    except ValueError:
-        since_days = 30
-    return {
-        "platform": "facebook",
-        "type": "page_feed",
-        "page_url": f"https://www.facebook.com/{slug}",
-        "since_days": since_days,
-        "max_pages": min(FB_MAX_PAGES, max(20, math.ceil(since_days * FB_POSTS_PER_DAY_GUESS))),
-        "dedupe": "false",
-        "run_id": str(uuid.uuid4()),
-        "bypass_drain": True,
-        "published_at": time.time(),
-        "priority": "tracked",
-    }
-
-
-async def _queue_facebook(
-    rows: list[dict[str, Any]], stats: dict[str, Any], *, include_authenticated: bool = True
-) -> set[str]:
-    """Bài đã có trong D1 -> một job post_metrics (không đăng nhập, kèm page_feed dự phòng theo page); bài chưa có ->
-    một job page_feed ưu tiên mỗi page, lùi tới bài cũ nhất đang theo dõi của page đó.
-
-    include_authenticated=False: chỉ xếp post_metrics, không kèm dự phòng vì page_feed dùng tài khoản. Trả về id các bài
-    chưa được xếp lượt nào để không ghi last_queued_at cho chúng."""
+async def _queue_facebook(rows: list[dict[str, Any]], stats: dict[str, Any]) -> set[str]:
+    """Bài đã có trong D1 -> một job post_metrics (không đăng nhập). Bài chưa có trong D1 thì chưa xếp được (trang không
+    đăng nhập chỉ có số, không tạo được bài; đường page_feed có tài khoản đã bỏ 17/11/2026): trả về id các bài đó để
+    không ghi last_queued_at cho chúng."""
     matched_urls: dict[str, str] = {}
     ids = [row["external_id"] for row in rows if row.get("external_id")]
     if ids:
@@ -209,15 +182,13 @@ async def _queue_facebook(
         slugs.append(slug)
         if slug and row.get("page"):
             slug_by_name.setdefault(row["page"].strip().lower(), slug)
-    oldest: dict[str, str] = {}
     metrics_posts: list[dict[str, Any]] = []
-    page_feed_slugs: set[str] = set()  # page có bài chưa có trong D1 -> page_feed ngay
     deferred: set[str] = set()
     for row, slug in zip(rows, slugs, strict=True):
         slug = slug or slug_by_name.get((row.get("page") or "").strip().lower())
         external_id = row.get("external_id") or ""
         known_url = matched_urls.get(external_id)
-        if settings.tracked_facebook_logged_out and known_url:
+        if known_url:
             # Link đã lưu trong D1 (dạng chuẩn spider-hub tạo ra), không dùng link sheet (share/..., m.facebook...).
             metrics_posts.append(
                 {
@@ -226,28 +197,18 @@ async def _queue_facebook(
                     "page_url": f"https://www.facebook.com/{slug}" if slug else None,
                 }
             )
-        elif not include_authenticated:
+        else:
             deferred.add(row.get("id"))
-        elif slug:
-            page_feed_slugs.add(slug)
         if not slug:
-            if not known_url or not settings.tracked_facebook_logged_out:
+            if not known_url:
                 stats["facebook_no_page"] = stats.get("facebook_no_page", 0) + 1
             continue
-        day = row.get("posted_date") or str(row.get("released_at") or "")[:10] or _today().isoformat()
-        oldest[slug] = min(oldest.get(slug, day), day)
     redis = get_redis_client()
     if metrics_posts:
-        # Page đã có page_feed ở trên thì không cần dự phòng (lượt đó cập nhật luôn bài của page).
-        fallback_slugs = {slug for slug in oldest if slug not in page_feed_slugs} if include_authenticated else set()
         request = {
             "platform": "facebook",
             "type": "post_metrics",
             "posts": metrics_posts,
-            "fallback_page_feeds": {
-                f"https://www.facebook.com/{slug}": _page_feed_request(slug, oldest[slug])
-                for slug in sorted(fallback_slugs)
-            },
             "run_id": str(uuid.uuid4()),
             "bypass_drain": True,
             "published_at": time.time(),
@@ -255,18 +216,13 @@ async def _queue_facebook(
         }
         await redis.lpush(IDLE_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
         stats["facebook_metrics_posts"] = len(metrics_posts)
-    for slug in sorted(page_feed_slugs):
-        await redis.lpush(PRIORITY_QUEUE_KEY, json.dumps(_page_feed_request(slug, oldest[slug]), ensure_ascii=False))
-        stats["facebook_pages_queued"] = stats.get("facebook_pages_queued", 0) + 1
     if deferred:
         stats["facebook_deferred"] = len(deferred)
     return deferred
 
 
-async def run_daily(*, include_authenticated_facebook: bool = True) -> dict[str, Any]:
-    """Một lượt cào lại mọi bài đang theo dõi (gọi mỗi ngày từ scheduler). include_authenticated_facebook=False khi không
-    được dùng tài khoản Facebook nền (scheduler/core.facebook_crawl_enabled): post_metrics không đăng nhập vẫn chạy, bài cần
-    page_feed có tài khoản đợi lượt sau."""
+async def run_daily() -> dict[str, Any]:
+    """Một lượt cào lại mọi bài đang theo dõi (gọi mỗi ngày từ scheduler)."""
     global _running
     _running = True
     stats: dict[str, Any] = {}
@@ -278,9 +234,7 @@ async def run_daily(*, include_authenticated_facebook: bool = True) -> dict[str,
         stats["rows"] = {platform: len(items) for platform, items in by_platform.items()}
         deferred: set[str] = set()
         if by_platform.get("facebook"):
-            deferred = await _queue_facebook(
-                by_platform["facebook"], stats, include_authenticated=include_authenticated_facebook
-            )
+            deferred = await _queue_facebook(by_platform["facebook"], stats)
         if by_platform.get("tiktok"):
             await _refresh_tiktok(by_platform["tiktok"], stats)
         queued_at = datetime.now(tz=UTC).isoformat(timespec="seconds")

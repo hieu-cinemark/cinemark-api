@@ -11,7 +11,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
-from app.repositories.d1.store import MIN_COMMENTS_FOR_REPORT, create_movie, disable_movie, list_movies, update_movie
+from app.repositories.d1.movies import create_movie, disable_movie, list_movies, update_movie
+from app.repositories.d1.report_data import MIN_COMMENTS_FOR_REPORT
 from app.services.reports.report_queue import enqueue_report_job, get_report_job
 from app.services.reports.social_topic import get_movie_for_report
 

@@ -26,8 +26,8 @@ from sqlalchemy import func, select
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import get_or_create_keyword
 from app.repositories.d1.tables import movie_measure_settings, movies
 from app.services.crawl.source_pages import _PUBLIC_QUEUE_KEY as PUBLIC_QUEUE_KEY
 from app.services.crawl.source_pages import _movie_title, source_pages

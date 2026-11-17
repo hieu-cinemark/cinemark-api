@@ -33,36 +33,9 @@ from app.services.crawl.platforms import PostDraft, registered_platforms
 
 logger = get_logger(__name__)
 
-# Đã tách ra module riêng (17/11/2026) - import + re-export để code cũ `from ...posts import X` chạy như cũ.
-from app.repositories.d1.author_reputation import (  # noqa: F401
-    _REPUTABLE_AUTHORS_TTL_SECONDS,
-    MIN_MOVIES_FOR_REPUTABLE_AUTHOR,
-    _author_reputation_ready,
-    _reputable_authors_cache,
-    author_reputation,
-    ensure_author_reputation_table,
-    reputable_authors,
-)
-from app.repositories.d1.post_matching import (  # noqa: F401
-    _HASHTAG_STRIP,
-    _HASHTAG_TOKEN_RE,
-    _VIETNAMESE_COMBINING_MARKS,
-    _fold_for_keyword_match,
-    _keyword_match_parts,
-    _looks_vietnamese,
-    _tag_form,
-    contains_keyword,
-    movie_hashtag_present,
-    post_mentions_movie,
-)
-from app.repositories.d1.post_raw import (  # noqa: F401
-    _IMAGE_URL_HINTS,
-    _VIDEO_URL_HINTS,
-    RAW_JSON_KEEP,
-    _hydrate_post_rows,
-    _is_preview_image_url,
-    trim_post_raw,
-)
+from app.repositories.d1.author_reputation import reputable_authors
+from app.repositories.d1.post_matching import contains_keyword, movie_hashtag_present
+from app.repositories.d1.post_raw import _hydrate_post_rows, trim_post_raw
 
 ENGAGEMENT_FIELDS = ENGAGEMENT_COLUMNS
 

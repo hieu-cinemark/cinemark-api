@@ -8,9 +8,9 @@ from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.crawl import channel_profiles, priority_channels, tracked_posts, watch_pages
-from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, claim, cycle_ttl, facebook_crawl_enabled, spawn
-from app.services.shortvid.shortvid_tiktok import get_pause as get_shortvid_pause
+from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, claim, cycle_ttl, spawn
 from app.services.relevance.trend_posts import mark_showing_movies
+from app.services.shortvid.shortvid_pause import get_pause as get_shortvid_pause
 
 logger = get_logger(__name__)
 
@@ -50,7 +50,7 @@ async def watch_pages_tick() -> None:
 
 async def _run_tracked_posts() -> None:
     try:
-        await tracked_posts.run_daily(include_authenticated_facebook=await facebook_crawl_enabled())
+        await tracked_posts.run_daily()
     except Exception as exc:  # noqa: BLE001 - lượt lỗi: hôm sau chạy lại (hoặc restart trong ngày chạy lại)
         logger.error("tracked_posts_failed", error=str(exc)[:300])
 

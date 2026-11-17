@@ -20,7 +20,7 @@ import json
 import math
 import time
 import zlib
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -210,7 +210,7 @@ async def _threads_busy() -> bool:
         logger.warning("deep_threads_busy_check_failed", error=str(exc)[:200])
         return False
     busy = bool(running or pending)
-    hour = datetime.now().strftime("%Y-%m-%dT%H")
+    hour = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H")
     if busy and _threads_busy_logged != hour:
         _threads_busy_logged = hour
         logger.info("deep_crawl_waiting_for_threads", running=len(running), pending=len(pending))

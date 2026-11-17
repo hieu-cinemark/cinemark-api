@@ -17,7 +17,7 @@ from fastapi import APIRouter, Query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1 import comment_repo, post_repo
-from app.repositories.d1.store import (
+from app.repositories.d1.overview import (
     get_comment_counts_by_platform,
     get_comment_timeseries,
     get_keyword_volume,
@@ -70,8 +70,8 @@ async def _cached_rows(name: str, compute: Callable[[], Awaitable[list[dict[str,
     if rows:
         try:
             await redis.set(key, json.dumps({"at": time.time(), "rows": rows}, default=str), ex=_STALE_SECONDS)
-        except Exception:  # noqa: BLE001 - không lưu được cache thì vẫn trả kết quả vừa đọc
-            pass
+        except Exception as exc:  # noqa: BLE001 - không lưu được cache thì vẫn trả kết quả vừa đọc
+            logger.warning("stats_cache_write_failed", name=name, error=str(exc)[:200])
         return rows
     if cached:
         logger.info("stats_served_stale", name=name, age_seconds=round(time.time() - float(cached.get("at") or 0)))

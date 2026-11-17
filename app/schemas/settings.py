@@ -435,9 +435,6 @@ class ProxySettings(BaseModel):
     tiktok_synthetic_provider: str = Field(default="tiktok_us", min_length=1, max_length=64)
     tiktok_hashtag_max_attempts: int = Field(default=8, ge=1, le=50)
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
-    # Cập nhật số bài booking Facebook bằng trang không đăng nhập (consumer/jobs/post_metrics.py của spider-hub). Tắt thì
-    # spider-hub đẩy các bài đó sang page_feed có đăng nhập như trước.
-    fb_logged_out_metrics_enabled: bool = True
     # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Đây là nguồn sự thật duy nhất: spider-hub chỉ đọc dòng
     # proxy_settings mà cinemark-api ghi đủ khi khởi động (platform_config_db.ensure_proxy_settings_complete).
     youtube_lanes: int = Field(default=16, ge=1, le=64)
@@ -447,7 +444,6 @@ class ProxySettings(BaseModel):
     public_pages_per_proxy: int = Field(default=3, ge=1, le=10)
     public_pages_gap_seconds: float = Field(default=3.0, ge=0, le=600)
     threads_channel_workers: int = Field(default=4, ge=0, le=16)
-    facebook_account_page_feed: bool = False
     # Bật/tắt trên dashboard (16/11/2026): TikTok mỗi job chạy cả feed hashtag lẫn tìm từ khoá rồi gộp (spider-hub
     # consumer/jobs/search.py); tác vụ public chạy liên tục khi hàng đợi trống - YouTube (crawl/public_continuous.py) và
     # kênh Threads không đăng nhập (crawl/threads_channels.py).
@@ -465,6 +461,26 @@ class ProxySettings(BaseModel):
     public_comments_daily_cap: int = Field(default=400, ge=1, le=100000)
     public_comments_interval_seconds: float = Field(default=5.0, ge=1, le=600)
     public_comments_max_requests: int = Field(default=400, ge=1, le=100000)
+    # Hạn mức request Facebook/Threads mỗi tài khoản (spider-hub runtime/search_budget.py, facebook_run_budget.py) - trước 17/11/2026 là
+    # biến .env FACEBOOK_*; .env không còn được đọc. Giờ dạng "HH:MM,HH:MM" (giờ Việt Nam); các danh sách số cách nhau dấu phẩy.
+    fb_daily_request_cap: int = Field(default=400, ge=0, le=100000)  # 0 = tắt mọi hạn mức ngày
+    fb_cap_rest_until: str = Field(default="05:30", pattern=r"^\d{2}:\d{2}$")
+    fb_budget_periods: str = Field(default="05:30,12:00,18:00", max_length=200)
+    fb_fresh_share: float = Field(default=0.4, ge=0, le=1)
+    fb_hourly_request_cap: int = Field(default=0, ge=0, le=100000)
+    threads_hourly_request_cap: int = Field(default=0, ge=0, le=100000)
+    fb_fresh_periods: str = Field(default="06:00,09:00,12:00,15:00,18:00,21:00", max_length=200)
+    fb_deep_periods: str = Field(
+        default="06:00,07:00,08:00,09:00,10:00,11:00,12:00,13:00,14:00,15:00,16:00,17:00,18:00,19:00,20:00,21:00,22:00",
+        max_length=300,
+    )
+    fb_new_account_ramp: str = Field(default="0.2,0.4,0.7", max_length=100)
+    fb_new_account_daily_cap: int = Field(default=500, ge=0, le=100000)
+    fb_restart_daily_caps: str = Field(default="100,150,200,300", max_length=100)
+    fb_restart_idle_days: int = Field(default=3, ge=0, le=365)
+    fb_run_max_requests: int = Field(default=100, ge=0, le=100000)
+    fb_run_max_seconds: int = Field(default=1800, ge=0, le=86400)
+    fb_run_rest_seconds: int = Field(default=900, ge=0, le=86400)
     # Proxy công khai (không tài khoản) - trước 17/11/2026 là biến .env FB_PUBLIC_PAGES_*, THREADS_CHANNEL_*, FB_LOGGED_OUT_*, ...;
     # .env không còn được đọc, sửa ở Settings › Proxy của dashboard.
     fb_public_discovery_proxy_id: int = Field(default=31, ge=1, le=1000000)

@@ -23,7 +23,7 @@ import argparse
 import asyncio
 
 from app.core.logging import get_logger
-from app.repositories.d1.store import list_movies
+from app.repositories.d1.movies import list_movies
 from app.services.reports.report_schedule import future_scheduled_movie_ids
 from app.services.reports.social_topic import generate_report_for_movie, get_movie_for_report
 

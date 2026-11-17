@@ -26,13 +26,13 @@ from sqlalchemy.schema import CreateTable
 
 from app.clients.kafka import publish_raw_comment
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.shortvid import PAGE_SIZE, map_comment
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import get_enabled_keywords
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metadata
-from app.repositories.d1.store import get_enabled_keywords
 from app.repositories.d1.tables import posts
-from app.clients.shortvid import PAGE_SIZE, map_comment
 from app.services.shortvid import shortvid_yield
 
 if TYPE_CHECKING:

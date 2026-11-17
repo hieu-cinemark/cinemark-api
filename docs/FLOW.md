@@ -119,3 +119,4 @@ ruff check app tests scripts && ruff format app tests scripts
   Sửa trên dashboard (Settings › Proxy), có hiệu lực sau ≤ 60 giây, không cần `.env` hay restart. Deploy cinemark-api TRƯỚC spider-hub.
 - **Deploy tự cài timer.** `deploy/vps/deploy-repo.sh` (CI gọi) tự cập nhật bản của chính nó, cài `requirements-ml.txt` khi cần, và đồng bộ/bật mọi
   cặp `deploy/systemd/*.timer`+`.service` - không còn bước cài tay sau deploy (`install_all.sh` chỉ còn để cài lần đầu).
+- **Hàng đợi Redis giao việc cho spider-hub** khai một chỗ ở `app/clients/crawl_queues.py` (kèm bảng đối chiếu với phía đọc trong spider-hub, nơi dùng `runtime/job_queue.JobQueue`). Tên khoá phải khớp từng ký tự giữa hai repo.

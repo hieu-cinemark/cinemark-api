@@ -28,18 +28,12 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.telegram import send_telegram_message
 from app.core.config import settings
 from app.core.logging import enable_file_logging, get_logger
+from app.repositories.d1.comments import persist_comment
+from app.repositories.d1.keywords import add_keyword, get_keyword
+from app.repositories.d1.movies import MOVIE_CONTEXT_FIELDS
+from app.repositories.d1.post_matching import contains_keyword
+from app.repositories.d1.posts import get_post_by_external_id, persist_post, update_post_engagement, update_post_views
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import (
-    MOVIE_CONTEXT_FIELDS,
-    add_keyword,
-    contains_keyword,
-    get_keyword,
-    get_post_by_external_id,
-    persist_comment,
-    persist_post,
-    update_post_engagement,
-    update_post_views,
-)
 from app.repositories.d1.tables import keywords
 from app.repositories.d1.tables import movies as movies_table
 from app.repositories.d1.transcripts import transcript_has_film_context
@@ -706,7 +700,7 @@ async def _handle_with_retries(message: Any, semaphore: asyncio.Semaphore) -> No
                     elif message.topic == RAW_COMMENTS_TOPIC:
                         await handle_comment(message.value)
             return
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - mọi lỗi xử lý một message đều đi qua _retry_delays để thử lại hoặc chuyển hàng lỗi
             delays = _retry_delays(exc)
             if attempt >= len(delays):
                 await _dead_letter(message, exc, attempt + 1)

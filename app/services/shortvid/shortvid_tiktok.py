@@ -41,38 +41,24 @@ from app.clients.shortvid import (
 )
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.repositories.d1.keywords import get_enabled_keywords
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import get_enabled_keywords
 from app.repositories.d1.tables import movies
 from app.services.accounts.platform_config_db import get_shortvid_api_settings, shortvid_requests_cap
 from app.services.shortvid import shortvid_channels, shortvid_comments, shortvid_search, shortvid_yield
 
 logger = get_logger(__name__)
 
-# Đã tách ra module riêng (17/11/2026) - import + re-export để code cũ `shortvid_tiktok.X` chạy như cũ.
-from app.services.shortvid.shortvid_pause import (  # noqa: F401
-    _KEY_PAUSE_HOURS,
+from app.services.shortvid.shortvid_pause import (
     _LAST_ROUND_KEY,
-    _PAUSE_KEY,
     _RESUME_SLACK_SECONDS,
     _log_stop,
     _pause_after_round,
     _round,
-    clear_pause,
-    get_pause,
-    key_fingerprint,
     last_round,
-    pause_over,
     set_pause,
 )
-from app.services.shortvid.shortvid_seen import (  # noqa: F401
-    _COOCCUR_TTL_SECONDS,
-    _SEEN_PREFIX,
-    _SPIDER_SEEN_VIDEOS_KEY,
-    _claim_unseen,
-    _count_cooccur,
-    _forget_seen,
-)
+from app.services.shortvid.shortvid_seen import _claim_unseen, _count_cooccur, _forget_seen
 
 
 async def publish_videos(

@@ -177,7 +177,7 @@ async def load_provider(key: str | None = None) -> ProviderConfig | None:
                 model=(row.get("model") or "").strip(),
                 reasoning_effort=(row.get("reasoning_effort") or "").strip(),
             )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - đọc cấu hình provider lỗi thì dùng bản cache/None, không làm hỏng lời gọi AI
         logger.warning("ai_provider_load_failed", provider=key, error=str(exc))
     _provider_cache[key] = (now, cfg)
     return cfg
@@ -239,7 +239,7 @@ def _invoke(
 
     try:
         content, finish_reason, usage = consume(params)
-    except Exception as exc:  # noqa: BLE001 - lớp lỗi tuỳ cổng (SSE error event), chỉ xử lý lỗi nói về temperature
+    except Exception as exc:
         # Vài model từ chối temperature (lỗi tới giữa stream): gọi lại một lần không kèm temperature.
         if "temperature" not in str(exc).lower() or "temperature" not in params:
             raise

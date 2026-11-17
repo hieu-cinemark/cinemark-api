@@ -23,17 +23,12 @@ from app.ai.domain.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
 from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.clients.d1 import _configured
 from app.core.logging import get_logger
+from app.repositories.d1.author_reputation import author_reputation, ensure_author_reputation_table, reputable_authors
 from app.repositories.d1.comments import (
     ensure_comment_insight_columns,
 )
-from app.repositories.d1.posts import (
-    MIN_CONTENT_LENGTH,
-    author_reputation,
-    ensure_author_reputation_table,
-    movie_hashtag_present,
-    relevant_post,
-    reputable_authors,
-)
+from app.repositories.d1.post_matching import movie_hashtag_present
+from app.repositories.d1.posts import MIN_CONTENT_LENGTH, relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import keywords, movies, social_topic_reports

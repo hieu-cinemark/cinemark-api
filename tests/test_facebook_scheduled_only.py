@@ -81,16 +81,15 @@ def test_tracked_posts_keep_logged_out_metrics_without_background_accounts(monke
     monkeypatch.setattr(tracked_posts, "_active_rows", AsyncMock(return_value=rows))
     monkeypatch.setattr(d1_sql, "d1_query", d1)
     monkeypatch.setattr(tracked_posts, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(tracked_posts.settings, "tracked_facebook_logged_out", True)
 
-    stats = asyncio.run(tracked_posts.run_daily(include_authenticated_facebook=False))
+    stats = asyncio.run(tracked_posts.run_daily())
 
     redis.lpush.assert_awaited_once()
     queue, payload = redis.lpush.await_args.args
     job = json.loads(payload)
     assert queue == tracked_posts.IDLE_QUEUE_KEY
     assert job["type"] == "post_metrics"
-    assert job["fallback_page_feeds"] == {}  # page_feed dự phòng sẽ dùng tài khoản
+    assert "fallback_page_feeds" not in job
     assert stats["facebook_deferred"] == 1
     assert len(updates) == 1
     assert json.loads(updates[0][1][1]) == ["known"]  # bài chưa được xếp lượt nào không ghi last_queued_at
@@ -107,7 +106,6 @@ def test_facebook_slot_crawls_without_nurture_even_with_old_flags_enabled(monkey
     monkeypatch.setattr(core.settings, "facebook_crawl_lanes", False)
     monkeypatch.setattr(crawl_slots, "get_enabled_keywords", AsyncMock(return_value=[keyword]))
     monkeypatch.setattr(crawl_slots, "plan_keyword_crawl", AsyncMock(return_value=([keyword], {})))
-    monkeypatch.setattr(crawl_slots, "queue_source_pages", AsyncMock())
     publish = AsyncMock(return_value=True)
     nurture = AsyncMock(side_effect=AssertionError("Facebook no longer queues nurture jobs"))
     monkeypatch.setattr(crawl_slots, "publish_crawl_request", publish)

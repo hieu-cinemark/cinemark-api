@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 from app.ai.domain.movie_context import movie_context_block
 from app.ai.prompts.report import (
@@ -24,14 +24,12 @@ from app.ai.prompts.report import (
 from app.ai.providers.client import JSON_FENCE_RE, active_provider_key
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
-from app.repositories.d1.store import REPORT_POST_TEXT_CHARS
+from app.repositories.d1.report_data import REPORT_POST_TEXT_CHARS
 
 logger = get_logger(__name__)
 
-T = TypeVar("T")
 
-
-async def _generate(
+async def _generate[T](
     *, task: str, system_prompt: str, user_prompt: str, max_tokens: int, temperature: float, parse: Callable[[str], T]
 ) -> tuple[T, str]:
     """Nhà cung cấp AI đang chọn viết, thử lại một lần khi lỗi. `parse` kiểm tra câu trả lời và raise khi không dùng được, nên câu trả lời bị
@@ -49,7 +47,7 @@ async def _generate(
                 force=True,  # report do người dùng yêu cầu: chạy cả khi công tắc AI ingest đang tắt
             )
             return parse(response), await active_provider_key()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - mỗi lần thử gọi AI có thể lỗi theo nhiều cách (mạng, JSON); lỗi cuối được ném lại sau vòng thử
             last_error = exc
             logger.warning("report_provider_failed", task=task, attempt=attempt + 1, error=str(exc))
     assert last_error is not None
@@ -331,7 +329,7 @@ async def generate_topics_and_verbatims(
                     return await _topics_for_part(
                         movie_title, movie, comments[index::parts_count], posts[index::parts_count], note
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 - một phần chủ đề lỗi không chặn các phần khác
                     logger.warning("report_topics_part_failed", movie_title=movie_title, part=index + 1, error=str(exc))
                     return None
 
@@ -342,7 +340,7 @@ async def generate_topics_and_verbatims(
         if len(parts) == 1:
             return {**parts[0], "provider": "bee"}
         return {**await _merge_parts(movie_title, movie, parts), "provider": "bee"}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - không dựng được chủ đề thì báo cáo bỏ qua phim này, không làm sập lượt
         logger.warning("report_topics_failed", movie_title=movie_title, error=str(exc))
         return None
 
@@ -405,6 +403,6 @@ async def generate_narrative(
             parse=_parse_narrative,
         )
         return analysis
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - phần phân tích viết lỗi thì báo cáo vẫn lưu phần còn lại
         logger.warning("report_narrative_failed", movie_title=movie_title, error=str(exc))
         return None

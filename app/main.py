@@ -17,9 +17,9 @@ from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.logs import router as logs_router
 from app.api.routes.movies import router as movies_router
-from app.api.routes.shortvid import router as shortvid_router
 from app.api.routes.research import router as research_router
 from app.api.routes.settings import router as settings_router
+from app.api.routes.shortvid import router as shortvid_router
 from app.api.routes.stats import router as stats_router
 from app.api.routes.threads import router as threads_router
 from app.api.routes.tiktok import router as tiktok_router
@@ -87,20 +87,20 @@ async def on_startup() -> None:
             platform_config_db.ensure_default_crawl_schedules(registered_platforms()),
             timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - khởi tạo lịch mặc định lỗi không được chặn API khởi động
         logger.warning("crawl_schedule_seed_failed", error=str(exc))
     try:
         await asyncio.wait_for(
             platform_config_db.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS),
             timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - khởi tạo lịch mặc định lỗi không được chặn API khởi động
         logger.warning("comment_crawl_schedule_seed_failed", error=str(exc))
     try:
         await asyncio.wait_for(
             platform_config_db.ensure_proxy_settings_complete(), timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - ghi đủ khoá cài đặt lỗi không được chặn API khởi động (thử lại ở lần khởi động sau)
         logger.warning("proxy_settings_complete_failed", error=str(exc))
     if settings.scheduler_in_web:
         scheduler.start()
@@ -118,7 +118,7 @@ async def _build_tab_filter_indexes() -> None:
     try:
         await posts_repo.ensure_tab_filter_indexes()
         await comments_repo.ensure_tab_filter_indexes()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - tạo index lỗi không được chặn API (tạo lại ở lần khởi động sau)
         logger.warning("tab_filter_indexes_failed", error=str(exc) or repr(exc))
 
 

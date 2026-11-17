@@ -14,17 +14,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from app.clients import crawl_queues as queues
 from app.clients.kafka import publish_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.store import get_enabled_keywords
+from app.repositories.d1.keywords import get_enabled_keywords
 from app.services.accounts.platform_config_db import crawl_setting
 
 logger = get_logger(__name__)
 
 # Khoá của spider-hub (social_crawler/consumer/jobs/youtube.py), cùng prefix Redis.
-YOUTUBE_QUEUE_KEYS = tuple(f"{REDIS_KEY_PREFIX}crawl_youtube:{name}" for name in ("search", "comments", "processing"))
+YOUTUBE_QUEUE_KEYS = queues.YOUTUBE_QUEUE_KEYS
 # Hash {keyword_id: thời điểm (epoch) xếp gần nhất bởi nhịp này}.
 LAST_KEY = f"{REDIS_KEY_PREFIX}youtube_continuous:last"
 

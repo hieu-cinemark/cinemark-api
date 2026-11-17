@@ -135,7 +135,7 @@ async def _sampler_loop() -> None:
     while True:
         try:
             await _append_if_due(get_redis_client(), await collect_sample())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Redis trục trặc không được giết vòng lấy mẫu
             # Redis trục trặc không được giết vòng lặp - lượt sau thử lại.
             logger.warning("ops_metrics_sample_failed", error=str(exc) or repr(exc))
         await asyncio.sleep(SAMPLE_MIN_INTERVAL_SECONDS)

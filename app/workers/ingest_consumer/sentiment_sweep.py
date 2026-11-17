@@ -28,12 +28,12 @@ from typing import Any
 from sqlalchemy import func, select, update
 
 from app.ai.tasks.sentiment import BATCH_SIZE, CommentLabel, classify_comments
+from app.clients.d1 import d1_query
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.comments import ensure_comment_insight_columns
-from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post
+from app.repositories.d1.posts import MIN_CONTENT_LENGTH, ensure_post_voice_columns, relevant_post
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import MIN_CONTENT_LENGTH, d1_query
 from app.repositories.d1.tables import comments, movies, posts
 
 logger = get_logger(__name__)
