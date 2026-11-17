@@ -182,6 +182,9 @@ class Settings(BaseSettings):
     # AI duyệt hashtag TikTok chạy cả khi công tắc chung "AI tự thêm nguồn cào" tắt (công tắc đó vẫn giữ câu tìm
     # Facebook/Threads và duyệt trang nguồn). Mục tiêu: gom nhiều video TikTok nhất có thể.
     tiktok_hashtag_discovery: bool = True
+    # AI duyệt hashtag TikTok (hashtag_discovery: lượt buổi sáng + lượt sau mỗi đợt ShortVid). Tạm tắt 17/11/2026 theo yêu
+    # cầu - bật lại bằng HASHTAG_AI_REVIEW=true. Tắt thì hai lượt đó bỏ hẳn phần hashtag, không gọi AI.
+    hashtag_ai_review: bool = False
     # AI thêm tối đa chừng này hashtag mỗi phim / mỗi lượt duyệt (variant + hashtag đi kèm từ spider và ShortVid BFS).
     hashtag_discovery_max_per_movie: int = 15
     hashtag_discovery_max_per_run: int = 150

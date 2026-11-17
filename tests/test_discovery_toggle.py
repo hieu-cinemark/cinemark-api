@@ -67,6 +67,8 @@ def test_tiktok_hashtags_run_alone_when_general_switch_is_off(monkeypatch):
     monkeypatch.setattr(scheduler, "is_due", lambda run_time, now: True)
     monkeypatch.setattr(scheduler.db, "get_discovery_settings", off)
     monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", True)
+    monkeypatch.setattr(scheduler.settings, "hashtag_ai_review", True)
+    monkeypatch.setattr(scheduler.threads_channels, "auto_add_authors", lambda: job("threads"))
     monkeypatch.setattr(scheduler, "run_discovery", lambda: job("hashtags"))
     monkeypatch.setattr(scheduler, "run_query_discovery", lambda: job("queries"))
     monkeypatch.setattr(scheduler, "review_source_pages", lambda: job("sources"))
@@ -75,4 +77,25 @@ def test_tiktok_hashtags_run_alone_when_general_switch_is_off(monkeypatch):
     asyncio.run(scheduler.hashtag_tick())
     assert len(spawned) == 1
     asyncio.run(spawned[0])
-    assert ran == ["hashtags"]  # câu tìm Facebook/Threads và trang nguồn vẫn theo công tắc chung (đang tắt)
+    assert ran == ["hashtags", "threads"]  # câu tìm Facebook/Threads và trang nguồn vẫn theo công tắc chung (đang tắt)
+
+
+def test_hashtag_ai_review_off_skips_ai_hashtag_jobs(monkeypatch):
+    ran = []
+
+    async def job(name):
+        ran.append(name)
+
+    async def on():
+        return {"enabled": True}
+
+    monkeypatch.setattr(scheduler.settings, "hashtag_ai_review", False)
+    monkeypatch.setattr(scheduler.settings, "tiktok_hashtag_discovery", True)
+    monkeypatch.setattr(scheduler.db, "get_discovery_settings", on)
+    monkeypatch.setattr(scheduler, "run_discovery", lambda: job("hashtags"))
+    monkeypatch.setattr(scheduler, "run_query_discovery", lambda: job("queries"))
+    monkeypatch.setattr(scheduler, "review_source_pages", lambda: job("sources"))
+    monkeypatch.setattr(scheduler.threads_channels, "auto_add_authors", lambda: job("threads"))
+    assert asyncio.run(scheduler.tiktok_hashtags_enabled()) is False  # lượt sau ShortVid cũng không chạy
+    asyncio.run(scheduler._run_discovery(everything=True))
+    assert ran == ["threads", "queries", "sources"]
