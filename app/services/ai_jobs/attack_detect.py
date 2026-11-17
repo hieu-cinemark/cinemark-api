@@ -4,6 +4,7 @@ Mỗi phim: đọc số chê theo giờ (16 ngày) + bình luận chê 48 giờ 
 verdict.decide -> một dòng attack_signals. Không gọi AI (dấu hiệu E và câu tóm tắt chưa làm).
 
 Lịch: scheduler/ai_jobs.py (AI_JOB_EVERY["attack_detect"]). Chạy tay:
+    python -m app.services.ai_jobs.attack_detect --all                               # mọi phim đang chiếu, GHI D1 (như một nhịp)
     python -m app.services.ai_jobs.attack_detect --movie-id <id> --dry-run           # in kết quả, không ghi
     python -m app.services.ai_jobs.attack_detect --movie-id <id> --dry-run --at 2026-11-05T14:00:00+00:00   # thử mốc cũ
 """
@@ -75,6 +76,9 @@ async def run_tick() -> dict[str, Any]:
 
 
 async def _cli(args: argparse.Namespace) -> None:
+    if args.all:
+        print("đã ghi theo trạng thái:", await run_tick())  # đúng một lượt của scheduler: mọi phim đang chiếu, ghi D1
+        return
     now = datetime.fromisoformat(args.at) if args.at else None
     result = await detect(args.movie_id, now)
     if not args.dry_run:
@@ -86,7 +90,11 @@ async def _cli(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--movie-id", required=True)
+    parser.add_argument("--movie-id", help="một phim (bắt buộc nếu không dùng --all)")
+    parser.add_argument("--all", action="store_true", help="chạy ngay một lượt cho MỌI phim đang chiếu và GHI D1")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--at", help="thời điểm tính (ISO, mặc định bây giờ) - để thử trên dữ liệu cũ")
-    asyncio.run(_cli(parser.parse_args()))
+    parsed = parser.parse_args()
+    if not parsed.all and not parsed.movie_id:
+        parser.error("cần --movie-id hoặc --all")
+    asyncio.run(_cli(parsed))
