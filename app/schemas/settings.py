@@ -437,13 +437,17 @@ class ProxySettings(BaseModel):
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
     # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Đây là nguồn sự thật duy nhất: spider-hub chỉ đọc dòng
     # proxy_settings mà cinemark-api ghi đủ khi khởi động (platform_config_db.ensure_proxy_settings_complete).
-    youtube_lanes: int = Field(default=16, ge=1, le=64)
+    # Chia làn (spider-hub runtime/lane_budget.py): lanes_total chia đều cho YouTube / page Facebook công khai / kênh Threads /
+    # TikTok (mặc định 16 -> mỗi nhóm 4). Ba số dưới đặt > 0 thì nhóm đó dùng số riêng; 0 = tự chia.
+    lanes_total: int = Field(default=16, ge=4, le=128)
+    youtube_lanes: int = Field(default=0, ge=0, le=64)
+    public_pages_workers: int = Field(default=0, ge=0, le=32)
     youtube_filter_concurrency: int = Field(default=6, ge=1, le=12)
     youtube_search_pages: int = Field(default=30, ge=1, le=200)
     youtube_reply_pages: int = Field(default=50, ge=0, le=500)
     public_pages_per_proxy: int = Field(default=3, ge=1, le=10)
     public_pages_gap_seconds: float = Field(default=3.0, ge=0, le=600)
-    threads_channel_workers: int = Field(default=4, ge=0, le=16)
+    threads_channel_workers: int = Field(default=0, ge=0, le=16)
     # Bật/tắt trên dashboard (16/11/2026): TikTok mỗi job chạy cả feed hashtag lẫn tìm từ khoá rồi gộp (spider-hub
     # consumer/jobs/search.py); tác vụ public chạy liên tục khi hàng đợi trống - YouTube (crawl/public_continuous.py) và
     # kênh Threads không đăng nhập (crawl/threads_channels.py).
