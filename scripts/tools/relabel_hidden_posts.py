@@ -2,7 +2,7 @@
 tín hiệu phim lên "liên quan" - để thay đổi quy tắc (tên đạo diễn tách "và", tên phim có số phần trước dấu ":", từ khoá
 mới thêm...) áp dụng cả cho bài cũ, không chỉ bài mới vào. Chạy lại an toàn.
 
-Bài ẩn = mọi bài không qua RELEVANT_POST_SQL ("uncertain", "not_related" do Kira/Jev, chưa có nhãn + không khớp từ khoá).
+Bài ẩn = mọi bài không qua RELEVANT_POST_SQL ("uncertain", "not_related" do AI, chưa có nhãn + không khớp từ khoá).
 Bài được xét như nhãn "uncertain": có tín hiệu phim (diễn viên/đạo diễn, hashtag tên phim đặc trưng, "phim <tên>", tên
 phim gần từ điện ảnh, đủ tên phim...) thì nâng; phim "chặt" (settings.strict_relevance_movie_slugs) chỉ nhận tín hiệu
 mạnh như ở ingest.

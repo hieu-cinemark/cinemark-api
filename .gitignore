@@ -6,7 +6,7 @@ __pycache__/
 .DS_Store
 *.log
 .local-db/
-# Generated output from scripts/, not source - e.g. label_posts_relevance_kira.py's own CSV.
+# Generated output from scripts/, not source.
 scripts/_*.csv
 
 # Local D1 table exports taken before pushing data to remote - data, not source.

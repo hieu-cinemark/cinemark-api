@@ -279,10 +279,9 @@ async def test_report_sample_is_random_audience_first_and_caps_each_post() -> No
         return [dict(p) for p in posts]
 
     with (
-        patch("app.repositories.d1.store.d1_query", fake_query),
         patch("app.repositories.d1.sql.d1_query", fake_query),
-        patch("app.repositories.d1.store.reputable_authors", AsyncMock(return_value=set())),
-        patch("app.repositories.d1.store.ensure_author_reputation_table", AsyncMock()),
+        patch("app.repositories.d1.report_data.reputable_authors", AsyncMock(return_value=set())),
+        patch("app.repositories.d1.report_data.ensure_author_reputation_table", AsyncMock()),
     ):
         sample = await get_report_sample_for_movie("movie_1")
         again = await get_report_sample_for_movie("movie_1")
@@ -348,11 +347,10 @@ async def test_aspect_stats_counts_all_tagged_comments_with_min_n_and_trend() ->
         return [dict(post)]
 
     with (
-        patch("app.repositories.d1.store.d1_query", fake_query),
         patch("app.repositories.d1.sql.d1_query", fake_query),
-        patch("app.repositories.d1.store.reputable_authors", AsyncMock(return_value=set())),
-        patch("app.repositories.d1.store.ensure_author_reputation_table", AsyncMock()),
-        patch("app.repositories.d1.store.ensure_comment_insight_columns", AsyncMock()),
+        patch("app.repositories.d1.report_data.reputable_authors", AsyncMock(return_value=set())),
+        patch("app.repositories.d1.report_data.ensure_author_reputation_table", AsyncMock()),
+        patch("app.repositories.d1.report_data.ensure_comment_insight_columns", AsyncMock()),
     ):
         stats = await get_movie_aspect_stats("movie_1")
 

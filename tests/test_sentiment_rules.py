@@ -15,7 +15,7 @@ from app.ai.tasks.sentiment_rules import is_tag_or_icon, rule_sentiment
         ("@Lan @Hoa", "neutral"),
         ("@Lan đẹp quá", None),
         ("Đỉnh quá chị ngọc ơi", None),
-        ("Chúc phim cháy vé nha", None),  # có chữ -> Kira
+        ("Chúc phim cháy vé nha", None),  # có chữ -> AI
         # nhiễu: rỗng, sticker, tiếng cười, tag tên không có @
         ("", "neutral"),
         (None, "neutral"),

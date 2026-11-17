@@ -96,6 +96,12 @@ async def on_startup() -> None:
         )
     except Exception as exc:
         logger.warning("comment_crawl_schedule_seed_failed", error=str(exc))
+    try:
+        await asyncio.wait_for(
+            platform_config_db.ensure_proxy_settings_complete(), timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS
+        )
+    except Exception as exc:
+        logger.warning("proxy_settings_complete_failed", error=str(exc))
     if settings.scheduler_in_web:
         scheduler.start()
         ops_metrics.start_sampler()

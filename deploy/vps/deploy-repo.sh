@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Deploy một repo trên VPS: pull (bằng user sở hữu repo), cài lại thư viện nếu requirements.txt đổi, restart các service
-# ĐANG CHẠY của repo đó, rồi kiểm tra /health. GitHub Actions gọi qua SSH (xem .github/workflows/ci.yml của cinemark-api
+# Deploy một repo trên VPS: pull (bằng user sở hữu repo), cài lại thư viện nếu requirements*.txt đổi, đồng bộ + bật các timer
+# systemd của repo (deploy/systemd/*.timer), restart các service ĐANG CHẠY, rồi kiểm tra /health. Script tự cập nhật bản cài ở
+# /usr/local/sbin khi bản trong repo đổi, nên không còn bước cài tay nào sau mỗi lần deploy. GitHub Actions gọi qua SSH (xem .github/workflows/ci.yml của cinemark-api
 # và spider-hub); chạy tay được: sudo /usr/local/sbin/deploy-repo cinemark-api
 #
 # Cài một lần (root):
@@ -29,19 +30,63 @@ esac
 
 owner=$(stat -c %U "$dir")
 as_owner() { sudo -u "$owner" "$@"; }
+self_installed=/usr/local/sbin/deploy-repo
 
-before=$(as_owner git -C "$dir" rev-parse HEAD)
-as_owner git -C "$dir" pull --ff-only
+# Timer chạy job nặng (deploy/systemd/<tên>.timer + <tên>.service): chép bản mới vào /etc/systemd/system khi khác, bật timer.
+# Chỉ đụng các cặp timer/service - service chạy lâu (ingest, scheduler) trên VPS mang tên khác file trong repo nên không chép.
+sync_timers() {
+  local src="$dir/deploy/systemd" changed=0 timer name
+  [ -d "$src" ] || return 0
+  for timer in "$src"/*.timer; do
+    [ -e "$timer" ] || continue
+    name=$(basename "$timer" .timer)
+    for unit in "$name.timer" "$name.service"; do
+      if [ -f "$src/$unit" ] && ! cmp -s "$src/$unit" "/etc/systemd/system/$unit"; then
+        install -m 644 "$src/$unit" "/etc/systemd/system/$unit"
+        echo "đồng bộ $unit"
+        changed=1
+      fi
+    done
+  done
+  if [ "$changed" = 1 ]; then
+    systemctl daemon-reload
+  fi
+  as_owner mkdir -p "$dir/data/clusters"
+  for timer in "$src"/*.timer; do
+    [ -e "$timer" ] || continue
+    name=$(basename "$timer")
+    systemctl is-enabled --quiet "$name" 2>/dev/null || { systemctl enable --now "$name" && echo "bật $name"; }
+  done
+}
+
+if [ -n "${DEPLOY_BEFORE:-}" ]; then
+  # Lần chạy lại bằng bản script mới (xem bên dưới): code đã pull rồi.
+  before=$DEPLOY_BEFORE
+else
+  before=$(as_owner git -C "$dir" rev-parse HEAD)
+  as_owner git -C "$dir" pull --ff-only
+fi
 after=$(as_owner git -C "$dir" rev-parse HEAD)
+
+# Bản script trong repo mới hơn bản đang chạy: cài đè rồi chạy lại bằng bản mới (một lần, cùng mốc `before`).
+if [ -z "${DEPLOY_BEFORE:-}" ] && [ -f "$dir/deploy/vps/deploy-repo.sh" ] && ! cmp -s "$dir/deploy/vps/deploy-repo.sh" "$self_installed"; then
+  install -o root -g root -m 755 "$dir/deploy/vps/deploy-repo.sh" "$self_installed"
+  echo "deploy-repo đã cập nhật, chạy lại bằng bản mới"
+  DEPLOY_BEFORE=$before exec "$self_installed" "$repo"
+fi
+
 if [ "$before" = "$after" ]; then
   echo "$repo: đã ở $after, không có gì mới"
+  if [ "$repo" = cinemark-api ]; then
+    sync_timers
+  fi
   exit 0
 fi
 echo "$repo: $before -> $after"
 
 # .venv có thể tạo bằng uv (không có pip bên trong) - thử pip, python -m pip, rồi uv.
 install_requirements() {
-  local req="$dir/requirements.txt" py="$dir/.venv/bin/python"
+  local req="${1:-$dir/requirements.txt}" py="$dir/.venv/bin/python"
   if [ -x "$dir/.venv/bin/pip" ]; then
     as_owner "$dir/.venv/bin/pip" install -q -r "$req"
   elif as_owner "$py" -m pip --version >/dev/null 2>&1; then
@@ -54,12 +99,23 @@ install_requirements() {
   fi
 }
 
-if as_owner git -C "$dir" diff --name-only "$before" "$after" | grep -qx requirements.txt; then
+changed_files=$(as_owner git -C "$dir" diff --name-only "$before" "$after")
+if grep -qx requirements.txt <<<"$changed_files"; then
   echo "requirements.txt đổi - cài lại thư viện"
   install_requirements
   if [ "$repo" = spider-hub ]; then
     as_owner "$dir/.venv/bin/python" -m patchright install chromium
   fi
+fi
+
+# Thư viện ML (torch, transformers, sentence-transformers) cho các timer: cài khi file đổi hoặc .venv chưa có torch.
+if [ -f "$dir/requirements-ml.txt" ] && { grep -qx requirements-ml.txt <<<"$changed_files" || ! as_owner "$dir/.venv/bin/python" -c "import torch" 2>/dev/null; }; then
+  echo "cài thư viện ML (requirements-ml.txt)"
+  install_requirements "$dir/requirements-ml.txt" || echo "CẢNH BÁO: không cài được requirements-ml.txt - các timer ML sẽ lỗi" >&2
+fi
+
+if [ "$repo" = cinemark-api ]; then
+  sync_timers
 fi
 
 # Trước khi restart: thiếu trình duyệt / lệch phiên bản / mất Redis thì service cũ chạy tiếp, không để job đầu tiên lỗi trên

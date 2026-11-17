@@ -83,7 +83,7 @@ def test_nested_and_short_titles_are_ignored() -> None:
     assert mentions_other_film("Út Lan hay quá", "Út Lan 2", "#UtLan2", TRACKED) is None
 
 
-# Bài thật của phim "Người Được Chọn" (2026-10-05): tên phim là cụm từ thường ngày, nên khi Kira
+# Bài thật của phim "Người Được Chọn" (2026-10-05): tên phim là cụm từ thường ngày, nên khi AI
 # không kết luận chỉ những bài có tín hiệu gắn với ĐÚNG phim này mới được giữ.
 NGUOI_DUOC_CHON = {"title": "Người Được Chọn"}
 
@@ -122,7 +122,7 @@ def test_has_film_context_keeps_target_film_posts(content: str) -> None:
             "Yêu là mong người ấy hạnh phúc, kể cả những năm tháng mình chưa phải người được chọn.\n\n"
             "Phim Madam T Xuất Chiêu | Khởi chiếu 25.09.2026 #MDTXC #MadamTXuatChieu"
         ),
-        # Review phim khác dùng cụm từ - Kira từng gán "related" 0,95 (2026-10-05).
+        # Review phim khác dùng cụm từ - AI từng gán "related" 0,95 (2026-10-05).
         (
             "CÁI KẾT KHÓ CHỊU NHẤT CỦA BỘ PHIM!!! Lâm tốt — tốt đến mức chấp nhận đứng ngoài câu chuyện. "
             "Còn Thương… lại chọn quay về. Đôi khi người được chọn không phải người tốt nhất"
@@ -161,7 +161,7 @@ def test_mentions_keyword_or_title_accepts_full_keyword_or_title(content: str) -
 @pytest.mark.parametrize(
     "content",
     [
-        # Bài phim truyền hình khác lọt qua tìm kiếm Facebook ngày 2026-10-05, Kira gán "related".
+        # Bài phim truyền hình khác lọt qua tìm kiếm Facebook ngày 2026-10-05, AI gán "related".
         "PHƯƠNG VỪA CHỐT CHỌN KHÁNH, TÙNG ĐÃ NHẬN 400 TRIỆU TỪ VƯƠNG? CHUYỆN GÌ ĐÂY?",
         "Người ấy đã được chọn làm nữ chính",  # đủ chữ nhưng không liền thành tên phim
         "",
@@ -190,7 +190,7 @@ TRAI_BUON_NGUOI = {"title": "Trại Buôn Người", "cast": "Steven Nguyễn, Q
 @pytest.mark.parametrize(
     "content",
     [
-        # Caption TikTok thật (2026-10-06) - Kira trả "uncertain", nội dung phim nằm trong video.
+        # Caption TikTok thật (2026-10-06) - AI trả "uncertain", nội dung phim nằm trong video.
         "#traibuonnguoi ",
         "Cổ khổ  #traibuonnguoi",
         "Ba ơi cứu em 😥😥😥 #traibuonnguoi ",

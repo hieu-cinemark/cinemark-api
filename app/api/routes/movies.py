@@ -104,7 +104,7 @@ async def generate_report(movie_id: str) -> dict[str, str]:
     """Nút "Tạo report" bấm tay (xem MoviesTable của spider-hub-dashboard) - chạy đúng
     logic theo từng phim như lượt quét hằng ngày của
     scripts/jobs/generate_social_topic_reports.py, cho một phim, khi cần. Đưa vào hàng đợi và
-    trả về ngay (xem app.services.reports.report_queue) thay vì chạy hai lời gọi Bee/Kira tuần
+    trả về ngay (xem app.services.reports.report_queue) thay vì chạy hai lời gọi Bee tuần
     tự ngay trong request handler - đã xác nhận thực tế riêng lời gọi gom topic có thể
     mất hơn 2 phút, và trong lúc đó dashboard từng khoá luôn nút "Tạo report" của MỌI
     phim khác. GET .../generate-report là cách dashboard hỏi định kỳ kết quả

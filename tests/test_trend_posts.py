@@ -12,7 +12,7 @@ def trend(item, repeated=frozenset()):
     return is_trend_post(item, TITLE, CAST, set(repeated))
 
 
-def test_hashtag_only_mention_of_the_film_is_trend():
+def test_hashtag_only_post_of_the_film_is_trend():
     assert trend(post("Ngày mẹ đồng ý  #bosuabay #xuhuongtiktok"))
     assert trend(post("#bosuabay #fyp"))
 

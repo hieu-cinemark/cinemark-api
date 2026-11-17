@@ -6,7 +6,7 @@
 Hiệu quả = (bài khớp từ khoá / tên phim trong lúc cào) x (bài liên quan / bài đã lưu):
 - vế đầu: bộ đếm spider-hub ghi ở Redis (spiders/keyword_filter.py save_yield) - bài lạc đề bị bỏ ngay trong spider nên
   không có trong D1;
-- vế sau: bài lưu trong WINDOW_DAYS ngày qua có RELEVANT_POST_SQL (Kira/quy tắc có thể vẫn chấm không liên quan).
+- vế sau: bài lưu trong WINDOW_DAYS ngày qua có RELEVANT_POST_SQL (AI/quy tắc có thể vẫn chấm không liên quan).
 
 Mỗi lượt cào theo lịch (scheduler/crawl_slots.trigger_platform) gọi plan_crawl:
 - từ khoá có từ MIN_SAMPLE bài mà hiệu quả < PAUSE_BELOW -> tắt (enabled = 0), ghi lý do ở PAUSED_KEY (tab từ khoá
@@ -101,7 +101,7 @@ async def keyword_yields(platform: str) -> dict[str, dict[str, Any]]:
         matched, dropped = spider.get(keyword_id, (0, 0))
         stored_ratio = relevant / saved if saved else 1.0
         if matched + dropped:
-            # Có bộ đếm spider: phần bị bỏ ở spider là rác, phần giữ lại còn bị Kira/quy tắc lọc tiếp theo tỉ lệ ở D1.
+            # Có bộ đếm spider: phần bị bỏ ở spider là rác, phần giữ lại còn bị AI/quy tắc lọc tiếp theo tỉ lệ ở D1.
             sample, ratio = matched + dropped, (matched / (matched + dropped)) * stored_ratio
         elif saved:
             sample, ratio = saved, stored_ratio  # lượt cào trước bản spider có bộ đếm - chỉ dựa vào D1

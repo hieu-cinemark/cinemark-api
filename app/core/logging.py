@@ -1,7 +1,8 @@
 """Cấu hình structlog, theo hợp đồng log dùng chung với spider-hub.
 
 - Mỗi dòng có `timestamp` (UTC), `level`, `event`, `service`, `logger` và context đã bind (`request_id`, `run_id`).
-- `event` là tên snake_case cố định; dữ liệu thay đổi đặt vào trường key=value.
+- `event` là mã snake_case cố định; dữ liệu thay đổi đặt vào trường key=value. Câu tiếng Việt cho người đọc nằm ở
+  core/log_messages.py, logger thêm vào mọi dòng (`msg`; ở console ngay sau mã sự kiện). Log mặc định là tiếng Việt.
 - Lỗi dùng `error`, `error_type`, `error_code`; truyền exception vào `error=` tự điền hai trường đầu.
 - `LOG_FORMAT=console|json`, `LOG_LEVEL` lọc mức log; chỉ có màu khi ghi ra terminal.
 
@@ -21,6 +22,7 @@ from typing import TextIO, cast
 import structlog
 
 from app.core.config import settings
+from app.core.log_messages import describe
 
 SERVICE_NAME = "cinemark-api"
 
@@ -99,6 +101,24 @@ def _normalize_error_fields(_logger, _method_name, event_dict):
     return event_dict
 
 
+def _add_vietnamese_message(_logger, _method_name, event_dict):
+    """Thêm câu tiếng Việt của sự kiện (danh mục core/log_messages.py) vào trường `msg`. Mã `event` giữ nguyên."""
+    event = event_dict.get("event")
+    if isinstance(event, str):
+        event_dict["msg"] = describe(event)
+    return event_dict
+
+
+def _inline_message_for_console(_logger, _method_name, event_dict):
+    """Console: đưa câu tiếng Việt ngay sau mã sự kiện (`ma_su_kien  Câu tiếng Việt  key=value`). Token đầu vẫn là mã sự kiện nên
+    trang Nhật ký của dashboard và các bộ lọc theo tên sự kiện chạy như cũ."""
+    msg = event_dict.pop("msg", None)
+    event = event_dict.get("event")
+    if msg and msg != event:
+        event_dict["event"] = f"{event}  {msg}"
+    return event_dict
+
+
 def _configure_once() -> None:
     global _configured
     if _configured:
@@ -121,8 +141,10 @@ def _configure_once() -> None:
             structlog.processors.TimeStamper(fmt="iso", utc=True),
             _add_service_field,
             _normalize_error_fields,
+            _add_vietnamese_message,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.dict_tracebacks if as_json else structlog.processors.format_exc_info,
+            *([] if as_json else [_inline_message_for_console]),
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(

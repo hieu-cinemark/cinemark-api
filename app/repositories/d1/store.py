@@ -7,30 +7,11 @@ thay vì raise, để một lần ghi D1 hỏng không làm sập ingest từ Ka
 
 from __future__ import annotations
 
-import asyncio
-import json
-import math
-import random
-import re
-import unicodedata
-import uuid
-from collections import Counter
-from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
-from typing import Any
-
-from sqlalchemy import Select, func, insert, literal_column, select, text, update
-from sqlalchemy.sql import ClauseElement
-
-from app.ai.domain.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
-from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.clients.d1 import _configured, d1_query
-from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.comments import (
     CommentRepository,
     comment_repo,
-    ensure_comment_insight_columns,
     list_all_comments,
     list_comments,
     persist_comment,
@@ -39,9 +20,7 @@ from app.repositories.d1.posts import (
     ENGAGEMENT_FIELDS,
     MIN_CONTENT_LENGTH,
     PostRepository,
-    author_reputation,
     contains_keyword,
-    ensure_author_reputation_table,
     get_post,
     get_post_by_external_id,
     list_posts,
@@ -50,15 +29,10 @@ from app.repositories.d1.posts import (
     persist_post,
     post_mentions_movie,
     post_repo,
-    relevant_post,
     reputable_authors,
     update_post_engagement,
     update_post_views,
 )
-from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.tables import comments as comments_table
-from app.repositories.d1.tables import keywords, movies, social_topic_reports
-from app.repositories.d1.tables import posts as posts_table
 
 logger = get_logger(__name__)
 
@@ -89,935 +63,78 @@ __all_reexports__ = (
     update_post_views,
 )
 
-
-# Redis khoá chung với spider-hub (cùng prefix social_crawler:). Spider: list top hashtag đi kèm sau mỗi lượt crawl
-# (constants/tiktok.py RELATED_HASHTAGS_KEY_TMPL). ShortVid: hash hashtag -> số video, cộng dồn qua các lượt
-# (app/services/shortvid/shortvid_tiktok.py) - giữ nguyên dấu, chữ thường.
-SPIDER_RELATED_KEY_TMPL = f"{REDIS_KEY_PREFIX}tiktok:related_hashtags:{{keyword_id}}"
-SHORTVID_COOCCUR_KEY_TMPL = f"{REDIS_KEY_PREFIX}shortvid:cooccur:{{keyword_id}}"
-# Hashtag ShortVid thấy đi kèm từ chừng này video trở lên mới tính là liên quan; tối đa chừng này mỗi từ khoá.
-SHORTVID_RELATED_MIN_VIDEOS = 3
-SHORTVID_RELATED_PER_KEYWORD = 15
-
-
-async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    """Hashtag TikTok xuất hiện cùng hashtag của từng từ khoá - gộp từ spider-hub (list sau mỗi lượt crawl) và ShortVid
-    (số video cộng dồn), cùng tag (không phân biệt hoa thường) lấy count lớn hơn. Dùng chung cho chip duyệt trên
-    dashboard (stats_summary) và ứng viên Kira duyệt (hashtag_discovery). Thiếu Redis / key rỗng = chưa có gì."""
-    if not keyword_ids:
-        return {}
-    try:
-        client = get_redis_client()
-        values = await client.mget([SPIDER_RELATED_KEY_TMPL.format(keyword_id=kid) for kid in keyword_ids])
-        pipe = client.pipeline()
-        for kid in keyword_ids:
-            pipe.hgetall(SHORTVID_COOCCUR_KEY_TMPL.format(keyword_id=kid))
-        shortvid_values = await pipe.execute()
-    except Exception as exc:  # noqa: BLE001 - Redis lỗi thì coi như chưa có hashtag liên quan
-        logger.warning("related_hashtags_redis_failed", error=str(exc))
-        return {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    for kid, raw, shortvid_raw in zip(keyword_ids, values or [], shortvid_values or [], strict=False):
-        merged: dict[str, dict[str, Any]] = {}
-        try:
-            parsed = json.loads(raw) if raw else []
-        except TypeError, json.JSONDecodeError:
-            parsed = []
-        for item in parsed if isinstance(parsed, list) else []:
-            if not isinstance(item, dict) or not item.get("title"):
-                continue
-            title = str(item["title"]).lstrip("#")
-            merged[title.lower()] = {
-                "id": str(item.get("id") or ""),
-                "title": title,
-                "count": int(item.get("count") or 0),
-                "bfs_depth": int(item.get("bfs_depth") or 1),
-            }
-        shortvid_items = sorted(
-            ((tag.decode() if isinstance(tag, bytes) else tag, int(n)) for tag, n in (shortvid_raw or {}).items()),
-            key=lambda pair: -pair[1],
-        )
-        for tag, count in [pair for pair in shortvid_items if pair[1] >= SHORTVID_RELATED_MIN_VIDEOS][
-            :SHORTVID_RELATED_PER_KEYWORD
-        ]:
-            entry = merged.setdefault(tag.lower(), {"id": "", "title": tag, "count": 0, "bfs_depth": 1})
-            entry["count"] = max(entry["count"], count)
-        if merged:
-            out[kid] = sorted(merged.values(), key=lambda item: -item["count"])
-    return out
-
-
-async def get_post_counts_by_platform() -> list[dict[str, Any]]:
-    """Tổng số bài đã ingest theo nền tảng, cộng thời điểm crawl gần nhất và số ingest hôm
-    nay so với hôm qua. Đọc bảng tổng hợp sẵn stats_platform_daily (xem
-    app/services/stats/stats_summary.py) - COUNT(*) toàn bộ posts qua D1 HTTP quá chậm cho
-    trang Overview."""
-    from app.services.stats.stats_summary import get_post_counts_by_platform as _from_summary
-
-    return await _from_summary()
-
-
-async def get_post_timeseries(days: int) -> list[dict[str, Any]]:
-    """Số bài theo ngày của từng nền tảng trong `days` ngày gần nhất - từ bảng tổng hợp
-    stats_platform_daily."""
-    from app.services.stats.stats_summary import get_post_timeseries as _from_summary
-
-    return await _from_summary(days)
-
-
-async def get_comment_counts_by_platform() -> list[dict[str, Any]]:
-    """Tổng số comment đã ingest theo nền tảng - cùng dạng với get_post_counts_by_platform,
-    từ stats_platform_daily."""
-    from app.services.stats.stats_summary import get_comment_counts_by_platform as _from_summary
-
-    return await _from_summary()
-
-
-async def get_comment_timeseries(days: int) -> list[dict[str, Any]]:
-    """Số comment theo ngày của từng nền tảng trong `days` ngày gần nhất."""
-    from app.services.stats.stats_summary import get_comment_timeseries as _from_summary
-
-    return await _from_summary(days)
-
-
-async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]]:
-    """Tổng số bài/comment theo từng từ khoá tìm kiếm cộng số ingest hôm nay so với hôm qua
-    - từ bảng tổng hợp stats_keyword_daily."""
-    from app.services.stats.stats_summary import get_keyword_volume as _from_summary
-
-    return await _from_summary(platform)
-
-
-_MOVIE_FIELDS = ("released_at", "poster_url", "description", "director", "cast", "distributor")
-# Thông tin phim đưa vào prompt AI (app/ai/domain/movie_context.py).
-MOVIE_CONTEXT_FIELDS = ("title", "director", "cast", "distributor", "released_at", "description")
-_MOVIE_COLUMNS = (movies.c.id, movies.c.title, movies.c.slug, *(movies.c[f] for f in _MOVIE_FIELDS))
-_KEYWORD_JOIN = keywords.join(movies, movies.c.id == keywords.c.movie_id)
-_KEYWORD_ROW = (keywords.c.id, keywords.c.movie_id, movies.c.title.label("movie_title"), keywords.c.keyword)
-
-
-def movie_slug(title: str) -> str:
-    """Slug URL gần như ASCII từ một tiêu đề (đã bỏ dấu tiếng Việt)."""
-    folded = title.strip().replace("đ", "d").replace("Đ", "D")
-    normalized = unicodedata.normalize("NFKD", folded)
-    ascii_ish = "".join(ch for ch in normalized if not unicodedata.combining(ch))
-    slug = re.sub(r"[^a-z0-9]+", "-", ascii_ish.lower()).strip("-")
-    return slug or "movie"
-
-
-def _blank_to_none(value: str | None) -> str | None:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
-
-
-async def _unique_movie_slug(base: str, exclude_id: str | None = None) -> str | None:
-    slug = base
-    suffix = 2
-    while True:
-        rows = await d1_exec(select(movies.c.id).where(movies.c.slug == slug))
-        if rows is None:
-            return None
-        clash = next((row for row in rows if row["id"] != exclude_id), None)
-        if clash is None:
-            return slug
-        slug = f"{base}-{suffix}"
-        suffix += 1
-
-
-async def list_movies() -> list[dict[str, Any]]:
-    """Mọi phim đang bật - cấp dữ liệu cho ô chọn "từ khoá mới này thuộc phim nào" khi tạo
-    từ khoá ngay trong form kích hoạt crawl, và bảng chi tiết phim của dashboard. Cũng
-    được scripts/jobs/generate_social_topic_reports.py dùng để duyệt qua mọi phim cần report
-    (các trường thừa ở đây chỗ gọi đó đơn giản là không dùng, không làm hỏng gì). `cast`
-    cần dấu backtick - nó là từ khoá SQL (hàm CAST()) trong ngữ pháp của chính SQLite,
-    không chỉ của Python."""
-    rows = await d1_exec(select(*_MOVIE_COLUMNS).where(movies.c.enabled == 1).order_by(movies.c.title))
-    return rows or []
-
-
-async def get_movie(movie_id: str) -> dict[str, Any] | None:
-    rows = await d1_exec(select(*_MOVIE_COLUMNS).where(movies.c.id == movie_id, movies.c.enabled == 1))
-    if rows is None:
-        return None
-    return rows[0] if rows else None
-
-
-async def create_movie(fields: dict[str, Any]) -> dict[str, Any] | None:
-    """Tạo phim từ trang Movies của dashboard - nhân viên gõ tên và các trường
-    release/cast tuỳ chọn; slug được tự suy ra trừ khi họ truyền vào."""
-    title = (fields.get("title") or "").strip()
-    if not title:
-        return None
-    requested = _blank_to_none(fields.get("slug"))
-    slug = await _unique_movie_slug(movie_slug(requested or title))
-    if slug is None:
-        return None
-    now = datetime.now(tz=UTC).isoformat()
-    movie_id = f"movie_{uuid.uuid4()}"
-    inserted = await d1_exec(
-        insert(movies).values(
-            id=movie_id,
-            title=title,
-            slug=slug,
-            enabled=1,
-            created_at=now,
-            updated_at=now,
-            **{f: _blank_to_none(fields.get(f)) for f in _MOVIE_FIELDS},
-        )
-    )
-    if inserted is None:
-        return None
-    return await get_movie(movie_id)
-
-
-async def update_movie(movie_id: str, fields: dict[str, Any]) -> dict[str, Any] | None:
-    existing = await get_movie(movie_id)
-    if not existing:
-        return None
-
-    title = existing["title"]
-    if "title" in fields and fields["title"] is not None:
-        title = fields["title"].strip() or existing["title"]
-
-    slug = existing["slug"]
-    if "slug" in fields:
-        requested = _blank_to_none(fields.get("slug"))
-        if requested:
-            unique = await _unique_movie_slug(movie_slug(requested), exclude_id=movie_id)
-            if unique is None:
-                return None
-            slug = unique
-
-    now = datetime.now(tz=UTC).isoformat()
-
-    def pick(key: str) -> str | None:
-        if key not in fields:
-            return existing.get(key)
-        return _blank_to_none(fields.get(key))
-
-    updated = await d1_exec(
-        update(movies)
-        .where(movies.c.id == movie_id, movies.c.enabled == 1)
-        .values(title=title, slug=slug, updated_at=now, **{f: pick(f) for f in _MOVIE_FIELDS})
-    )
-    if updated is None:
-        return None
-    return await get_movie(movie_id)
-
-
-async def disable_movie(movie_id: str) -> bool | None:
-    """Xoá mềm khỏi danh sách trên dashboard (keywords/posts vẫn giữ khoá ngoại)."""
-    existing = await get_movie(movie_id)
-    if existing is None:
-        rows = await d1_exec(select(movies.c.id).where(movies.c.id == movie_id))
-        if rows is None:
-            return None
-        return False
-    now = datetime.now(tz=UTC).isoformat()
-    result = await d1_exec(
-        update(movies).where(movies.c.id == movie_id, movies.c.enabled == 1).values(enabled=0, updated_at=now)
-    )
-    if result is None:
-        return None
-    return True
-
-
-# Dưới số comment đã phân loại này, scripts/jobs/generate_social_topic_reports.py bỏ qua hẳn
-# một phim (quá ít tín hiệu để gom topic có ý nghĩa) - chỉnh thoải mái, không suy ra
-# từ đâu cả.
-MIN_COMMENTS_FOR_REPORT = 15
-
-# Trần số comment đưa vào một lời gọi Kira gom topic - giữ prompt (và lượng token suy
-# luận của model) có giới hạn bất kể số comment của phim lớn tới đâu. Xếp hạng theo
-# tương tác trước, nên nếu phim có nhiều comment đã phân loại hơn mức này thì những
-# comment có tín hiệu cao nhất là những comment được giữ lại. Nâng 400 -> 800
-# cùng lúc bỏ khỏi mẫu các comment không mang ý kiến (chỉ tag bạn bè/emoji/quá ngắn - xem
-# rule_sentiment) và comment bị gắn not_related, nên 800 chỗ đều là comment có nội dung. Nâng 800 -> 2000 (
-# Bee claude-opus-4-8 viết report): 800 chỉ là ~2% bình luận của phim lớn (Trại Buôn Người ~43k), chủ đề nhỏ bị sót.
-# Tỉ lệ cảm xúc / khía cạnh vẫn tính trên toàn bộ bình luận (SQL) - mẫu chỉ phục vụ chủ đề / trích dẫn / nhận định.
-REPORT_COMMENT_SAMPLE_SIZE = 2000
-
-# Mỗi khía cạnh x chiều (vd. "dien_vien:-") được giữ trước chừng này comment trong mẫu, rồi mới rút phần còn lại theo tỉ
-# lệ - để khía cạnh ít người nhắc (âm nhạc, kỹ xảo...) vẫn có mặt cho AI gom thành chủ đề.
-REPORT_ASPECT_RESERVE = 12
-
-# Tối đa bấy nhiêu comment của cùng một bài trong mẫu - comment tới theo thứ tự tương tác,
-# nên không có trần này một bài viral có thể chiếm phần lớn mẫu và AI chỉ thấy một cuộc
-# thảo luận.
-REPORT_COMMENTS_PER_POST = 15
-
-# Số bài viết của khán giả (rút ngẫu nhiên, cùng cổng liên quan với mẫu comment) đưa vào lời gọi
-# gom topic như một nguồn ý kiến riêng - trên Threads/TikTok bản thân bài viết thường chính là ý
-# kiến của khán giả về phim, không chỉ là chỗ chứa comment.
-REPORT_POST_SAMPLE_SIZE = 150
-
-# Tác giả là "kênh" (studio, trang showbiz/tin phim - bài của họ chỉ làm ngữ cảnh, không phải ý
-# kiến khán giả) khi đã đăng về >= CHANNEL_MIN_MOVIES phim khác nhau, hoặc >= CHANNEL_MIN_POSTS
-# bài về cùng một phim. Đo 2026-10-07 với "Hoàng Hậu Cuối Cùng": 463/674 tác giả chỉ có 1 bài;
-# trang chính thức của phim có 27 bài, galaxystudiovn 92.
-CHANNEL_MIN_MOVIES = 3
-CHANNEL_MIN_POSTS = 4
-
-# Bài viết đưa cho AI được cắt tới bấy nhiêu ký tự - đủ để hiểu bài nói gì mà không để vài
-# bài dài chiếm hết prompt.
-REPORT_POST_TEXT_CHARS = 400
-
-# Comment bị bộ phân loại (batch 2026-09-24) gắn là không nói về phim - loại khỏi cả mẫu lẫn
-# tỉ lệ cảm xúc. Comment chưa có nhãn (NULL) vẫn được tính.
-# Giữ dạng text() vì điều kiện này nằm trong câu ghép với cột của bảng comments (alias c).
-_COMMENT_ABOUT_MOVIE_SQL = text("(c.relevance_label IS NULL OR c.relevance_label != 'not_related')")
-
-
-_SENTIMENT_BUCKETS = ("positive", "negative", "neutral")
-
-
-def _normalize_comment_text(message: str) -> str:
-    """Thu gọn một comment thành key khử trùng - chữ thường, gộp khoảng trắng. Bắt được các
-    bản copy-paste giống hệt/gần giống hệt (trại spam, nhóm bot đăng lại cùng một câu
-    dưới nhiều bài) mà không tốn chi phí/độ phức tạp của so khớp mờ thật sự - xem
-    docstring của get_report_sample_for_movie để biết vì sao điều này quan trọng với một
-    mẫu mà LLM coi là đại diện."""
-    # bỏ dấu câu / emoji và rút chữ kéo dài - "Phim hay quá!!!", "phim hayyy quá 😍" là một ý.
-    text = re.sub(r"[^\w\s]", " ", message.casefold())
-    text = re.sub(r"(\w)\1{2,}", r"\1", text)
-    return " ".join(text.split())
-
-
-def _aspect_tags(raw: Any) -> list[str]:
-    """Cột comments.aspects (JSON ["dien_vien:+", ...]) -> danh sách tag; hỏng / trống -> []."""
-    if not raw:
-        return []
-    try:
-        tags = json.loads(raw) if isinstance(raw, str) else raw
-    except ValueError:
-        return []
-    return [str(tag) for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
-
-
-def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
-    """Chọn `limit` dòng từ by_sentiment (trong mỗi nhóm lấy từ đầu danh sách - chỗ gọi đã
-    xáo ngẫu nhiên), giữ đúng tỉ lệ thật của từng nhóm trong tập ứng viên, không chỉ lấy nhóm
-    nào tình cờ có comment ồn ào/nhiều like nhất. Kết quả xếp theo like để dễ đọc. Xem
-    docstring của get_report_sample_for_movie để biết vì sao mẫu top-N theo tương tác làm
-    lệch lời gọi gom topic/narrative."""
-    total = sum(len(rows) for rows in by_sentiment.values())
-    if total <= limit:
-        combined = [row for rows in by_sentiment.values() for row in rows]
-        combined.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
-        return combined
-
-    # Phương pháp phần dư lớn nhất: hạn mức theo đúng tỉ lệ thật hiếm khi là số nguyên,
-    # nên làm tròn xuống phần của mỗi nhóm, rồi chia vài chỗ còn dư cho các nhóm có phần
-    # lẻ lớn nhất - giữ sum(quotas) == limit chính xác.
-    raw_quotas = {k: (len(v) / total) * limit for k, v in by_sentiment.items()}
-    quotas = {k: int(q) for k, q in raw_quotas.items()}
-    remainder = limit - sum(quotas.values())
-    for k in sorted(by_sentiment, key=lambda k: raw_quotas[k] - quotas[k], reverse=True)[:remainder]:
-        quotas[k] += 1
-
-    selected: list[dict[str, Any]] = []
-    shortfall = 0
-    for k, rows in by_sentiment.items():
-        take = min(quotas[k], len(rows))
-        selected.extend(rows[:take])
-        shortfall += quotas[k] - take
-
-    if shortfall > 0:
-        # Một nhóm không đủ hạn mức (quá ít tín hiệu thật ở cảm xúc đó) - bù bằng các ứng viên
-        # chưa được chọn (giữ thứ tự ngẫu nhiên của chỗ gọi), để mẫu vẫn dài đúng `limit` mỗi
-        # khi tổng các nhóm còn đủ ứng viên.
-        taken_ids = {row["id"] for row in selected}
-        leftover = [row for rows in by_sentiment.values() for row in rows if row["id"] not in taken_ids]
-        selected.extend(leftover[:shortfall])
-
-    selected.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
-    return selected
-
-
-async def _channel_authors() -> set[tuple[str, str]]:
-    """{(platform, author)} đã đăng về >= CHANNEL_MIN_MOVIES phim khác nhau - trang showbiz/tin phim/studio, không
-    phải khán giả. Ngưỡng cao hơn MIN_MOVIES_FOR_REPUTABLE_AUTHOR (2) vì một khán giả thường cũng có thể đăng về
-    hai phim."""
-    await ensure_author_reputation_table()
-    rows = await d1_exec(
-        select(author_reputation.c.platform, author_reputation.c.author).where(
-            author_reputation.c.distinct_movies >= CHANNEL_MIN_MOVIES
-        )
-    )
-    return {(r["platform"], r["author"]) for r in rows or []}
-
-
-# Phim lớn (Trại Buôn Người 26/10: 512 nghìn comment, 10 nghìn bài) không kéo nguyên khối về một lần được - D1 trả
-# quá chậm, d1_query hết giờ và trả None, report tưởng phim "0 comment". Mọi câu đọc comment của report đi qua các
-# hàm dưới: theo trang / theo nhóm bài, hết giờ lâu hơn, và lỗi thì raise (không lặng lẽ thành 0).
-_POST_PAGE = 2000
-_POST_BATCH = 80  # D1 cho tối đa 100 tham số một câu
-_BATCH_CONCURRENCY = 4
-_REPORT_QUERY_TIMEOUT = 120.0
-# Mẫu comment cho lời gọi gom topic: rút trước trong SQL khoảng ngần này ứng viên (cố định theo rowid), rồi Python
-# lọc trùng / giới hạn mỗi bài / chia theo cảm xúc như cũ để ra REPORT_COMMENT_SAMPLE_SIZE.
-REPORT_SAMPLE_CANDIDATES = 40_000
-
-
-async def _d1_rows(stmt: ClauseElement) -> list[dict[str, Any]]:
-    """Chạy câu dựng bằng SQLAlchemy; lỗi D1 thì raise (không lặng lẽ thành 0 - xem docstring _REPORT_QUERY_TIMEOUT)."""
-    rows = await d1_exec(stmt, timeout=_REPORT_QUERY_TIMEOUT)
-    if rows is None:
-        raise RuntimeError("D1 query failed while building the report")
-    return rows
-
-
-async def _comments_of_posts(
-    post_ids: list[str], build: Callable[[Any], Select[tuple[Any, ...]]]
-) -> list[dict[str, Any]]:
-    """Comment (alias c) của các bài đã qua cổng, theo nhóm _POST_BATCH bài, tối đa _BATCH_CONCURRENCY câu song song.
-
-    `build` nhận alias của bảng comments và trả về câu select (đã có điều kiện post_id) để chỗ gọi tự chọn cột.
-    """
-    semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
-
-    async def one(batch: list[str]) -> list[dict[str, Any]]:
-        async with semaphore:
-            c = comments_table.alias("c")
-            stmt = build(c).where(c.c.post_id.in_(batch))
-            return await _d1_rows(stmt)
-
-    batches = [post_ids[i : i + _POST_BATCH] for i in range(0, len(post_ids), _POST_BATCH)]
-    return [row for rows in await asyncio.gather(*(one(b) for b in batches)) for row in rows]
-
-
-async def _report_posts(movie_id: str) -> dict[str, dict[str, Any]]:
-    """Mọi bài của phim qua cổng relevance_label + movie_hashtag_present (xem docstring của
-    get_report_sample_for_movie), theo id, mỗi bài có thêm "is_channel": True khi tác giả là một kênh
-    (_channel_authors) hoặc đã đăng >= CHANNEL_MIN_POSTS bài về chính phim này (trang chính thức của phim, fanpage)
-    - bài của kênh chỉ làm ngữ cảnh, không được coi là ý kiến khán giả."""
-    movie_rows = await d1_exec(select(movies.c.title).where(movies.c.id == movie_id))
-    movie_title = movie_rows[0]["title"] if movie_rows else None
-    p, k = posts_table.alias("p"), keywords.alias("k")
-    page_query = (
-        select(
-            p.c.id,
-            p.c.url.label("post_url"),
-            p.c.content.label("post_content"),
-            p.c.author.label("post_author"),
-            p.c.platform,
-            p.c.like_count.label("post_likes"),
-            p.c.reply_count.label("post_comments"),
-            (p.c.repost_count + p.c.quote_count + p.c.reshare_count).label("post_shares"),
-            k.c.keyword.label("post_keyword"),
-        )
-        .select_from(p.outerjoin(k, k.c.id == p.c.keyword_id))
-        .order_by(p.c.id)
-        .limit(_POST_PAGE)
-    )
-    rows: list[dict[str, Any]] = []
-    last = ""
-    while True:  # theo trang - phim lớn có hàng chục nghìn bài kèm nội dung
-        page = await d1_exec(
-            page_query.where(p.c.movie_id == movie_id, relevant_post(p), p.c.id > last),
-            timeout=_REPORT_QUERY_TIMEOUT,
-        )
-        if page is None:
-            raise RuntimeError("D1 query failed while building the report")
-        rows += page
-        if len(page) < _POST_PAGE:
-            break
-        last = page[-1]["id"]
-    reputable = await reputable_authors()
-    posts: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        is_reputable = (row.get("platform"), row.get("post_author")) in reputable
-        if movie_hashtag_present(
-            row.get("post_content"), movie_title, row.pop("post_keyword", None), is_reputable_author=is_reputable
-        ):
-            posts[row["id"]] = row
-
-    channels = await _channel_authors()
-    per_author = Counter((row.get("platform"), row.get("post_author")) for row in posts.values())
-    for row in posts.values():
-        key = (row.get("platform"), row.get("post_author"))
-        row["is_channel"] = key in channels or per_author[key] >= CHANNEL_MIN_POSTS
-    return posts
-
-
-def _sample_rng(movie_id: str) -> random.Random:
-    """Ngẫu nhiên nhưng cố định theo phim + ngày: bấm "Tạo report" hai lần trong ngày ra cùng một mẫu."""
-    return random.Random(f"{movie_id}:{datetime.now(tz=UTC).date().isoformat()}")
-
-
-async def get_report_sample_for_movie(
-    movie_id: str,
-    *,
-    comment_limit: int = REPORT_COMMENT_SAMPLE_SIZE,
-    post_limit: int = REPORT_POST_SAMPLE_SIZE,
-) -> dict[str, list[dict[str, Any]]]:
-    """{"comments": [...], "posts": [...]} cho lời gọi gom topic - KHÔNG dùng cho tỉ lệ cảm xúc tổng thể (xem
-    get_movie_sentiment_counts, hàm đếm mọi comment đã phân loại).
-
-    Chỉ lấy bài vừa có relevance_label='related' VỪA qua được movie_hashtag_present (cùng cổng hai tín hiệu với
-    danh sách top 100 trong app/repositories/d1/posts.py: riêng relevance_label chỉ là bản sao phán quyết của AI lúc
-    ingest - đã xác nhận 2026-09-24 với report "Huyết Thống"), và chỉ comment dưới những bài đó.
-
-    RÚT NGẪU NHIÊN, không lấy top tương tác. Đo trên D1 thật với "Hoàng Hậu Cuối Cùng": 60 bài tương
-    tác cao nhất gần như toàn là studio (15 bài của galaxystudiovn) và trang showbiz, và 800 comment top like dồn
-    vào 74 bài - mẫu top tương tác đo tiếng nói của các kênh quảng bá, không phải của khán giả. Giờ:
-    - comment: bỏ comment không mang nội dung (rule_sentiment - chỉ tag bạn bè/emoji/quá ngắn), comment bị gắn
-      not_related và bản trùng text (giữ bản nhiều like nhất), mỗi bài tối đa REPORT_COMMENTS_PER_POST comment, rồi
-      rút ngẫu nhiên theo đúng tỉ lệ cảm xúc thật (_stratified_sample);
-    - bài: rút ngẫu nhiên trong các bài không phải của kênh (xem _report_posts), rồi thêm các bài chứa comment trong
-      mẫu làm ngữ cảnh. Bài có "is_channel" chỉ là ngữ cảnh, prompt cấm dùng làm bằng chứng."""
-    posts = await _report_posts(movie_id)
-    rng = _sample_rng(movie_id)
-
-    # Rút trước ~REPORT_SAMPLE_CANDIDATES comment trong SQL (băm rowid - cố định, rải đều), không kéo cả trăm nghìn
-    # comment về; comment chỉ có emoji/tag (sentiment_source='rule') bỏ luôn trong SQL.
-    total = sum((await get_movie_sentiment_counts(movie_id, posts)).values())
-    per_mille = min(1000, math.ceil(REPORT_SAMPLE_CANDIDATES * 1000 / max(total, 1)))
-    rows = await _comments_of_posts(
-        list(posts),
-        lambda c: select(
-            c.c.id,
-            c.c.post_id,
-            c.c.message,
-            c.c.reactions_count,
-            c.c.sentiment,
-            c.c.aspects,
-            c.c.audience_stage,
-        ).where(
-            _COMMENT_ABOUT_MOVIE_SQL,
-            c.c.sentiment.is_not(None),
-            c.c.message.is_not(None),
-            func.coalesce(c.c.sentiment_source, "") != "rule",
-            # Băm rowid: mẫu rút trước trong SQL, cố định và rải đều theo toàn bộ bảng.
-            literal_column("abs(c.rowid * 2654435761) % 1000") < per_mille,
-        ),
-    )
-    rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trùng text: giữ bản nhiều like nhất
-    seen_texts: set[str] = set()
-    candidates: list[dict[str, Any]] = []
-    for row in rows:
-        post = posts.get(row["post_id"])
-        if post is None or row.get("sentiment") not in _SENTIMENT_BUCKETS:
-            continue
-        message = row.get("message") or ""
-        if rule_sentiment(message) is not None:
-            continue
-        normalized = _normalize_comment_text(message)
-        if not normalized or normalized in seen_texts:
-            continue
-        seen_texts.add(normalized)
-        candidates.append({**row, **{k: v for k, v in post.items() if k != "id"}})
-
-    rng.shuffle(candidates)
-    per_post: Counter[str] = Counter()
-    eligible: list[dict[str, Any]] = []
-    for row in candidates:
-        if per_post[row["post_id"]] >= REPORT_COMMENTS_PER_POST:
-            continue
-        per_post[row["post_id"]] += 1
-        eligible.append(row)
-
-    # Giữ chỗ trước cho từng khía cạnh x chiều, rồi rút phần còn lại theo đúng tỉ lệ (cảm xúc x giai đoạn hóng/đã xem).
-    reserved: list[dict[str, Any]] = []
-    per_aspect: Counter[str] = Counter()
-    for row in eligible:
-        tags = _aspect_tags(row.get("aspects"))
-        if any(per_aspect[tag] < REPORT_ASPECT_RESERVE for tag in tags):
-            reserved.append(row)
-            per_aspect.update(tags)
-    reserved = reserved[: comment_limit // 4]
-    taken = {row["id"] for row in reserved}
-    by_bucket: dict[str, list[dict[str, Any]]] = {}
-    for row in eligible:
-        if row["id"] not in taken:
-            by_bucket.setdefault(f"{row['sentiment']}:{row.get('audience_stage') or 'khac'}", []).append(row)
-    comments = _stratified_sample(by_bucket, comment_limit - len(reserved)) + reserved
-    comments.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
-
-    audience_posts = [
-        post
-        for post in posts.values()
-        if not post["is_channel"] and len((post.get("post_content") or "").strip()) >= MIN_CONTENT_LENGTH
-    ]
-    audience_posts.sort(key=lambda post: post["id"])  # thứ tự cố định trước khi rút, để seed cho ra cùng mẫu
-    sampled = rng.sample(audience_posts, min(post_limit, len(audience_posts)))
-    sampled.sort(key=lambda post: post.get("post_likes") or 0, reverse=True)
-    return {"comments": comments, "posts": sampled}
-
-
-# Khía cạnh/nhóm có ít hơn bấy nhiêu comment thì không báo % (quá ít để tin) - cùng ý với min_n của Kompa.
-ASPECT_MIN_N = 10
-# Xu hướng: so % khen của ASPECT_TREND_DAYS ngày gần nhất (tính tới comment mới nhất của phim, không phải hôm nay -
-# crawl có độ trễ) với ASPECT_TREND_DAYS ngày trước đó; tụt >= ASPECT_SLIP_POINTS điểm thì gắn "đang tụt".
-ASPECT_TREND_DAYS = 7
-ASPECT_SLIP_POINTS = 10
-ASPECT_QUOTES_PER_SIDE = 2
-_QUOTE_MIN_CHARS = 15
-
-
-def _positive_pct(pos: int, neg: int) -> int | None:
-    return round(pos * 100 / (pos + neg)) if pos + neg >= ASPECT_MIN_N else None
-
-
-def _count_between(rows: list[dict[str, Any]], start: str, stop: str | None) -> int:
-    return sum(
-        1 for r in rows if r.get("posted_at") and start <= r["posted_at"] and (stop is None or r["posted_at"] < stop)
-    )
-
-
-def _pick_quotes(rows: list[dict[str, Any]], posts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Các dòng tới theo thứ tự like giảm dần; mỗi bài tối đa một câu để không trích cùng một cuộc thảo luận."""
-    picked: list[dict[str, Any]] = []
-    seen_posts: set[str] = set()
-    for row in rows:
-        message = " ".join((row.get("message") or "").split())
-        if len(message) < _QUOTE_MIN_CHARS or row["post_id"] in seen_posts:
-            continue
-        seen_posts.add(row["post_id"])
-        post = posts[row["post_id"]]
-        picked.append(
-            {
-                "source": "comment",
-                "id": row["id"],
-                "text": message,
-                "likes": row.get("reactions_count") or 0,
-                # Không kèm tên / link / ảnh người bình luận: trích dẫn hiện cho khách hàng (chính sách nền tảng).
-                "post_url": post.get("post_url"),
-                "post_content": post.get("post_content"),
-                "post_author": post.get("post_author"),
-                "platform": post.get("platform"),
-            }
-        )
-        if len(picked) >= ASPECT_QUOTES_PER_SIDE:
-            break
-    return picked
-
-
-async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
-    """Số liệu khía cạnh + giai đoạn khán giả của phim, đếm thẳng trên MỌI comment đã được gán khía cạnh (không
-    phải mẫu) dưới các bài qua cổng liên quan (_report_posts) - xem app/ai/domain/aspects.py. Bỏ comment không mang nội
-    dung (rule_sentiment) khỏi mẫu số để "tỉ trọng nhắc tới" không bị loãng bởi comment chỉ tag bạn bè.
-
-    - aspects: mỗi khía cạnh có mentions, mention_share (% comment có nhắc), positive/negative (% khen/chê trong
-      số lượt nhắc, None khi < ASPECT_MIN_N), trend {from, to} của % khen theo cửa sổ ASPECT_TREND_DAYS ngày và
-      slipping khi tụt >= ASPECT_SLIP_POINTS điểm.
-    - stage: số comment đang hóng / đã xem / khác.
-    - expectation: % khen (positive / (positive + negative)) của nhóm đang hóng so với nhóm đã xem.
-    - quotes: tối đa ASPECT_QUOTES_PER_SIDE câu khen và chê nhiều like nhất mỗi khía cạnh, mỗi bài một câu."""
-    await ensure_comment_insight_columns()
-    posts = await _report_posts(movie_id)
-    rows = await _comments_of_posts(
-        list(posts),
-        lambda c: select(
-            c.c.id,
-            c.c.post_id,
-            c.c.message,
-            c.c.reactions_count,
-            c.c.sentiment,
-            c.c.aspects,
-            c.c.audience_stage,
-            c.c.posted_at,
-        ).where(
-            _COMMENT_ABOUT_MOVIE_SQL,
-            c.c.insights_classified_at.is_not(None),
-            c.c.message.is_not(None),
-        ),
-    )
-    rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trích dẫn: nhiều like trước
-    tagged: list[dict[str, Any]] = []
-    for row in rows:
-        if row["post_id"] not in posts or rule_sentiment(row.get("message") or "") is not None:
-            continue
-        try:
-            aspects = json.loads(row.get("aspects") or "[]")
-        except ValueError:
-            aspects = []
-        row["aspect_tags"] = [a for a in aspects if isinstance(a, str) and a.rsplit(":", 1)[0] in ASPECTS]
-        tagged.append(row)
-
-    total = len(tagged)
-    latest = max((r["posted_at"] for r in tagged if r.get("posted_at")), default=None)
-    windows: tuple[str, str] | None = None
-    if latest:
-        end = datetime.fromisoformat(latest)
-        windows = (
-            (end - timedelta(days=2 * ASPECT_TREND_DAYS)).isoformat(),
-            (end - timedelta(days=ASPECT_TREND_DAYS)).isoformat(),
-        )
-
-    aspects_out: list[dict[str, Any]] = []
-    quotes: dict[str, dict[str, list[dict[str, Any]]]] = {}
-    for key, (label, _desc) in ASPECTS.items():
-        if key in DISCUSSION_ONLY_ASPECTS:
-            continue
-        pos = [r for r in tagged if f"{key}:+" in r["aspect_tags"]]
-        neg = [r for r in tagged if f"{key}:-" in r["aspect_tags"]]
-        mentions = len(pos) + len(neg)
-        if not mentions:
-            continue
-        trend = None
-        if windows:
-            prev_from, recent_from = windows
-            before = _positive_pct(
-                _count_between(pos, prev_from, recent_from), _count_between(neg, prev_from, recent_from)
-            )
-            after = _positive_pct(_count_between(pos, recent_from, None), _count_between(neg, recent_from, None))
-            if before is not None and after is not None:
-                trend = {"from": before, "to": after}
-        positive = _positive_pct(len(pos), len(neg))
-        aspects_out.append(
-            {
-                "aspect": key,
-                "label": label,
-                "mentions": mentions,
-                "mention_share": round(mentions * 100 / total, 1) if total else 0.0,
-                "positive": positive,
-                "negative": None if positive is None else 100 - positive,
-                "trend": trend,
-                "slipping": bool(trend and trend["from"] - trend["to"] >= ASPECT_SLIP_POINTS),
-            }
-        )
-        quotes[key] = {"khen": _pick_quotes(pos, posts), "che": _pick_quotes(neg, posts)}
-    aspects_out.sort(key=lambda a: a["mentions"], reverse=True)
-
-    stage_counts = Counter(r.get("audience_stage") or "khac" for r in tagged)
-    by_stage = {
-        stage: _positive_pct(
-            sum(1 for r in tagged if r.get("audience_stage") == stage and r["sentiment"] == "positive"),
-            sum(1 for r in tagged if r.get("audience_stage") == stage and r["sentiment"] == "negative"),
-        )
-        for stage in ("hong", "da_xem")
-    }
-    expectation = None
-    if by_stage["hong"] is not None and by_stage["da_xem"] is not None:
-        expectation = {
-            "hong_positive": by_stage["hong"],
-            "da_xem_positive": by_stage["da_xem"],
-            "gap": by_stage["da_xem"] - by_stage["hong"],
-        }
-    return {
-        "comments": total,
-        "min_n": ASPECT_MIN_N,
-        "trend_days": ASPECT_TREND_DAYS,
-        "aspects": aspects_out,
-        "stage": {stage: stage_counts.get(stage, 0) for stage in STAGES},
-        "expectation": expectation,
-        "quotes": quotes,
-    }
-
-
-async def get_movie_sentiment_counts(movie_id: str, posts: dict[str, dict[str, Any]] | None = None) -> dict[str, int]:
-    """Số lượng mọi comment đã phân loại của phim này, nhóm theo nhãn cảm xúc - sự thật gốc
-    cho tỉ lệ overall_sentiment của report (chỗ gọi tính bằng phép chia đơn giản, không
-    để LLM ước lượng), trên TOÀN BỘ tập comment, không chỉ mẫu có giới hạn đưa vào lời
-    gọi gom topic.
-
-    Cùng cổng relevance_label='related' VÀ movie_hashtag_present như
-    get_report_sample_for_movie ở trên, cùng lý do - tỉ lệ phải lấy từ đúng tập comment
-    đúng chủ đề mà mẫu được rút ra, không phải từ một tập lớn hơn vẫn chứa comment của
-    bài lạc đề. Riêng relevance_label không phải bằng chứng củng cố độc lập (xem
-    docstring của hàm kia); hàm này từng bỏ qua cổng thứ hai, và đó chính là lý do "Huyết
-    Thống" (một tên phim là từ vựng thông thường) vẫn làm bẩn tỉ lệ cảm xúc của chính nó
-    ngay cả sau khi danh sách bài và mẫu comment đã được sửa để lọc bỏ - phần đếm ở đây
-    chạy thẳng trên nhãn thô, không kiểm tra lại. Lấy mọi comment đã phân loại (không chỉ
-    một mẫu có giới hạn, khác với get_report_sample_for_movie) vì cần đếm đúng toàn bộ,
-    không phải mẫu đại diện - sau đó movie_hashtag_present vẫn chạy bằng Python trên từng
-    dòng."""
-    # Đếm trong SQL theo (bài, nhãn) - vài chục nghìn dòng nhỏ thay vì từng comment kèm nội dung bài (512 nghìn dòng
-    # với Trại Buôn Người, 26/10) - rồi chỉ cộng các bài qua cổng của _report_posts (cùng movie_hashtag_present).
-    if posts is None:
-        posts = await _report_posts(movie_id)
-    c, p = comments_table.alias("c"), posts_table.alias("p")
-    rows = await _d1_rows(
-        select(c.c.post_id, c.c.sentiment, func.count().label("n"))
-        .select_from(c.join(p, p.c.id == c.c.post_id))
-        .where(
-            p.c.movie_id == movie_id,
-            relevant_post(p),
-            _COMMENT_ABOUT_MOVIE_SQL,
-            c.c.sentiment.is_not(None),
-        )
-        .group_by(c.c.post_id, c.c.sentiment)
-    )
-    counts: dict[str, int] = {}
-    for row in rows:
-        if row["post_id"] in posts:
-            counts[row["sentiment"]] = counts.get(row["sentiment"], 0) + int(row["n"])
-    return counts
-
-
-async def upsert_social_topic_report(
-    *, movie_id: str, dashboard_data_json: str, comment_count: int, post_count: int, kira_model: str | None
-) -> bool:
-    """Upsert theo movie_id vào social_topic_reports - mỗi phim một dòng, bị ghi đè mỗi lần
-    scripts/jobs/generate_social_topic_reports.py chạy (không giữ lịch sử; không có gì đọc
-    report cũ)."""
-    if not _configured():
-        return False
-
-    generated_at = datetime.now(tz=UTC).isoformat()
-    report = social_topic_reports.c
-    fields = {
-        "dashboard_data_json": dashboard_data_json,
-        "comment_count": comment_count,
-        "post_count": post_count,
-        "kira_model": kira_model,
-        "generated_at": generated_at,
-    }
-    existing_rows = await d1_exec(select(report.id).where(report.movie_id == movie_id))
-    if existing_rows:
-        stmt = update(social_topic_reports).where(report.id == existing_rows[0]["id"]).values(**fields)
-    else:
-        stmt = insert(social_topic_reports).values(id=f"str_{uuid.uuid4()}", movie_id=movie_id, **fields)
-    return await d1_exec(stmt) is not None
-
-
-async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> dict[str, Any] | None:
-    """Dùng cho luồng "gõ từ khoá mới" ngay trên dashboard (form kích hoạt crawl) - tìm
-    dòng (movie_id, platform, keyword) đã có trước (bộ ba đó có unique index - xem
-    src/db/schema.ts của cinemark-scraper) để gửi lặp lại hoặc đua với một tab khác chỉ
-    trả về cùng dòng đó thay vì lỗi ràng buộc."""
-    existing = await d1_exec(
-        select(*_KEYWORD_ROW)
-        .select_from(_KEYWORD_JOIN)
-        .where(keywords.c.movie_id == movie_id, keywords.c.platform == platform, keywords.c.keyword == keyword)
-    )
-    if existing:
-        return existing[0]
-
-    movie_rows = await d1_exec(select(movies.c.title).where(movies.c.id == movie_id, movies.c.enabled == 1))
-    if not movie_rows:
-        return None
-    movie_title = movie_rows[0]["title"]
-
-    keyword_id = f"kw_{uuid.uuid4()}"
-    inserted = await d1_exec(
-        insert(keywords).values(
-            id=keyword_id,
-            movie_id=movie_id,
-            platform=platform,
-            keyword=keyword,
-            enabled=1,
-            created_at=datetime.now(tz=UTC).isoformat(),
-        )
-    )
-    if inserted is None:
-        return None
-    return {"id": keyword_id, "movie_id": movie_id, "movie_title": movie_title, "keyword": keyword}
-
-
-async def add_keyword(
-    movie_id: str, platform: str, keyword: str, keyword_id: str | None = None, *, enabled: bool = True
-) -> str | None:
-    """Thêm một từ khoá (luồng tự tìm từ khoá). enabled=False: từ khoá chỉ để gắn bài chuyển sang phim (ingest), không cào.
-    Trả về id, None khi ghi lỗi."""
-    keyword_id = keyword_id or f"kw_{uuid.uuid4()}"
-    inserted = await d1_exec(
-        insert(keywords).values(
-            id=keyword_id,
-            movie_id=movie_id,
-            platform=platform,
-            keyword=keyword,
-            enabled=1 if enabled else 0,
-            created_at=datetime.now(tz=UTC).isoformat(),
-            related_keywords="[]",
-        )
-    )
-    return keyword_id if inserted is not None else None
-
-
-async def enable_keyword(keyword_id: str, enabled: bool) -> None:
-    """Bật/tắt từ khoá theo id, không kiểm tra nền tảng (luồng tự dọn từ khoá)."""
-    await d1_exec(update(keywords).where(keywords.c.id == keyword_id).values(enabled=1 if enabled else 0))
-
-
-async def movie_of_keyword(keyword_id: str) -> dict[str, Any] | None:
-    """Thông tin phim (MOVIE_CONTEXT_FIELDS) của phim sở hữu từ khoá; None khi không có hoặc D1 lỗi."""
-    rows = await d1_exec(
-        select(*(movies.c[f] for f in MOVIE_CONTEXT_FIELDS))
-        .select_from(_KEYWORD_JOIN)
-        .where(keywords.c.id == keyword_id),
-        quiet=True,
-    )
-    return rows[0] if rows else None
-
-
-async def list_keywords(platform: str) -> list[dict[str, Any]]:
-    """Mọi từ khoá đang bật của nền tảng này, kèm tên phim - cấp dữ liệu cho ô chọn từ khoá
-    trên dashboard (GET /<platform>/keywords) để một lần kích hoạt crawl tay có thể nhắm
-    vào một từ khoá thay vì "mọi từ khoá đang bật của nền tảng này" (xem
-    get_enabled_keywords bên dưới, vẫn dùng cho trường hợp chạy hàng loạt đó)."""
-    rows = await d1_exec(
-        select(*_KEYWORD_ROW)
-        .select_from(_KEYWORD_JOIN)
-        .where(keywords.c.platform == platform, keywords.c.enabled == 1, movies.c.enabled == 1)
-        .order_by(movies.c.title, keywords.c.keyword)
-    )
-    return rows or []
-
-
-async def get_keyword(keyword_id: str, platform: str, *, include_disabled: bool = False) -> dict[str, Any] | None:
-    """Một từ khoá đang bật theo id, trên nền tảng đã cho, join với cờ enabled của phim -
-    giống những gì KeywordRepository.get() + tra phim của Postgres (đã xoá) từng làm cho
-    nút kích hoạt "chạy một từ khoá". Tham số platform là bắt buộc, không phải tình cờ:
-    mỗi nền tảng có router riêng (xem app/api/routes/facebook.py + platform_scraper.py)
-    chỉ muốn từ khoá của chính nó - một keyword_id thuộc nền tảng khác không được âm thầm
-    khớp ở đây.
-
-    include_disabled=True (ingest): nhận cả từ khoá đã tắt - bài đang trên đường về khi keyword_yield/người dùng vừa tắt
-    từ khoá vẫn là bài thật của phim, trước đây bị bỏ với lý do unknown_keyword_id. Phim vẫn phải đang bật."""
-    stmt = (
-        select(
-            *_KEYWORD_ROW,
-            keywords.c.platform,
-            movies.c.director.label("movie_director"),
-            movies.c.cast.label("movie_cast"),
-            movies.c.distributor.label("movie_distributor"),
-        )
-        .select_from(_KEYWORD_JOIN)
-        .where(keywords.c.id == keyword_id, keywords.c.platform == platform, movies.c.enabled == 1)
-    )
-    if not include_disabled:
-        stmt = stmt.where(keywords.c.enabled == 1)
-    rows = await d1_exec(stmt)
-    return rows[0] if rows else None
-
-
-async def get_enabled_keywords(platform: str, movie_id: str | None = None) -> list[dict[str, Any]]:
-    """Mọi từ khoá đang bật trên nền tảng đã cho (có thể giới hạn trong một phim) mà phim
-    của nó cũng đang bật - dùng cho cả nút "chạy mọi từ khoá của một phim" lẫn lời gọi
-    cron hằng ngày của một nền tảng ("chạy mọi thứ của nền tảng này")."""
-    stmt = (
-        select(keywords.c.id, keywords.c.movie_id, keywords.c.platform, keywords.c.keyword)
-        .select_from(_KEYWORD_JOIN)
-        .where(keywords.c.platform == platform, keywords.c.enabled == 1, movies.c.enabled == 1)
-    )
-    if movie_id:
-        stmt = stmt.where(keywords.c.movie_id == movie_id)
-    rows = await d1_exec(stmt)
-    return rows or []
-
-
-async def set_keyword_enabled(platform: str, keyword_id: str, enabled: bool) -> dict[str, Any] | None:
-    """Bật/tắt một từ khoá - cho người vận hành tạm dừng một từ khoá cũ/dùng một lần (hoặc
-    một lô vừa thêm để thử) mà không xoá, để lịch hằng ngày của nền tảng
-    (get_enabled_keywords ở trên) lấy đúng tập mong muốn. platform là phạm vi phòng thủ,
-    không tự nó là key tra cứu - keyword_id vốn đã duy nhất - để một platform không khớp
-    trên URL không thể âm thầm bật/tắt dòng của nền tảng khác. Trả về dòng đã cập nhật,
-    hoặc None nếu id không tồn tại dưới nền tảng đó, hoặc việc ghi thất bại."""
-    updated = await d1_exec(
-        update(keywords)
-        .where(keywords.c.id == keyword_id, keywords.c.platform == platform)
-        .values(enabled=1 if enabled else 0)
-    )
-    if updated is None:
-        logger.warning("d1_set_keyword_enabled_failed", platform=platform, keyword_id=keyword_id, enabled=enabled)
-        return None
-    rows = await d1_exec(
-        select(*_KEYWORD_ROW, keywords.c.enabled)
-        .select_from(_KEYWORD_JOIN)
-        .where(keywords.c.id == keyword_id, keywords.c.platform == platform)
-    )
-    return rows[0] if rows else None
+# Các nhóm hàm đã tách ra module riêng (17/11/2026) - re-export để `from app.repositories.d1.store import X` cũ vẫn chạy.
+from app.repositories.d1.keywords import (  # noqa: F401
+    add_keyword,
+    enable_keyword,
+    get_enabled_keywords,
+    get_keyword,
+    get_or_create_keyword,
+    list_keywords,
+    movie_of_keyword,
+    set_keyword_enabled,
+)
+from app.repositories.d1.movies import (  # noqa: F401
+    _KEYWORD_JOIN,
+    _KEYWORD_ROW,
+    _MOVIE_COLUMNS,
+    _MOVIE_FIELDS,
+    MOVIE_CONTEXT_FIELDS,
+    _blank_to_none,
+    _unique_movie_slug,
+    create_movie,
+    disable_movie,
+    get_movie,
+    list_movies,
+    movie_slug,
+    update_movie,
+)
+from app.repositories.d1.overview import (  # noqa: F401
+    SHORTVID_COOCCUR_KEY_TMPL,
+    SHORTVID_RELATED_MIN_VIDEOS,
+    SHORTVID_RELATED_PER_KEYWORD,
+    SPIDER_RELATED_KEY_TMPL,
+    get_comment_counts_by_platform,
+    get_comment_timeseries,
+    get_keyword_volume,
+    get_post_counts_by_platform,
+    get_post_timeseries,
+    related_hashtags_for_keywords,
+)
+from app.repositories.d1.report_data import (  # noqa: F401
+    _BATCH_CONCURRENCY,
+    _COMMENT_ABOUT_MOVIE_SQL,
+    _POST_BATCH,
+    _POST_PAGE,
+    _QUOTE_MIN_CHARS,
+    _REPORT_QUERY_TIMEOUT,
+    _SENTIMENT_BUCKETS,
+    ASPECT_MIN_N,
+    ASPECT_QUOTES_PER_SIDE,
+    ASPECT_SLIP_POINTS,
+    ASPECT_TREND_DAYS,
+    CHANNEL_MIN_MOVIES,
+    CHANNEL_MIN_POSTS,
+    MIN_COMMENTS_FOR_REPORT,
+    REPORT_ASPECT_RESERVE,
+    REPORT_COMMENT_SAMPLE_SIZE,
+    REPORT_COMMENTS_PER_POST,
+    REPORT_POST_SAMPLE_SIZE,
+    REPORT_POST_TEXT_CHARS,
+    REPORT_SAMPLE_CANDIDATES,
+    _aspect_tags,
+    _channel_authors,
+    _comments_of_posts,
+    _count_between,
+    _d1_rows,
+    _normalize_comment_text,
+    _pick_quotes,
+    _positive_pct,
+    _report_posts,
+    _sample_rng,
+    _stratified_sample,
+    get_movie_aspect_stats,
+    get_movie_sentiment_counts,
+    get_report_sample_for_movie,
+    upsert_social_topic_report,
+)

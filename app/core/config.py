@@ -8,7 +8,6 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -109,7 +108,7 @@ class Settings(BaseSettings):
     visobert_model_dir: str = "models/visobert-cinemark"
     visobert_batch_size: int = 32
     # Bình luận KHÔNG gọi AI (yêu cầu người dùng): luật -> cache -> ViSoBERT gắn nhãn MỌI câu (bỏ ngưỡng
-    # visobert_min_confidence), không Jev/Bee/Kira, không lượt AI bổ sung khía cạnh/giai đoạn. Cảm xúc nội dung bài
+    # visobert_min_confidence), không Jev/Bee, không lượt AI bổ sung khía cạnh/giai đoạn. Cảm xúc nội dung bài
     # (kind="post") vẫn như cũ. Bật lại = True.
     comment_ai_enabled: bool = False
     # Model độ liên quan của bài (app/ai/local/visobert_relevance.py) chạy trước AI: lấy luôn khi đủ chắc theo ngưỡng từng nhãn.
@@ -122,24 +121,16 @@ class Settings(BaseSettings):
     ai_provider_concurrency: int = 2
     # AI phân loại độ liên quan của bài lúc ingest (app/ai/tasks/post_relevance.py): tối đa chừng này bài mỗi ngày UTC (mỗi bài
     # khoảng 330 token khi gom lô). Vượt hạn mức thì bài chỉ còn quy tắc dự phòng (relevance_rules.has_film_context). 0 = tắt.
-    # Tên env cũ (KIRA_POST_RELEVANCE_DAILY_CAP) vẫn được đọc để file .env đang chạy không bị đổi hành vi.
-    ai_post_relevance_daily_cap: int = Field(
-        default=30000, validation_alias=AliasChoices("AI_POST_RELEVANCE_DAILY_CAP", "KIRA_POST_RELEVANCE_DAILY_CAP")
-    )
+    ai_post_relevance_daily_cap: int = 30000
 
     # False: ingest KHÔNG hỏi AI độ liên quan mà lưu bài ngay theo tín hiệu phim/từ khoá; scripts/jobs/relabel_post_relevance.py
-    # --follow gán lại nhãn ở nền. Dùng khi model chậm (từng làm Kafka tồn hàng chục nghìn message). Tên env cũ
-    # KIRA_INGEST_RELEVANCE vẫn được đọc (VPS đang đặt false).
-    ai_ingest_relevance: bool = Field(
-        default=True, validation_alias=AliasChoices("AI_INGEST_RELEVANCE", "KIRA_INGEST_RELEVANCE")
-    )
+    # --follow gán lại nhãn ở nền. Dùng khi model chậm (từng làm Kafka tồn hàng chục nghìn message).
+    # Mặc định False vì AI đang tạm dừng.
+    ai_ingest_relevance: bool = False
 
     # True: lọc bài liên quan hoàn toàn bằng luật, không AI (relevance_rules.mentions_film_manual/no_diacritics_reason):
     # khớp tên phim / viết tắt / từ khoá thì liên quan, phần chữ không có dấu tiếng Việt thì loại thẳng.
-    # scripts/jobs/relabel_post_relevance.py khi đó tạm dừng phần Kira; --rules áp luật cho bài đang chờ.
-    # Bài chỉ nhắc phim qua hashtag nhét cuối caption (relevance_rules.hashtag_only_mention) -> lưu nhưng ẩn. Tắt mặc định
-    # tới khi độ chính xác đủ (dry-run ~50%).
-    hashtag_only_filter: bool = False
+    # scripts/jobs/relabel_post_relevance.py khi đó tạm dừng phần AI; --rules áp luật cho bài đang chờ.
     relevance_rules_only: bool = False
 
     # Lịch crawl Facebook theo hai phần hạn mức (app/services/crawl/crawl_lanes.py, 27/10/2026): mỗi giờ chạy của lịch là một
@@ -195,7 +186,7 @@ class Settings(BaseSettings):
     # Ngoài lượt buổi sáng, sau mỗi lượt ShortVid lại duyệt hashtag BFS mới - cách nhau ít nhất chừng này giờ.
     hashtag_discovery_after_shortvid_hours: float = 2
 
-    # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài Kira gán "related" cũng phải có
+    # Phim "chặt": tên phim trùng cụm từ thông dụng, nên kể cả bài AI gán "related" cũng phải có
     # tín hiệu gắn với đúng phim (relevance_rules.film_context_reason: đạo diễn/diễn viên, "phim
     # <tên>", từ điện ảnh sát tên phim...) mới được hiện. Danh sách slug cách nhau bằng dấu phẩy.
     # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
@@ -234,8 +225,6 @@ class Settings(BaseSettings):
     shortvid_requests_per_hour: int = 0
     shortvid_requests_per_minute: int = 60
     shortvid_daily_reserve: int = 50
-    # False (mặc định): mỗi lượt dùng hết hạn mức còn lại liên tục; True: rải đều hạn mức ngày theo giờ.
-    shortvid_spread_daily: bool = False
     # Số request ShortVid chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
     shortvid_concurrency: int = 8
     # Video ShortVid đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem shortvid_tiktok._claim_unseen.

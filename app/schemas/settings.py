@@ -32,8 +32,7 @@ class AccountOut(BaseModel):
     updated_at: datetime
     last_checked_at: datetime | None = None
     last_check_status: str | None = None
-    # Chẩn đoán do AI sinh ra (xem diagnose_account_failure trong clients/kira.py của
-    # spider-hub) mỗi khi tài khoản này bị tắt cứng - được xoá về null ở lần đăng nhập
+    # Ghi chú chẩn đoán mỗi khi tài khoản này bị tắt cứng - được xoá về null ở lần đăng nhập
     # thành công kế tiếp.
     last_check_note: str | None = None
     # Pool / circuit-breaker + ghim proxy cố định - do spider-hub ghi (services/pool.py,
@@ -397,9 +396,9 @@ class CronJob(BaseModel):
 
 
 # --- Hành vi proxy -------------------------------------------------------
-# Giống DEFAULTS trong social_crawler/db/proxy_settings.py của spider-hub - giá trị mặc
-# định của các trường bên dưới CHÍNH LÀ giá trị dự phòng spider-hub dùng khi thiếu
-# key, nên khi thêm key phải giữ hai bên đồng bộ. Lưu thành một object jsonb trong dòng
+# NGUỒN SỰ THẬT DUY NHẤT của cấu hình cào: spider-hub không có giá trị mặc định riêng mà
+# chỉ đọc dòng proxy_settings; cinemark-api ghi đủ mọi khoá (mặc định bên dưới) khi khởi
+# động (platform_config_db.ensure_proxy_settings_complete). Lưu thành một object jsonb trong dòng
 # singleton proxy_settings (xem platform_config_db.get_proxy_settings).
 
 
@@ -439,8 +438,8 @@ class ProxySettings(BaseModel):
     # Cập nhật số bài booking Facebook bằng trang không đăng nhập (consumer/jobs/post_metrics.py của spider-hub). Tắt thì
     # spider-hub đẩy các bài đó sang page_feed có đăng nhập như trước.
     fb_logged_out_metrics_enabled: bool = True
-    # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Giữ đồng bộ với DEFAULTS trong
-    # social_crawler/db/proxy_settings.py của spider-hub.
+    # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Đây là nguồn sự thật duy nhất: spider-hub chỉ đọc dòng
+    # proxy_settings mà cinemark-api ghi đủ khi khởi động (platform_config_db.ensure_proxy_settings_complete).
     youtube_lanes: int = Field(default=16, ge=1, le=64)
     youtube_filter_concurrency: int = Field(default=6, ge=1, le=12)
     youtube_search_pages: int = Field(default=30, ge=1, le=200)
@@ -466,6 +465,31 @@ class ProxySettings(BaseModel):
     public_comments_daily_cap: int = Field(default=400, ge=1, le=100000)
     public_comments_interval_seconds: float = Field(default=5.0, ge=1, le=600)
     public_comments_max_requests: int = Field(default=400, ge=1, le=100000)
+    # Proxy công khai (không tài khoản) - trước 17/11/2026 là biến .env FB_PUBLIC_PAGES_*, THREADS_CHANNEL_*, FB_LOGGED_OUT_*, ...;
+    # .env không còn được đọc, sửa ở Settings › Proxy của dashboard.
+    fb_public_discovery_proxy_id: int = Field(default=31, ge=1, le=1000000)
+    fb_public_pages_block_strikes: int = Field(default=3, ge=1, le=20)
+    fb_public_pages_cooldown_minutes: int = Field(default=120, ge=1, le=1440)
+    fb_public_pages_max_pages: int = Field(default=0, ge=0, le=1000)
+    fb_public_pages_since_days: int = Field(default=60, ge=1, le=3650)
+    fb_public_pages_window_days: int = Field(default=7, ge=0, le=365)
+    fb_public_pages_ip_check_seconds: int = Field(default=60, ge=5, le=3600)
+    fb_public_pages_request_interval: float = Field(default=3.0, ge=0.0, le=120.0)
+    fb_public_pages_max_pace: int = Field(default=8, ge=1, le=64)
+    fb_public_pages_min_rest_seconds: int = Field(default=300, ge=0, le=86400)
+    fb_public_pages_doc_id: str = Field(default="", max_length=64)
+    fb_public_yield_to_search: bool = False
+    threads_channel_since_days: int = Field(default=30, ge=1, le=3650)
+    threads_channel_max_pages: int = Field(default=20, ge=1, le=500)
+    threads_channel_request_interval: float = Field(default=3.0, ge=0.0, le=120.0)
+    threads_channel_cooldown_minutes: int = Field(default=30, ge=1, le=1440)
+    threads_channel_rotating_retries: int = Field(default=3, ge=0, le=20)
+    fb_logged_out_proxy_ids: str = Field(default="", max_length=200)
+    fb_logged_out_delay_seconds: float = Field(default=4.0, ge=0.0, le=120.0)
+    fb_logged_out_jitter_seconds: float = Field(default=2.0, ge=0.0, le=60.0)
+    fb_logged_out_block_strikes: int = Field(default=3, ge=1, le=20)
+    fb_logged_out_cooldown_minutes: int = Field(default=60, ge=1, le=1440)
+    youtube_proxy_rest_seconds: int = Field(default=600, ge=10, le=86400)
 
 
 class ProxySettingsOut(BaseModel):

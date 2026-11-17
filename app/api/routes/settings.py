@@ -327,26 +327,9 @@ async def delete_proxy(proxy_id: int) -> dict[str, bool]:
     return {"ok": True}
 
 
-_RENAMED_PROXY_SETTINGS = {"provider_min_get_new_interval_seconds": "provider_min_call_interval_seconds"}
-
-
 def _proxy_settings_out(row: dict) -> ProxySettingsOut:
-    # Key lạ/cũ bị bỏ qua; giá trị đã lưu mà không còn qua được kiểm tra (ví dụ giới hạn
-    # bị siết lại sau này) thì quay về mặc định thay vì làm cả trang Settings lỗi 500.
-    stored = dict(value) if isinstance(value := row.get("settings"), dict) else {}
-    # Key đã đổi tên (spider-hub db/proxy_settings.RENAMED_KEYS): giá trị lưu dưới tên cũ vẫn hiện và vẫn có hiệu lực
-    # cho tới lần lưu kế tiếp (lần lưu đó ghi tên mới).
-    for old, new in _RENAMED_PROXY_SETTINGS.items():
-        if old in stored and new not in stored:
-            stored[new] = stored[old]
-    merged = ProxySettings().model_dump()
-    for key, value in stored.items():
-        if key not in merged:
-            continue
-        try:
-            merged[key] = getattr(ProxySettings.model_validate({key: value}), key)
-        except PydanticValidationError:
-            logger.warning("proxy_setting_invalid_stored_value", key=key)
+    settings = row.get("settings") if isinstance(row.get("settings"), dict) else {}
+    merged = db.merge_proxy_settings(settings)
     return ProxySettingsOut(values=ProxySettings(**merged), defaults=ProxySettings(), updated_at=row.get("updated_at"))
 
 

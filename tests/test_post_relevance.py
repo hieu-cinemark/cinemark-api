@@ -1,4 +1,4 @@
-"""app/ai/tasks/post_relevance.py với Kira và Redis được thay bằng bản giả."""
+"""app/ai/tasks/post_relevance.py với AI và Redis được thay bằng bản giả."""
 
 from __future__ import annotations
 
@@ -49,13 +49,13 @@ def _classify(content: str = "Và đây là Lan Trinh trong Án Mạng Xém Hoà
         "platform": "threads",
         "other_titles": OTHER,
     }
-    return post_relevance.classify_post_relevance_kira(**{**defaults, **kwargs})
+    return post_relevance.classify_post_relevance(**{**defaults, **kwargs})
 
 
 def _reply_with(monkeypatch: pytest.MonkeyPatch, answer, seen: list | None = None) -> None:
     """answer: một Exception, một chuỗi thô, hoặc fn(post_count) -> danh sách kết quả."""
 
-    async def fake_call_kira(**kwargs):
+    async def fake_call_ai(**kwargs):
         if seen is not None:
             seen.append(kwargs)
         if isinstance(answer, Exception):
@@ -65,7 +65,7 @@ def _reply_with(monkeypatch: pytest.MonkeyPatch, answer, seen: list | None = Non
         count = len(re.findall(r"^\[\d+\] TARGET FILM", kwargs["user_prompt"], flags=re.MULTILINE))
         return json.dumps({"results": answer(count)})
 
-    monkeypatch.setattr(post_relevance, "call_llm", fake_call_kira)
+    monkeypatch.setattr(post_relevance, "call_llm", fake_call_ai)
 
 
 def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
@@ -85,7 +85,7 @@ def test_concurrent_posts_share_one_call(monkeypatch, fake_redis) -> None:
     assert len(seen) == 1
     call = seen[0]
     assert call["task"] == "post_relevance"
-    assert "force" not in call  # tôn trọng công tắc bật/tắt Kira trên dashboard
+    assert "force" not in call  # tôn trọng công tắc bật/tắt AI trên dashboard
     assert "[1] TARGET FILM: Án Mạng Karaoke" in call["user_prompt"]
     assert (
         "OTHER TRACKED FILMS (a post about one of these is not about its target): Án Mạng Xém Hoàn Hảo"

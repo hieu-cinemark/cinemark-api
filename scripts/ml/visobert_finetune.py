@@ -1,4 +1,4 @@
-"""Fine-tune ViSoBERT sentiment bằng chính nhãn Jev/Kira đã có trong D1 - bản 5CD-AI có sẵn (huấn luyện trên đánh giá
+"""Fine-tune ViSoBERT sentiment bằng chính nhãn AI đã có trong D1 - bản 5CD-AI có sẵn (huấn luyện trên đánh giá
 sản phẩm) chỉ khớp ~40% với nhãn của mình trên bình luận phim (đo 2026-10-15: gần như không bao giờ trả neutral, chấm
 "positive 1.00" cho câu chê thẳng). Model sau fine-tune lưu ở models/visobert-cinemark/ (không commit), dùng bởi
 scripts/jobs/visobert_label.py.

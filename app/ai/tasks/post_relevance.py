@@ -99,7 +99,7 @@ async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
         )
         parsed = parse_json_response(response)
     except Exception as exc:  # noqa: BLE001 - fail open, bên gọi giữ lại các bài
-        logger.warning("kira_post_relevance_failed", error=exc, batch_size=len(jobs))
+        logger.warning("ai_post_relevance_failed", error=exc, batch_size=len(jobs))
         return [None] * len(jobs)
 
     results = parsed.get("results") if isinstance(parsed, dict) else None
@@ -111,7 +111,7 @@ async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
     missing = verdicts.count(None)
     log = logger.warning if missing else logger.info
     log(
-        "kira_post_relevance_batch",
+        "ai_post_relevance_batch",
         batch_size=len(jobs),
         missing=missing,
         latency_ms=round((time.monotonic() - started) * 1000),
@@ -136,7 +136,7 @@ class _Batcher:
             self._loop = loop
             self._queue = asyncio.Queue()
             self._in_flight = asyncio.Semaphore(MAX_BATCHES_IN_FLIGHT)
-            self._collector = loop.create_task(self._collect(), name="kira-post-relevance-batcher")
+            self._collector = loop.create_task(self._collect(), name="ai-post-relevance-batcher")
         assert self._queue is not None
         return self._queue
 
@@ -178,21 +178,21 @@ async def _within_daily_cap() -> bool:
         return False
     from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 
-    key = f"{REDIS_KEY_PREFIX}kira_post_relevance:{datetime.now(tz=UTC):%Y-%m-%d}"
+    key = f"{REDIS_KEY_PREFIX}ai_post_relevance:{datetime.now(tz=UTC):%Y-%m-%d}"
     try:
         client = get_redis_client()
         count = await client.incr(key)
         if count == 1:
             await client.expire(key, 2 * 24 * 3600)
     except Exception as exc:  # noqa: BLE001 - không có bộ đếm thì không tốn chi phí
-        logger.warning("kira_post_relevance_cap_check_failed", error=exc)
+        logger.warning("ai_post_relevance_cap_check_failed", error=exc)
         return False
     if count == cap + 1:
-        logger.warning("kira_post_relevance_daily_cap_reached", cap=cap)
+        logger.warning("ai_post_relevance_daily_cap_reached", cap=cap)
     return count <= cap
 
 
-async def classify_post_relevance_kira(
+async def classify_post_relevance(
     *,
     content: str | None,
     movie: dict[str, Any],
@@ -201,7 +201,7 @@ async def classify_post_relevance_kira(
     other_titles: list[str],
 ) -> Verdict | None:
     """{"label": related|not_related|uncertain, "confidence": float, "reason": str},
-    hoặc None khi Kira đang tắt, vượt giới hạn ngày, không kết nối được hoặc trả lời
+    hoặc None khi AI đang tắt, vượt giới hạn ngày, không kết nối được hoặc trả lời
     sai định dạng. Được gom lô chung với các bài khác đang phân loại cùng lúc."""
     if not content or not content.strip() or not movie.get("title"):
         return None

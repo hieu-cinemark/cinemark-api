@@ -19,23 +19,50 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
-import time
-import unicodedata
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Column, Integer, Table, Text, and_, func, insert, or_, select, text, update
-from sqlalchemy.schema import CreateTable
+from sqlalchemy import and_, func, insert, or_, select, update
 
 from app.clients.d1 import _configured, d1_query
 from app.core.logging import get_logger
-from app.repositories.d1.sql import d1_exec, metadata
+from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import ENGAGEMENT_COLUMNS, comments, keywords, movies, post_engagement_snapshots, posts
 from app.services.crawl.platforms import PostDraft, registered_platforms
 
 logger = get_logger(__name__)
+
+# Đã tách ra module riêng (17/11/2026) - import + re-export để code cũ `from ...posts import X` chạy như cũ.
+from app.repositories.d1.author_reputation import (  # noqa: F401
+    _REPUTABLE_AUTHORS_TTL_SECONDS,
+    MIN_MOVIES_FOR_REPUTABLE_AUTHOR,
+    _author_reputation_ready,
+    _reputable_authors_cache,
+    author_reputation,
+    ensure_author_reputation_table,
+    reputable_authors,
+)
+from app.repositories.d1.post_matching import (  # noqa: F401
+    _HASHTAG_STRIP,
+    _HASHTAG_TOKEN_RE,
+    _VIETNAMESE_COMBINING_MARKS,
+    _fold_for_keyword_match,
+    _keyword_match_parts,
+    _looks_vietnamese,
+    _tag_form,
+    contains_keyword,
+    movie_hashtag_present,
+    post_mentions_movie,
+)
+from app.repositories.d1.post_raw import (  # noqa: F401
+    _IMAGE_URL_HINTS,
+    _VIDEO_URL_HINTS,
+    RAW_JSON_KEEP,
+    _hydrate_post_rows,
+    _is_preview_image_url,
+    trim_post_raw,
+)
 
 ENGAGEMENT_FIELDS = ENGAGEMENT_COLUMNS
 
@@ -60,7 +87,6 @@ ENGAGEMENT_SCORE_SQL = (
 )
 
 # Bỏ khoảng trắng / dấu câu để "#Anh Hùng" và "#AnhHung" đều khớp tên phim "Anh Hùng".
-_HASHTAG_STRIP = re.compile(r"[\s._-]+")
 
 # "Bài này được tính là nói về phim của nó" cho các query report/danh sách top/quét
 # comment. relevance_label chỉ được ghi khi bộ phân loại thực sự chạy: bài được nhận
@@ -196,295 +222,6 @@ async def ensure_tab_filter_indexes() -> None:
     dưới dạng task nền là an toàn - IF NOT EXISTS, timeout 90s."""
     for sql in _TAB_FILTER_INDEXES:
         await d1_query(sql, quiet=True, timeout=90.0)
-
-
-def post_mentions_movie(content: str | None, title: str | None) -> bool:
-    """True khi nội dung bài chứa đầy đủ tên phim, hoặc hashtag của tên đó đã bỏ khoảng
-    trắng (#AnhHùng cho "Anh Hùng")."""
-    if not content or not title:
-        return False
-    text = content.casefold()
-    name = title.strip().casefold()
-    if len(name) < 2:
-        return False
-    if name in text:
-        return True
-    compact = _HASHTAG_STRIP.sub("", name)
-    if len(compact) < 2:
-        return False
-    compact_text = _HASHTAG_STRIP.sub("", text)
-    return f"#{compact}" in compact_text
-
-
-def _fold_for_keyword_match(text: str) -> str:
-    """Chuyển chữ thường, bỏ dấu tiếng Việt, bỏ khoảng trắng - chuyển từ
-    foldForKeywordMatch() trong src/lib/keyword-match.ts của cinemark-scraper để bài
-    ingest ở đây tính keyword_match giống với các bài khác trong cùng bảng, bất kể nền
-    tảng nào crawl."""
-    decomposed = unicodedata.normalize("NFD", text)
-    without_marks = "".join(c for c in decomposed if not unicodedata.combining(c))
-    without_dd = without_marks.replace("đ", "d").replace("Đ", "D")
-    return re.sub(r"\s+", "", without_dd.lower())
-
-
-def _keyword_match_parts(keyword: str) -> list[str]:
-    """Từ khoá thường -> một cụm phải xuất hiện đầy đủ; từ khoá nối bằng `+` -> mọi phần
-    đều phải xuất hiện (thứ tự nào cũng được) - giống keywordMatchParts() trong
-    keyword-match.ts."""
-    if "+" in keyword:
-        return [part.strip() for part in keyword.split("+") if part.strip()]
-    trimmed = keyword.strip()
-    return [trimmed] if trimmed else []
-
-
-def contains_keyword(content: str | None, keyword: str | None) -> bool:
-    """Kiểm tra keyword_match theo chuỗi con chính xác. Để public (không chỉ là phương án
-    dự phòng riêng của persist_post) để chỗ gọi - xem handle_post trong
-    app/workers/ingest_consumer/main.py - có thể kiểm tra lối khớp rẻ/miễn phí này trước
-    và chỉ tốn một lời gọi Kira (xem app/ai/tasks/post_relevance.py) cho những bài nó
-    thực sự bỏ sót, thay vì phân loại mọi bài bất kể kiểm tra miễn phí đã khớp hay chưa."""
-    if not content or not keyword:
-        return False
-    haystack = _fold_for_keyword_match(content)
-    parts = _keyword_match_parts(keyword)
-    if not parts:
-        return False
-    for part in parts:
-        needle = _fold_for_keyword_match(part)
-        if not needle or needle not in haystack:
-            return False
-    return True
-
-
-_HASHTAG_TOKEN_RE = re.compile(r"#(\w+)", re.UNICODE)
-_VIETNAMESE_COMBINING_MARKS = ("̛", "̣", "̉")  # dấu móc (ư/ơ), dấu nặng, dấu hỏi
-
-
-def _tag_form(text: str) -> str:
-    """Dạng đã fold (xem _fold_for_keyword_match) và bỏ mọi ký tự không phải chữ/số - đúng
-    dạng của một token hashtag."""
-    return re.sub(r"[\W_]+", "", _fold_for_keyword_match(text))
-
-
-def _looks_vietnamese(text: str) -> bool:
-    """Tín hiệu ngôn ngữ rẻ tiền, không phải bộ nhận diện thật: đ, cộng với dấu móc kết hợp
-    (ư/ơ) và dấu nặng/dấu hỏi (đã tách theo NFD), trên thực tế gần như chỉ có ở tiếng
-    Việt trong các ngôn ngữ thực sự xuất hiện trong dữ liệu crawl này - dấu huyền/sắc/ngã
-    đứng riêng thì trùng với tiếng Tây Ban Nha/Pháp/Bồ Đào Nha nên không dùng riêng ở
-    đây. Chỉ dùng làm tiêu chí phân xử cho tín hiệu yếu hơn của movie_hashtag_present
-    (token hashtag khớp chính xác nhưng ngắn/mơ hồ, không có tên phim nguyên văn ở đâu
-    cả) - một câu tiếng Việt thật có độ dài bình thường gần như luôn có ít nhất một dấu
-    này; nội dung tiếng nước ngoài thật sự không liên quan mà tình cờ dùng chung hashtag
-    ngắn đó thì không."""
-    if "đ" in text.lower():
-        return True
-    decomposed = unicodedata.normalize("NFD", text)
-    return any(mark in decomposed for mark in _VIETNAMESE_COMBINING_MARKS)
-
-
-# --- uy tín tác giả --------------------------------------------------------
-# Củng cố tín hiệu yếu nhất của movie_hashtag_present (chỉ khớp tên phim nguyên văn,
-# không có hashtag nào hỗ trợ) cho phim có tên cũng là từ vựng thông thường - xem
-# docstring của hàm đó về sự cố "Huyết Thống" mà phần này sinh ra để xử lý. Uy tín của
-# một tác giả được dựng bởi scripts/jobs/build_author_reputation.py bằng cách kiểm tra lại
-# các bài relevance_label='related' trước đây của chính họ chỉ với các tín hiệu MẠNH
-# của movie_hashtag_present (is_reputable_author mặc định False - xem tham số đó) -
-# không bao giờ dùng chính tín hiệu yếu mà bảng này dùng để củng cố, nên không có vòng
-# lặp: uy tín chỉ có được qua bằng chứng hashtag.
-
-MIN_MOVIES_FOR_REPUTABLE_AUTHOR = 2
-_REPUTABLE_AUTHORS_TTL_SECONDS = 300.0
-
-_author_reputation_ready = False
-author_reputation = Table(
-    "author_reputation",
-    metadata,
-    Column("platform", Text, primary_key=True),
-    Column("author", Text, primary_key=True),
-    Column("distinct_movies", Integer, nullable=False, server_default=text("0")),
-    Column("confirmed_posts", Integer, nullable=False, server_default=text("0")),
-    Column("updated_at", Text, nullable=False),
-)
-_reputable_authors_cache: tuple[float, set[tuple[str, str]]] | None = None
-
-
-async def ensure_author_reputation_table() -> None:
-    global _author_reputation_ready
-    if _author_reputation_ready:
-        return
-    await d1_exec(CreateTable(author_reputation, if_not_exists=True), quiet=True)
-    _author_reputation_ready = True
-
-
-async def reputable_authors() -> set[tuple[str, str]]:
-    """Tập {(platform, author)} đã được xác nhận trên >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR
-    phim khác nhau - cache trong tiến trình _REPUTABLE_AUTHORS_TTL_SECONDS giây (bảng
-    này chỉ đổi khi có người chạy lại script dựng, không đổi giữa các request, nên cache
-    ngắn giúp tránh thêm một lượt gọi D1 mỗi lần). Chỗ gọi kiểm tra
-    `(platform, author) in reputable_authors()` rồi truyền kết quả làm
-    is_reputable_author của movie_hashtag_present."""
-    global _reputable_authors_cache
-    now = time.monotonic()
-    if _reputable_authors_cache is not None and now - _reputable_authors_cache[0] < _REPUTABLE_AUTHORS_TTL_SECONDS:
-        return _reputable_authors_cache[1]
-    await ensure_author_reputation_table()
-    rows = await d1_exec(
-        select(author_reputation.c.platform, author_reputation.c.author).where(
-            author_reputation.c.distinct_movies >= MIN_MOVIES_FOR_REPUTABLE_AUTHOR
-        )
-    )
-    result = {(r["platform"], r["author"]) for r in (rows or [])}
-    _reputable_authors_cache = (now, result)
-    return result
-
-
-def movie_hashtag_present(
-    content: str | None, movie_title: str | None, keyword: str | None, *, is_reputable_author: bool = False
-) -> bool:
-    """Bản chặt hơn của post_mentions_movie/contains_keyword, cho các chỗ gọi chỉ muốn tin
-    relevance_label='related' (một phán quyết của AI hoặc chuỗi con - xem docstring của
-    persist_post: keyword_match chỉ là bản sao của relevance_label mỗi khi AI thực sự
-    được gọi, KHÔNG phải bằng chứng củng cố độc lập) khi chính nội dung bài cũng nêu tên
-    phim này một cách độc lập. Ba tín hiệu, mạnh nhất trước:
-
-    1. Dạng hashtag bỏ khoảng trắng của tên phim (ví dụ "#HoangHauCuoiCung" cho "Hoàng
-       Hậu Cuối Cùng") xuất hiện nguyên văn - hashtag có chủ đích TOÀN BỘ tên phim, được
-       tin bất kể ai đăng.
-
-    2. Một TOKEN hashtag nguyên vẹn có dạng fold (xem _fold_for_keyword_match - không
-       phân biệt dấu/hoa thường/khoảng trắng) bằng đúng tên phim hoặc từ khoá đã cấu hình
-       (cũng ở dạng fold). Cố ý so sánh nguyên token, không chứa chuỗi con như
-       contains_keyword: một từ khoá ngắn/chung chung sau khi fold (ví dụ "Mẹ Mìn" thành
-       "memin") có thể tình cờ là CHUỖI CON của một hashtag dài hơn hoàn toàn không liên
-       quan (đã xác nhận thực tế các bài
-       "#botanasmemin"/"#echatelabotanaconbotanasmemin" của một hãng snack Mexico đạt
-       99%+ "related" chỉ vì trùng hợp đó). Vẫn cần thêm _looks_vietnamese(content):
-       "#memin" CŨNG là một biệt danh/hình ảnh văn hoá có sẵn trong tiếng Tây Ban Nha
-       (một nhân vật truyện tranh Mexico kinh điển) dùng đúng token đó, chứ không chỉ là
-       chuỗi con - xem docstring của hàm đó.
-
-    3. Tên phim nguyên văn xuất hiện ở bất cứ đâu trong văn bản tự do, không có hashtag
-       nào hỗ trợ - đáng tin với tên phim tự đặt (gần như không bao giờ tình cờ xuất
-       hiện), không đáng tin khi tên phim cũng là từ vựng thông thường. Đã xác nhận thực
-       tế "Huyết Thống" - nghĩa đen là quan hệ máu mủ - khớp với một bài về
-       mâu thuẫn gia đình không liên quan của một người lạ trên Threads với độ tin
-       "related" 99,9% từ CẢ kiểm tra chuỗi con lẫn bộ phân loại AI, vì cụm từ trơ trọi
-       đó tự nó không mang tín hiệu riêng nào về phim. Chỉ được tin khi
-       is_reputable_author là True (xem reputable_authors) - tài khoản có thành tích độc
-       lập về nội dung phim thật trên cả *các* phim khác, qua tín hiệu 1/2 ở trên, không
-       bao giờ qua chính tín hiệu yếu này (không có vòng lặp). Một tài khoản lần đầu/chỉ
-       đăng một lần mà có đúng khẳng định này thì tự nó chưa đủ bằng chứng.
-
-    Đánh đổi, chấp nhận có chủ đích (xem docstring của các chỗ gọi): một bài thật sự
-    liên quan mà không dùng tên phim nguyên văn, không có hashtag bằng tên phim, cũng
-    không đến từ tài khoản có uy tín - chỉ có tên diễn viên, một tag ghép như
-    "#PhimMeMin", hoặc biệt danh - cũng sẽ không qua được. Đó chính là mục đích với các
-    chỗ gọi dùng hàm này (danh sách "top 100", lượt quét comment hằng ngày và tạo
-    report) - ít kết quả hơn nhưng đúng chủ đề hơn, thay vì cố lấy cho đủ."""
-    if not content:
-        return False
-    text = content.casefold()
-    name = (movie_title or "").strip().casefold()
-
-    if len(name) >= 2:
-        compact = _HASHTAG_STRIP.sub("", name)
-        if len(compact) >= 2 and f"#{compact}" in _HASHTAG_STRIP.sub("", text):
-            return True
-
-    # Dùng _tag_form, không dùng _fold_for_keyword_match trần: token hashtag được tách ra
-    # không có "#" và không chứa dấu câu, nên đích so sánh cũng phải bỏ cả hai - nếu
-    # không, từ khoá dạng hashtag ("#ScottyGiaiCuuHoangThuong" -> "#scotty...") hoặc tên
-    # phim có dấu câu ("SCOTTY: GIẢI CỨU..." -> "scotty:...") sẽ không bao giờ khớp.
-    folded_targets = {_tag_form(t) for t in (movie_title, keyword) if t}
-    folded_targets.discard("")
-    if folded_targets:
-        tags = {_tag_form(tag) for tag in _HASHTAG_TOKEN_RE.findall(content)}
-        if (tags & folded_targets) and _looks_vietnamese(content):
-            return True
-
-    if len(name) >= 2 and name in text:
-        return is_reputable_author
-
-    return False
-
-
-# Khoá của raw_json bài đang được đọc (json_extract ở đây và ở cinemark). Bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer):
-# lưu cả khối trên D1 khiến mọi truy vấn json_extract phải đọc thêm nhiều trang (D1 đã ~7,6 GB).
-RAW_JSON_KEEP = ("reactions", "collect_count", "author_name", "author_followers", "media_url", "cover_url")
-
-
-def trim_post_raw(raw: Any) -> dict[str, Any] | None:
-    if not isinstance(raw, dict):
-        return None
-    return {key: raw[key] for key in RAW_JSON_KEEP if raw.get(key) is not None} or None
-
-
-# Video phát được / permalink không đặt vào <img> được. Các dòng TikTok cũ lưu playAddr
-# làm media_url và chỉ để cover_url trong raw_json.
-_VIDEO_URL_HINTS = (
-    ".mp4",
-    ".m3u8",
-    "/video/tos/",
-    "webapp-prime.tiktok.com",
-    "facebook.com/reel/",
-    "facebook.com/watch",
-    "facebook.com/share/v",
-    "facebook.com/video",
-    "tiktok.com/@",
-    "threads.com/@",
-    "threads.net/@",
-)
-_IMAGE_URL_HINTS = (
-    "fbcdn.net",
-    "cdninstagram.com",
-    "tiktokcdn",
-    "byteicdn",
-    "ibyteimg",
-    "byteimg.com",
-    "muscdn.com",
-    "scontent",
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".gif",
-)
-
-
-def _is_preview_image_url(url: Any) -> bool:
-    if not isinstance(url, str) or not url.startswith("http"):
-        return False
-    lower = url.lower()
-    if any(hint in lower for hint in _VIDEO_URL_HINTS):
-        return False
-    return any(hint in lower for hint in _IMAGE_URL_HINTS)
-
-
-def _hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    out = rows or []
-    for row in out:
-        media = json.loads(row.pop("media_json") or "{}")
-        raw_cover = row.pop("raw_cover_url", None)
-        row["media_type"] = media.get("media_type")
-        candidates = (
-            media.get("cover_url"),
-            raw_cover,
-            media.get("thumbnail_url"),
-            media.get("media_url"),
-        )
-        row["media_url"] = next((url for url in candidates if _is_preview_image_url(url)), None)
-        quoted = media.get("quoted") if isinstance(media.get("quoted"), dict) else None
-        row["quoted"] = (
-            {
-                "author": quoted.get("author"),
-                "content": quoted.get("content"),
-                "url": quoted.get("url"),
-                "media_url": quoted.get("media_url") if _is_preview_image_url(quoted.get("media_url")) else None,
-            }
-            if quoted
-            else None
-        )
-    return out
 
 
 _POST_REF = (posts.c.id, posts.c.platform, posts.c.external_id, posts.c.url)
@@ -814,8 +551,8 @@ class PostRepository:
         tảng nào.
 
         `ai_relevant`, khi có (xem app/ai/tasks/post_relevance.py), là phán quyết "related"
-        của Kira và được dùng cho keyword_match thay cho kiểm tra chuỗi con chính xác
-        contains_keyword bên dưới - chỗ gọi truyền None để quay về kiểm tra chuỗi con (Kira
+        của AI và được dùng cho keyword_match thay cho kiểm tra chuỗi con chính xác
+        contains_keyword bên dưới - chỗ gọi truyền None để quay về kiểm tra chuỗi con (AI
         không chắc, đang tắt, vượt hạn mức ngày, hoặc lời gọi thất bại) thay vì chặn việc
         ingest chỉ vì bộ phân loại trục trặc.
 
@@ -915,7 +652,7 @@ class PostRepository:
         # lần crawl lại một bài đã có (chỉ cập nhật tương tác), và nội dung không đổi nghĩa là
         # đi lại đúng đường contains_keyword/phân loại như trước, mà đường đó có thể trả None
         # một cách hợp lệ ở đây (chỉ khớp chuỗi con đã quyết định, không có phán quyết của
-        # Kira) - ghi đè thẳng sẽ xoá mất một nhãn thật mà lượt quét theo lô (hoặc lần phân
+        # AI) - ghi đè thẳng sẽ xoá mất một nhãn thật mà lượt quét theo lô (hoặc lần phân
         # loại lúc ingest trước đó) đã đặt.
         updated = await d1_exec(
             update(posts)

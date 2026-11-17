@@ -134,7 +134,7 @@ async def classify_comments(
     home_model: bool = True,
 ) -> list[CommentLabel | None]:
     """Cùng độ dài/thứ tự với `messages`: {"sentiment", "aspects", "stage"}, hoặc None với tin nhắn quá ngắn để
-    phân loại, khi Kira đang tắt, hoặc khi lời gọi của lô đó lỗi. `films` (cùng độ dài, tuỳ chọn) là dòng movies của
+    phân loại, khi AI đang tắt, hoặc khi lời gọi của lô đó lỗi. `films` (cùng độ dài, tuỳ chọn) là dòng movies của
     phim mà mỗi comment nằm dưới - để AI nhận ra diễn viên/nhân vật và biết phim đã ra rạp chưa."""
     labels: list[CommentLabel | None] = [None] * len(messages)
     todo = [(i, m.strip()) for i, m in enumerate(messages) if m is not None and _classifiable(m)]

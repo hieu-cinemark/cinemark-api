@@ -171,7 +171,7 @@ async def publish_crawl_request(
     # kèm tên phim để câu kiểu "đi xem <tên phim>" không làm mất bài chỉ nhắc tên phim.
     if platform in ("facebook", "threads") and (terms := await _match_terms_for_keyword(keyword_id)):
         value["match_terms"] = terms
-    # Spider hashtag của TikTok hỏi Kira hashtag nào đi cùng là của phim (BFS) - kèm thông tin phim để nó nhận ra tên
+    # Spider hashtag của TikTok hỏi AI hashtag nào đi cùng là của phim (BFS) - kèm thông tin phim để nó nhận ra tên
     # diễn viên/nhân vật ("#nadechkugimiya", diễn viên chính Quỷ Ăn Tạng 4, bị chấm "generic").
     if platform == "tiktok" and (movie_context := await _movie_context_for_keyword(keyword_id)):
         value["movie_context"] = movie_context
@@ -205,7 +205,7 @@ async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
 
 async def _movie_context_for_keyword(keyword_id: str) -> str | None:
     """Khối thông tin phim (app/ai/domain/movie_context.py) của phim sở hữu từ khoá này, hoặc None khi không tra được -
-    thiếu nó thì spider vẫn chạy, chỉ là Kira chấm hashtag kém hơn."""
+    thiếu nó thì spider vẫn chạy, chỉ là AI chấm hashtag kém hơn."""
     from app.ai.domain.movie_context import movie_context_block
     from app.repositories.d1.store import movie_of_keyword
 

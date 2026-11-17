@@ -1,13 +1,13 @@
-"""Kira chấm "bài này có đáng cào comment không", cho comment_planner.
+"""AI chấm "bài này có đáng cào comment không", cho comment_planner.
 
 Hai lớp cũ (bài nóng theo tốc độ tương tác, mẫu phân tầng) không nhìn nội dung bài: bài minigame "comment tag 3 người
 bạn nhận vé" có hàng nghìn comment rác nên luôn đứng đầu lớp bài nóng, trong khi một bài review gây tranh cãi vừa phải
-có thể không bao giờ được chọn. Ở đây Kira đọc caption của các bài có nhiều comment chưa được chấm và cho điểm 0-100
+có thể không bao giờ được chọn. Ở đây AI đọc caption của các bài có nhiều comment chưa được chấm và cho điểm 0-100
 theo giá trị comment cho việc hiểu khán giả nghĩ gì về phim:
 - cao: review/cảm nhận, tranh luận khen chê, so sánh, hỏi đáp có nội dung, tin gây tranh cãi về phim/diễn viên;
 - thấp: minigame/giveaway/tag bạn bè, quảng cáo/đặt vé/khuyến mãi, bài không thật sự về phim.
 
-Mỗi bài chỉ chấm một lần (bảng post_comment_value, D1 scraper). Kira tắt/lỗi thì bài chưa có điểm và planner chạy
+Mỗi bài chỉ chấm một lần (bảng post_comment_value, D1 scraper). AI tắt/lỗi thì bài chưa có điểm và planner chạy
 như cũ."""
 
 from __future__ import annotations
@@ -116,8 +116,8 @@ async def judge_new_posts(rows: list[dict[str, Any]], scores: dict[str, int]) ->
             batch = movie_rows[start : start + BATCH_PER_MOVIE]
             try:
                 judged = await _judge_movie(batch[0].get("movie_title") or "", batch)
-            except Exception as exc:  # noqa: BLE001 - Kira tắt/lỗi: các bài này chấm ở lượt sau
-                logger.warning("comment_value_kira_failed", movie_id=batch[0]["movie_id"], error=str(exc)[:300])
+            except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: các bài này chấm ở lượt sau
+                logger.warning("comment_value_ai_failed", movie_id=batch[0]["movie_id"], error=str(exc)[:300])
                 break
             now = datetime.now(tz=UTC).isoformat()
             for post_id, verdict in judged.items():

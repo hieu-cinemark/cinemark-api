@@ -63,9 +63,9 @@ def test_drought():
 
 def test_wallet_alert_window():
     now_ts = NOW.timestamp()
-    assert ops_alerts.wallet_alert("kira", None, now_ts) is None
-    assert ops_alerts.wallet_alert("kira", now_ts - 600, now_ts).key == "ai_wallet:kira"
-    assert ops_alerts.wallet_alert("kira", now_ts - 2 * 3600, now_ts) is None
+    assert ops_alerts.wallet_alert("bee", None, now_ts) is None
+    assert ops_alerts.wallet_alert("bee", now_ts - 600, now_ts).key == "ai_wallet:bee"
+    assert ops_alerts.wallet_alert("bee", now_ts - 2 * 3600, now_ts) is None
 
 
 def test_wallet_error_detection():

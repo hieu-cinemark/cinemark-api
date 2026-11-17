@@ -1,17 +1,17 @@
 """Gán nhãn cảm xúc hàng loạt bằng ViSoBERT (5CD-AI/Vietnamese-Sentiment-visobert) chạy ở máy local - không tốn
-quota Jev/Kira, vài trăm câu mỗi giây trên GPU (MPS của Mac M1 / CUDA) hoặc CPU.
+quota AI, vài trăm câu mỗi giây trên GPU (MPS của Mac M1 / CUDA) hoặc CPU.
 
 Chỉ ghi cột sentiment (+ sentiment_source='visobert', sentiment_confidence) cho dòng sentiment IS NULL và chỉ khi
 model đủ chắc (--min-confidence; mặc định 0 = mọi câu khi bình luận không dùng AI - settings.comment_ai_enabled).
 Câu model không chắc (khi có ngưỡng) giữ NULL để AI gán. Khía cạnh/giai đoạn
-(aspects, audience_stage) không đụng tới: insights_classified_at vẫn NULL nên lượt bổ sung insights của Kira
+(aspects, audience_stage) không đụng tới: insights_classified_at vẫn NULL nên lượt bổ sung insights của AI
 (classify_pending(insights_only=True)) vẫn lấy được các dòng này sau. D1 là remote nên nhãn có hiệu lực ngay.
 
 Cần torch + transformers (không có trong requirements.txt - chỉ cài ở máy chạy script):
     pip install torch transformers
 
 Cách dùng:
-    python -m scripts.jobs.visobert_label --eval 3000                 # so với nhãn Jev/Kira đã có, không ghi gì
+    python -m scripts.jobs.visobert_label --eval 3000                 # so với nhãn AI đã có, không ghi gì
     python -m scripts.jobs.visobert_label --dry-run --limit 50        # in thử nhãn, không ghi
     python -m scripts.jobs.visobert_label                              # mọi comment chưa có nhãn, mới nhất trước
     python -m scripts.jobs.visobert_label --table posts --days 30      # nội dung bài liên quan tới phim
@@ -41,12 +41,12 @@ from app.repositories.d1.tables import posts as posts_table
 logger = get_logger(__name__)
 
 BASE_MODEL = "5CD-AI/Vietnamese-Sentiment-visobert"
-# Bản fine-tune bằng nhãn Jev/Kira (scripts/ml/visobert_finetune.py) - bản gốc chỉ khớp ~40% trên bình luận phim.
+# Bản fine-tune bằng nhãn AI (scripts/ml/visobert_finetune.py) - bản gốc chỉ khớp ~40% trên bình luận phim.
 FINETUNED_DIR = Path(__file__).resolve().parents[2] / "models" / "visobert-cinemark"
 LABELS = {"NEG": "negative", "POS": "positive", "NEU": "neutral"}
 SOURCE = "visobert"
 # Comment không mang nội dung (rỗng, sticker, emoji, tag tên, tiếng cười - rule_sentiment) ghi nguồn riêng để tách khỏi
-# nhãn model/Kira khi cần (vd. bỏ khỏi tỉ lệ cảm xúc).
+# nhãn model/AI khi cần (vd. bỏ khỏi tỉ lệ cảm xúc).
 RULE_SOURCE = "rule"
 MAX_TOKENS = 256
 POST_TEXT_LIMIT = 1200
@@ -154,7 +154,7 @@ async def _select(
 
 
 async def _save(table: str, labels: dict[str, tuple[str, float]], source: str = SOURCE) -> int:
-    """Một câu UPDATE cho cả khối qua json_each - chỉ dòng vẫn còn sentiment IS NULL (Jev/Kira ghi trước thì giữ)."""
+    """Một câu UPDATE cho cả khối qua json_each - chỉ dòng vẫn còn sentiment IS NULL (AI ghi trước thì giữ)."""
     if not labels:
         return 0
     payload = json.dumps([{"id": cid, "s": s, "c": c} for cid, (s, c) in labels.items()])
@@ -176,7 +176,7 @@ async def _save(table: str, labels: dict[str, tuple[str, float]], source: str = 
 
 
 async def evaluate(clf: Classifier, table: str, n: int) -> None:
-    """So với nhãn đã có (Jev/Kira, sentiment_source khác visobert): độ khớp theo từng ngưỡng tin cậy + ma trận nhầm."""
+    """So với nhãn đã có (AI, sentiment_source khác visobert): độ khớp theo từng ngưỡng tin cậy + ma trận nhầm."""
     cols = {row.get("name") for row in await d1_query(f"PRAGMA table_info({table})") or []}
     stmt, alias = _select_stmt(table, labeled=True)
     if "sentiment_source" in cols:
@@ -251,7 +251,7 @@ async def run(args: argparse.Namespace) -> None:
                 confident[row["id"]] = (label, conf)
                 totals[label] += 1
             else:
-                totals["low_confidence"] += 1  # để Jev/Kira
+                totals["low_confidence"] += 1  # để AI
         if args.dry_run:
             pred_by_id = {row["id"]: pred for row, pred in zip(model_rows, preds, strict=True)}
             for row in rows[:50]:
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     parser.add_argument("--table", choices=("comments", "posts"), default="comments")
     parser.add_argument("--model", help="đường dẫn/tên model (mặc định models/visobert-cinemark)")
     parser.add_argument("--eval", type=int, metavar="N", help="so N dòng đã có nhãn với ViSoBERT, không ghi gì")
-    # 0.7 từ 19/10/2026 (model fine-tune lại trên 94k nhãn): trên 3.000 nhãn Jev/Kira model chưa thấy, 0.7 phủ 94.9% khớp
+    # 0.7 từ 19/10/2026 (model fine-tune lại trên 94k nhãn): trên 3.000 nhãn AI model chưa thấy, 0.7 phủ 94.9% khớp
     # 96.6% - ngang model cũ ở 0.85 (phủ 84.5%, khớp 97.0%).
     parser.add_argument(
         "--min-confidence",

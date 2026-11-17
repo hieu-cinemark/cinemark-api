@@ -46,7 +46,7 @@ class IngestFunnel(BaseModel):
     received: int = 0
     new: int = 0
     updated: int = 0
-    # lý do -> số bài (non_vietnamese, kira_irrelevant, other_film, d1_write_failed, ...)
+    # lý do -> số bài (non_vietnamese, ai_irrelevant, other_film, d1_write_failed, ...)
     dropped: dict[str, int] = {}
 
 

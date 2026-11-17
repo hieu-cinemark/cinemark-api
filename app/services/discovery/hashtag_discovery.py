@@ -215,7 +215,7 @@ async def _record(
     )
 
 
-async def _ask_kira(
+async def _ask_ai(
     movie: dict[str, Any], candidates: list[dict[str, Any]], other_titles: Iterable[str]
 ) -> dict[str, dict[str, Any]]:
     others = [t for t in other_titles if t != movie.get("title")][:40]
@@ -352,7 +352,7 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
             and not any(other in tag for other in other_tags)
         }
         # Biến thể tự sinh (HoLinhTrangSiMovie, ChiChiEmEm32026...) phần lớn KHÔNG có trên TikTok - kiểm tra
-        # qua ShortVid trước khi hỏi Kira; không có thì ghi "rejected" (xét lại sau RECHECK_REJECTED_DAYS ngày). Hashtag đi kèm
+        # qua ShortVid trước khi hỏi AI; không có thì ghi "rejected" (xét lại sau RECHECK_REJECTED_DAYS ngày). Hashtag đi kèm
         # lấy từ video thật nên không cần kiểm tra.
         for tag, cand in list(cands.items()):
             if cand["source"] != "variant" or await hashtag_exists(cand["display"]) is not False:
@@ -371,10 +371,10 @@ async def run_discovery(*, dry_run: bool = False, movie_id: str | None = None) -
         batch = sorted(cands.values(), key=lambda c: (c["source"] != "variant", -c["seen"]))[:MAX_CANDIDATES_PER_MOVIE]
         stats["candidates"] += len(batch)
         try:
-            verdicts = await _ask_kira(movie, batch, titles)
-        except Exception as exc:  # noqa: BLE001 - Kira tắt/lỗi: phim này để lượt sau, không chặn phim khác
+            verdicts = await _ask_ai(movie, batch, titles)
+        except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: phim này để lượt sau, không chặn phim khác
             stats["failed"] += 1
-            logger.warning("hashtag_ai_kira_failed", movie_id=movie["id"], error=str(exc)[:300])
+            logger.warning("hashtag_ai_review_failed", movie_id=movie["id"], error=str(exc)[:300])
             continue
         stats["asked"] += 1
         added_here = 0

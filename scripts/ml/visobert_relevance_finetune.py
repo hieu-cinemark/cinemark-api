@@ -1,5 +1,5 @@
 """Fine-tune ViSoBERT thành model ĐỘ LIÊN QUAN của bài viết (bài có nói về phim đích không) - model nhà trồng chạy sau
-luật và trước AI (2026-10-22): bài model đủ chắc thì không tốn lời gọi AI, chỉ ca khó mới gọi Bee / Kira.
+luật và trước AI (2026-10-22): bài model đủ chắc thì không tốn lời gọi AI, chỉ ca khó mới gọi Bee.
 
 Dữ liệu: bài đã được AI gán nhãn (relevance_confidence trong (0, 1) - nhãn luật ghi 1.0 / NULL nên không học lại luật),
 3 nhãn related / not_related / uncertain. Đầu vào là CẶP (tên phim + từ khoá, nội dung bài) vì cùng một bài có thể liên

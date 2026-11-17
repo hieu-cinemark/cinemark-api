@@ -1,0 +1,592 @@
+"""Dữ liệu cho báo cáo Social Topic: mẫu bình luận/bài, thống kê khía cạnh, đếm cảm xúc và ghi báo cáo.
+
+Tách từ store.py (17/11/2026); store.py vẫn re-export mọi tên để code cũ chạy như cũ.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+import random
+import re
+import uuid
+from collections import Counter
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import Select, func, insert, literal_column, select, text, update
+from sqlalchemy.sql import ClauseElement
+
+from app.ai.domain.aspects import ASPECTS, DISCUSSION_ONLY_ASPECTS, STAGES
+from app.ai.tasks.sentiment_rules import rule_sentiment
+from app.clients.d1 import _configured
+from app.core.logging import get_logger
+from app.repositories.d1.comments import (
+    ensure_comment_insight_columns,
+)
+from app.repositories.d1.posts import (
+    MIN_CONTENT_LENGTH,
+    author_reputation,
+    ensure_author_reputation_table,
+    movie_hashtag_present,
+    relevant_post,
+    reputable_authors,
+)
+from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.tables import comments as comments_table
+from app.repositories.d1.tables import keywords, movies, social_topic_reports
+from app.repositories.d1.tables import posts as posts_table
+
+logger = get_logger(__name__)
+
+
+# Dưới số comment đã phân loại này, scripts/jobs/generate_social_topic_reports.py bỏ qua hẳn
+# một phim (quá ít tín hiệu để gom topic có ý nghĩa) - chỉnh thoải mái, không suy ra
+# từ đâu cả.
+MIN_COMMENTS_FOR_REPORT = 15
+
+# Trần số comment đưa vào một lời gọi AI gom topic - giữ prompt (và lượng token suy
+# luận của model) có giới hạn bất kể số comment của phim lớn tới đâu. Xếp hạng theo
+# tương tác trước, nên nếu phim có nhiều comment đã phân loại hơn mức này thì những
+# comment có tín hiệu cao nhất là những comment được giữ lại. Nâng 400 -> 800
+# cùng lúc bỏ khỏi mẫu các comment không mang ý kiến (chỉ tag bạn bè/emoji/quá ngắn - xem
+# rule_sentiment) và comment bị gắn not_related, nên 800 chỗ đều là comment có nội dung. Nâng 800 -> 2000 (
+# Bee claude-opus-4-8 viết report): 800 chỉ là ~2% bình luận của phim lớn (Trại Buôn Người ~43k), chủ đề nhỏ bị sót.
+# Tỉ lệ cảm xúc / khía cạnh vẫn tính trên toàn bộ bình luận (SQL) - mẫu chỉ phục vụ chủ đề / trích dẫn / nhận định.
+REPORT_COMMENT_SAMPLE_SIZE = 2000
+
+# Mỗi khía cạnh x chiều (vd. "dien_vien:-") được giữ trước chừng này comment trong mẫu, rồi mới rút phần còn lại theo tỉ
+# lệ - để khía cạnh ít người nhắc (âm nhạc, kỹ xảo...) vẫn có mặt cho AI gom thành chủ đề.
+REPORT_ASPECT_RESERVE = 12
+
+# Tối đa bấy nhiêu comment của cùng một bài trong mẫu - comment tới theo thứ tự tương tác,
+# nên không có trần này một bài viral có thể chiếm phần lớn mẫu và AI chỉ thấy một cuộc
+# thảo luận.
+REPORT_COMMENTS_PER_POST = 15
+
+# Số bài viết của khán giả (rút ngẫu nhiên, cùng cổng liên quan với mẫu comment) đưa vào lời gọi
+# gom topic như một nguồn ý kiến riêng - trên Threads/TikTok bản thân bài viết thường chính là ý
+# kiến của khán giả về phim, không chỉ là chỗ chứa comment.
+REPORT_POST_SAMPLE_SIZE = 150
+
+# Tác giả là "kênh" (studio, trang showbiz/tin phim - bài của họ chỉ làm ngữ cảnh, không phải ý
+# kiến khán giả) khi đã đăng về >= CHANNEL_MIN_MOVIES phim khác nhau, hoặc >= CHANNEL_MIN_POSTS
+# bài về cùng một phim. Đo 2026-10-07 với "Hoàng Hậu Cuối Cùng": 463/674 tác giả chỉ có 1 bài;
+# trang chính thức của phim có 27 bài, galaxystudiovn 92.
+CHANNEL_MIN_MOVIES = 3
+CHANNEL_MIN_POSTS = 4
+
+# Bài viết đưa cho AI được cắt tới bấy nhiêu ký tự - đủ để hiểu bài nói gì mà không để vài
+# bài dài chiếm hết prompt.
+REPORT_POST_TEXT_CHARS = 400
+
+# Comment bị bộ phân loại (batch 2026-09-24) gắn là không nói về phim - loại khỏi cả mẫu lẫn
+# tỉ lệ cảm xúc. Comment chưa có nhãn (NULL) vẫn được tính.
+# Giữ dạng text() vì điều kiện này nằm trong câu ghép với cột của bảng comments (alias c).
+_COMMENT_ABOUT_MOVIE_SQL = text("(c.relevance_label IS NULL OR c.relevance_label != 'not_related')")
+
+
+_SENTIMENT_BUCKETS = ("positive", "negative", "neutral")
+
+
+def _normalize_comment_text(message: str) -> str:
+    """Thu gọn một comment thành key khử trùng - chữ thường, gộp khoảng trắng. Bắt được các
+    bản copy-paste giống hệt/gần giống hệt (trại spam, nhóm bot đăng lại cùng một câu
+    dưới nhiều bài) mà không tốn chi phí/độ phức tạp của so khớp mờ thật sự - xem
+    docstring của get_report_sample_for_movie để biết vì sao điều này quan trọng với một
+    mẫu mà LLM coi là đại diện."""
+    # bỏ dấu câu / emoji và rút chữ kéo dài - "Phim hay quá!!!", "phim hayyy quá 😍" là một ý.
+    text = re.sub(r"[^\w\s]", " ", message.casefold())
+    text = re.sub(r"(\w)\1{2,}", r"\1", text)
+    return " ".join(text.split())
+
+
+def _aspect_tags(raw: Any) -> list[str]:
+    """Cột comments.aspects (JSON ["dien_vien:+", ...]) -> danh sách tag; hỏng / trống -> []."""
+    if not raw:
+        return []
+    try:
+        tags = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return []
+    return [str(tag) for tag in tags if isinstance(tag, str)] if isinstance(tags, list) else []
+
+
+def _stratified_sample(by_sentiment: dict[str, list[dict[str, Any]]], limit: int) -> list[dict[str, Any]]:
+    """Chọn `limit` dòng từ by_sentiment (trong mỗi nhóm lấy từ đầu danh sách - chỗ gọi đã
+    xáo ngẫu nhiên), giữ đúng tỉ lệ thật của từng nhóm trong tập ứng viên, không chỉ lấy nhóm
+    nào tình cờ có comment ồn ào/nhiều like nhất. Kết quả xếp theo like để dễ đọc. Xem
+    docstring của get_report_sample_for_movie để biết vì sao mẫu top-N theo tương tác làm
+    lệch lời gọi gom topic/narrative."""
+    total = sum(len(rows) for rows in by_sentiment.values())
+    if total <= limit:
+        combined = [row for rows in by_sentiment.values() for row in rows]
+        combined.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
+        return combined
+
+    # Phương pháp phần dư lớn nhất: hạn mức theo đúng tỉ lệ thật hiếm khi là số nguyên,
+    # nên làm tròn xuống phần của mỗi nhóm, rồi chia vài chỗ còn dư cho các nhóm có phần
+    # lẻ lớn nhất - giữ sum(quotas) == limit chính xác.
+    raw_quotas = {k: (len(v) / total) * limit for k, v in by_sentiment.items()}
+    quotas = {k: int(q) for k, q in raw_quotas.items()}
+    remainder = limit - sum(quotas.values())
+    for k in sorted(by_sentiment, key=lambda k: raw_quotas[k] - quotas[k], reverse=True)[:remainder]:
+        quotas[k] += 1
+
+    selected: list[dict[str, Any]] = []
+    shortfall = 0
+    for k, rows in by_sentiment.items():
+        take = min(quotas[k], len(rows))
+        selected.extend(rows[:take])
+        shortfall += quotas[k] - take
+
+    if shortfall > 0:
+        # Một nhóm không đủ hạn mức (quá ít tín hiệu thật ở cảm xúc đó) - bù bằng các ứng viên
+        # chưa được chọn (giữ thứ tự ngẫu nhiên của chỗ gọi), để mẫu vẫn dài đúng `limit` mỗi
+        # khi tổng các nhóm còn đủ ứng viên.
+        taken_ids = {row["id"] for row in selected}
+        leftover = [row for rows in by_sentiment.values() for row in rows if row["id"] not in taken_ids]
+        selected.extend(leftover[:shortfall])
+
+    selected.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
+    return selected
+
+
+async def _channel_authors() -> set[tuple[str, str]]:
+    """{(platform, author)} đã đăng về >= CHANNEL_MIN_MOVIES phim khác nhau - trang showbiz/tin phim/studio, không
+    phải khán giả. Ngưỡng cao hơn MIN_MOVIES_FOR_REPUTABLE_AUTHOR (2) vì một khán giả thường cũng có thể đăng về
+    hai phim."""
+    await ensure_author_reputation_table()
+    rows = await d1_exec(
+        select(author_reputation.c.platform, author_reputation.c.author).where(
+            author_reputation.c.distinct_movies >= CHANNEL_MIN_MOVIES
+        )
+    )
+    return {(r["platform"], r["author"]) for r in rows or []}
+
+
+# Phim lớn (Trại Buôn Người 26/10: 512 nghìn comment, 10 nghìn bài) không kéo nguyên khối về một lần được - D1 trả
+# quá chậm, d1_query hết giờ và trả None, report tưởng phim "0 comment". Mọi câu đọc comment của report đi qua các
+# hàm dưới: theo trang / theo nhóm bài, hết giờ lâu hơn, và lỗi thì raise (không lặng lẽ thành 0).
+_POST_PAGE = 2000
+_POST_BATCH = 80  # D1 cho tối đa 100 tham số một câu
+_BATCH_CONCURRENCY = 4
+_REPORT_QUERY_TIMEOUT = 120.0
+# Mẫu comment cho lời gọi gom topic: rút trước trong SQL khoảng ngần này ứng viên (cố định theo rowid), rồi Python
+# lọc trùng / giới hạn mỗi bài / chia theo cảm xúc như cũ để ra REPORT_COMMENT_SAMPLE_SIZE.
+REPORT_SAMPLE_CANDIDATES = 40_000
+
+
+async def _d1_rows(stmt: ClauseElement) -> list[dict[str, Any]]:
+    """Chạy câu dựng bằng SQLAlchemy; lỗi D1 thì raise (không lặng lẽ thành 0 - xem docstring _REPORT_QUERY_TIMEOUT)."""
+    rows = await d1_exec(stmt, timeout=_REPORT_QUERY_TIMEOUT)
+    if rows is None:
+        raise RuntimeError("D1 query failed while building the report")
+    return rows
+
+
+async def _comments_of_posts(
+    post_ids: list[str], build: Callable[[Any], Select[tuple[Any, ...]]]
+) -> list[dict[str, Any]]:
+    """Comment (alias c) của các bài đã qua cổng, theo nhóm _POST_BATCH bài, tối đa _BATCH_CONCURRENCY câu song song.
+
+    `build` nhận alias của bảng comments và trả về câu select (đã có điều kiện post_id) để chỗ gọi tự chọn cột.
+    """
+    semaphore = asyncio.Semaphore(_BATCH_CONCURRENCY)
+
+    async def one(batch: list[str]) -> list[dict[str, Any]]:
+        async with semaphore:
+            c = comments_table.alias("c")
+            stmt = build(c).where(c.c.post_id.in_(batch))
+            return await _d1_rows(stmt)
+
+    batches = [post_ids[i : i + _POST_BATCH] for i in range(0, len(post_ids), _POST_BATCH)]
+    return [row for rows in await asyncio.gather(*(one(b) for b in batches)) for row in rows]
+
+
+async def _report_posts(movie_id: str) -> dict[str, dict[str, Any]]:
+    """Mọi bài của phim qua cổng relevance_label + movie_hashtag_present (xem docstring của
+    get_report_sample_for_movie), theo id, mỗi bài có thêm "is_channel": True khi tác giả là một kênh
+    (_channel_authors) hoặc đã đăng >= CHANNEL_MIN_POSTS bài về chính phim này (trang chính thức của phim, fanpage)
+    - bài của kênh chỉ làm ngữ cảnh, không được coi là ý kiến khán giả."""
+    movie_rows = await d1_exec(select(movies.c.title).where(movies.c.id == movie_id))
+    movie_title = movie_rows[0]["title"] if movie_rows else None
+    p, k = posts_table.alias("p"), keywords.alias("k")
+    page_query = (
+        select(
+            p.c.id,
+            p.c.url.label("post_url"),
+            p.c.content.label("post_content"),
+            p.c.author.label("post_author"),
+            p.c.platform,
+            p.c.like_count.label("post_likes"),
+            p.c.reply_count.label("post_comments"),
+            (p.c.repost_count + p.c.quote_count + p.c.reshare_count).label("post_shares"),
+            k.c.keyword.label("post_keyword"),
+        )
+        .select_from(p.outerjoin(k, k.c.id == p.c.keyword_id))
+        .order_by(p.c.id)
+        .limit(_POST_PAGE)
+    )
+    rows: list[dict[str, Any]] = []
+    last = ""
+    while True:  # theo trang - phim lớn có hàng chục nghìn bài kèm nội dung
+        page = await d1_exec(
+            page_query.where(p.c.movie_id == movie_id, relevant_post(p), p.c.id > last),
+            timeout=_REPORT_QUERY_TIMEOUT,
+        )
+        if page is None:
+            raise RuntimeError("D1 query failed while building the report")
+        rows += page
+        if len(page) < _POST_PAGE:
+            break
+        last = page[-1]["id"]
+    reputable = await reputable_authors()
+    posts: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        is_reputable = (row.get("platform"), row.get("post_author")) in reputable
+        if movie_hashtag_present(
+            row.get("post_content"), movie_title, row.pop("post_keyword", None), is_reputable_author=is_reputable
+        ):
+            posts[row["id"]] = row
+
+    channels = await _channel_authors()
+    per_author = Counter((row.get("platform"), row.get("post_author")) for row in posts.values())
+    for row in posts.values():
+        key = (row.get("platform"), row.get("post_author"))
+        row["is_channel"] = key in channels or per_author[key] >= CHANNEL_MIN_POSTS
+    return posts
+
+
+def _sample_rng(movie_id: str) -> random.Random:
+    """Ngẫu nhiên nhưng cố định theo phim + ngày: bấm "Tạo report" hai lần trong ngày ra cùng một mẫu."""
+    return random.Random(f"{movie_id}:{datetime.now(tz=UTC).date().isoformat()}")
+
+
+async def get_report_sample_for_movie(
+    movie_id: str,
+    *,
+    comment_limit: int = REPORT_COMMENT_SAMPLE_SIZE,
+    post_limit: int = REPORT_POST_SAMPLE_SIZE,
+) -> dict[str, list[dict[str, Any]]]:
+    """{"comments": [...], "posts": [...]} cho lời gọi gom topic - KHÔNG dùng cho tỉ lệ cảm xúc tổng thể (xem
+    get_movie_sentiment_counts, hàm đếm mọi comment đã phân loại).
+
+    Chỉ lấy bài vừa có relevance_label='related' VỪA qua được movie_hashtag_present (cùng cổng hai tín hiệu với
+    danh sách top 100 trong app/repositories/d1/posts.py: riêng relevance_label chỉ là bản sao phán quyết của AI lúc
+    ingest - đã xác nhận 2026-09-24 với report "Huyết Thống"), và chỉ comment dưới những bài đó.
+
+    RÚT NGẪU NHIÊN, không lấy top tương tác. Đo trên D1 thật với "Hoàng Hậu Cuối Cùng": 60 bài tương
+    tác cao nhất gần như toàn là studio (15 bài của galaxystudiovn) và trang showbiz, và 800 comment top like dồn
+    vào 74 bài - mẫu top tương tác đo tiếng nói của các kênh quảng bá, không phải của khán giả. Giờ:
+    - comment: bỏ comment không mang nội dung (rule_sentiment - chỉ tag bạn bè/emoji/quá ngắn), comment bị gắn
+      not_related và bản trùng text (giữ bản nhiều like nhất), mỗi bài tối đa REPORT_COMMENTS_PER_POST comment, rồi
+      rút ngẫu nhiên theo đúng tỉ lệ cảm xúc thật (_stratified_sample);
+    - bài: rút ngẫu nhiên trong các bài không phải của kênh (xem _report_posts), rồi thêm các bài chứa comment trong
+      mẫu làm ngữ cảnh. Bài có "is_channel" chỉ là ngữ cảnh, prompt cấm dùng làm bằng chứng."""
+    posts = await _report_posts(movie_id)
+    rng = _sample_rng(movie_id)
+
+    # Rút trước ~REPORT_SAMPLE_CANDIDATES comment trong SQL (băm rowid - cố định, rải đều), không kéo cả trăm nghìn
+    # comment về; comment chỉ có emoji/tag (sentiment_source='rule') bỏ luôn trong SQL.
+    total = sum((await get_movie_sentiment_counts(movie_id, posts)).values())
+    per_mille = min(1000, math.ceil(REPORT_SAMPLE_CANDIDATES * 1000 / max(total, 1)))
+    rows = await _comments_of_posts(
+        list(posts),
+        lambda c: select(
+            c.c.id,
+            c.c.post_id,
+            c.c.message,
+            c.c.reactions_count,
+            c.c.sentiment,
+            c.c.aspects,
+            c.c.audience_stage,
+        ).where(
+            _COMMENT_ABOUT_MOVIE_SQL,
+            c.c.sentiment.is_not(None),
+            c.c.message.is_not(None),
+            func.coalesce(c.c.sentiment_source, "") != "rule",
+            # Băm rowid: mẫu rút trước trong SQL, cố định và rải đều theo toàn bộ bảng.
+            literal_column("abs(c.rowid * 2654435761) % 1000") < per_mille,
+        ),
+    )
+    rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trùng text: giữ bản nhiều like nhất
+    seen_texts: set[str] = set()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        post = posts.get(row["post_id"])
+        if post is None or row.get("sentiment") not in _SENTIMENT_BUCKETS:
+            continue
+        message = row.get("message") or ""
+        if rule_sentiment(message) is not None:
+            continue
+        normalized = _normalize_comment_text(message)
+        if not normalized or normalized in seen_texts:
+            continue
+        seen_texts.add(normalized)
+        candidates.append({**row, **{k: v for k, v in post.items() if k != "id"}})
+
+    rng.shuffle(candidates)
+    per_post: Counter[str] = Counter()
+    eligible: list[dict[str, Any]] = []
+    for row in candidates:
+        if per_post[row["post_id"]] >= REPORT_COMMENTS_PER_POST:
+            continue
+        per_post[row["post_id"]] += 1
+        eligible.append(row)
+
+    # Giữ chỗ trước cho từng khía cạnh x chiều, rồi rút phần còn lại theo đúng tỉ lệ (cảm xúc x giai đoạn hóng/đã xem).
+    reserved: list[dict[str, Any]] = []
+    per_aspect: Counter[str] = Counter()
+    for row in eligible:
+        tags = _aspect_tags(row.get("aspects"))
+        if any(per_aspect[tag] < REPORT_ASPECT_RESERVE for tag in tags):
+            reserved.append(row)
+            per_aspect.update(tags)
+    reserved = reserved[: comment_limit // 4]
+    taken = {row["id"] for row in reserved}
+    by_bucket: dict[str, list[dict[str, Any]]] = {}
+    for row in eligible:
+        if row["id"] not in taken:
+            by_bucket.setdefault(f"{row['sentiment']}:{row.get('audience_stage') or 'khac'}", []).append(row)
+    comments = _stratified_sample(by_bucket, comment_limit - len(reserved)) + reserved
+    comments.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)
+
+    audience_posts = [
+        post
+        for post in posts.values()
+        if not post["is_channel"] and len((post.get("post_content") or "").strip()) >= MIN_CONTENT_LENGTH
+    ]
+    audience_posts.sort(key=lambda post: post["id"])  # thứ tự cố định trước khi rút, để seed cho ra cùng mẫu
+    sampled = rng.sample(audience_posts, min(post_limit, len(audience_posts)))
+    sampled.sort(key=lambda post: post.get("post_likes") or 0, reverse=True)
+    return {"comments": comments, "posts": sampled}
+
+
+# Khía cạnh/nhóm có ít hơn bấy nhiêu comment thì không báo % (quá ít để tin) - cùng ý với min_n của Kompa.
+ASPECT_MIN_N = 10
+# Xu hướng: so % khen của ASPECT_TREND_DAYS ngày gần nhất (tính tới comment mới nhất của phim, không phải hôm nay -
+# crawl có độ trễ) với ASPECT_TREND_DAYS ngày trước đó; tụt >= ASPECT_SLIP_POINTS điểm thì gắn "đang tụt".
+ASPECT_TREND_DAYS = 7
+ASPECT_SLIP_POINTS = 10
+ASPECT_QUOTES_PER_SIDE = 2
+_QUOTE_MIN_CHARS = 15
+
+
+def _positive_pct(pos: int, neg: int) -> int | None:
+    return round(pos * 100 / (pos + neg)) if pos + neg >= ASPECT_MIN_N else None
+
+
+def _count_between(rows: list[dict[str, Any]], start: str, stop: str | None) -> int:
+    return sum(
+        1 for r in rows if r.get("posted_at") and start <= r["posted_at"] and (stop is None or r["posted_at"] < stop)
+    )
+
+
+def _pick_quotes(rows: list[dict[str, Any]], posts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Các dòng tới theo thứ tự like giảm dần; mỗi bài tối đa một câu để không trích cùng một cuộc thảo luận."""
+    picked: list[dict[str, Any]] = []
+    seen_posts: set[str] = set()
+    for row in rows:
+        message = " ".join((row.get("message") or "").split())
+        if len(message) < _QUOTE_MIN_CHARS or row["post_id"] in seen_posts:
+            continue
+        seen_posts.add(row["post_id"])
+        post = posts[row["post_id"]]
+        picked.append(
+            {
+                "source": "comment",
+                "id": row["id"],
+                "text": message,
+                "likes": row.get("reactions_count") or 0,
+                # Không kèm tên / link / ảnh người bình luận: trích dẫn hiện cho khách hàng (chính sách nền tảng).
+                "post_url": post.get("post_url"),
+                "post_content": post.get("post_content"),
+                "post_author": post.get("post_author"),
+                "platform": post.get("platform"),
+            }
+        )
+        if len(picked) >= ASPECT_QUOTES_PER_SIDE:
+            break
+    return picked
+
+
+async def get_movie_aspect_stats(movie_id: str) -> dict[str, Any]:
+    """Số liệu khía cạnh + giai đoạn khán giả của phim, đếm thẳng trên MỌI comment đã được gán khía cạnh (không
+    phải mẫu) dưới các bài qua cổng liên quan (_report_posts) - xem app/ai/domain/aspects.py. Bỏ comment không mang nội
+    dung (rule_sentiment) khỏi mẫu số để "tỉ trọng nhắc tới" không bị loãng bởi comment chỉ tag bạn bè.
+
+    - aspects: mỗi khía cạnh có mentions, mention_share (% comment có nhắc), positive/negative (% khen/chê trong
+      số lượt nhắc, None khi < ASPECT_MIN_N), trend {from, to} của % khen theo cửa sổ ASPECT_TREND_DAYS ngày và
+      slipping khi tụt >= ASPECT_SLIP_POINTS điểm.
+    - stage: số comment đang hóng / đã xem / khác.
+    - expectation: % khen (positive / (positive + negative)) của nhóm đang hóng so với nhóm đã xem.
+    - quotes: tối đa ASPECT_QUOTES_PER_SIDE câu khen và chê nhiều like nhất mỗi khía cạnh, mỗi bài một câu."""
+    await ensure_comment_insight_columns()
+    posts = await _report_posts(movie_id)
+    rows = await _comments_of_posts(
+        list(posts),
+        lambda c: select(
+            c.c.id,
+            c.c.post_id,
+            c.c.message,
+            c.c.reactions_count,
+            c.c.sentiment,
+            c.c.aspects,
+            c.c.audience_stage,
+            c.c.posted_at,
+        ).where(
+            _COMMENT_ABOUT_MOVIE_SQL,
+            c.c.insights_classified_at.is_not(None),
+            c.c.message.is_not(None),
+        ),
+    )
+    rows.sort(key=lambda r: r.get("reactions_count") or 0, reverse=True)  # trích dẫn: nhiều like trước
+    tagged: list[dict[str, Any]] = []
+    for row in rows:
+        if row["post_id"] not in posts or rule_sentiment(row.get("message") or "") is not None:
+            continue
+        try:
+            aspects = json.loads(row.get("aspects") or "[]")
+        except ValueError:
+            aspects = []
+        row["aspect_tags"] = [a for a in aspects if isinstance(a, str) and a.rsplit(":", 1)[0] in ASPECTS]
+        tagged.append(row)
+
+    total = len(tagged)
+    latest = max((r["posted_at"] for r in tagged if r.get("posted_at")), default=None)
+    windows: tuple[str, str] | None = None
+    if latest:
+        end = datetime.fromisoformat(latest)
+        windows = (
+            (end - timedelta(days=2 * ASPECT_TREND_DAYS)).isoformat(),
+            (end - timedelta(days=ASPECT_TREND_DAYS)).isoformat(),
+        )
+
+    aspects_out: list[dict[str, Any]] = []
+    quotes: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for key, (label, _desc) in ASPECTS.items():
+        if key in DISCUSSION_ONLY_ASPECTS:
+            continue
+        pos = [r for r in tagged if f"{key}:+" in r["aspect_tags"]]
+        neg = [r for r in tagged if f"{key}:-" in r["aspect_tags"]]
+        mentions = len(pos) + len(neg)
+        if not mentions:
+            continue
+        trend = None
+        if windows:
+            prev_from, recent_from = windows
+            before = _positive_pct(
+                _count_between(pos, prev_from, recent_from), _count_between(neg, prev_from, recent_from)
+            )
+            after = _positive_pct(_count_between(pos, recent_from, None), _count_between(neg, recent_from, None))
+            if before is not None and after is not None:
+                trend = {"from": before, "to": after}
+        positive = _positive_pct(len(pos), len(neg))
+        aspects_out.append(
+            {
+                "aspect": key,
+                "label": label,
+                "mentions": mentions,
+                "mention_share": round(mentions * 100 / total, 1) if total else 0.0,
+                "positive": positive,
+                "negative": None if positive is None else 100 - positive,
+                "trend": trend,
+                "slipping": bool(trend and trend["from"] - trend["to"] >= ASPECT_SLIP_POINTS),
+            }
+        )
+        quotes[key] = {"khen": _pick_quotes(pos, posts), "che": _pick_quotes(neg, posts)}
+    aspects_out.sort(key=lambda a: a["mentions"], reverse=True)
+
+    stage_counts = Counter(r.get("audience_stage") or "khac" for r in tagged)
+    by_stage = {
+        stage: _positive_pct(
+            sum(1 for r in tagged if r.get("audience_stage") == stage and r["sentiment"] == "positive"),
+            sum(1 for r in tagged if r.get("audience_stage") == stage and r["sentiment"] == "negative"),
+        )
+        for stage in ("hong", "da_xem")
+    }
+    expectation = None
+    if by_stage["hong"] is not None and by_stage["da_xem"] is not None:
+        expectation = {
+            "hong_positive": by_stage["hong"],
+            "da_xem_positive": by_stage["da_xem"],
+            "gap": by_stage["da_xem"] - by_stage["hong"],
+        }
+    return {
+        "comments": total,
+        "min_n": ASPECT_MIN_N,
+        "trend_days": ASPECT_TREND_DAYS,
+        "aspects": aspects_out,
+        "stage": {stage: stage_counts.get(stage, 0) for stage in STAGES},
+        "expectation": expectation,
+        "quotes": quotes,
+    }
+
+
+async def get_movie_sentiment_counts(movie_id: str, posts: dict[str, dict[str, Any]] | None = None) -> dict[str, int]:
+    """Số lượng mọi comment đã phân loại của phim này, nhóm theo nhãn cảm xúc - sự thật gốc
+    cho tỉ lệ overall_sentiment của report (chỗ gọi tính bằng phép chia đơn giản, không
+    để LLM ước lượng), trên TOÀN BỘ tập comment, không chỉ mẫu có giới hạn đưa vào lời
+    gọi gom topic.
+
+    Cùng cổng relevance_label='related' VÀ movie_hashtag_present như
+    get_report_sample_for_movie ở trên, cùng lý do - tỉ lệ phải lấy từ đúng tập comment
+    đúng chủ đề mà mẫu được rút ra, không phải từ một tập lớn hơn vẫn chứa comment của
+    bài lạc đề. Riêng relevance_label không phải bằng chứng củng cố độc lập (xem
+    docstring của hàm kia); hàm này từng bỏ qua cổng thứ hai, và đó chính là lý do "Huyết
+    Thống" (một tên phim là từ vựng thông thường) vẫn làm bẩn tỉ lệ cảm xúc của chính nó
+    ngay cả sau khi danh sách bài và mẫu comment đã được sửa để lọc bỏ - phần đếm ở đây
+    chạy thẳng trên nhãn thô, không kiểm tra lại. Lấy mọi comment đã phân loại (không chỉ
+    một mẫu có giới hạn, khác với get_report_sample_for_movie) vì cần đếm đúng toàn bộ,
+    không phải mẫu đại diện - sau đó movie_hashtag_present vẫn chạy bằng Python trên từng
+    dòng."""
+    # Đếm trong SQL theo (bài, nhãn) - vài chục nghìn dòng nhỏ thay vì từng comment kèm nội dung bài (512 nghìn dòng
+    # với Trại Buôn Người, 26/10) - rồi chỉ cộng các bài qua cổng của _report_posts (cùng movie_hashtag_present).
+    if posts is None:
+        posts = await _report_posts(movie_id)
+    c, p = comments_table.alias("c"), posts_table.alias("p")
+    rows = await _d1_rows(
+        select(c.c.post_id, c.c.sentiment, func.count().label("n"))
+        .select_from(c.join(p, p.c.id == c.c.post_id))
+        .where(
+            p.c.movie_id == movie_id,
+            relevant_post(p),
+            _COMMENT_ABOUT_MOVIE_SQL,
+            c.c.sentiment.is_not(None),
+        )
+        .group_by(c.c.post_id, c.c.sentiment)
+    )
+    counts: dict[str, int] = {}
+    for row in rows:
+        if row["post_id"] in posts:
+            counts[row["sentiment"]] = counts.get(row["sentiment"], 0) + int(row["n"])
+    return counts
+
+
+async def upsert_social_topic_report(
+    *, movie_id: str, dashboard_data_json: str, comment_count: int, post_count: int, kira_model: str | None
+) -> bool:
+    """Upsert theo movie_id vào social_topic_reports - mỗi phim một dòng, bị ghi đè mỗi lần
+    scripts/jobs/generate_social_topic_reports.py chạy (không giữ lịch sử; không có gì đọc
+    report cũ)."""
+    if not _configured():
+        return False
+
+    generated_at = datetime.now(tz=UTC).isoformat()
+    report = social_topic_reports.c
+    fields = {
+        "dashboard_data_json": dashboard_data_json,
+        "comment_count": comment_count,
+        "post_count": post_count,
+        "kira_model": kira_model,
+        "generated_at": generated_at,
+    }
+    existing_rows = await d1_exec(select(report.id).where(report.movie_id == movie_id))
+    if existing_rows:
+        stmt = update(social_topic_reports).where(report.id == existing_rows[0]["id"]).values(**fields)
+    else:
+        stmt = insert(social_topic_reports).values(id=f"str_{uuid.uuid4()}", movie_id=movie_id, **fields)
+    return await d1_exec(stmt) is not None

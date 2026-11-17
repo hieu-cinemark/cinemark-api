@@ -149,7 +149,7 @@ def _normalize_column(name: str) -> str:
 
 def _format_columns(format_hint: str, aliases: dict[str, str]) -> list[str | None] | None:
     """Dòng tiêu đề phân cách bằng pipe/tab/chấm phẩy như ID|PASS|MAIL|COOKIE. Trả về None
-    nếu đây là văn bản mô tả tự do, vẫn cần Kira."""
+    nếu đây là văn bản mô tả tự do, vẫn cần AI."""
     hint = format_hint.strip()
     separator = "|" if "|" in hint else ("\t" if "\t" in hint else (";" if ";" in hint else None))
     if separator is None:

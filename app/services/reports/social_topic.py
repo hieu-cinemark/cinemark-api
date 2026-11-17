@@ -13,7 +13,7 @@ Với một phim:
    comment kể cả khi nó lớn hơn mẫu mà LLM thấy.
 3. Bỏ qua nếu có ít hơn MIN_COMMENTS_FOR_REPORT comment đã phân loại - không đủ tín
    hiệu để gom topic có ý nghĩa.
-4. Hai lời gọi AI (Kira mặc định, hoặc Bee nếu chọn trong Settings): topics +
+4. Hai lời gọi AI (AI mặc định, hoặc Bee nếu chọn trong Settings): topics +
    verbatims (trên mẫu), rồi một đoạn narrative được cấp tỉ lệ thật từ bước 2.
 5. Ghép đúng dạng ReportData['dashboard_data'] mà frontend cần rồi upsert.
 """
@@ -242,7 +242,7 @@ async def generate_report_for_movie(movie: dict, *, dry_run: bool = False) -> Re
         dashboard_data_json=json.dumps(dashboard_data, ensure_ascii=False),
         comment_count=len(sample),
         post_count=post_count,
-        # Cột vẫn tên là kira_model (schema có từ trước khi có Bee) - lưu model nào đã viết
+        # Cột tên kira_model là tên cũ (schema dùng chung với Worker cinemark, đổi tên phải migrate D1 + Worker) - lưu model nào đã viết
         # report.
         kira_model=model,
     )

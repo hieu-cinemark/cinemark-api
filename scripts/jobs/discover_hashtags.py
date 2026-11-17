@@ -2,7 +2,7 @@
 (app/services/discovery/query_discovery.py) - bình thường scheduler chạy mỗi ngày ở settings.hashtag_discovery_time.
 
 Cách dùng:
-    python -m scripts.jobs.discover_hashtags --dry-run            # hỏi Kira, in quyết định, không ghi gì
+    python -m scripts.jobs.discover_hashtags --dry-run            # hỏi AI, in quyết định, không ghi gì
     python -m scripts.jobs.discover_hashtags --movie-id movie_...
     python -m scripts.jobs.discover_hashtags
     python -m scripts.jobs.discover_hashtags --only queries --dry-run   # chỉ câu tìm kiếm Facebook/Threads
@@ -18,7 +18,7 @@ from app.services.discovery.query_discovery import run_query_discovery
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", help="Ask Kira and log decisions, write nothing")
+    parser.add_argument("--dry-run", action="store_true", help="Ask AI and log decisions, write nothing")
     parser.add_argument("--movie-id", help="Only this movie")
     parser.add_argument("--only", choices=["hashtags", "queries"], help="Run just one of the two passes")
     args = parser.parse_args()

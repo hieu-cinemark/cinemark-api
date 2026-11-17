@@ -1,5 +1,5 @@
-"""Kiểm tra bộ phân loại Kira theo lô của app/ai/tasks/sentiment.py và hợp đồng
-fail-open của nó: classify_sentiments không bao giờ được raise - Kira sập, câu trả lời
+"""Kiểm tra bộ phân loại AI theo lô của app/ai/tasks/sentiment.py và hợp đồng
+fail-open của nó: classify_sentiments không bao giờ được raise - AI sập, câu trả lời
 sai định dạng hoặc thiếu, hay comment quá ngắn đều chỉ trả về None cho các comment bị
 ảnh hưởng."""
 
@@ -37,7 +37,7 @@ def _reply(*labels: str) -> str:
     return json.dumps({"results": [{"i": i, "sentiment": s} for i, s in enumerate(labels, 1)]})
 
 
-def _kira(reply: str | Exception):
+def _ai(reply: str | Exception):
     call = AsyncMock(side_effect=reply) if isinstance(reply, Exception) else AsyncMock(return_value=reply)
     return (
         patch("app.ai.tasks.sentiment.call_llm", call),
@@ -46,7 +46,7 @@ def _kira(reply: str | Exception):
 
 
 async def test_batch_maps_results_by_number_and_skips_short() -> None:
-    call, configured = _kira(_reply("negative", "positive"))
+    call, configured = _ai(_reply("negative", "positive"))
     with call as mock_call, configured:
         result = await classify_sentiments(["Kịch bản dở quá, phí tiền vé", "ok", None, LONG])
     assert result == ["negative", None, None, "positive"]
@@ -61,14 +61,14 @@ async def test_batch_maps_results_by_number_and_skips_short() -> None:
 async def test_splits_into_batches_of_batch_size() -> None:
     calls: list[str] = []
 
-    async def fake_call_kira(**kwargs):
+    async def fake_call_ai(**kwargs):
         calls.append(kwargs["user_prompt"])
         count = len(re.findall(r"^\d+\. ", kwargs["user_prompt"], flags=re.MULTILINE))
         return _reply(*["neutral"] * count)
 
     with (
         patch.object(sentiment, "BATCH_SIZE", 3),
-        patch("app.ai.tasks.sentiment.call_llm", fake_call_kira),
+        patch("app.ai.tasks.sentiment.call_llm", fake_call_ai),
         patch("app.ai.tasks.sentiment.ai_is_enabled", AsyncMock(return_value=True)),
     ):
         result = await classify_sentiments([f"{LONG} {n}" for n in range(7)])
@@ -77,12 +77,12 @@ async def test_splits_into_batches_of_batch_size() -> None:
 
 
 async def test_partial_reply_leaves_missing_as_none() -> None:
-    call, configured = _kira(json.dumps({"results": [{"i": 2, "sentiment": "positive"}, {"i": 9, "sentiment": "x"}]}))
+    call, configured = _ai(json.dumps({"results": [{"i": 2, "sentiment": "positive"}, {"i": 9, "sentiment": "x"}]}))
     with call, configured:
         assert await classify_sentiments([LONG, LONG]) == [None, "positive"]
 
 
-async def test_kira_switched_off_returns_none_without_calling() -> None:
+async def test_ai_switched_off_returns_none_without_calling() -> None:
     with (
         patch("app.ai.tasks.sentiment.call_llm", AsyncMock()) as mock_call,
         patch("app.ai.tasks.sentiment.ai_is_enabled", AsyncMock(return_value=False)),
@@ -92,27 +92,27 @@ async def test_kira_switched_off_returns_none_without_calling() -> None:
 
 
 async def test_bad_shape_fails_open() -> None:
-    call, configured = _kira('{"sentiment": "positive"}')
+    call, configured = _ai('{"sentiment": "positive"}')
     with call, configured:
         assert await classify_sentiments([LONG, LONG]) == [None, None]
 
 
 async def test_exception_fails_open() -> None:
-    call, configured = _kira(RuntimeError("down"))
+    call, configured = _ai(RuntimeError("down"))
     with call, configured:
         assert (await classify_sentiments([LONG]))[0] is None
 
 
 async def test_single_wrapper() -> None:
-    call, configured = _kira(_reply("positive"))
+    call, configured = _ai(_reply("positive"))
     with call, configured:
         assert (await classify_sentiments([LONG]))[0] == "positive"
     assert (await classify_sentiments(["ok"]))[0] is None
 
 
 async def test_unnumbered_results_map_by_order_when_counts_match() -> None:
-    # Đã thấy thực tế: một system prompt cũ cho một comment làm Kira bỏ mất "i".
-    call, configured = _kira(json.dumps({"results": [{"sentiment": "positive"}, {"sentiment": "negative"}]}))
+    # Đã thấy thực tế: một system prompt cũ cho một comment làm AI bỏ mất "i".
+    call, configured = _ai(json.dumps({"results": [{"sentiment": "positive"}, {"sentiment": "negative"}]}))
     with call, configured:
         assert await classify_sentiments([LONG, LONG]) == ["positive", "negative"]
 
@@ -132,7 +132,7 @@ async def test_aspects_and_stage_are_parsed_and_unknown_keys_dropped() -> None:
             ]
         }
     )
-    call, configured = _kira(reply)
+    call, configured = _ai(reply)
     with call as mock_call, configured:
         result = await classify_comments([LONG, LONG, LONG, "@Nguyễn Văn An"])
     assert result == [
@@ -144,7 +144,7 @@ async def test_aspects_and_stage_are_parsed_and_unknown_keys_dropped() -> None:
             "aspects": [],
             "stage": "hong",
             "source": "rule",
-        },  # chỉ tag bạn bè: luật, không gọi Kira
+        },  # chỉ tag bạn bè: luật, không gọi AI
     ]
     prompt = mock_call.await_args.kwargs["user_prompt"]
     assert '"dien_xuat"' in prompt and '"da_xem"' in prompt  # danh sách khía cạnh/giai đoạn nằm trong user prompt
@@ -157,7 +157,7 @@ async def test_film_context_is_tagged_per_comment_and_described_once() -> None:
         "cast": '["Minh Hằng", "Đại Nghĩa"]',
         "released_at": "2026-10-23",
     }
-    call, configured = _kira(_reply("positive", "positive", "neutral"))
+    call, configured = _ai(_reply("positive", "positive", "neutral"))
     with call as mock_call, configured:
         await classify_comments([LONG, f"{LONG} 2", f"{LONG} 3"], [film, film, None])
     prompt = mock_call.await_args.kwargs["user_prompt"]

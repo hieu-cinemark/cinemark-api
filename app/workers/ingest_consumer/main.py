@@ -21,7 +21,7 @@ from aiokafka.errors import KafkaError
 from redis.exceptions import RedisError
 from sqlalchemy import select
 
-from app.ai.tasks.post_relevance import classify_post_relevance_kira
+from app.ai.tasks.post_relevance import classify_post_relevance
 from app.clients.d1 import D1Unavailable, d1_strict
 from app.clients.kafka import publish_dead_letter, publish_ingest_decision, start_kafka_producer, stop_kafka_producer
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
@@ -49,7 +49,6 @@ from app.services.relevance.relevance_rules import (
     find_film,
     foreign_language_reason,
     has_film_context,
-    hashtag_only_mention,
     mentions_film_manual,
     mentions_keyword_or_title,
     mentions_other_film,
@@ -76,7 +75,7 @@ CONSUMER_GROUP_COMMENTS = "cinemark-api.ingest.comments"
 # (auto_offset_reset="latest" bên dưới) và bỏ qua những gì group cũ chưa xử lý.
 _LEGACY_CONSUMER_GROUP = "cinemark-api.ingest"
 
-# Số message xử lý song song mỗi topic. 24 đặt hồi mỗi bài chủ yếu chờ Kira (gom lô); Kira đã bỏ, nên cả 24 luồng
+# Số message xử lý song song mỗi topic. 24 đặt hồi mỗi bài chủ yếu chờ AI (gom lô); AI đã bỏ, nên cả 24 luồng
 # đều ghi thẳng D1 (~5-7 lệnh mỗi bài) - 28/10/2026 đợt TikTok ~10k bài/giờ làm D1 trả "7429 overloaded" liên tục,
 # dashboard không đọc được số liệu. Giảm xuống 8: Kafka giữ phần dư và ghi dần, không mất bài. Chỉnh qua env.
 _POST_MESSAGE_CONCURRENCY = settings.ingest_post_concurrency
@@ -132,7 +131,7 @@ class CommentParentNotReady(IngestRetryable):
 
 
 # Các phim đang theo dõi (tên phim cho relevance_rules.mentions_other_film, thông tin
-# cho prompt của Kira) - một bảng nhỏ chỉ đổi khi có người thêm phim, nên cache ngắn là
+# cho prompt của AI) - một bảng nhỏ chỉ đổi khi có người thêm phim, nên cache ngắn là
 # đủ.
 _TRACKED_MOVIES_TTL_SECONDS = 300.0
 _tracked_movies_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
@@ -380,7 +379,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
 
     # Cào theo nguồn (spider facebook_page_feed, 2026-10-16): bài đăng trên trang nguồn đã gắn với phim (fanpage chính
     # thức, nhà phát hành...) là về phim đó dù không nhắc tên ("Nó làm gì em chưa???" + ảnh) - bỏ cổng từ khoá/tên phim
-    # và Kira, lưu là liên quan. Vẫn qua lọc ngôn ngữ ở trên.
+    # và AI, lưu là liên quan. Vẫn qua lọc ngôn ngữ ở trên.
     if payload.get("source") in ("page", "tracked"):
         ok = await persist_post(
             movie_id=keyword["movie_id"],
@@ -407,8 +406,8 @@ async def handle_post(payload: dict[str, Any]) -> None:
         return
 
     # Bài phải chứa đầy đủ từ khoá (hoặc dạng hashtag của nó) hoặc đầy đủ tên phim - kết quả
-    # tìm kiếm của nền tảng có cả bài không hề nhắc tới phim, và Kira từng gán "related" cho
-    # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi Kira.
+    # tìm kiếm của nền tảng có cả bài không hề nhắc tới phim, và AI từng gán "related" cho
+    # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi AI.
     movie = (await _tracked_movies()).get(keyword.get("movie_id") or "") or {"title": keyword.get("movie_title")}
     movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
     # Phim "chặt" (cần tín hiệu gắn đúng phim): video có transcript nhắc phim đúng nghĩa phim chiếu rạp (tên phim cạnh từ điện
@@ -439,17 +438,17 @@ async def handle_post(payload: dict[str, Any]) -> None:
         await _drop(platform=platform, post_id=post_id, reason=reason, keyword_id=keyword_id, other_film=other_film)
         return
 
-    # Kira phân loại mọi bài đã qua được các quy tắc. Kiểm tra chuỗi con theo từ khoá chỉ
-    # là phương án dự phòng khi Kira không đưa ra phán quyết - bị tắt trên dashboard, vượt
+    # AI phân loại mọi bài đã qua được các quy tắc. Kiểm tra chuỗi con theo từ khoá chỉ
+    # là phương án dự phòng khi AI không đưa ra phán quyết - bị tắt trên dashboard, vượt
     # settings.ai_post_relevance_daily_cap, hoặc lỗi - để một lần sự cố không bao giờ
     # loại hay giấu đi những bài lẽ ra được giữ.
     relevance_label = None
     relevance_confidence = None
     has_keyword = contains_keyword(draft.get("content"), keyword["keyword"])
 
-    # settings.ai_ingest_relevance tắt: ingest không chờ Kira (qwen có lúc 60-180 giây một lô, đủ làm
-    # Kafka tồn hàng chục nghìn message) - bài vào theo tín hiệu phim/từ khoá như lúc Kira không kết luận, rồi
-    # scripts/jobs/relabel_post_relevance.py gán lại nhãn Kira ở nền.
+    # settings.ai_ingest_relevance tắt: ingest không chờ AI (qwen có lúc 60-180 giây một lô, đủ làm
+    # Kafka tồn hàng chục nghìn message) - bài vào theo tín hiệu phim/từ khoá như lúc AI không kết luận, rồi
+    # scripts/jobs/relabel_post_relevance.py gán lại nhãn AI ở nền.
     # Luật trước (model nhà trồng): bài có tín hiệu phim rõ (tên phim đủ / tên rút gọn quanh ngày chiếu / ngữ cảnh phim)
     # thì kết luận luôn, không gọi AI - chỉ CA KHÓ mới tới model quyết định của Bee (openai/gpt-6-luna-decisions).
     rule_relevant, _, _ = resolve_relevance(
@@ -462,7 +461,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         posted_at=draft.get("posted_at"),
     )
     verdict = (
-        await classify_post_relevance_kira(
+        await classify_post_relevance(
             content=draft.get("content"),
             movie=movie,
             keyword=keyword["keyword"],
@@ -514,27 +513,18 @@ async def handle_post(payload: dict[str, Any]) -> None:
             post_id=post_id,
             keyword_id=keyword_id,
             decision="kept",
-            reason="kira_not_related_hidden",
+            reason="ai_not_related_hidden",
             confidence=relevance_confidence,
             has_keyword=has_keyword,
         )
         return
-    # Bài chỉ nối với phim bằng hashtag nhét vào nội dung khác ("... anh hùng💕 #traibuonnguoi #fyp"): Jev hay gán
-    # "related" cho loại này. Lưu nhưng ẩn (not_related, lý do hashtag_only) trừ khi bộ phân loại rất tự tin.
-    # Tắt mặc định (settings.hashtag_only_filter): dry-run 13/10/2026 chỉ đúng khoảng một nửa - bật khi đã bổ sung tên diễn
-    # viên cho các phim và xem lại mẫu.
-    hashtag_only = settings.hashtag_only_filter and hashtag_only_mention(draft.get("content"), movie, movie_keywords)
-    # Kira "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
+    # AI "uncertain" / không kết luận / phim "chặt": xem relevance_rules.resolve_relevance.
     if settings.relevance_rules_only:
         # Đã qua cổng tên phim/viết tắt/từ khoá ở trên - chế độ thủ công coi vậy là liên quan.
         # Phim "chặt" (kể cả chỉ trên YouTube): đủ tên phim chưa đủ, phải có tín hiệu gắn đúng phim - không có thì lưu ẩn.
         strict_without_context = strict and not has_film_context(draft.get("content"), movie)
         ai_relevant, relevance_label, context = (
-            (False, "not_related", "hashtag_only")
-            if hashtag_only
-            else (False, "uncertain", "strict_no_context")
-            if strict_without_context
-            else (True, "related", "manual_rules")
+            (False, "uncertain", "strict_no_context") if strict_without_context else (True, "related", "manual_rules")
         )
     else:
         ai_relevant, relevance_label, context = resolve_relevance(
@@ -543,12 +533,11 @@ async def handle_post(payload: dict[str, Any]) -> None:
             movie,
             has_keyword=has_keyword,
             strict=strict,
-            hashtag_only=hashtag_only,
             confidence=relevance_confidence,
             full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
             posted_at=draft.get("posted_at"),
         )
-    no_film_context = ai_relevant is False and context != "hashtag_only"
+    no_film_context = ai_relevant is False
     # Sắp lưu ẩn dưới phim A vì thiếu tín hiệu phim A: bài nêu phim khác đang theo dõi thì chuyển sang phim đó.
     if no_film_context and await _reroute_to_other_film(
         payload, draft, platform=platform, post_id=post_id, keyword=keyword, why="no_film_context"
@@ -567,7 +556,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     if not ok:
         raise IngestWriteFailed(f"persist_post {platform}:{post_id}")
     logger.info("post_persisted", platform=platform, post_id=draft.get("external_id"))
-    # kira_related, context_<lý do> khi tín hiệu phim quyết định thay Kira, hoặc no_verdict khi Kira
+    # ai_related, context_<lý do> khi tín hiệu phim quyết định thay AI, hoặc no_verdict khi AI
     # đứng ngoài (tắt, vượt hạn mức ngày, lỗi) và chỉ mình kiểm tra từ khoá quyết định.
     await _decide(
         platform=platform,
@@ -576,11 +565,9 @@ async def handle_post(payload: dict[str, Any]) -> None:
         decision="kept",
         reason="no_film_context"
         if no_film_context
-        else "hashtag_only"
-        if context == "hashtag_only"
         else f"context_{context}"
         if context
-        else (f"kira_{relevance_label}" if relevance_label else "no_verdict"),
+        else (f"ai_{relevance_label}" if relevance_label else "no_verdict"),
         confidence=relevance_confidence,
         has_keyword=has_keyword,
     )
@@ -613,7 +600,7 @@ async def handle_comment(payload: dict[str, Any]) -> None:
         logger.warning("comment_missing_external_id", platform=platform, post_id=external_post_id)
         return
     # Ở đây sentiment vẫn là NULL - sentiment_sweep.py phân loại comment mới theo lô qua
-    # Kira trong vòng một hai phút.
+    # AI trong vòng một hai phút.
     ok = await persist_comment(post_id=post["id"], platform=platform, draft=draft, sentiment=None)
     if not ok:
         raise IngestWriteFailed(f"persist_comment {platform}:{external_post_id}")
@@ -625,7 +612,7 @@ class _OffsetTracker:
     không theo bộ hẹn giờ mặc định của aiokafka, vốn commit dựa trên việc vòng
     `async for` đã duyệt tới đâu, bất kể task chạy song song cho message đó đã xong hay
     chưa. Không có cái này, một message được giao cho task còn đang chạy dở (ví dụ đang
-    kẹt trong retry/backoff của Kira) có thể bị bộ hẹn giờ commit offset trước khi task
+    kẹt trong retry/backoff của AI) có thể bị bộ hẹn giờ commit offset trước khi task
     xong; crash trong khoảng đó là mất message vĩnh viễn, vì Kafka không giao lại một
     offset đã commit qua rồi. Message trong một partition được giao theo đúng thứ tự
     aiokafka trả ra, nên một hàng đợi offset đã giao theo từng partition cộng một tập các
@@ -802,7 +789,7 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
         value_deserializer=orjson.loads,
         # Group không có offset đã commit dùng được thì bắt đầu ở CUỐI, không phải đầu: ngày
         # 2026-09-29 một lần khôi phục Kafka làm cả hai group mất vị trí và "earliest" đã xếp
-        # lại khoảng 264 nghìn message đã ingest để chạy qua Kira và D1. Bỏ qua là kiểu lỗi rẻ
+        # lại khoảng 264 nghìn message đã ingest để chạy qua AI và D1. Bỏ qua là kiểu lỗi rẻ
         # hơn - nếu cần phát lại gì, tự đặt lại offset của group bằng tay (hoặc đọc từ lake).
         auto_offset_reset="latest",
         # Commit thủ công theo từng message (xem _OffsetTracker) thay vì auto-commit theo bộ

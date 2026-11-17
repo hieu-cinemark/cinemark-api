@@ -11,6 +11,13 @@ SQL trên D1 `cinemark-scraper`.
 | `press_reviews.py` | tin báo chí sau công chiếu |
 | `sql.py` | `compile_sql`, `d1_exec`, `d1_insert_many`, `json_values` |
 | `tables.py` | bảng dùng chung (khai ở đây để dựng query) |
+| `overview.py` | Số liệu tổng quan cho dashboard (đếm bài/bình luận theo nền tảng, chuỗi theo ngày) và hashtag đi kèm của từ khoá TikTok. |
+| `movies.py` | Phim: danh sách, tạo, sửa, tắt (bảng movies của D1 scraper) và slug. |
+| `report_data.py` | Dữ liệu cho báo cáo Social Topic: mẫu bình luận/bài, thống kê khía cạnh, đếm cảm xúc và ghi báo cáo. |
+| `keywords.py` | Từ khoá theo dõi (bảng keywords): tạo, bật/tắt, đọc theo nền tảng/phim. |
+| `post_matching.py` | Khớp tên phim / từ khoá / hashtag trong nội dung bài (hàm thuần, không chạm D1). |
+| `author_reputation.py` | Uy tín tác giả: bảng author_reputation (cinemark-api dựng) và danh sách tác giả đáng tin cho luật hashtag. |
+| `post_raw.py` | Rút gọn raw_json của bài và dựng lại URL ảnh/video từ nó khi đọc ra (D1 đã ~7,6 GB nên chỉ giữ các khoá đang được đọc). |
 
 Lưu ý: D1 tính tiền và giới hạn theo số dòng đọc. Đọc theo phim nên đi qua index `(movie_id, posted_at)` hoặc chia lô
 theo `post_id`; tránh `UPDATE ... WHERE sentiment IS NULL` quét toàn bảng.

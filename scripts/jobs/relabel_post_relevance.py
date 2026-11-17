@@ -1,7 +1,7 @@
-"""Gán lại nhãn độ liên quan (luật trước, ca khó mới gọi model quyết định của Bee - openai/gpt-6-luna-decisions) cho các bài đã vào D1 mà Kira chưa kết luận (relevance_confidence IS NULL): lúc
-Kira tắt, lỗi/504, vượt hạn mức ngày, hoặc khi ingest chạy với KIRA_INGEST_RELEVANCE=false (ingest không chờ Kira).
+"""Gán lại nhãn độ liên quan (luật trước, ca khó mới gọi model quyết định của Bee - openai/gpt-6-luna-decisions) cho các bài đã vào D1 mà AI chưa kết luận (relevance_confidence IS NULL): lúc
+AI tắt, lỗi/504, vượt hạn mức ngày, hoặc khi ingest chạy với AI_INGEST_RELEVANCE=false (ingest không chờ AI).
 Cùng bộ gom lô (app/ai/tasks/post_relevance.py) và cùng logic chốt nhãn (relevance_rules.resolve_relevance) như
-ingest consumer - khác duy nhất: bài Kira gán "not_related" được ẨN (relevance_label='not_related', keyword_match=0)
+ingest consumer - khác duy nhất: bài AI gán "not_related" được ẨN (relevance_label='not_related', keyword_match=0)
 thay vì xoá, nên một nhãn sai vẫn sửa lại được.
 
 Sau mỗi vòng relevance, gắn luôn cảm xúc/khía cạnh cho NỘI DUNG bài liên quan còn thiếu trong cùng khoảng ngày
@@ -26,7 +26,7 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 
-from app.ai.tasks.post_relevance import classify_post_relevance_kira
+from app.ai.tasks.post_relevance import classify_post_relevance
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.posts import MIN_CONTENT_LENGTH, contains_keyword
@@ -44,7 +44,7 @@ from app.workers.ingest_consumer.sentiment_sweep import MAX_ATTEMPTS, classify_p
 
 logger = get_logger(__name__)
 
-PAGE_SIZE = 60  # 6 lô Kira (BATCH_SIZE 10), bộ gom lô chạy tối đa 3 lô song song
+PAGE_SIZE = 60  # 6 lô AI (BATCH_SIZE 10), bộ gom lô chạy tối đa 3 lô song song
 MAX_BACKOFF_SECONDS = 300.0
 IDLE_SECONDS = 120.0
 
@@ -72,7 +72,7 @@ async def _select(since: str, movie_id: str | None, limit: int, exclude: set[str
 async def _relabel(
     row: dict[str, Any], movies: dict[str, dict[str, Any]], titles: list[str], dry_run: bool
 ) -> str | None:
-    """Nhãn cuối cùng đã ghi, hoặc None khi Kira không kết luận (để lại cho vòng sau)."""
+    """Nhãn cuối cùng đã ghi, hoặc None khi AI không kết luận (để lại cho vòng sau)."""
     movie = movies.get(row["movie_id"])
     if movie is None:
         return None
@@ -102,7 +102,7 @@ async def _relabel(
                 )
             )
         return f"rule:{context}"
-    verdict = await classify_post_relevance_kira(
+    verdict = await classify_post_relevance(
         content=row["content"], movie=movie, keyword=row["keyword"], platform=row["platform"], other_titles=titles
     )
     if verdict is None:
@@ -133,12 +133,12 @@ async def _relabel(
             )
         )
     else:
-        logger.info("relabel_dry_run", post_id=row["id"], label=label, kira=verdict["label"], reason=verdict["reason"])
+        logger.info("relabel_dry_run", post_id=row["id"], label=label, ai=verdict["label"], reason=verdict["reason"])
     return label or "none"
 
 
 async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
-    """--rules: áp luật lọc thủ công (settings.relevance_rules_only) cho mọi bài đang chờ Kira (relevance_confidence IS
+    """--rules: áp luật lọc thủ công (settings.relevance_rules_only) cho mọi bài đang chờ AI (relevance_confidence IS
     NULL) từ `since` - khớp tên phim/viết tắt/từ khoá thì "related", không dấu/tiếng nước ngoài hoặc không khớp thì ẩn
     ("not_related", keyword_match=0, không xoá). Lật trang theo con trỏ scraped_at nên chạy một lượt là xong."""
     movies = await _tracked_movies()
@@ -198,7 +198,7 @@ async def run(
     mới gọi AI, theo lô."""
     logger.info("relabel_started", since=since, movie_id=movie_id, limit=limit, dry_run=dry_run, follow=follow)
     if settings.relevance_rules_only:
-        # Chế độ lọc thủ công: không gọi Kira cho độ liên quan. Chạy dạng service (--follow) thì đứng chờ thay vì thoát,
+        # Chế độ lọc thủ công: không gọi AI cho độ liên quan. Chạy dạng service (--follow) thì đứng chờ thay vì thoát,
         # để Restart=always của systemd không khởi động lại liên tục.
         logger.info("relabel_paused_rules_only_mode")
         while follow:
@@ -221,14 +221,14 @@ async def run(
             if dry_run:
                 break
             if done:
-                # Kira đang trả lời: bài nào nó không kết luận được thì chỉ thử lại vài lần.
+                # AI đang trả lời: bài nào nó không kết luận được thì chỉ thử lại vài lần.
                 attempts.update(row["id"] for row, label in zip(rows, labels, strict=True) if label is None)
                 failed_pages = 0
                 continue
-            # Cả trang đều lỗi - Kira tắt/sập/hết tiền, không phải do các bài này: chờ lâu dần rồi thử lại.
+            # Cả trang đều lỗi - AI tắt/sập/hết tiền, không phải do các bài này: chờ lâu dần rồi thử lại.
             failed_pages += 1
             delay = min(10 * 2**failed_pages, MAX_BACKOFF_SECONDS)
-            logger.warning("relabel_kira_unavailable", failed_pages=failed_pages, retry_in=delay)
+            logger.warning("relabel_ai_unavailable", failed_pages=failed_pages, retry_in=delay)
             if not follow and failed_pages >= 5:
                 break
             await asyncio.sleep(delay)

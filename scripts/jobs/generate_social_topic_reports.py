@@ -1,7 +1,7 @@
 """Tạo lại report social listening "top 10 topic" bằng AI cho mọi phim đang bật (hoặc
 một phim qua --movie-id), ghi đè social_topic_reports theo movie_id. Đây cố ý là job
 theo lô chạy định kỳ, không tính theo mỗi lượt xem trang - gom topic comment của một
-phim là một lời gọi AI tốn kém (Kira mặc định, hoặc Bee nếu chọn trong Settings), và
+phim là một lời gọi AI tốn kém (AI mặc định, hoặc Bee nếu chọn trong Settings), và
 chủ đề thảo luận của một phim không thay đổi đáng kể trong vài giờ với lượng comment
 hiện tại. Chạy hằng ngày qua cron (xem scripts/trigger_scheduled_crawl.sh); dùng
 --movie-id để tạo lại một lần khi cần (ví dụ ngay sau một lượt backfill, không phải

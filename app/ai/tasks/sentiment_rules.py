@@ -104,7 +104,7 @@ def _only_brackets(message: str | None) -> bool:
 
 def rule_sentiment(message: str | None) -> str | None:
     """Nhãn không cần model cho comment KHÔNG mang nội dung (rỗng, chỉ sticker/emoji, chỉ tag bạn bè, chỉ tiếng cười,
-    quá ngắn); None nghĩa là có chữ, để Kira/ViSoBERT gán."""
+    quá ngắn); None nghĩa là có chữ, để AI/ViSoBERT gán."""
     text = _PLACEHOLDER.sub(" ", message or "")
     if _only_brackets(message):
         text = _BRACKET.sub(" ", text)
@@ -185,7 +185,7 @@ async def remember_comment_labels(pairs: list[tuple[str, dict[str, Any]]]) -> No
         for message, label in pairs:
             pipe.set(_label_cache_key(message), json.dumps(label, ensure_ascii=False), ex=CACHE_TTL)
         await pipe.execute()
-    except Exception as exc:  # noqa: BLE001 - không ghi được cache thì lần sau gọi Kira lại, không sao
+    except Exception as exc:  # noqa: BLE001 - không ghi được cache thì lần sau gọi AI lại, không sao
         logger.warning("comment_label_cache_write_failed", error=exc)
 
 

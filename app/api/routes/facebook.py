@@ -52,7 +52,7 @@ async def list_source_pages() -> dict[str, Any]:
 
 @router.get("/sources/suggestions")
 async def source_page_suggestions() -> dict[str, Any]:
-    """Trang có nhiều bài liên quan nhất 30 ngày qua chưa có trong danh sách và Kira chưa quyết định."""
+    """Trang có nhiều bài liên quan nhất 30 ngày qua chưa có trong danh sách và AI chưa quyết định."""
     return {"items": await source_pages.pending_suggestions()}
 
 

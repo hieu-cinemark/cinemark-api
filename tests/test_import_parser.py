@@ -19,7 +19,7 @@ def test_pipe_format_one_line_per_account():
     assert rows[1]["account_id"] == "user_b"
 
 
-def test_prose_format_falls_through_to_kira():
+def test_prose_format_falls_through_to_ai():
     assert parse_delimited("accounts", "each line is email then password", "a@x.com secret") is None
 
 

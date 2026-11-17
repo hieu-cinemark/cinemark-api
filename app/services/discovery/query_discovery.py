@@ -6,7 +6,7 @@ câu - mỗi câu khác nhau trả về một tập bài khác. Kompa (đo ~120 
 1. Ứng viên: "phim <tên>", "review <tên>", "đi xem <tên>", "<diễn viên chính> <tên>" (QUERY_TEMPLATES, MAX_CAST).
 2. Chỉ phim còn quanh thời gian chiếu (ACTIVE_BEFORE/AFTER_DAYS quanh released_at) - mỗi câu Facebook là một lượt quét
    60 ngày bằng tài khoản thật, nên không thêm cho phim đã hết chiếu.
-3. Kira đọc thông tin phim, chấm câu truy vấn: "film" khi kết quả tìm kiếm hầu hết sẽ là bài về đúng phim này.
+3. AI đọc thông tin phim, chấm câu truy vấn: "film" khi kết quả tìm kiếm hầu hết sẽ là bài về đúng phim này.
 4. Ràng buộc: "film" + confidence >= MIN_CONFIDENCE, tối đa MAX_ADDS_PER_MOVIE câu mỗi phim và MAX_ADDS_PER_RUN câu
    mỗi lượt; mỗi câu được thêm cho Facebook và Threads (nền tảng phim đang theo dõi). Không xếp crawl ngay - lịch crawl
    hằng ngày lấy chúng ở lượt kế tiếp (tránh dồn thêm hàng chục lượt quét Facebook cùng lúc).
@@ -96,7 +96,7 @@ Trả về JSON hợp lệ, không bọc code block:
 
 GENERATE_TASK = "query_generation"
 MAX_GENERATED = 6
-# Mỗi lần sinh câu mất ~150-170 giây và 11-15 nghìn token của Kira - giới hạn số phim mỗi lượt, phim gần
+# Mỗi lần sinh câu mất ~150-170 giây và 11-15 nghìn token của AI - giới hạn số phim mỗi lượt, phim gần
 # ngày chiếu nhất trước; phim còn lại chỉ xét câu theo mẫu và tới lượt ở các ngày sau.
 MAX_GENERATE_PER_RUN = 6
 SAMPLE_POSTS = 15
@@ -139,7 +139,7 @@ async def _sample_posts(movie_id: str) -> list[str]:
 
 
 async def _generate_queries(movie: dict[str, Any], existing: list[str]) -> list[str]:
-    """Kira đề xuất câu tìm kiếm mới (dạng chữ) từ thông tin phim + bài mẫu. Lỗi -> [] (chỉ còn câu theo mẫu)."""
+    """AI đề xuất câu tìm kiếm mới (dạng chữ) từ thông tin phim + bài mẫu. Lỗi -> [] (chỉ còn câu theo mẫu)."""
     samples = await _sample_posts(movie["id"])
     user = (
         f"{movie_context_block(movie)}\n"
@@ -184,9 +184,7 @@ def _active(movie: dict[str, Any], now: datetime) -> bool:
     return now - timedelta(days=ACTIVE_AFTER_DAYS) <= day <= now + timedelta(days=ACTIVE_BEFORE_DAYS)
 
 
-async def _ask_kira(
-    movie: dict[str, Any], queries: list[str], other_titles: Iterable[str]
-) -> dict[str, dict[str, Any]]:
+async def _ask_ai(movie: dict[str, Any], queries: list[str], other_titles: Iterable[str]) -> dict[str, dict[str, Any]]:
     others = [t for t in other_titles if t != movie.get("title")][:40]
     user = (
         f"{movie_context_block(movie)}\n"
@@ -302,7 +300,7 @@ async def _backfill_threads_templates(
     now: datetime,
     dry_run: bool,
 ) -> int:
-    """Thêm cho Threads các câu theo mẫu (QUERY_TEMPLATES, không gồm câu diễn viên) đã dùng cho Facebook của cùng phim - Kira
+    """Thêm cho Threads các câu theo mẫu (QUERY_TEMPLATES, không gồm câu diễn viên) đã dùng cho Facebook của cùng phim - AI
     đã chấm "film", hoặc là từ khoá Facebook đang bật (thường "phim <tên>" người vận hành thêm, không qua quyết định nào -
     chính mẫu ra nhiều bài nhất trên Threads) - khi phim đang theo dõi Threads mà chưa có câu đó."""
     if "threads" not in ADD_PLATFORMS or THREADS_BACKFILL_PER_RUN <= 0:
@@ -434,10 +432,10 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
             continue
         stats["candidates"] += len(queries)
         try:
-            verdicts = await _ask_kira(movie, queries, titles)
-        except Exception as exc:  # noqa: BLE001 - Kira tắt/lỗi: phim này để lượt sau
+            verdicts = await _ask_ai(movie, queries, titles)
+        except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: phim này để lượt sau
             stats["failed"] += 1
-            logger.warning("query_ai_kira_failed", movie_id=movie["id"], error=str(exc)[:300])
+            logger.warning("query_ai_review_failed", movie_id=movie["id"], error=str(exc)[:300])
             continue
         stats["asked"] += 1
         added_here = 0

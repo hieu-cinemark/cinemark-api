@@ -16,7 +16,6 @@ tác giả của bài lấy từ nguồn khác (channel_profiles, spider)."""
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import heapq
 import itertools
 import json
@@ -29,6 +28,7 @@ import httpx
 from sqlalchemy import select
 
 from app.clients.kafka import publish_raw_post
+from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.clients.shortvid import (
     PAGE_SIZE,
     ShortVidStop,
@@ -39,16 +39,40 @@ from app.clients.shortvid import (
     usage_snapshot,
     videos_of,
 )
-from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec
-from app.repositories.d1.store import SHORTVID_COOCCUR_KEY_TMPL, get_enabled_keywords
+from app.repositories.d1.store import get_enabled_keywords
 from app.repositories.d1.tables import movies
 from app.services.accounts.platform_config_db import get_shortvid_api_settings, shortvid_requests_cap
 from app.services.shortvid import shortvid_channels, shortvid_comments, shortvid_search, shortvid_yield
 
 logger = get_logger(__name__)
+
+# Đã tách ra module riêng (17/11/2026) - import + re-export để code cũ `shortvid_tiktok.X` chạy như cũ.
+from app.services.shortvid.shortvid_pause import (  # noqa: F401
+    _KEY_PAUSE_HOURS,
+    _LAST_ROUND_KEY,
+    _PAUSE_KEY,
+    _RESUME_SLACK_SECONDS,
+    _log_stop,
+    _pause_after_round,
+    _round,
+    clear_pause,
+    get_pause,
+    key_fingerprint,
+    last_round,
+    pause_over,
+    set_pause,
+)
+from app.services.shortvid.shortvid_seen import (  # noqa: F401
+    _COOCCUR_TTL_SECONDS,
+    _SEEN_PREFIX,
+    _SPIDER_SEEN_VIDEOS_KEY,
+    _claim_unseen,
+    _count_cooccur,
+    _forget_seen,
+)
 
 
 async def publish_videos(
@@ -231,7 +255,7 @@ async def run_round_robin(
     await asyncio.gather(*(worker() for _ in range(max(1, min(workers, len(items))))))
 
 
-async def fetch_usage(api_key: str = "", client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:  # noqa: ARG001
+async def fetch_usage(api_key: str = "", client: httpx.AsyncClient | None = None) -> dict[str, Any] | None:
     """Hạn mức ngày tự đặt + credit còn lại (app/clients/shortvid.usage_snapshot - ShortVid không có GET /usage).
     Giữ tên và tham số cũ để phần ngân sách lượt cào và tab ShortVid dùng như trước."""
     try:
@@ -254,173 +278,6 @@ async def _movie_priority() -> dict[str, float]:
     return out
 
 
-_SEEN_PREFIX = f"{REDIS_KEY_PREFIX}shortvid:seen:"
-# Set video TikTok đã gửi lên raw_posts của spider-hub (constants/tiktok.py SEEN_POSTS_KEY, cùng prefix) - dùng chung để
-# spider không gửi lại video ShortVid đã gửi và ngược lại.
-_SPIDER_SEEN_VIDEOS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_video_ids"
-
-
-async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None) -> set[str]:
-    """Video cần gửi lên raw_posts: video MỚI (chưa có trong set đã gửi dùng chung với spider) hoặc video cũ đã quá
-    settings.shortvid_republish_hours giờ chưa gửi lại (cập nhật tương tác). Đánh dấu luôn những video đó. Với gói lớn (~1 triệu
-    video/ngày, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải. Redis lỗi thì coi như mới hết (thà ghi trùng còn
-    hơn mất bài)."""
-    if not video_ids:
-        return set()
-    ttl = int(settings.shortvid_republish_hours * 3600)
-    try:
-        pipe = get_redis_client().pipeline()
-        for video_id in video_ids:
-            pipe.sadd(_SPIDER_SEEN_VIDEOS_KEY, video_id)
-            if ttl > 0:
-                pipe.set(f"{_SEEN_PREFIX}{video_id}", "1", nx=True, ex=ttl)
-        results = await pipe.execute()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("shortvid_seen_check_failed", error=str(exc)[:200])
-        return set(video_ids)
-    step = 2 if ttl > 0 else 1
-    out = set()
-    for i, video_id in enumerate(video_ids):
-        is_new = bool(results[i * step])
-        refresh_due = bool(results[i * step + 1]) if ttl > 0 else True
-        if is_new or refresh_due:
-            out.add(video_id)
-        if is_new and brand_new is not None:
-            brand_new.add(video_id)  # lần đầu thấy (chưa có trong tập chống trùng dùng chung với spider)
-    return out
-
-
-async def _forget_seen(video_id: str) -> None:
-    """Gửi Kafka lỗi: bỏ đánh dấu để lần sau gửi lại."""
-    try:
-        pipe = get_redis_client().pipeline()
-        pipe.srem(_SPIDER_SEEN_VIDEOS_KEY, video_id)
-        pipe.delete(f"{_SEEN_PREFIX}{video_id}")
-        await pipe.execute()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("shortvid_seen_forget_failed", error=str(exc)[:200])
-
-
-# BFS: hashtag đi kèm trong video ShortVid lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày. d1.related_hashtags_for_keywords
-# gộp với hashtag liên quan của spider - cùng một nguồn cho chip duyệt trên dashboard và cho Kira duyệt (hashtag_discovery).
-_COOCCUR_TTL_SECONDS = 14 * 24 * 3600
-
-
-async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, Any]]) -> None:
-    """Cộng số video có mỗi hashtag đi kèm (khác chính hashtag đang cào). Giữ nguyên dấu, chỉ hạ chữ thường: TikTok không
-    phân biệt hoa thường nhưng #trạibuônngười và #traibuonnguoi là hai hashtag khác nhau."""
-    own = keyword.lstrip("#").strip().lower()
-    counts: dict[str, int] = {}
-    for video in videos:
-        for tag in {str(t).strip().lower() for t in video.get("hashtags") or [] if str(t).strip()}:
-            if tag != own and 3 <= len(tag) <= 60:
-                counts[tag] = counts.get(tag, 0) + 1
-    if not counts:
-        return
-    key = SHORTVID_COOCCUR_KEY_TMPL.format(keyword_id=keyword_id)
-    try:
-        pipe = get_redis_client().pipeline()
-        for tag, n in counts.items():
-            pipe.hincrby(key, tag, n)
-        pipe.expire(key, _COOCCUR_TTL_SECONDS)
-        await pipe.execute()
-    except Exception as exc:  # noqa: BLE001 - thiếu số đếm chỉ làm BFS chậm hơn
-        logger.warning("shortvid_cooccur_failed", error=str(exc)[:200])
-
-
-# Tạm dừng khi hết hạn mức: lượt kết thúc vì dùng hết hạn mức ngày (hoặc key sai) thì ghi lại tới khi nào
-# chạy được - scheduler không gọi ShortVid nữa (kể cả /usage) cho tới lúc đó rồi mở lượt NGAY khi hạn mức reset, không đợi
-# mốc giờ kế tiếp. Con trỏ hashtag / hàng đợi bình luận / tìm kiếm vốn lưu sau mỗi trang nên lượt sau đi tiếp đúng chỗ.
-_PAUSE_KEY = f"{REDIS_KEY_PREFIX}shortvid:paused"
-_LAST_ROUND_KEY = f"{REDIS_KEY_PREFIX}shortvid:last_round"
-# Key sai/hết hạn: thử lại khi đổi key, hoặc sau chừng này giờ nếu vẫn key cũ.
-_KEY_PAUSE_HOURS = 6
-# Hạn mức reset xong chừng này giây mới mở lượt - tránh gọi đúng lúc phía ShortVid chưa kịp reset.
-_RESUME_SLACK_SECONDS = 60
-
-
-def key_fingerprint(api_key: str) -> str:
-    return hashlib.sha256(api_key.encode()).hexdigest()[:12] if api_key else ""
-
-
-def _log_stop(exc: ShortVidStop) -> None:
-    quota = str(exc).startswith("daily_limit")
-    # Hết hạn mức ngày là chuyện bình thường của chế độ chạy liên tục - chỉ báo Telegram khi key có vấn đề.
-    if quota:
-        logger.info("shortvid_round_stopped", error=str(exc))
-    else:
-        logger.error("shortvid_round_stopped", error=str(exc), telegram=True)
-
-
-async def get_pause() -> dict[str, Any] | None:
-    try:
-        raw = await get_redis_client().get(_PAUSE_KEY)
-        return json.loads(raw) if raw else None
-    except Exception as exc:  # noqa: BLE001 - không đọc được thì coi như không dừng (lượt tự kiểm tra hạn mức)
-        logger.warning("shortvid_pause_read_failed", error=str(exc)[:200])
-        return None
-
-
-async def set_pause(reason: str, until: datetime, *, api_key: str = "") -> None:
-    entry = {
-        "reason": reason,  # "quota" (hết hạn mức ngày) | "key" (key sai/hết hạn)
-        "until": until.astimezone(UTC).isoformat(),
-        "at": datetime.now(tz=UTC).isoformat(),
-        "key": key_fingerprint(api_key),
-    }
-    ttl = max(60, int((until - datetime.now(tz=UTC)).total_seconds()) + 7 * 24 * 3600)
-    await get_redis_client().set(_PAUSE_KEY, json.dumps(entry), ex=ttl)
-    logger.info("shortvid_paused", **entry)
-
-
-async def clear_pause() -> None:
-    await get_redis_client().delete(_PAUSE_KEY)
-
-
-async def pause_over(pause: dict[str, Any]) -> bool:
-    """Hết dừng chưa: tới giờ `until`, hoặc (dừng vì key) key trong Supabase đã đổi."""
-    try:
-        until = datetime.fromisoformat(pause["until"])
-    except KeyError, TypeError, ValueError:
-        return True
-    if datetime.now(tz=UTC) >= until:
-        return True
-    if pause.get("reason") == "key":
-        row = await get_shortvid_api_settings()
-        current = key_fingerprint(((row or {}).get("api_key") or "").strip())
-        return bool(current) and current != pause.get("key")
-    return False
-
-
-async def _pause_after_round(stats: dict[str, Any], api_key: str, reset_at: datetime | None, exhausted: bool) -> None:
-    """Ghi lại khi nào lượt kế tiếp chạy được, theo lý do lượt vừa dừng."""
-    stopped = str(stats.get("stopped") or "")
-    now = datetime.now(tz=UTC)
-    if stopped.startswith(("http_401", "http_403")):
-        await set_pause("key", now + timedelta(hours=_KEY_PAUSE_HOURS), api_key=api_key)
-        return
-    if not (stopped.startswith("daily_limit") or (exhausted and not settings.shortvid_spread_daily)):
-        return
-    # Đọc lại /usage (không tính vào hạn mức) để có giờ reset chính xác; không đọc được thì dùng giờ reset lúc mở lượt.
-    usage = await fetch_usage(api_key)
-    day = (usage or {}).get("day") or {}
-    if day.get("resets_in") is not None:
-        reset_at = now + timedelta(seconds=int(day["resets_in"]))
-        if int(day.get("remaining") or 0) > settings.shortvid_daily_reserve and not stopped.startswith("daily_limit"):
-            return  # vẫn còn hạn mức (vd. gói vừa được nâng) - lượt sau chạy bình thường
-    await set_pause("quota", (reset_at or now + timedelta(hours=1)) + timedelta(seconds=_RESUME_SLACK_SECONDS))
-
-
-async def last_round() -> dict[str, Any] | None:
-    try:
-        raw = await get_redis_client().get(_LAST_ROUND_KEY)
-        return json.loads(raw) if raw else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
-# Trạng thái lượt đang/vừa chạy - cho tab ShortVid trên dashboard (app/api/routes/shortvid.py) và scheduler (không mở lượt chồng).
-_round: dict[str, Any] = {"running": False, "trigger": None, "started_at": None, "finished_at": None, "stats": {}}
 _stop_requested = False
 
 
@@ -598,9 +455,8 @@ async def run_shortvid_round(live: dict[str, Any] | None = None) -> dict[str, An
     Redis sau mỗi trang, lượt sau / hôm sau đi tiếp; cào tới has_more = false thì xong, cào lại từ đầu sau
     settings.shortvid_recrawl_days ngày, hoặc sớm hơn khi lượt còn ngân sách dư (hashtag xong lâu nhất trước).
 
-    Ngân sách: mặc định CHẠY LIÊN TỤC - toàn bộ hạn mức ngày tự đặt còn lại (shortvid_daily_requests, trừ settings.shortvid_daily_reserve) dùng
-    ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ Supabase mỗi lượt). settings.shortvid_spread_daily = True thì
-    rải đều: phần còn lại chia cho số giờ tới lúc reset, trần = số request một giờ ở giới hạn mỗi phút của gói.
+    Ngân sách: CHẠY LIÊN TỤC - toàn bộ hạn mức ngày tự đặt còn lại (shortvid_daily_requests, trừ settings.shortvid_daily_reserve) dùng
+    ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ Supabase mỗi lượt).
     Nhịp gọi cũng theo giới hạn mỗi phút của gói - nâng gói ShortVid thì tự chạy nhanh/nhiều hơn."""
     row = await get_shortvid_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()
@@ -643,13 +499,9 @@ async def run_shortvid_round(live: dict[str, Any] | None = None) -> dict[str, An
             remaining, resets_in = int(day["remaining"]), int(day.get("resets_in") or 0)
             reset_at = datetime.now(tz=UTC) + timedelta(seconds=resets_in)
             spendable = max(0, remaining - settings.shortvid_daily_reserve)
-            if settings.shortvid_spread_daily:
-                # Rải đều: phần còn lại chia cho số giờ tới lúc reset, trần một giờ.
-                budget = min(hour_cap, spendable // max(1, -(-resets_in // 3600)))
-            else:
-                # Chạy liên tục (mặc định): dùng hết hạn mức còn lại ngay trong lượt này - lượt có thể dài
-                # nhiều giờ (scheduler không mở lượt chồng lên); hết thì chờ reset ngày / key mới.
-                budget = spendable
+            # Chạy liên tục: dùng hết hạn mức còn lại ngay trong lượt này - lượt có thể dài nhiều giờ (scheduler không
+            # mở lượt chồng lên); hết thì chờ reset ngày / key mới.
+            budget = spendable
         else:
             budget = hour_cap // 4
         stats["budget"] = budget

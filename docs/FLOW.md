@@ -92,7 +92,7 @@ vào `max_tokens`, nên client tự cộng thêm hạn mức khi provider có `r
 | Thêm nhịp lịch | `async def x_tick()` + một dòng trong `TICKS` (README `scheduler/`) |
 | Thêm job AI | file trong `app/services/ai_jobs/` (logic) + `app/ai/prompts/` (prompt) + `app/ai/tasks/` (parse, hàm thuần); gọi `call_llm_json`; gắn vào `ai_jobs_tick` |
 | Thêm bảng D1 | `Table(...)` + `CreateTable(if_not_exists=True)` + hàm `ensure_table()`; test bằng SQLite trong bộ nhớ (mẫu `tests/test_comment_hourly.py`) |
-| Thêm cài đặt chỉnh từ dashboard | `ProxySettings` trong `app/schemas/settings.py` + mặc định bên spider-hub `db/proxy_settings.py` + form dashboard; đọc bằng `await crawl_setting("khoá")` |
+| Thêm cài đặt chỉnh từ dashboard | Chỉ `ProxySettings` trong `app/schemas/settings.py` (khoá + mặc định + giới hạn) + form dashboard. Khi khởi động, cinemark-api ghi khoá mới vào dòng `proxy_settings`; spider-hub đọc bằng `get_setting("khoá")`, ở đây đọc bằng `await crawl_setting("khoá")`. Deploy cinemark-api TRƯỚC spider-hub |
 | Thêm nền tảng | mapper bài/bình luận trong `app/services/crawl/platforms.py` + job bên spider-hub |
 | Đổi luật liên quan | `app/services/relevance/relevance_rules.py` (hàm thuần, có test riêng); chạy lại nhãn bài cũ bằng script trong `scripts/tools/` |
 | Thêm route cho dashboard | `app/api/routes/<tên>.py` + đăng ký trong `app/main.py` |
@@ -108,3 +108,14 @@ ruff check app tests scripts && ruff format app tests scripts
 - Hàm thuần có test riêng; test cần D1 thì monkeypatch `app.repositories.d1.sql.d1_query` hoặc chạy câu SQLAlchemy thật trên SQLite trong bộ nhớ.
 - Có test bắt code thừa/trùng ở phía Worker (`cinemark`); phía này dùng `ruff` + bộ quét code chết (tên hàm cấp module chỉ xuất hiện một lần trong cả repo).
 - Push `main` thì GitHub Actions deploy lên VPS (`deploy/vps/deploy-repo.sh`). Timer mới phải cài trên VPS: `bash deploy/systemd/install_all.sh` cài mọi timer một lần (chạy lại an toàn).
+
+## 8. Log và cấu hình (từ 17/11/2026)
+
+- **Log mặc định tiếng Việt.** `event` là mã snake_case cố định (dashboard, Telegram, test dựa vào nó); câu tiếng Việt nằm ở `app/core/log_messages.py`
+  và được logger thêm vào mọi dòng (`msg` ở JSON, ngay sau mã sự kiện ở console). Thêm sự kiện mới = thêm một dòng vào `MESSAGES`;
+  `tests/test_log_messages.py` quét mã nguồn và fail nếu thiếu hoặc mã không phải snake_case. Dữ liệu thay đổi đặt ở key=value, không ghép vào câu.
+- **Cấu hình cào nằm ở Postgres (`proxy_settings`), cinemark-api là nguồn sự thật.** Khoá/mặc định/giới hạn khai ở `ProxySettings`
+  (`app/schemas/settings.py`); khi web/scheduler khởi động `ensure_proxy_settings_complete` ghi đủ mọi khoá vào dòng này; spider-hub chỉ đọc.
+  Sửa trên dashboard (Settings › Proxy), có hiệu lực sau ≤ 60 giây, không cần `.env` hay restart. Deploy cinemark-api TRƯỚC spider-hub.
+- **Deploy tự cài timer.** `deploy/vps/deploy-repo.sh` (CI gọi) tự cập nhật bản của chính nó, cài `requirements-ml.txt` khi cần, và đồng bộ/bật mọi
+  cặp `deploy/systemd/*.timer`+`.service` - không còn bước cài tay sau deploy (`install_all.sh` chỉ còn để cài lần đầu).

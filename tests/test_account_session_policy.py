@@ -8,6 +8,7 @@ import pytest
 from app.api.routes import settings as routes
 from app.core.errors import CookieRefusedError, ProxyPolicyError
 from app.services.accounts import platform_config_db as db
+from app.services.accounts.config_db import accounts as accounts_db
 from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.user_agent import merge_user_agent
 
@@ -130,8 +131,8 @@ class Ctx:
 
 def use_db(monkeypatch, rows):
     cur = Cur(rows)
-    monkeypatch.setattr(db, "_ensure_pool_columns", AsyncMock())
-    monkeypatch.setattr(db, "_connect", lambda: Ctx(cur))
+    monkeypatch.setattr(accounts_db, "_ensure_pool_columns", AsyncMock())
+    monkeypatch.setattr(accounts_db, "_connect", lambda: Ctx(cur))
     return cur
 
 
@@ -151,7 +152,7 @@ async def test_pin_does_not_look_like_a_new_cookie(monkeypatch):
 
 async def test_health_check_cannot_overwrite_dead(monkeypatch):
     cur = use_db(monkeypatch, [None])
-    monkeypatch.setattr(db, "get_account", AsyncMock(return_value={"id": 1, "last_check_status": "dead"}))
+    monkeypatch.setattr(accounts_db, "get_account", AsyncMock(return_value={"id": 1, "last_check_status": "dead"}))
     row = await db.update_account_check_result(1, status="unknown")
     assert row["last_check_status"] == "dead"
     assert "NOT (last_check_status IS NOT DISTINCT FROM 'dead'" in cur.sql[0][0]

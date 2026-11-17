@@ -299,7 +299,7 @@ class CommentRepository:
         tương tác riêng, chỉ có số reaction/reply hiện tại).
 
         `sentiment` là nhãn do AI phân loại ("positive"/"negative"/"neutral") từ
-        app.ai.tasks.sentiment.classify_comments() (Kira), đã được chỗ gọi xác định trước
+        app.ai.tasks.sentiment.classify_comments() (AI), đã được chỗ gọi xác định trước
         khi gọi hàm này - None nghĩa là hoặc chưa phân loại (message quá ngắn) hoặc lời gọi
         AI thất bại, và chỉ để cột là NULL thay vì chặn việc upsert."""
         if not _configured():

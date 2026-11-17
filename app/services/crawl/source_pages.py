@@ -5,7 +5,7 @@ Mỗi dòng source_pages là một Page/Profile Facebook, hai loại:
 - movie_id NULL: trang CHUNG (CGV, Moveek, trang review) - ingest tìm phim đang theo dõi mà bài nêu tên rồi lọc liên quan
   như bài tìm kiếm của phim đó; bài không nêu phim nào thì bỏ.
 
-Tự động: review_suggestions() (mỗi sáng, sau hashtag/query discovery) cho Kira duyệt các trang gợi ý - tác giả Facebook
+Tự động: review_suggestions() (mỗi sáng, sau hashtag/query discovery) cho AI duyệt các trang gợi ý - tác giả Facebook
 có nhiều bài liên quan nhất 30 ngày qua (suggestions()) kèm bài mẫu của chính trang - thành "trang của phim X", "trang
 chung" hoặc loại; trang được duyệt tự thêm vào danh sách (added_by='ai').
 
@@ -615,14 +615,14 @@ async def _decided_urls() -> set[str]:
 
 
 async def pending_suggestions() -> list[dict[str, Any]]:
-    """Gợi ý mà Kira chưa quyết định (cho dashboard)."""
+    """Gợi ý mà AI chưa quyết định (cho dashboard)."""
     await _ensure_table()
     decided = await _decided_urls()
     return [s for s in await suggestions() if s["url"] not in decided]
 
 
 async def review_suggestions(*, dry_run: bool = False, limit: int | None = None) -> dict[str, int]:
-    """Kira duyệt các trang gợi ý chưa quyết định; trang film/shared đủ tin cậy tự thêm vào danh sách (xem docstring)."""
+    """AI duyệt các trang gợi ý chưa quyết định; trang film/shared đủ tin cậy tự thêm vào danh sách (xem docstring)."""
     await _ensure_table()
     decided = await _decided_urls()
     candidates = [s for s in await suggestions() if s["url"] not in decided][:limit]
@@ -647,7 +647,7 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
             raw = await call_llm(
                 task=REVIEW_TASK, system_prompt=REVIEW_PROMPT, user_prompt="\n".join(blocks), max_tokens=6000
             )
-        except Exception as exc:  # noqa: BLE001 - Kira tắt/lỗi: lượt sau xét lại
+        except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: lượt sau xét lại
             stats["failed"] += 1
             logger.warning("source_page_review_failed", error=str(exc)[:300])
             continue

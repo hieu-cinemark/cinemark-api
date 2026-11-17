@@ -2,11 +2,11 @@
 
 handle_comment lưu comment với sentiment NULL; vòng lặp này cứ mỗi
 SWEEP_INTERVAL_SECONDS lại lấy các comment gần đây chưa phân loại và phân loại theo
-lô qua Kira (app/ai/tasks/sentiment.py), để một comment có nhãn trong vòng một hai
+lô qua AI (app/ai/tasks/sentiment.py), để một comment có nhãn trong vòng một hai
 phút thay vì làm nghẽn việc ingest Kafka bằng mỗi comment một lời gọi LLM.
 
-Lời gọi Kira chạy từng lô một, nên lượt quét không bao giờ chiếm quá một chỗ trong
-giới hạn song song của Kira (app/ai/providers/client.py) so với phân loại độ liên quan của bài
+Lời gọi AI chạy từng lô một, nên lượt quét không bao giờ chiếm quá một chỗ trong
+giới hạn song song của AI (app/ai/providers/client.py) so với phân loại độ liên quan của bài
 lúc ingest. Một khoá Redis ngăn hai consumer đang chạy cùng phân loại một dòng.
 
 scripts/jobs/backfill_comment_sentiment.py dùng lại classify_pending() cho hàng tồn cũ
@@ -41,9 +41,9 @@ logger = get_logger(__name__)
 SWEEP_INTERVAL_SECONDS = 60
 SWEEP_MAX_ROWS = 200
 # Chỉ comment gần đây: các dòng NULL cũ hơn là việc của script backfill, và cửa sổ này
-# giới hạn thời gian một comment mà Kira cứ lỗi mãi còn được thử lại.
+# giới hạn thời gian một comment mà AI cứ lỗi mãi còn được thử lại.
 SWEEP_WINDOW = timedelta(hours=48)
-# Comment mà Kira không trả về nhãn hợp lệ quá chừng này lần thì để lại cho script
+# Comment mà AI không trả về nhãn hợp lệ quá chừng này lần thì để lại cho script
 # backfill thay vì chiếm chỗ ở mọi lượt quét.
 MAX_ATTEMPTS = 3
 _LOCK_KEY = f"{REDIS_KEY_PREFIX}comment_sentiment_sweep_lock"
@@ -111,7 +111,7 @@ async def classify_pending(
     insights_only: bool = False,
     movie_id: str | None = None,
 ) -> dict[str, Any]:
-    """Phân loại tối đa `limit` comment có sentiment NULL, mới nhất trước, từng lô Kira một,
+    """Phân loại tối đa `limit` comment có sentiment NULL, mới nhất trước, từng lô AI một,
     ghi mỗi lô ngay khi đã gắn nhãn. Trả về {"selected", "classified", "failed",
     "failed_ids", <label>: count...} - có failed_ids để chỗ gọi giới hạn số lần thử lại
     của từng comment.
@@ -165,7 +165,7 @@ async def classify_pending(
     return {**stats, "failed_ids": failed_ids}
 
 
-# Nội dung bài thường dài (caption + hashtag) - cắt bớt trước khi gửi Kira; phần đầu là phần cảm nhận.
+# Nội dung bài thường dài (caption + hashtag) - cắt bớt trước khi gửi AI; phần đầu là phần cảm nhận.
 POST_TEXT_LIMIT = 1200
 SWEEP_MAX_POSTS = 100
 # bài quét mỗi 10 phút thay vì mỗi phút. Câu chọn bài chưa có nhãn duyệt cả 48 giờ bài (~10 nghìn dòng) dù
@@ -266,8 +266,8 @@ async def sweep_forever() -> None:
                 finally:
                     await _release_lock()
                 failed_ids = result.pop("failed_ids")
-                # Chỉ tính lỗi cho comment khi Kira đã gắn nhãn được các comment khác trong cùng vòng -
-                # một vòng mà lô nào cũng lỗi nghĩa là Kira sập/bị giới hạn, và không được loại bỏ mọi
+                # Chỉ tính lỗi cho comment khi AI đã gắn nhãn được các comment khác trong cùng vòng -
+                # một vòng mà lô nào cũng lỗi nghĩa là AI sập/bị giới hạn, và không được loại bỏ mọi
                 # thứ.
                 if result["classified"]:
                     attempts.update(failed_ids)

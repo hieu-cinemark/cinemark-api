@@ -102,5 +102,5 @@ def test_threads_backfill_copies_facebook_template_queries(monkeypatch):
         {"movie_id": "m1", "tag": "facebook:reviewhuyetthong", "display": "review Huyết Thống", "verdict": "other"},
     ]
     added = asyncio.run(qd._backfill_threads_templates(movies, keywords, decisions, now, dry_run=False))
-    # câu FB đang bật + câu Kira đã chấm "film"; bỏ câu FB đã tắt và câu bị chấm khác
+    # câu FB đang bật + câu AI đã chấm "film"; bỏ câu FB đã tắt và câu bị chấm khác
     assert added == 2 and sorted(inserted) == ["Huyết Thống trailer", "phim Huyết Thống"]

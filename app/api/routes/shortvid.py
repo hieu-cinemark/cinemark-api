@@ -57,7 +57,7 @@ async def shortvid_status() -> dict[str, Any]:
         "round": round_status,
         # Đang dừng chờ hạn mức / key mới: {"reason": "quota"|"key", "until": iso, ...} hoặc None.
         "paused": paused,
-        "mode": "spread_daily" if settings.shortvid_spread_daily else "continuous",
+        "mode": "continuous",
         "hashtags": progress,
         "channels": channels,
         "comments": {
