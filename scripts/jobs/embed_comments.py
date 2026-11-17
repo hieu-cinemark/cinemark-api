@@ -8,6 +8,7 @@ nên dừng rồi chạy lại được.
     python -m scripts.jobs.embed_comments --limit 2000
     python -m scripts.jobs.embed_comments
     python -m scripts.jobs.embed_comments --movie-id <id>   # bù comment mới của một phim (con trỏ chung theo id bỏ sót chúng)
+    python -m scripts.jobs.embed_comments --showing --hours 2   # phim đang chiếu, comment về trong 2 giờ qua (timer VPS)
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import argparse
 import asyncio
 import sqlite3
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -99,26 +101,22 @@ async def _read(stmt: Any) -> list[dict[str, Any]]:
         await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)
 
 
-async def _movie_pages(movie_id: str):
-    """--movie-id: comment của phim theo từng nhóm bài, qua index post_id (09/11/2026). Lọc `post_id IN (bài của phim)` trên
-    câu sắp theo id quét gần như cả bảng comments mỗi trang và làm D1 quá tải."""
+async def _movie_pages(movie_id: str, since: str | None = None):
+    """Comment của một phim theo từng nhóm bài, qua index post_id (09/11/2026) - lọc `post_id IN (bài của phim)` trên câu
+    sắp theo id quét gần như cả bảng comments mỗi trang và làm D1 quá tải. `since`: chỉ comment về từ mốc đó (--showing)."""
     post_ids = [row["id"] for row in await _read(select(posts_table.c.id).where(posts_table.c.movie_id == movie_id))]
+    c = comments_table.alias("c")
+    par = comments_table.alias("par")
     for i in range(0, len(post_ids), MOVIE_POST_CHUNK):
-        chunk = post_ids[i : i + MOVIE_POST_CHUNK]
-        c = comments_table.alias("c")
-        par = comments_table.alias("par")
         stmt = (
-            select(
-                c.c.id,
-                c.c.message,
-                literal(movie_id).label("movie_id"),
-                par.c.message.label("parent_message"),
-            )
+            select(c.c.id, c.c.message, literal(movie_id).label("movie_id"), par.c.message.label("parent_message"))
             .select_from(
                 c.outerjoin(par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id))
             )
-            .where(c.c.post_id.in_(chunk))
+            .where(c.c.post_id.in_(post_ids[i : i + MOVIE_POST_CHUNK]))
         )
+        if since:
+            stmt = stmt.where(c.c.first_seen_at >= since)
         rows = await _read(stmt)
         if rows:
             yield rows
@@ -129,27 +127,33 @@ async def main(args: argparse.Namespace) -> None:
     row = conn.execute("SELECT last_id FROM embed_cursor WHERE id = 1").fetchone()
     cursor_id = "" if not row else row[0]
     last_id = "" if args.restart else cursor_id
+    # Con trỏ chung chỉ tiến ở chế độ mặc định; 
+    
+    by_movie = bool(args.movie_id or args.showing)
     read = saved = 0
     started = time.monotonic()
 
     async def pages():
         nonlocal last_id
+        if args.showing:
+            from app.services.relevance.trend_posts import showing_movies
+
+            since = (datetime.now(tz=UTC) - timedelta(hours=args.hours)).isoformat(timespec="seconds")
+            for movie in await showing_movies(datetime.now(tz=UTC)):
+                async for rows in _movie_pages(movie["id"], since):
+                    yield rows
+            return
         if args.movie_id:
             # id comment là uuid nên comment mới không nằm sau con trỏ chung: quét lại comment của phim, bỏ dòng đã embed.
             async for rows in _movie_pages(args.movie_id):
                 yield rows
             return
+        c = comments_table.alias("c")
+        p = posts_table.alias("p")
+        par = comments_table.alias("par")
         while not args.limit or read < args.limit:
-            c = comments_table.alias("c")
-            p = posts_table.alias("p")
-            par = comments_table.alias("par")
             stmt = (
-                select(
-                    c.c.id,
-                    c.c.message,
-                    p.c.movie_id,
-                    par.c.message.label("parent_message"),
-                )
+                select(c.c.id, c.c.message, p.c.movie_id, par.c.message.label("parent_message"))
                 .select_from(
                     c.outerjoin(p, p.c.id == c.c.post_id).outerjoin(
                         par, and_(par.c.platform == c.c.platform, par.c.external_id == c.c.parent_external_id)
@@ -175,7 +179,7 @@ async def main(args: argparse.Namespace) -> None:
         )
         picked = texts_to_embed(rows, done)
         vectors = embed_texts([text for _, text in picked]) if picked else np.zeros((0, 384), dtype=np.float32)
-        save_page(conn, picked, vectors, cursor_id if args.movie_id else last_id)
+        save_page(conn, picked, vectors, cursor_id if by_movie else last_id)
         read += len(rows)
         saved += len(picked)
         if read % (PAGE_SIZE * 25) < len(rows):
@@ -188,4 +192,8 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=0, help="đọc tối đa ngần này comment lượt này")
     parser.add_argument("--restart", action="store_true", help="đọc lại từ đầu, dòng đã embed đúng thì bỏ qua")
     parser.add_argument("--movie-id", help="chỉ comment của một phim, quét lại từ đầu")
+    parser.add_argument(
+        "--showing", action="store_true", help="chỉ phim đang chiếu, bình luận về trong --hours giờ qua"
+    )
+    parser.add_argument("--hours", type=float, default=6)
     asyncio.run(main(parser.parse_args()))
