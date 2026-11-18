@@ -1,6 +1,6 @@
-"""ShortVid: dấu video đã thấy (chống cào lặp) và đếm hashtag đi kèm.
+"""Omar: dấu video đã thấy (chống cào lặp) và đếm hashtag đi kèm.
 
-Tách từ shortvid_tiktok.py (17/11/2026); shortvid_tiktok.py vẫn re-export mọi tên để code cũ chạy như cũ.
+Tách từ omar_tiktok.py (17/11/2026); omar_tiktok.py vẫn re-export mọi tên để code cũ chạy như cũ.
 """
 
 from __future__ import annotations
@@ -10,25 +10,25 @@ from typing import Any
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.overview import SHORTVID_COOCCUR_KEY_TMPL
+from app.repositories.d1.overview import OMAR_COOCCUR_KEY_TMPL
 
 logger = get_logger(__name__)
 
 
-_SEEN_PREFIX = f"{REDIS_KEY_PREFIX}shortvid:seen:"
+_SEEN_PREFIX = f"{REDIS_KEY_PREFIX}omar:seen:"
 # Set video TikTok đã gửi lên raw_posts của spider-hub (constants/tiktok.py SEEN_POSTS_KEY, cùng prefix) - dùng chung để
-# spider không gửi lại video ShortVid đã gửi và ngược lại.
+# spider không gửi lại video Omar đã gửi và ngược lại.
 _SPIDER_SEEN_VIDEOS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_video_ids"
 
 
 async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None) -> set[str]:
     """Video cần gửi lên raw_posts: video MỚI (chưa có trong set đã gửi dùng chung với spider) hoặc video cũ đã quá
-    settings.shortvid_republish_hours giờ chưa gửi lại (cập nhật tương tác). Đánh dấu luôn những video đó. Với gói lớn (~1 triệu
+    settings.omar_republish_hours giờ chưa gửi lại (cập nhật tương tác). Đánh dấu luôn những video đó. Với gói lớn (~1 triệu
     video/ngày, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải. Redis lỗi thì coi như mới hết (thà ghi trùng còn
     hơn mất bài)."""
     if not video_ids:
         return set()
-    ttl = int(settings.shortvid_republish_hours * 3600)
+    ttl = int(settings.omar_republish_hours * 3600)
     try:
         pipe = get_redis_client().pipeline()
         for video_id in video_ids:
@@ -37,7 +37,7 @@ async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None)
                 pipe.set(f"{_SEEN_PREFIX}{video_id}", "1", nx=True, ex=ttl)
         results = await pipe.execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("shortvid_seen_check_failed", error=str(exc)[:200])
+        logger.warning("omar_seen_check_failed", error=str(exc)[:200])
         return set(video_ids)
     step = 2 if ttl > 0 else 1
     out = set()
@@ -59,10 +59,10 @@ async def _forget_seen(video_id: str) -> None:
         pipe.delete(f"{_SEEN_PREFIX}{video_id}")
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("shortvid_seen_forget_failed", error=str(exc)[:200])
+        logger.warning("omar_seen_forget_failed", error=str(exc)[:200])
 
 
-# BFS: hashtag đi kèm trong video ShortVid lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày. d1.related_hashtags_for_keywords
+# BFS: hashtag đi kèm trong video Omar lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày. d1.related_hashtags_for_keywords
 # gộp với hashtag liên quan của spider - cùng một nguồn cho chip duyệt trên dashboard.
 _COOCCUR_TTL_SECONDS = 14 * 24 * 3600
 
@@ -78,7 +78,7 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
                 counts[tag] = counts.get(tag, 0) + 1
     if not counts:
         return
-    key = SHORTVID_COOCCUR_KEY_TMPL.format(keyword_id=keyword_id)
+    key = OMAR_COOCCUR_KEY_TMPL.format(keyword_id=keyword_id)
     try:
         pipe = get_redis_client().pipeline()
         for tag, n in counts.items():
@@ -86,4 +86,4 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
         pipe.expire(key, _COOCCUR_TTL_SECONDS)
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - thiếu số đếm chỉ làm BFS chậm hơn
-        logger.warning("shortvid_cooccur_failed", error=str(exc)[:200])
+        logger.warning("omar_cooccur_failed", error=str(exc)[:200])

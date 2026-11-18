@@ -1,9 +1,8 @@
 """Kênh ưu tiên: kênh trong danh sách booking (trang "Xuất thông tin theo kênh" › Nghiệm thu booking của
 cinemark) mà D1 chưa có bài nào - Worker ghi vào bảng D1 priority_channels (api/lib/bookingReport.ts), bên này:
 
-- crawl ngay (mỗi vòng scheduler, tối đa BATCH kênh) kênh TikTok: video của kênh qua ShortVid /posts (chỉ giữ video nhắc tới
-  phim đang theo dõi, như shortvid_channels) + follower qua ShortVid /profile. Facebook / Threads không tự crawl (spider-hub lo).
-- kênh TikTok yêu cầu trong KEEP_DAYS ngày luôn đứng đầu hàng cào kênh của các lượt ShortVid (shortvid_channels.load_channels).
+- lấy ngay (mỗi vòng scheduler, tối đa BATCH kênh) follower của kênh TikTok qua Omar /profile. Facebook / Threads không tự
+  crawl (spider-hub lo). Video của kênh không còn cào riêng qua Omar (chỉ hashtag + bình luận, 18/11/2026).
 """
 
 from __future__ import annotations
@@ -85,21 +84,15 @@ async def process_pending() -> dict[str, int]:
         if not rows:
             return {"pending": 0}
         from app.services.crawl import channel_profiles
-        from app.services.shortvid.shortvid_channels import crawl_channel_once
 
         by_platform: dict[str, list[str]] = {}
         for row in rows:
             by_platform.setdefault(str(row["platform"]), []).append(str(row["handle"]))
         results: dict[tuple[str, str], dict[str, Any]] = {}
-        for handle in by_platform.get("tiktok", []):
-            stats = await crawl_channel_once(handle)
-            results[("tiktok", handle)] = {
-                "videos": int(stats.get("channel_videos") or 0),
-                "matched": int(stats.get("channel_matched") or 0),
-                **({"error": stats["error"]} if stats.get("error") else {}),
-            }
         if by_platform.get("tiktok"):
-            await channel_profiles.refresh_tiktok_handles(by_platform["tiktok"])
+            found = await channel_profiles.refresh_tiktok_handles(by_platform["tiktok"])
+            for handle in by_platform["tiktok"]:
+                results[("tiktok", handle)] = {"followers_found": found}
         now = datetime.now(tz=UTC).isoformat()
         for (platform, handle), result in results.items():
             await d1_exec(

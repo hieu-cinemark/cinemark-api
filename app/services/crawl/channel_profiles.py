@@ -5,8 +5,8 @@ CHANNEL_MIN_POSTS bài liên quan cho CÙNG một phim trong LOOKBACK_DAYS ngày
 REFRESH_DAYS ngày, không phải follower nhập tay (followers_source='manual'). Ghi bảng D1 channel_profiles (cùng bảng
 Worker ghi tệp khán giả - api/lib/channelNiches.ts của cinemark).
 
-- TikTok: bài lấy qua ShortVid không có follower (raw_json.author_followers luôn trống), bài spider chỉ có ở ~14% bài - nên
-  hỏi ShortVid GET /profile?username= (1 request mỗi kênh, tối đa MAX_PER_RUN mỗi lượt).
+- TikTok: bài lấy qua Omar không có follower (raw_json.author_followers luôn trống), bài spider chỉ có ở ~14% bài - nên
+  hỏi Omar GET /profile?username= (1 request mỗi kênh, tối đa MAX_PER_RUN mỗi lượt).
 - Facebook / Threads: cinemark-api không tự crawl (spider-hub lo, 20/10/2026) - trang xuất đọc follower có sẵn trong D1.
 - Threads qua spider-hub (không lên lịch): qua session Threads của spider-hub. Bên này SADD handle vào THREADS_QUEUE_KEY rồi xếp type=profiles lên
   crawl_requests (publish_threads_profiles_request); worker spider-hub (spiders/threads/features/profiles/) hỏi từng
@@ -36,7 +36,7 @@ from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, json_rows
 from app.repositories.d1.tables import channel_profiles
 from app.repositories.d1.tables import posts as posts_table
-from app.services.accounts.platform_config_db import get_shortvid_api_settings
+from app.services.accounts.platform_config_db import get_omar_api_settings
 
 logger = get_logger(__name__)
 
@@ -176,7 +176,7 @@ async def _upsert(platform: str, rows: list[dict[str, Any]], now: str) -> None:
 
 
 async def _fetch_profile(client: httpx.AsyncClient, api_key: str, handle: str) -> dict[str, Any] | None:
-    base = settings.shortvid_api_base_url.rstrip("/")
+    base = settings.omar_api_base_url.rstrip("/")
     for attempt in range(3):
         resp = await client.get(f"{base}/profile", params={"username": handle}, headers={"X-API-Key": api_key})
         if resp.status_code == 429:
@@ -207,7 +207,7 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
     _running = True
     try:
         await _ensure_table_once()
-        api_key = ((await get_shortvid_api_settings() or {}).get("api_key") or "").strip()
+        api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
         if not api_key:
             return {"no_key": 1}
         candidates = await _candidates("tiktok", limit)
@@ -303,8 +303,8 @@ async def collect_threads_results() -> dict[str, int]:
 
 
 async def refresh_tiktok_handles(handles: list[str]) -> int:
-    """Follower TikTok qua ShortVid /profile cho đúng các kênh này (kênh ưu tiên); trả số kênh có follower."""
-    api_key = ((await get_shortvid_api_settings() or {}).get("api_key") or "").strip()
+    """Follower TikTok qua Omar /profile cho đúng các kênh này (kênh ưu tiên); trả số kênh có follower."""
+    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
     if not api_key or not handles:
         return 0
     await _ensure_table_once()

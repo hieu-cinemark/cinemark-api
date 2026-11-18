@@ -28,7 +28,7 @@ scheduler/crawl_slots.crawl_tick  (giờ trong bảng crawl_schedules)
         (hàm này cũng gọi task_queue.enqueue_published để job hiện trên trang Hàng đợi của dashboard)
 ```
 
-Các nhịp khác (bình luận, trang nguồn, YouTube liên tục, ShortVid...) đi cùng kiểu: nhịp -> `publish_crawl_request` hoặc nạp hàng đợi Redis mà
+Các nhịp khác (bình luận, trang nguồn, YouTube liên tục, Omar...) đi cùng kiểu: nhịp -> `publish_crawl_request` hoặc nạp hàng đợi Redis mà
 spider-hub đọc. Danh sách nhịp và cách thêm nhịp: [../app/services/crawl/scheduler/README.md](../app/services/crawl/scheduler/README.md).
 
 ### 2.2 Từ bài thô tới D1

@@ -2,17 +2,17 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.clients.shortvid import next_cursor
+from app.clients.omar import next_cursor
 from app.core.config import settings
-from app.services.shortvid.shortvid_comments import iso_week, weekly_due
-from app.services.shortvid.shortvid_tiktok import Budget
+from app.services.omar.omar_comments import iso_week, weekly_due
+from app.services.omar.omar_tiktok import Budget
 
 VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 def test_daily_due(monkeypatch):
-    monkeypatch.setattr(settings, "shortvid_comments_cadence", "daily")
-    monkeypatch.setattr(settings, "shortvid_comments_time", "01:00")
+    monkeypatch.setattr(settings, "omar_comments_cadence", "daily")
+    monkeypatch.setattr(settings, "omar_comments_time", "01:00")
     assert not weekly_due(datetime(2026, 10, 20, 0, 59, tzinfo=VN))
     assert weekly_due(datetime(2026, 10, 20, 1, 0, tzinfo=VN))
     assert weekly_due(datetime(2026, 10, 21, 1, 0, tzinfo=VN))  # thứ nào cũng chạy
@@ -20,9 +20,9 @@ def test_daily_due(monkeypatch):
 
 
 def test_weekly_due(monkeypatch):
-    monkeypatch.setattr(settings, "shortvid_comments_cadence", "weekly")
-    monkeypatch.setattr(settings, "shortvid_comments_weekday", 0)
-    monkeypatch.setattr(settings, "shortvid_comments_time", "01:00")
+    monkeypatch.setattr(settings, "omar_comments_cadence", "weekly")
+    monkeypatch.setattr(settings, "omar_comments_weekday", 0)
+    monkeypatch.setattr(settings, "omar_comments_time", "01:00")
     assert not weekly_due(datetime(2026, 10, 12, 0, 59, tzinfo=VN))  # thứ Hai, trước giờ
     assert weekly_due(datetime(2026, 10, 12, 1, 0, tzinfo=VN))
     assert weekly_due(datetime(2026, 10, 18, 23, 0, tzinfo=VN))  # chủ nhật, chạy bù
@@ -33,9 +33,9 @@ def test_budget_and_cursor():
     budget = Budget(2)
     assert budget.take() and budget.take() and not budget.take()
     assert budget.exhausted
-    assert next_cursor({"hasMore": True, "cursor": 30}) == "30"
-    assert next_cursor({"hasMore": "false", "cursor": 30}) is None
-    assert next_cursor({"hasMore": True}) is None
+    assert next_cursor({"has_more": "true", "next_cursor": 30}) == "30"
+    assert next_cursor({"has_more": "false", "next_cursor": 30}) is None
+    assert next_cursor({"has_more": "true"}) is None
 
 
 class _FakeRedis:
@@ -57,7 +57,7 @@ def test_enqueue_all_videos_only_for_selected_keywords(monkeypatch):
     import asyncio
     import json
 
-    from app.services.shortvid import shortvid_comments as oc
+    from app.services.omar import omar_comments as oc
 
     redis = _FakeRedis()
     keywords = [{"id": "k1", "keyword": "#phim"}]

@@ -1,8 +1,8 @@
 """Cào lại MỖI NGÀY các bài booking đang theo dõi (bảng tracked_posts của D1 - trang "Theo dõi bài booking" của cinemark
 nhập từ link Google Sheet, xem cinemark api/lib/trackedPosts.ts), ở làn ưu tiên.
 
-- TikTok: ShortVid video/detail từng video (số liệu hiện tại), gửi thẳng lên raw_posts với source="tracked" - không qua tập
-  seen chống trùng của ShortVid (bài đã có vẫn phải cập nhật số).
+- TikTok: Omar video/detail từng video (số liệu hiện tại), gửi thẳng lên raw_posts với source="tracked" - không qua tập
+  seen chống trùng của Omar (bài đã có vẫn phải cập nhật số).
 - Facebook: bài đã có trong D1 (đã khớp external_id) -> MỘT job post_metrics vào hàng đợi rảnh của spider-hub (Redis
   crawl_idle:facebook - chạy khi spider-hub không có việc khác hoặc trong giờ yên lặng Meta, vì job này không dùng tài
   khoản): đọc từng trang bài KHÔNG đăng nhập, chỉ cập nhật like/comment/share (tắt bằng
@@ -34,15 +34,15 @@ from sqlalchemy import Column, Integer, Table, Text, select, update
 
 from app.clients import crawl_queues as queues
 from app.clients.kafka import publish_raw_post
+from app.clients.omar import OmarStop, map_video, omar_get
 from app.clients.redis import get_redis_client
-from app.clients.shortvid import ShortVidStop, map_video, shortvid_get
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.sql import d1_exec, json_values, metadata
 from app.repositories.d1.tables import movies, posts
-from app.services.accounts.platform_config_db import get_shortvid_api_settings
-from app.services.shortvid.shortvid_tiktok import _Pacer
+from app.services.accounts.platform_config_db import get_omar_api_settings
+from app.services.omar.omar_tiktok import _Pacer
 
 logger = get_logger(__name__)
 
@@ -128,11 +128,11 @@ async def _keyword_id(movie_id: str, platform: str, title: str) -> str | None:
 
 
 async def _refresh_tiktok(rows: list[dict[str, Any]], stats: dict[str, Any]) -> None:
-    api_key = (((await get_shortvid_api_settings()) or {}).get("api_key") or "").strip()
+    api_key = (((await get_omar_api_settings()) or {}).get("api_key") or "").strip()
     if not api_key:
         stats["tiktok_skipped"] = "no_api_key"
         return
-    pacer = _Pacer(settings.shortvid_manual_requests_per_minute)
+    pacer = _Pacer(settings.omar_manual_requests_per_minute)
     keywords: dict[str, str | None] = {}
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         for row in rows:
@@ -143,8 +143,8 @@ async def _refresh_tiktok(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
             if movie_id not in keywords:
                 keywords[movie_id] = await _keyword_id(movie_id, "tiktok", row["movie_title"])
             try:
-                data = await shortvid_get(client, pacer.wait, api_key, "video/detail", {"url": video_id})
-            except ShortVidStop as exc:
+                data = await omar_get(client, pacer.wait, api_key, "video_info", {"video": video_id})
+            except OmarStop as exc:
                 stats["tiktok_stopped"] = str(exc)[:120]
                 return
             except Exception as exc:  # noqa: BLE001 - một video lỗi: hôm sau thử lại

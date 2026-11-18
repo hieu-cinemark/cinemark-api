@@ -53,6 +53,8 @@ from app.schemas.settings import (
     ImportParseResponse,
     NurtureRequest,
     NurtureResponse,
+    OmarApiSettingsOut,
+    OmarApiSettingsUpdate,
     ProxyCreate,
     ProxyOut,
     ProxyProviderOut,
@@ -60,8 +62,6 @@ from app.schemas.settings import (
     ProxySettings,
     ProxySettingsOut,
     ProxyUpdate,
-    ShortVidApiSettingsOut,
-    ShortVidApiSettingsUpdate,
     TotpCodeResponse,
     parse_run_times,
 )
@@ -736,8 +736,8 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
     return [CleanupRunHistoryEntry(**row) for row in rows]
 
 
-# --- Cấu hình ShortVid API (api.shortvidapi.com) --------------------------------
-# Toggle dùng ShortVid API thay vì spider-hub cho crawl video/hashtag TikTok.
+# --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
+# Toggle dùng Omar API thay vì spider-hub cho crawl video/hashtag TikTok.
 
 
 @router.get("/discovery", response_model=DiscoverySettings)
@@ -751,37 +751,53 @@ async def set_discovery_settings(payload: DiscoverySettingsUpdate) -> DiscoveryS
     return DiscoverySettings(**await db.set_discovery_enabled(payload.enabled))
 
 
-@router.get("/shortvid-api", response_model=ShortVidApiSettingsOut)
-async def get_shortvid_api_settings() -> ShortVidApiSettingsOut:
-    """Cấu hình ShortVid API: api_key đã lưu (không bao giờ trả về giá trị thô), base URL
-    đang có hiệu lực (từ env hoặc override trên dashboard). API key được đọc từ bảng
-    shortvid_api_settings trên Supabase."""
+@router.get("/omar-api", response_model=OmarApiSettingsOut)
+async def get_omar_api_settings() -> OmarApiSettingsOut:
+    """Cấu hình Omar API: api_key đã lưu (không bao giờ trả về giá trị thô), base URL đang có hiệu lực, tổng request mỗi
+    ngày và số request đồng thời. API key được đọc từ bảng omar_api_settings trên Supabase."""
     from app.core.config import settings as app_settings
 
-    row = await db.get_shortvid_api_settings()
-    return ShortVidApiSettingsOut(
+    row = await db.get_omar_api_settings()
+    return OmarApiSettingsOut(
         api_key_set=bool(row and row.get("api_key")),
-        base_url=app_settings.shortvid_api_base_url,
+        base_url=app_settings.omar_api_base_url,
         requests_per_minute=int((row or {}).get("requests_per_minute") or 0),
+        daily_requests=int((row or {}).get("daily_requests") or 0),
+        concurrency=int((row or {}).get("concurrency") or 0),
         updated_at=(row or {}).get("updated_at"),
     )
 
 
-@router.put("/shortvid-api", response_model=ShortVidApiSettingsOut)
-async def set_shortvid_api_settings(payload: ShortVidApiSettingsUpdate) -> ShortVidApiSettingsOut:
-    """Upsert api_key và/hoặc base_url. api_key=None/rỗng nghĩa là "xoá key hiện tại".
-    base_url=None giữ nguyên giá trị từ env."""
+@router.put("/omar-api", response_model=OmarApiSettingsOut)
+async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettingsOut:
+    """Lưu api_key (rỗng = xoá), base_url, tổng request mỗi ngày, số request đồng thời, trần request/phút.
+
+    Vừa lưu key mới: gọi GET /usage kiểm tra key. Key đúng thì bỏ trạng thái tạm dừng và mở lượt cào ngay - lượt chạy liên
+    tục, tự đi tiếp tới hết hạn mức ngày (key sai thì chỉ báo key_valid=false, không mở lượt)."""
+    from app.clients.omar import fetch_usage
     from app.core.config import settings as app_settings
+    from app.services.crawl.scheduler import trigger_omar_now
+    from app.services.omar import omar_pause
 
-    # Ghi api_key
     if payload.api_key is not None:
-        await db.upsert_shortvid_api_key(payload.api_key)
-    if payload.requests_per_minute is not None:
-        await db.set_shortvid_requests_per_minute(payload.requests_per_minute)
-
-    # Ghi base_url override nếu có (lưu vào env override để nó tồn tại giữa các lần restart)
+        await db.upsert_omar_api_key(payload.api_key.strip())
+    await db.set_omar_limits(
+        requests_per_minute=payload.requests_per_minute,
+        daily_requests=payload.daily_requests,
+        concurrency=payload.concurrency,
+    )
+    # Ghi base_url override nếu có (cập nhật tại runtime, mất khi restart)
     if payload.base_url is not None and payload.base_url.strip():
-        # Cập nhật trong config env tại runtime (sẽ mất khi restart)
-        app_settings.shortvid_api_base_url = payload.base_url.strip()
+        app_settings.omar_api_base_url = payload.base_url.strip()
 
-    return await get_shortvid_api_settings()
+    result = await get_omar_api_settings()
+    key = ((await db.get_omar_api_settings()) or {}).get("api_key") or ""
+    if payload.api_key is not None and key:
+        usage = await fetch_usage(key)
+        # /usage trả status "active" khi key dùng được; không đọc được (key sai / Omar lỗi) thì usage là None.
+        result.key_valid = bool(usage) and str(usage.get("status") or "active").lower() in ("active", "ok")
+        result.usage = usage
+        if result.key_valid:
+            await omar_pause.clear_pause()
+            trigger_omar_now()
+    return result

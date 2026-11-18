@@ -434,6 +434,9 @@ class ProxySettings(BaseModel):
     # Danh tính khách synthetic của TikTok (spiders/tiktok/client.py)
     tiktok_synthetic_provider: str = Field(default="tiktok_us", min_length=1, max_length=64)
     tiktok_hashtag_max_attempts: int = Field(default=8, ge=1, le=50)
+    # Thăm dò quá chỗ TikTok báo hết feed hashtag (17/11/2026, spider-hub .../hashtag_search/probe.py): hasMore=false chỉ là
+    # hết của MỘT cursor - gửi cursor lớn hơn vẫn ra video. Số request thăm dò cho mỗi lượt chạy, 0 = tắt.
+    tiktok_probe_requests: int = Field(default=30, ge=0, le=500)
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
     # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Đây là nguồn sự thật duy nhất: spider-hub chỉ đọc dòng
     # proxy_settings mà cinemark-api ghi đủ khi khởi động (platform_config_db.ensure_proxy_settings_complete).
@@ -594,9 +597,9 @@ class CleanupRunHistoryEntry(BaseModel):
     error: str | None = None
 
 
-# --- Cấu hình ShortVid API (api.shortvidapi.com) --------------------------------
+# --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
 # Dùng cho crawl video/hashtag thay vì spider-hub khi toggle bật trên dashboard.
-# API key được đọc từ Supabase (bảng shortvid_api_settings), không từ env.
+# API key được đọc từ Supabase (bảng omar_api_settings), không từ env.
 
 
 class DiscoverySettings(BaseModel):
@@ -611,17 +614,25 @@ class DiscoverySettingsUpdate(BaseModel):
     enabled: bool
 
 
-class ShortVidApiSettingsOut(BaseModel):
+class OmarApiSettingsOut(BaseModel):
     # Có api_key hay chưa - không bao giờ trả về key thô.
     api_key_set: bool
     base_url: str
     # Trần request/phút (0 = theo gói).
     requests_per_minute: int = 0
+    # Tổng request mỗi ngày người dùng đặt (0 = theo hạn mức ngày của gói) và số request đồng thời (0 = mặc định).
+    daily_requests: int = 0
+    concurrency: int = 0
+    # Chỉ có sau khi PUT đổi key: GET /usage báo key dùng được hay không (None = chưa kiểm tra). Key đúng thì lượt cào chạy liên tục.
+    key_valid: bool | None = None
+    usage: dict[str, Any] | None = None
     updated_at: datetime | None = None
 
 
-class ShortVidApiSettingsUpdate(BaseModel):
+class OmarApiSettingsUpdate(BaseModel):
     api_key: str | None = Field(default=None, max_length=500)
     base_url: str | None = Field(default=None, max_length=200)
     # None = giữ nguyên; 0 = theo giới hạn của gói.
     requests_per_minute: int | None = Field(default=None, ge=0, le=10000)
+    daily_requests: int | None = Field(default=None, ge=0, le=10_000_000)
+    concurrency: int | None = Field(default=None, ge=0, le=64)

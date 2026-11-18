@@ -9,7 +9,7 @@ của một nhịp không chặn các nhịp sau. Việc nặng được chạy 
 | comments.py | Lượt cào bình luận mỗi giờ |
 | cleanup.py | Dọn bài không liên quan mỗi ngày |
 | discovery.py | AI tự thêm hashtag / câu tìm / trang nguồn |
-| shortvid.py | ShortVid TikTok mỗi giờ + video đang nổi |
+| omar.py | Omar TikTok (hashtag liên tục + bình luận) |
 | refresh.py | Bài trend, page phim đang chiếu, bài booking, follower kênh |
 | ops.py | Cảnh báo, sức khoẻ tài khoản, đối soát thống kê, report theo lịch, đồng bộ AI sang D1 |
 | ai_jobs.py | Job AI nền (tác giả, niche kênh, Review Angles) |
@@ -32,16 +32,16 @@ from app.services.crawl.scheduler import (
     comments,
     crawl_slots,
     discovery,
+    omar,
     ops,
     refresh,
-    shortvid,
 )
 from app.services.crawl.scheduler.cleanup import purge_in_progress, run_purge_now
 from app.services.crawl.scheduler.core import POLL_INTERVAL_SECONDS, TIMEZONE, facebook_crawl_enabled
-from app.services.crawl.scheduler.shortvid import trigger_shortvid_now
+from app.services.crawl.scheduler.omar import trigger_omar_now
 from app.services.crawl.source_pages import fill_public_pages_queue
 
-__all__ = ["purge_in_progress", "run_purge_now", "start", "stop", "trigger_shortvid_now"]
+__all__ = ["purge_in_progress", "run_purge_now", "start", "stop", "trigger_omar_now"]
 
 logger = get_logger(__name__)
 
@@ -70,8 +70,7 @@ TICKS: list[tuple[str, Callable[[], Awaitable[None]], bool]] = [
     ("threads_channels", threads_channels.fill_queue, False),
     ("youtube_continuous", public_continuous.youtube_idle_tick, False),
     ("hashtag", discovery.hashtag_tick, False),
-    ("shortvid", shortvid.shortvid_tick, False),
-    ("shortvid_trending", shortvid.shortvid_trending_tick, False),
+    ("omar", omar.omar_tick, False),
     ("trend_posts", refresh.trend_posts_tick, False),
     ("watch_pages", refresh.watch_pages_tick, False),
     ("channel_profiles", refresh.channel_profiles_tick, False),

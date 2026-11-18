@@ -10,7 +10,7 @@ vẫn chạy. Code mới nên import thẳng module con; test monkeypatch phải
 | ai_config.py | ai_settings, ai_providers, ai_accuracy_runs |
 | proxy_settings.py | proxy_settings, proxy_providers (cinemark-api là nguồn sự thật, spider-hub chỉ đọc) |
 | cleanup.py | cleanup_settings, cleanup_run_history |
-| shortvid.py | discovery_settings, shortvid_api_settings |
+| omar.py | discovery_settings, omar_api_settings |
 
 Mọi lần ghi dựng SQL từ danh sách cột cố định đã duyệt trước cộng giá trị từ model Pydantic - không bao giờ từ dict request thô.
 """
@@ -83,6 +83,20 @@ from app.services.accounts.config_db.conn import (  # noqa: F401
     _trusted_sql,
     close_pool,
 )
+from app.services.accounts.config_db.omar import (  # noqa: F401
+    _discovery_settings_ready,
+    _ensure_discovery_settings_table,
+    _ensure_omar_api_settings_table,
+    _omar_api_settings_ready,
+    _omar_cap,
+    get_discovery_settings,
+    get_omar_api_settings,
+    omar_limits,
+    omar_requests_cap,
+    set_discovery_enabled,
+    set_omar_limits,
+    upsert_omar_api_key,
+)
 from app.services.accounts.config_db.proxy_settings import (  # noqa: F401
     PROXY_PROVIDER_COLUMNS,
     RENAMED_PROXY_SETTINGS,
@@ -118,17 +132,4 @@ from app.services.accounts.config_db.schedules import (  # noqa: F401
     update_filter_keyword,
     upsert_comment_crawl_schedule,
     upsert_crawl_schedule,
-)
-from app.services.accounts.config_db.shortvid import (  # noqa: F401
-    _discovery_settings_ready,
-    _ensure_discovery_settings_table,
-    _ensure_shortvid_api_settings_table,
-    _shortvid_api_settings_ready,
-    _shortvid_cap,
-    get_discovery_settings,
-    get_shortvid_api_settings,
-    set_discovery_enabled,
-    set_shortvid_requests_per_minute,
-    shortvid_requests_cap,
-    upsert_shortvid_api_key,
 )

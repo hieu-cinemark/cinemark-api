@@ -17,7 +17,7 @@ lỗi hay treo của một nhịp chỉ được log, không chặn nhịp sau. 
 | `discovery.py` | AI tự thêm nguồn cào mỗi ngày một lần ở settings.hashtag_discovery_time: hashtag TikTok, câu tìm Facebook/Threads, trang nguồn gợi ý (app/services/discovery/*, app/services/crawl/source_pages.py). |
 | `ops.py` | Việc vận hành: cảnh báo Telegram, sức khoẻ tài khoản, đối soát thống kê, report theo lịch, đồng bộ cấu hình AI sang D1. |
 | `refresh.py` | Làm mới định kỳ bài và kênh: bài hưởng ứng trend, page phim đang chiếu, bài booking đang theo dõi, follower kênh. |
-| `shortvid.py` | ShortVid API: lượt hashtag TikTok mỗi giờ (app/services/shortvid/shortvid_tiktok.py), bình luận tuần, "video đang nổi" (shortvid_trending) và bước BFS hashtag sau mỗi lượt. |
+| `omar.py` | Omar API: lượt hashtag TikTok chạy liên tục khi key đúng (app/services/omar/omar_tiktok.py) + xếp hàng bình luận hằng ngày |
 
 ## Luồng
 
@@ -30,7 +30,7 @@ Một nhịp là hàm `async def <tên>_tick() -> None`. Nó tự quyết địn
 | Mốc thời gian trong bộ nhớ (`_last_run`) | Job AI nhiều chu kỳ trong một file | `ai_jobs.ai_jobs_tick` |
 
 Danh sách nhịp (thứ tự = thứ tự chạy mỗi vòng): `crawl`, `cleanup`, `comments`, `public_pages`, `threads_channels`, `youtube_continuous`,
-`hashtag`, `shortvid`, `shortvid_trending`, `trend_posts`, `watch_pages`, `channel_profiles`, `comment_completions`, `ops_alerts`,
+`hashtag`, `omar`, `trend_posts`, `watch_pages`, `channel_profiles`, `comment_completions`, `ops_alerts`,
 `health_checks`, `tracked_posts`, `ai_jobs`, `ai_runtime`, `report_schedule`, `news`, `stats_reconcile`, `deep_crawl`, `comment_hourly`,
 `attack_detect`. Ba nhịp `public_pages`, `threads_channels`, `youtube_continuous` có phần việc nằm ngoài thư mục này (`app/services/crawl/`).
 

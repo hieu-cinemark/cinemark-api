@@ -9,47 +9,48 @@ from app.services.ops import ops_alerts
 NOW = datetime(2026, 10, 13, 5, 0, tzinfo=UTC)  # 12:00 giờ VN
 
 
-def test_shortvid_quota_threshold_and_daily_key():
+def test_omar_quota_threshold_and_daily_key():
     early = 8 * 3600  # còn 8 giờ mới reset: cạn sớm
-    assert ops_alerts.shortvid_quota_alerts({"day": {"used": 899, "limit": 1000, "resets_in": early}}, NOW) == []
-    alerts = ops_alerts.shortvid_quota_alerts({"day": {"used": 900, "limit": 1000, "resets_in": early}}, NOW)
-    assert [a.key for a in alerts] == ["shortvid_quota:2026-10-13"]
+    assert ops_alerts.omar_quota_alerts({"day": {"used": 899, "limit": 1000, "resets_in": early}}, NOW) == []
+    alerts = ops_alerts.omar_quota_alerts({"day": {"used": 900, "limit": 1000, "resets_in": early}}, NOW)
+    assert [a.key for a in alerts] == ["omar_quota:2026-10-13"]
     assert alerts[0].ttl >= 24 * 3600
     # Gần giờ reset (chế độ chạy liên tục cố ý dùng hết): không báo.
-    assert ops_alerts.shortvid_quota_alerts({"day": {"used": 990, "limit": 1000, "resets_in": 2 * 3600}}, NOW) == []
+    assert ops_alerts.omar_quota_alerts({"day": {"used": 990, "limit": 1000, "resets_in": 2 * 3600}}, NOW) == []
     # Không có used: suy từ remaining.
-    assert ops_alerts.shortvid_quota_alerts({"day": {"remaining": 50, "limit": 1000, "resets_in": early}}, NOW)
-    assert ops_alerts.shortvid_quota_alerts({"day": {"limit": 0}}, NOW) == []
-    assert ops_alerts.shortvid_quota_alerts(None, NOW) == []
+    assert ops_alerts.omar_quota_alerts({"day": {"remaining": 50, "limit": 1000, "resets_in": early}}, NOW)
+    assert ops_alerts.omar_quota_alerts({"day": {"limit": 0}}, NOW) == []
+    assert ops_alerts.omar_quota_alerts(None, NOW) == []
 
 
 @pytest.mark.parametrize(
-    ("credits", "key"),
+    ("days_left", "key"),
     [
-        (500_000, None),
-        (19_999, "shortvid_credits:low:2026-10-13"),
-        (0, "shortvid_credits:empty:2026-10-13"),
-        (None, None),
+        (30, None),
+        (2.5, "omar_expiry:3d:2026-10-13"),
+        (0.5, "omar_expiry:1d:2026-10-13"),
+        (-1, "omar_expiry:expired:2026-10-13"),
     ],
 )
-def test_shortvid_credit_alerts(credits, key):
-    alerts = ops_alerts.shortvid_quota_alerts({"credits_remaining": credits}, NOW)
+def test_omar_plan_expiry_alerts(days_left, key):
+    usage = {"plan": "Pro", "expires_at": (NOW + timedelta(days=days_left)).isoformat()}
+    alerts = ops_alerts.omar_quota_alerts(usage, NOW)
     assert [a.key for a in alerts] == ([key] if key else [])
 
 
-def test_shortvid_error_rate():
+def test_omar_error_rate():
     status = {"running": True, "started_at": "x", "stats": {"requests": 60, "failed": 40}}
-    alert = ops_alerts.shortvid_error_alert(status, NOW)
-    assert alert and alert.key == "shortvid_error_rate" and alert.ttl == int(settings.ops_alert_repeat_hours * 3600)
+    alert = ops_alerts.omar_error_alert(status, NOW)
+    assert alert and alert.key == "omar_error_rate" and alert.ttl == int(settings.ops_alert_repeat_hours * 3600)
     # Dưới ngưỡng tỉ lệ / chưa đủ số lần gọi.
-    assert ops_alerts.shortvid_error_alert({**status, "stats": {"requests": 80, "failed": 20}}, NOW) is None
-    assert ops_alerts.shortvid_error_alert({**status, "stats": {"requests": 10, "failed": 30}}, NOW) is None
+    assert ops_alerts.omar_error_alert({**status, "stats": {"requests": 80, "failed": 20}}, NOW) is None
+    assert ops_alerts.omar_error_alert({**status, "stats": {"requests": 10, "failed": 30}}, NOW) is None
     # Lượt đã xong: chỉ xét nếu kết thúc trong 1 giờ qua.
     done = {**status, "running": False, "finished_at": (NOW - timedelta(minutes=30)).isoformat()}
-    assert ops_alerts.shortvid_error_alert(done, NOW)
+    assert ops_alerts.omar_error_alert(done, NOW)
     old = {**done, "finished_at": (NOW - timedelta(hours=2)).isoformat()}
-    assert ops_alerts.shortvid_error_alert(old, NOW) is None
-    assert ops_alerts.shortvid_error_alert({"running": False, "finished_at": None, "stats": {}}, NOW) is None
+    assert ops_alerts.omar_error_alert(old, NOW) is None
+    assert ops_alerts.omar_error_alert({"running": False, "finished_at": None, "stats": {}}, NOW) is None
 
 
 def test_drought():

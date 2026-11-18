@@ -9,8 +9,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.crawl import channel_profiles, priority_channels, tracked_posts, watch_pages
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, claim, cycle_ttl, spawn
+from app.services.omar.omar_pause import get_pause as get_omar_pause
 from app.services.relevance.trend_posts import mark_showing_movies
-from app.services.shortvid.shortvid_pause import get_pause as get_shortvid_pause
 
 logger = get_logger(__name__)
 
@@ -79,7 +79,7 @@ async def channel_profiles_tick() -> None:
 
     - Kênh ưu tiên (danh sách booking chưa có bài): crawl ngay, mỗi vòng (priority_channels).
     - Facebook / Threads: không tự crawl (spider-hub lo); kết quả spider-hub ghi vào Redis được gom mỗi vòng.
-    - TikTok (ShortVid): ShortVid hết hạn mức thì chờ."""
+    - TikTok (Omar): Omar hết hạn mức thì chờ."""
     global _threads_collecting
     if not priority_channels.is_running():
         spawn(priority_channels.process_pending())
@@ -88,7 +88,7 @@ async def channel_profiles_tick() -> None:
     if not _threads_collecting and await get_redis_client().hlen(channel_profiles.THREADS_RESULTS_KEY):
         _threads_collecting = True
         spawn(_collect_threads_profiles())
-    if channel_profiles.is_running() or await get_shortvid_pause():
+    if channel_profiles.is_running() or await get_omar_pause():
         return
     ttl = cycle_ttl(settings.channel_profiles_interval_hours)
     if await claim("channel_profiles", ttl, datetime.now(TIMEZONE).isoformat()):

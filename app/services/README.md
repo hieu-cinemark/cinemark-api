@@ -8,7 +8,7 @@ Nghiệp vụ của service, gọi xuống `repositories`, `clients` và `ai`. L
 | `ai_jobs/` | Job AI nền: nhãn tác giả, niche kênh, Review Angles, Attack Detection hằng giờ |
 | `attack/` | Attack Detection: dấu hiệu chê dồn dập / chê giống nhau, quy tắc trạng thái, bảng `attack_signals` |
 | `discovery/` | AI tìm thêm hashtag và câu tìm kiếm |
-| `shortvid/` | Cào TikTok qua ShortVid API |
+| `omar/` | Cào TikTok qua Omar API |
 | `accounts/` | Tài khoản, proxy, phiên đăng nhập, sức khoẻ tài khoản |
 | `relevance/` | Luật độ liên quan, dọn bài không liên quan |
 | `reports/` | Report Social Topic |

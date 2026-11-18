@@ -12,4 +12,4 @@ Các bảng cấu hình trên Postgres (Supabase), tách từ `platform_config_d
 | `ai_config.py` | Cấu hình AI: ai_settings (bật/tắt, prompt, provider đang dùng), ai_providers (base_url, key, model, reasoning_effort) và lịch sử đo độ chính xác. |
 | `proxy_settings.py` | Cấu hình cào (proxy_settings) và nguồn proxy (proxy_providers). |
 | `cleanup.py` | Cài đặt và lịch sử lượt dọn bài không liên quan (cleanup_settings, cleanup_run_history). |
-| `shortvid.py` | Cài đặt khám phá tự động và ShortVid API (key, trần request/phút). |
+| `omar.py` | Cài đặt khám phá tự động và Omar API (key, trần request/phút, tổng request mỗi ngày, số request đồng thời). |

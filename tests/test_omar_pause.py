@@ -3,8 +3,8 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
-from app.services.shortvid import shortvid_pause as pause_mod
-from app.services.shortvid import shortvid_tiktok as ot
+from app.services.omar import omar_pause as pause_mod
+from app.services.omar import omar_tiktok as ot
 
 
 class _FakeRedis:
@@ -33,7 +33,7 @@ def _setup(monkeypatch, *, usage=None, key="key-a"):
         return {"api_key": key}
 
     monkeypatch.setattr(ot, "fetch_usage", fake_usage)
-    monkeypatch.setattr(pause_mod, "get_shortvid_api_settings", fake_settings)
+    monkeypatch.setattr(pause_mod, "get_omar_api_settings", fake_settings)
     return redis
 
 
@@ -54,7 +54,7 @@ def test_quota_stop_pauses_until_reset(monkeypatch):
 
 
 def test_exhausted_budget_pauses_until_reset(monkeypatch):
-    redis = _setup(monkeypatch, usage={"day": {"remaining": settings.shortvid_daily_reserve, "resets_in": 600}})
+    redis = _setup(monkeypatch, usage={"day": {"remaining": settings.omar_daily_reserve, "resets_in": 600}})
     asyncio.run(ot._pause_after_round({}, "key-a", None, True))
     assert _pause(redis)["reason"] == "quota"
 

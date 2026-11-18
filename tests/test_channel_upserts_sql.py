@@ -1,4 +1,4 @@
-"""Upsert channel_profiles (follower từ ShortVid, niche từ AI) dựng bằng SQLAlchemy - chạy thật trên SQLite trong bộ nhớ:
+"""Upsert channel_profiles (follower từ Omar, niche từ AI) dựng bằng SQLAlchemy - chạy thật trên SQLite trong bộ nhớ:
 không ghi đè số nhập tay, giữ tên đã có."""
 
 import asyncio
