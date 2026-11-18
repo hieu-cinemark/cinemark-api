@@ -95,7 +95,9 @@ def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
     lưu được: tài khoản có thể thêm trước, nhập phiên sau."""
     if platform != "facebook" or not cookie.strip():
         return
-    problems = assess_cookie(cookie, account_id).problems
+    # Thiếu mỗi User-Agent thì vẫn lưu (18/11/2026): tài khoản mua sẵn thường chỉ kèm cookie, UA nhập bổ sung sau ở form sửa.
+    # Không mở được cửa nào: spider-hub (accounts/session_quality.py) vẫn chặn trước request đầu tiên cho tới khi có UA.
+    problems = [p for p in assess_cookie(cookie, account_id).problems if p != "missing_user_agent"]
     if problems:
         raise CookieRefusedError(",".join(problems))
 
