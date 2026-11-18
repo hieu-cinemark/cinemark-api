@@ -1,0 +1,19 @@
+[Unit]
+Description=cinemark-api weekly retrain of the author tier model (export labels + posts, train, keep only if not worse)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cinemark-api
+EnvironmentFile=/opt/cinemark-api/.env
+Environment=OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.author_tier_retrain
+User=app
+Group=app
+Nice=10
+CPUQuota=150%
+MemoryMax=4G
+TimeoutStartSec=2h
+StandardOutput=journal
+StandardError=journal

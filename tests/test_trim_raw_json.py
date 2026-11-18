@@ -53,3 +53,24 @@ def test_aspect_job_replaces_ai_labels_only_when_asked():
     assert pending_sql("c", False) == "+c.aspects IS NULL"
     assert "aspects_source IS NULL" in pending_sql("c", True)
     assert "aspects_source = 'model'" in pending_sql("c", "model")
+
+
+def test_author_signals_are_kept_for_the_author_tier_model():
+    """18/11/2026: tín hiệu tác giả cho mô hình phân loại tầng - giữ cả giá trị False (biết là không, khác với không biết)."""
+    raw = {
+        "author_verified": False,
+        "author_is_business": True,
+        "author_is_seller": False,
+        "is_ad": False,
+        "is_branded": True,
+        "author_signature": "liên hệ booking " * 40,
+        "desc": "không giữ",
+    }
+    kept = trim_post_raw(raw)
+    assert kept["author_verified"] is False and kept["author_is_business"] is True and kept["is_branded"] is True
+    assert len(kept["author_signature"]) == 160
+    assert "desc" not in kept
+
+
+def test_empty_signature_is_dropped():
+    assert trim_post_raw({"author_signature": "", "author_name": "a"}) == {"author_name": "a"}

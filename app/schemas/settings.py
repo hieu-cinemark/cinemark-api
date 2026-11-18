@@ -459,6 +459,9 @@ class ProxySettings(BaseModel):
     # Facebook/Threads/TikTok (app/services/crawl/comment_planner.py), YouTube, hàng đợi bình luận Omar. 0 = tắt (vẫn cần >= 1).
     # Nút cào tay một bài cụ thể không bị chặn.
     comments_min_count: int = Field(default=10, ge=0, le=100000)
+    # Mô hình phân loại tầng tác giả chạy local (app/services/ai_jobs/author_model.py, 18/11/2026): chỉ tự áp nhãn có xác suất >=
+    # ngưỡng này; tác giả chưa chắc để job AI hoặc lần train sau.
+    author_model_threshold: float = Field(default=0.9, ge=0.5, le=1.0)
     # Bình luận công khai Facebook (spider-hub spiders/facebook/auth/public_comments.py): proxy `public` ghim theo id.
     public_comments_proxy_id: int = Field(default=29, ge=1)
     public_comments_daily_cap: int = Field(default=400, ge=1, le=100000)

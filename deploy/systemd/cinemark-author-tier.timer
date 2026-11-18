@@ -1,0 +1,11 @@
+[Unit]
+Description=Run cinemark-author-tier every day
+
+[Timer]
+# 04:30 every day (after the weekly retrain at 02:30 on Sunday), up to 10 min jitter; runs a missed slot after a reboot
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

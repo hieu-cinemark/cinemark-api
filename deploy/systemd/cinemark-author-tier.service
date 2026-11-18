@@ -1,0 +1,19 @@
+[Unit]
+Description=cinemark-api author tier labelling with the local model (owned / pro / media / outsider) for authors without a tier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/cinemark-api
+EnvironmentFile=/opt/cinemark-api/.env
+Environment=OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2
+ExecStart=/opt/cinemark-api/.venv/bin/python -m scripts.jobs.author_tier_label
+User=app
+Group=app
+Nice=10
+CPUQuota=150%
+MemoryMax=3G
+TimeoutStartSec=1h
+StandardOutput=journal
+StandardError=journal

@@ -28,3 +28,4 @@ scripts/_*.csv
 /data/clusters/
 /data/summaries/
 /data/stage/
+/data/author_tiers/

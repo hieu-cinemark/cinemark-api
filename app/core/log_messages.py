@@ -46,6 +46,8 @@ MESSAGES: dict[str, str] = {
     "ai_call_finished": "Gọi AI xong",
     "ai_call_truncated_empty": "AI trả lời rỗng vì bị cắt (hết max_tokens)",
     "ai_job_failed": "Job AI thất bại",
+    "author_model_labelled": "Mô hình tầng tác giả: đã gắn nhãn tác giả chưa phân loại",
+    "author_model_missing": "Mô hình tầng tác giả: chưa có file model, bỏ qua lượt gắn nhãn",
     "ai_job_finished": "Job AI xong",
     "ai_provider_deleted": "Đã xoá nhà cung cấp AI",
     "ai_provider_load_failed": "Không đọc được cấu hình nhà cung cấp AI",

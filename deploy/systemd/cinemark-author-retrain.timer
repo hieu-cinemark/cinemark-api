@@ -1,0 +1,11 @@
+[Unit]
+Description=Run cinemark-author-retrain every week
+
+[Timer]
+# Sunday 02:30, up to 10 min jitter; runs a missed slot after a reboot
+OnCalendar=Sun *-*-* 02:30:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

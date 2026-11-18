@@ -26,7 +26,7 @@ from sqlalchemy import and_, literal, select
 
 from app.ai.local.embedding import embed_texts
 from app.ai.tasks.sentiment_rules import rule_sentiment, with_parent_context
-from app.repositories.d1.sql import d1_exec
+from app.repositories.d1.sql import d1_exec, d1_query
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import posts as posts_table
 
@@ -103,7 +103,8 @@ async def _read(stmt: Any) -> list[dict[str, Any]]:
 
 async def _movie_pages(movie_id: str, since: str | None = None):
     """Comment của một phim theo từng nhóm bài, qua index post_id (09/11/2026) - lọc `post_id IN (bài của phim)` trên câu
-    sắp theo id quét gần như cả bảng comments mỗi trang và làm D1 quá tải. `since`: chỉ comment về từ mốc đó (--showing)."""
+    sắp theo id quét gần như cả bảng comments mỗi trang và làm D1 quá tải. Chỉ còn dùng cho --movie-id (quét lại cả phim, chạy
+    tay); --showing dùng _recent_pages."""
     post_ids = [row["id"] for row in await _read(select(posts_table.c.id).where(posts_table.c.movie_id == movie_id))]
     c = comments_table.alias("c")
     par = comments_table.alias("par")
@@ -120,6 +121,35 @@ async def _movie_pages(movie_id: str, since: str | None = None):
         rows = await _read(stmt)
         if rows:
             yield rows
+
+
+async def _recent_pages(movie_ids: list[str], since: str):
+    """Bình luận thu từ `since` của các phim `movie_ids`, đọc thẳng theo index scraped_at (18/11/2026).
+
+    Trước đây --showing đi theo _movie_pages: mỗi phim đọc hết id bài, rồi mỗi nhóm 40 bài một truy vấn - khoảng 3.000 truy vấn
+    mỗi giờ (77.752 trong 24 giờ đo bằng wrangler d1 insights) để tìm vài trăm bình luận mới, và là nguồn D1 quá tải lớn nhất theo
+    số lần. Bình luận mới có scraped_at = lúc thu, nên lọc scraped_at >= since ra một tập bao trùm (gồm cả bình luận cũ vừa được
+    thu lại - dòng đã embed thì main() bỏ qua). INDEXED BY: không ép thì planner có thể đi đường posts.movie_id rồi đọc mọi bình
+    luận của phim."""
+    if not movie_ids:
+        return
+    marks = ",".join("?" * len(movie_ids))
+    sql = (
+        "SELECT c.id, c.message, p.movie_id, par.message AS parent_message "
+        "FROM comments c INDEXED BY idx_comments_scraped_at JOIN posts p ON p.id = c.post_id "
+        "LEFT JOIN comments par ON par.platform = c.platform AND par.external_id = c.parent_external_id "
+        f"WHERE c.scraped_at >= ? AND p.movie_id IN ({marks}) ORDER BY c.scraped_at DESC LIMIT ? OFFSET ?"
+    )
+    offset = 0
+    while True:
+        while (rows := await d1_query(sql, [since, *movie_ids, PAGE_SIZE, offset], timeout=60.0, quiet=True)) is None:
+            print(f"đọc lỗi (D1 có thể quá tải), nghỉ {OVERLOAD_PAUSE_SECONDS:.0f} giây", flush=True)
+            await asyncio.sleep(OVERLOAD_PAUSE_SECONDS)
+        if rows:
+            yield rows
+        if len(rows) < PAGE_SIZE:
+            return
+        offset += PAGE_SIZE
 
 
 async def main(args: argparse.Namespace) -> None:
@@ -141,9 +171,9 @@ async def main(args: argparse.Namespace) -> None:
             from app.services.relevance.trend_posts import showing_movies
 
             since = (datetime.now(tz=UTC) - timedelta(hours=args.hours)).isoformat(timespec="seconds")
-            for movie in await showing_movies(datetime.now(tz=UTC)):
-                async for rows in _movie_pages(movie["id"], since):
-                    yield rows
+            movie_ids = [movie["id"] for movie in await showing_movies(datetime.now(tz=UTC))]
+            async for rows in _recent_pages(movie_ids, since):
+                yield rows
             return
         if args.movie_id:
             # id comment là uuid nên comment mới không nằm sau con trỏ chung: quét lại comment của phim, bỏ dòng đã embed.

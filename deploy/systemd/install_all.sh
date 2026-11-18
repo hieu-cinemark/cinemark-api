@@ -4,7 +4,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for name in visobert aspects embed visuals reports clusters; do
+for name in visobert aspects embed visuals reports clusters author_tier; do
   echo "== install_${name}.sh"
   bash "$SCRIPT_DIR/install_${name}.sh"
 done

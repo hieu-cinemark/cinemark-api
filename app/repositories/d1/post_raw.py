@@ -15,13 +15,35 @@ logger = get_logger(__name__)
 
 # Khoá của raw_json bài đang được đọc (json_extract ở đây và ở cinemark). Bản đầy đủ nằm ở tầng bronze trên R2 (lake_writer):
 # lưu cả khối trên D1 khiến mọi truy vấn json_extract phải đọc thêm nhiều trang (D1 đã ~7,6 GB).
-RAW_JSON_KEEP = ("reactions", "collect_count", "author_name", "author_followers", "media_url", "cover_url")
+# 18/11/2026: thêm tín hiệu tác giả cho mô hình phân loại tầng (app/ml/author_tier.py) - tick xanh, tài khoản business / shop,
+# nhãn quảng cáo / hợp tác, bio. Trước đó chúng bị cắt ở đây nên D1 không có, mô hình chỉ học được từ tên và caption.
+RAW_JSON_KEEP = (
+    "reactions",
+    "collect_count",
+    "author_name",
+    "author_followers",
+    "media_url",
+    "cover_url",
+    "author_verified",
+    "author_is_business",
+    "author_is_seller",
+    "author_signature",
+    "is_ad",
+    "is_branded",
+)
+# Bio lặp lại ở mọi bài của tác giả: chỉ giữ đoạn đầu.
+SIGNATURE_MAX_CHARS = 160
 
 
 def trim_post_raw(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
-    return {key: raw[key] for key in RAW_JSON_KEEP if raw.get(key) is not None} or None
+    kept = {key: raw[key] for key in RAW_JSON_KEEP if raw.get(key) is not None}
+    if isinstance(kept.get("author_signature"), str):
+        kept["author_signature"] = kept["author_signature"][:SIGNATURE_MAX_CHARS] or None
+        if kept["author_signature"] is None:
+            kept.pop("author_signature")
+    return kept or None
 
 
 # Video phát được / permalink không đặt vào <img> được. Các dòng TikTok cũ lưu playAddr
