@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.api.routes import settings as routes
-from app.core.errors import CookieRefusedError, ProxyPolicyError
+from app.core.errors import CookieRefusedError
 from app.services.accounts import platform_config_db as db
 from app.services.accounts.config_db import accounts as accounts_db
 from app.services.accounts.cookie_quality import assess_cookie
@@ -59,39 +59,6 @@ def test_route_refuses_facebook_only_and_allows_empty_cookie():
     routes._refuse_bad_cookie("threads", "someone", "sessionid=x")
 
 
-def target(**fields):
-    return {"platform": "facebook", "ip_type": "static", "proxy_platform": "facebook", "others": 0, **fields}
-
-
-@pytest.mark.parametrize(
-    "fields,fragment",
-    [
-        ({"ip_type": "rotating"}, "rotating_ip"),
-        ({"platform": "threads", "ip_type": "rotating"}, "rotating_ip"),
-        ({"others": 1}, "shared_ip"),
-        ({"platform": "threads", "others": 1}, "shared_ip"),
-        # Một proxy chỉ thuộc một tài khoản - không kể nền tảng.
-        ({"platform": "tiktok", "others": 1}, "shared_ip"),
-        ({"proxy_platform": "public"}, "public_proxy"),
-        ({"ip_type": "unknown"}, "ip_type_not_static"),
-    ],
-)
-def test_pin_refusals(fields, fragment):
-    assert db.proxy_pin_refusal(target(**fields)) == fragment
-
-
-@pytest.mark.parametrize(
-    "fields",
-    [
-        {},
-        {"platform": "threads", "ip_type": "unknown", "proxy_platform": "threads"},
-        {"platform": "tiktok", "ip_type": "rotating", "others": 0},
-    ],
-)
-def test_pin_allowed(fields):
-    assert db.proxy_pin_refusal(target(**fields)) is None
-
-
 class Cur:
     def __init__(self, rows):
         self.rows, self.sql = list(rows), []
@@ -134,20 +101,6 @@ def use_db(monkeypatch, rows):
     monkeypatch.setattr(accounts_db, "_ensure_pool_columns", AsyncMock())
     monkeypatch.setattr(accounts_db, "_connect", lambda: Ctx(cur))
     return cur
-
-
-async def test_refused_pin_changes_nothing(monkeypatch):
-    cur = use_db(monkeypatch, [target(ip_type="rotating")])
-    with pytest.raises(ProxyPolicyError):
-        await db.set_account_proxy(1, 15)
-    assert not any(sql.startswith("UPDATE") for sql, _ in cur.sql)
-
-
-async def test_pin_does_not_look_like_a_new_cookie(monkeypatch):
-    cur = use_db(monkeypatch, [target(), {"id": 1}])
-    await db.set_account_proxy(1, 18)
-    update = next(sql for sql, _ in cur.sql if sql.startswith("UPDATE"))
-    assert "updated_at = now()" not in update
 
 
 async def test_health_check_cannot_overwrite_dead(monkeypatch):

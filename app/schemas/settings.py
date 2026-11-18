@@ -46,7 +46,6 @@ class AccountOut(BaseModel):
     cooldown_until: datetime | None = None
     consecutive_failures: int | None = 0
     last_used_at: datetime | None = None
-    assigned_proxy_id: int | None = None
     # Client duy nhất được dùng phiên này (manual | browser | http); null = chưa khai báo, Facebook không gửi gì.
     # Tên các trường bí mật đang có giá trị. Các trường đó luôn trả về rỗng ở đây (xem
     # AccountOut.masked) - giá trị thật chỉ lấy qua GET /settings/accounts/{id}/credentials.
@@ -92,10 +91,6 @@ class AccountCreate(BaseModel):
     user_agent: str = ""
 
 
-class AccountSetProxy(BaseModel):
-    proxy_id: int
-
-
 class AccountSetEnabled(BaseModel):
     enabled: bool
 
@@ -130,9 +125,6 @@ class ProxyOut(BaseModel):
     cooldown_until: datetime | None = None
     consecutive_failures: int | None = 0
     last_used_at: datetime | None = None
-    # Số tài khoản đang được ghim cố định vào proxy này - xem
-    # platform_config_db.list_proxies. Chỉ endpoint danh sách mới điền giá trị này.
-    assigned_account_count: int = 0
     # Nguồn proxy sở hữu dòng này (NULL = nhập tay/tĩnh) - xem
     # platform_config_db.list_proxies. Trước đó không có quan hệ này, code đoán chủ
     # quan bằng cách so proxy_url với token của từng gói.
@@ -488,6 +480,20 @@ class ProxySettings(BaseModel):
     fb_run_max_requests: int = Field(default=100, ge=0, le=100000)
     fb_run_max_seconds: int = Field(default=1800, ge=0, le=86400)
     fb_run_rest_seconds: int = Field(default=900, ge=0, le=86400)
+    # Nhịp job tài khoản Meta (18/11/2026, trước đây env của spider-hub consumer/loop.py): giờ yên lặng, khoảng nghỉ giữa hai job,
+    # giờ bỏ job tìm kiếm Facebook nằm chờ quá lâu. spider-hub đọc mỗi job, không cần restart.
+    meta_quiet_hours: str = Field(default="23:30-05:30", pattern=r"^(\d{2}:\d{2}-\d{2}:\d{2})?$")
+    facebook_job_pause_min_seconds: float = Field(default=30.0, ge=0, le=3600)
+    facebook_job_pause_max_seconds: float = Field(default=90.0, ge=0, le=3600)
+    facebook_comments_pause_min_seconds: float = Field(default=15.0, ge=0, le=3600)
+    facebook_comments_pause_max_seconds: float = Field(default=30.0, ge=0, le=3600)
+    threads_job_pause_min_seconds: float = Field(default=10.0, ge=0, le=3600)
+    threads_job_pause_max_seconds: float = Field(default=30.0, ge=0, le=3600)
+    other_job_pause_min_seconds: float = Field(default=3.0, ge=0, le=3600)
+    other_job_pause_max_seconds: float = Field(default=8.0, ge=0, le=3600)
+    facebook_stale_job_hours: float = Field(default=6.0, ge=0, le=72)
+    facebook_fresh_stale_job_hours: float = Field(default=3.0, ge=0, le=72)
+    facebook_deep_stale_job_hours: float = Field(default=2.0, ge=0, le=72)
     # Proxy công khai (không tài khoản) - trước 17/11/2026 là biến .env FB_PUBLIC_PAGES_*, THREADS_CHANNEL_*, FB_LOGGED_OUT_*, ...;
     # .env không còn được đọc, sửa ở Settings › Proxy của dashboard.
     fb_public_discovery_proxy_id: int = Field(default=31, ge=1, le=1000000)

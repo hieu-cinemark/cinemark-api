@@ -7,7 +7,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Jsonb
 
-from app.core.errors import ConflictError, NotFoundError, ProxyPolicyError
+from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -21,7 +21,7 @@ ACCOUNT_COLUMNS = (
     # tài khoản) - xem ACCOUNT_CREATE_COLUMNS bên dưới, cố ý loại chúng ra. Cột gốc chỉ tên
     # là "status" - đặt alias thành pool_status để không lẫn với last_check_status ở trên
     # (một tín hiệu khác, kích hoạt bằng tay - xem app/services/accounts/account_health.py).
-    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at, assigned_proxy_id"
+    "status AS pool_status, cooldown_until, consecutive_failures, last_used_at"
 )
 PROXY_COLUMNS = (
     "id, platform, proxy_url, username, password, login_use_proxy, ip_type, enabled, created_at, updated_at, "
@@ -32,8 +32,8 @@ _pool_columns_ready = False
 
 
 async def _ensure_pool_columns() -> None:
-    """Thêm các cột pool/circuit-breaker + ghim proxy cố định (status, cooldown_until,
-    consecutive_failures, last_used_at, assigned_proxy_id) nếu database Supabase này có
+    """Thêm các cột pool/circuit-breaker (status, cooldown_until, consecutive_failures,
+    last_used_at) nếu database Supabase này có
     từ trước services/pool.py của spider-hub - giống hệt các câu ALTER TABLE ... IF NOT
     EXISTS trong scripts/dev_db_schema.sql của spider-hub, để
     ACCOUNT_COLUMNS/PROXY_COLUMNS/_PROXY_LIST_COLUMNS (vốn SELECT các cột này không điều
@@ -51,7 +51,6 @@ async def _ensure_pool_columns() -> None:
             "ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS consecutive_failures int NOT NULL DEFAULT 0"
         )
         await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS last_used_at timestamptz")
-        await cur.execute("ALTER TABLE platform_accounts ADD COLUMN IF NOT EXISTS assigned_proxy_id int")
         await cur.execute(
             "CREATE TABLE IF NOT EXISTS account_events (id bigserial PRIMARY KEY, at timestamptz NOT NULL DEFAULT now(), "
             "platform text NOT NULL, account_key text NOT NULL, event text NOT NULL, "
@@ -256,85 +255,6 @@ async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
     return row
 
 
-def proxy_pin_refusal(target: dict[str, Any]) -> str | None:
-    """Lý do tài khoản không được ghim vào proxy này (spider-hub db/proxies.meta_proxy_violation).
-
-    Nguyên tắc từ 12/11/2026: MỘT proxy chỉ thuộc MỘT tài khoản - không kể nền tảng
-    (Meta nối Facebook với Threads qua IP, và một proxy của TikTok cũng là một IP). Nên
-    bất kỳ tài khoản nào khác đang giữ cổng này đều là vi phạm.
-
-    Ngoài ra Facebook phải đúng nhãn static, Threads chỉ bị chặn proxy tự xoay (#17 đang
-    chờ 2 tài khoản Threads và chưa có IP thay thế)."""
-    platform, ip_type = target["platform"], target["ip_type"]
-    # Một proxy chỉ thuộc một tài khoản - không kể nền tảng (Meta nối Facebook với
-    # Threads qua IP, và một proxy của TikTok cũng là một IP).
-    if int(target["others"]):
-        return "shared_ip"
-    if platform not in ("facebook", "threads"):
-        return None
-    if ip_type == "rotating":
-        return "rotating_ip"
-    if target["proxy_platform"] == "public":
-        return "public_proxy"
-    if platform == "facebook" and ip_type != "static":
-        return "ip_type_not_static"
-    return None
-
-
-async def reset_account_proxy(account_id: int) -> dict[str, Any]:
-    """Xoá ghim proxy cố định của một tài khoản (assigned_proxy_id -> NULL) - xem
-    services/pool.acquire_proxy_for_account của spider-hub. Ở lượt crawl/bootstrap kế
-    tiếp, tài khoản được ghim lại vào một proxy TRỐNG (proxy chưa có tài khoản nào khác -
-    mỗi proxy thuộc riêng một tài khoản); dùng từ dashboard khi bỏ một proxy đang được
-    ghim, hoặc để ghim lại sau khi thêm proxy mới vào pool."""
-    await _ensure_pool_columns()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            f"UPDATE platform_accounts SET assigned_proxy_id = NULL WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
-            (account_id,),
-        )
-        row = await cur.fetchone()
-        await conn.commit()
-    if row is None:
-        raise NotFoundError(f"Account {account_id} not found")
-    return row
-
-
-async def set_account_proxy(account_id: int, proxy_id: int) -> dict[str, Any]:
-    """Ghim tay một tài khoản vào một proxy cụ thể - phần tương ứng trên dashboard của logic
-    tự ghim vào proxy ít tải nhất của spider-hub (xem
-    services/pool.acquire_proxy_for_account), cho người vận hành muốn trực tiếp quyết
-    định tài khoản nào nằm trên IP nào thay vì để pool tự cân bằng. Ràng buộc khoá ngoại
-    trên assigned_proxy_id (xem scripts/dev_db_schema.sql của spider-hub) từ chối
-    proxy_id không tồn tại - lỗi hiện ra ở đây là lỗi psycopg thường, không xử lý riêng,
-    vì ô chọn proxy trên dashboard chỉ đưa ra id thật.
-
-    Tài khoản Meta phải qua chính sách IP (proxy_pin_refusal), cùng quy tắc spider-hub áp lúc giao proxy."""
-    await _ensure_pool_columns()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "SELECT a.platform, a.account_id, a.email, p.platform AS proxy_platform, p.ip_type, "
-            "(SELECT count(*) FROM platform_accounts o JOIN platform_proxies same ON same.id = o.assigned_proxy_id "
-            # Mọi tài khoản khác đã ghim cổng này, kể cả đang tắt / checkpoint: tài khoản tắt tạm vẫn giữ IP của nó
-            # (cùng luật với pin_account_to_free_proxy của spider-hub). Muốn lấy cổng thì bỏ ghim tài khoản kia trước.
-            " WHERE same.proxy_url = p.proxy_url AND o.id != a.id) AS others "
-            "FROM platform_accounts a JOIN platform_proxies p ON p.id = %s WHERE a.id = %s",
-            (proxy_id, account_id),
-        )
-        target = await cur.fetchone()
-        if target and (refusal := proxy_pin_refusal(target)):
-            raise ProxyPolicyError(refusal)
-        await cur.execute(
-            f"UPDATE platform_accounts SET assigned_proxy_id = %s WHERE id = %s RETURNING {ACCOUNT_COLUMNS}",
-            (proxy_id, account_id),
-        )
-        row = await cur.fetchone()
-        await conn.commit()
-    if row is None:
-        raise NotFoundError(f"Account {account_id} not found")
-    return row
-
-
 async def delete_account(account_id: int) -> None:
     account = await get_account(account_id)
     if account is not None:
@@ -350,14 +270,7 @@ async def delete_account(account_id: int) -> None:
 _PROXY_LIST_COLUMNS = (
     "pp.id, pp.platform, pp.proxy_url, pp.username, pp.password, pp.login_use_proxy, pp.ip_type, pp.enabled, "
     "pp.created_at, pp.updated_at, pp.status AS pool_status, pp.cooldown_until, pp.consecutive_failures, "
-    "pp.last_used_at, pp.provider_key, pp.provider_ref, "
-    # Số dòng platform_accounts còn sống đang được ghim cố định vào proxy này (đang bật,
-    # không bị checkpoint) - khớp với pin_account_to_free_proxy của spider-hub để con số "tài
-    # khoản đã ghim" trên dashboard đúng bằng mức tải mà pool thực sự cân bằng theo. Các
-    # ghim chết vẫn nằm trên assigned_proxy_id nhưng không được làm một IP trông như đã
-    # đầy. Nguyên tắc mới: một proxy thuộc riêng một tài khoản - giá trị này luôn 0 hoặc 1.
-    "(SELECT count(*) FROM platform_accounts pa WHERE pa.assigned_proxy_id = pp.id "
-    "AND pa.enabled = true AND pa.status != 'checkpoint') AS assigned_account_count"
+    "pp.last_used_at, pp.provider_key, pp.provider_ref"
 )
 
 
