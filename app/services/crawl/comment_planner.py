@@ -111,6 +111,13 @@ def _num(value: Any) -> int:
         return 0
 
 
+def enough_comments(rows: list[dict[str, Any]], min_count: int) -> list[dict[str, Any]]:
+    """Bài đáng cào bình luận: ít nhất `min_count` bình luận theo số nền tảng báo (reply_count), tối thiểu 1. Bài ít bình luận
+    tốn một job (và request của tài khoản) mà gần như không ra dữ liệu - bỏ ở mọi lượt tự động (18/11/2026)."""
+    floor = max(1, int(min_count))
+    return [row for row in rows if _num(row.get("reply_count")) >= floor]
+
+
 def velocity(row: dict[str, Any], now: datetime) -> float:
     """Tương tác mỗi giờ kể từ lúc đăng (comment tính gấp 3 như ENGAGEMENT_SCORE_SQL; tối thiểu 1 giờ để bài vừa
     đăng không thành vô hạn)."""
@@ -371,7 +378,8 @@ async def apply_comment_completions() -> int:
 async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: bool) -> dict[str, int]:
     """Một lượt mỗi giờ cho một nền tảng: lớp bài nóng, và lớp mẫu nếu `with_sample`. Trả về thống kê."""
     now = datetime.now(tz=UTC)
-    all_rows = await _candidates(platform, VALUE_WINDOW, now)
+    loaded = await _candidates(platform, VALUE_WINDOW, now)
+    all_rows = enough_comments(loaded, int(await crawl_setting("comments_min_count")))
     week_rows = [row for row in all_rows if not queued_recently(row, now)]
     scores: dict[str, int] = {}
     try:
@@ -421,6 +429,7 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
         "ai_value": sum(1 for p in published if p.reason == "ai_value"),
         "skipped_low_value": len(week_rows) - len(usable),
         "skipped_queued": len(all_rows) - len(week_rows),
+        "skipped_few_comments": len(loaded) - len(all_rows),
     }
     logger.info("comment_round_finished", platform=platform, with_sample=with_sample, **stats)
     return stats
@@ -449,7 +458,9 @@ def youtube_due(row: dict[str, Any], now: datetime) -> bool:
 
 async def run_youtube_comment_round() -> dict[str, int]:
     now = datetime.now(tz=UTC)
-    rows = await _candidates("youtube", YOUTUBE_WINDOW, now)
+    rows = enough_comments(
+        await _candidates("youtube", YOUTUBE_WINDOW, now), int(await crawl_setting("comments_min_count"))
+    )
     due = [row for row in rows if not queued_recently(row, now) and youtube_due(row, now)]
     # Chưa cào trước, rồi video nhiều tương tác.
     due.sort(key=lambda row: (row.get("comments_crawled_at") is not None, -_num(row.get("like_count"))))

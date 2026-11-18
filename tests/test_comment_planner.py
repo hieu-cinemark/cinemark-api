@@ -132,3 +132,12 @@ def test_young_post_refreshes_every_six_hours_even_without_reply_count_update():
     assert cp.refresh_due(stale, NOW)
     assert not cp.refresh_due(recent, NOW)  # mới 4 giờ, reply_count không đổi
     assert not cp.refresh_due(older, NOW)  # bài > 24h vẫn cần reply_count tăng
+
+
+def test_posts_with_fewer_than_min_comments_are_skipped():
+    """Bài dưới comments_min_count bình luận không được xếp cào (18/11/2026); 0 = tắt nhưng vẫn cần ít nhất 1."""
+    rows = [_post(1, replies=9), _post(2, replies=10), _post(3, replies=250), _post(4, replies=0)]
+
+    assert [r["id"] for r in cp.enough_comments(rows, 10)] == ["p2", "p3"]
+    assert [r["id"] for r in cp.enough_comments(rows, 0)] == ["p1", "p2", "p3"]
+    assert cp.enough_comments([_post(5, replies=None)], 10) == []

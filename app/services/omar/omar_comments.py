@@ -2,7 +2,7 @@
 
 Mỗi ngày (hoặc từ thứ settings.omar_comments_weekday) lúc settings.omar_comments_time (giờ VN), enqueue_weekly_job lấy từ D1 cho mỗi
 hashtag TikTok đang bật settings.omar_comments_top_per_hashtag video đăng trong 7 ngày qua, tương tác cao nhất (thích +
-3 x bình luận + chia sẻ, chỉ bài liên quan và có bình luận), rồi xếp vào hàng đợi Redis (omar:comments:jobs). Mỗi lượt
+3 x bình luận + chia sẻ, chỉ bài liên quan và có ít nhất comments_min_count bình luận), rồi xếp vào hàng đợi Redis (omar:comments:jobs). Mỗi lượt
 Omar (omar_tiktok.run_omar_round) xử lý hàng đợi SAU phần video mới (ưu tiên video): mỗi video lật /comments tới hết, bình luận nào có
 trả lời thì lật /comment_replies tới hết. Con trỏ lưu sau mỗi trang - hết ngân sách / dừng / restart thì lượt sau đi
 tiếp đúng chỗ; xong video thì xoá khỏi hàng đợi và đánh dấu posts.comments_crawled_* (lý do "omar_weekly").
@@ -116,6 +116,13 @@ def _needs_crawl():
     )
 
 
+async def _min_comments() -> int:
+    """Video có ít hơn chừng này bình luận thì không xếp hàng (proxy_settings comments_min_count, tối thiểu 1)."""
+    from app.services.accounts.platform_config_db import crawl_setting
+
+    return max(1, int(await crawl_setting("comments_min_count")))
+
+
 async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[str, list[dict[str, Any]]]:
     """Top `limit` video theo tương tác của MỖI từ khoá, một truy vấn cho mọi từ khoá (ROW_NUMBER theo keyword_id).
     Trước 14/10/2026 là một truy vấn mỗi từ khoá chạy lần lượt: 147 hashtag ~140 giây, nút "Cào bình luận ngay" của
@@ -127,7 +134,7 @@ async def _top_videos(keyword_ids: list[str], since: str, limit: int) -> dict[st
         _P.c.platform == "tiktok",
         _P.c.keyword_id.in_(json_values(keyword_ids)),
         _P.c.posted_at >= since,
-        _P.c.reply_count > 0,
+        _P.c.reply_count >= await _min_comments(),
         relevant_post(_P),
     )
     if _daily():
@@ -200,7 +207,7 @@ async def _all_videos(keyword_ids: list[str]) -> dict[str, list[dict[str, Any]]]
             .where(
                 _P.c.platform == "tiktok",
                 _P.c.keyword_id.in_(json_values(keyword_ids)),
-                _P.c.reply_count > 0,
+                _P.c.reply_count >= await _min_comments(),
                 relevant_post(_P),
                 or_(_P.c.comments_crawl_reason.is_(None), _P.c.comments_crawl_reason.not_like("omar%")),
             )

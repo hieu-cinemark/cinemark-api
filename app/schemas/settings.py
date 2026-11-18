@@ -455,6 +455,10 @@ class ProxySettings(BaseModel):
     public_pages_queue_target: int = Field(default=20, ge=0, le=500)
     threads_channels_queue_target: int = Field(default=8, ge=0, le=200)
     youtube_comments_per_round: int = Field(default=1000, ge=0, le=10000)
+    # Bỏ qua cào bình luận tự động của bài có ít hơn chừng này bình luận (18/11/2026) - mọi lượt tự động: bộ lập lịch bình luận
+    # Facebook/Threads/TikTok (app/services/crawl/comment_planner.py), YouTube, hàng đợi bình luận Omar. 0 = tắt (vẫn cần >= 1).
+    # Nút cào tay một bài cụ thể không bị chặn.
+    comments_min_count: int = Field(default=10, ge=0, le=100000)
     # Bình luận công khai Facebook (spider-hub spiders/facebook/auth/public_comments.py): proxy `public` ghim theo id.
     public_comments_proxy_id: int = Field(default=29, ge=1)
     public_comments_daily_cap: int = Field(default=400, ge=1, le=100000)

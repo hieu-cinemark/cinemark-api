@@ -322,7 +322,7 @@ def _round(monkeypatch, publish):
                 "platform": "tiktok",
                 "movie_id": "m",
                 "posted_at": datetime.now(tz=UTC).isoformat(),
-                "reply_count": 7,
+                "reply_count": 12,  # trên ngưỡng comments_min_count (10)
                 "like_count": 1,
             }
         ]
@@ -334,6 +334,11 @@ def _round(monkeypatch, publish):
     monkeypatch.setattr(cp, "load_scores", no_scores)
     monkeypatch.setattr(cp, "judge_new_posts", no_scores)
     monkeypatch.setattr(cp, "publish_comments_crawl_request", publish)
+
+    async def setting(name):
+        return {"comments_min_count": 10}[name]
+
+    monkeypatch.setattr(cp, "crawl_setting", setting)
     return asyncio.run(cp.run_comment_round("tiktok", hot_per_movie=5, with_sample=False))
 
 
