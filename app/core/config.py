@@ -245,7 +245,7 @@ class Settings(BaseSettings):
     facebook_watch_pages_enabled: bool = True
     facebook_watch_pages_interval_hours: float = 3
     facebook_watch_pages_per_round: int = 15
-    facebook_watch_pages_max_pages: int = 1
+    facebook_watch_pages_max_pages: int = 5
     facebook_watch_pages_since_days: float = 14
 
     # Dọn dữ liệu bài không liên quan hằng ngày (app/services/relevance/cleanup.py), do
