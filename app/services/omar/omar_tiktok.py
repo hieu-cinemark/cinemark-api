@@ -365,6 +365,23 @@ async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
     logger.info("omar_manual_finished", hashtag=keyword["keyword"], done=bool(entry.get("done_at")), **stats)
 
 
+async def recrawl_hashtag_now(keyword: dict[str, Any]) -> bool:
+    """Nút "Cào lại" của một hashtag ở tab Omar: xoá con trỏ / mốc xong của hashtag (giữ số liệu hashtag_info) rồi cào lại từ trang
+    đầu ngay (crawl_hashtag_now). False khi hashtag đang được cào riêng - không đụng con trỏ đang chạy. Lượt Omar đang chạy sẽ
+    bỏ qua hashtag này (xem _manual_running); lượt sau thấy nó đã xong lại thì cào lại theo omar_recrawl_days như mọi hashtag."""
+    kw_id = keyword["id"]
+    if kw_id in _manual_running:
+        return False
+    redis = get_redis_client()
+    raw = await redis.hget(_STATE_KEY, kw_id)
+    try:
+        entry = json.loads(raw) if raw else {}
+    except TypeError, ValueError:
+        entry = {}
+    await redis.hset(_STATE_KEY, kw_id, json.dumps({k: entry[k] for k in _RESET_KEEP if k in entry}))
+    return crawl_hashtag_now(keyword)
+
+
 def crawl_hashtag_now(keyword: dict[str, Any]) -> bool:
     """Cào NGAY một hashtag tới hết (ô "Thêm hashtag" ở tab Omar), độc lập với lượt đang chạy - lượt chế độ liên tục có
     thể kéo dài nhiều giờ và chỉ nạp danh sách hashtag lúc bắt đầu. False khi hashtag đang được cào riêng."""

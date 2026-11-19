@@ -81,3 +81,44 @@ def test_pause_over_after_until():
     past = {"reason": "quota", "until": (datetime.now(tz=UTC) - timedelta(seconds=1)).isoformat()}
     assert asyncio.run(pause_mod.pause_over(past)) is True
     assert asyncio.run(pause_mod.pause_over({"reason": "quota"})) is True  # dữ liệu hỏng: không kẹt mãi
+
+
+class _StateRedis:
+    def __init__(self, entry):
+        self.state = {"kw1": json.dumps(entry)} if entry is not None else {}
+
+    async def hget(self, _key, field):
+        return self.state.get(field)
+
+    async def hset(self, _key, field, value):
+        self.state[field] = value
+
+
+def test_recrawl_clears_cursor_but_keeps_hashtag_info(monkeypatch):
+    redis = _StateRedis(
+        {
+            "cursor": "abc",
+            "done_at": "2026-11-18T00:00:00+00:00",
+            "pages": 255,
+            "video_count": 5100,
+            "hashtag_id": "h1",
+            "info_at": "x",
+        }
+    )
+    monkeypatch.setattr(ot, "get_redis_client", lambda: redis)
+    started = []
+    monkeypatch.setattr(ot, "crawl_hashtag_now", lambda keyword: started.append(keyword["id"]) or True)
+    assert asyncio.run(ot.recrawl_hashtag_now({"id": "kw1", "keyword": "#x"})) is True
+    assert json.loads(redis.state["kw1"]) == {"video_count": 5100, "info_at": "x", "hashtag_id": "h1"}
+    assert started == ["kw1"]
+
+
+def test_recrawl_refuses_while_hashtag_is_being_crawled(monkeypatch):
+    redis = _StateRedis({"cursor": "abc", "pages": 3})
+    monkeypatch.setattr(ot, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(ot, "_manual_running", {"kw1"})
+    monkeypatch.setattr(
+        ot, "crawl_hashtag_now", lambda keyword: (_ for _ in ()).throw(AssertionError("must not start"))
+    )
+    assert asyncio.run(ot.recrawl_hashtag_now({"id": "kw1", "keyword": "#x"})) is False
+    assert json.loads(redis.state["kw1"])["cursor"] == "abc"

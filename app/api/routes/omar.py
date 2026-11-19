@@ -11,9 +11,9 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from app.core.config import settings
-from app.core.errors import UpstreamError, ValidationError
+from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
-from app.repositories.d1.keywords import get_or_create_keyword, set_keyword_enabled
+from app.repositories.d1.keywords import get_enabled_keywords, get_or_create_keyword, set_keyword_enabled
 from app.services.accounts.platform_config_db import get_omar_api_settings, omar_limits
 from app.services.omar import omar_comments, omar_pause, omar_tiktok
 
@@ -161,3 +161,16 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     started = omar_tiktok.crawl_hashtag_now(row)
     logger.info("omar_hashtag_added", hashtag=row["keyword"], movie_id=payload.movie_id, started=started)
     return {"keyword": row, "started": started, "verified": exists is True}
+
+
+@router.post("/hashtags/{keyword_id}/recrawl")
+async def omar_recrawl_hashtag(keyword_id: str) -> dict[str, Any]:
+    """Nút "Cào lại" trên từng dòng bảng tiến độ hashtag: bỏ con trỏ của hashtag và cào lại từ trang đầu ngay, độc lập với lượt
+    Omar đang chạy (nhịp theo omar_manual_requests_per_minute). started=False khi hashtag đang được cào riêng."""
+    keywords = await get_enabled_keywords(platform="tiktok")
+    keyword = next((k for k in keywords if k["id"] == keyword_id and str(k["keyword"]).startswith("#")), None)
+    if keyword is None:
+        raise NotFoundError("Không tìm thấy hashtag TikTok đang bật này")
+    started = await omar_tiktok.recrawl_hashtag_now(keyword)
+    logger.info("omar_hashtag_recrawl", hashtag=keyword["keyword"], started=started)
+    return {"keyword_id": keyword_id, "hashtag": keyword["keyword"], "started": started}

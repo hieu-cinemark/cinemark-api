@@ -282,6 +282,7 @@ MESSAGES: dict[str, str] = {
     "omar_comments_video_failed": "Omar: bình luận một video thất bại",
     "omar_cooccur_failed": "Omar: lấy hashtag đi kèm thất bại",
     "omar_hashtag_added": "Omar: đã thêm hashtag",
+    "omar_hashtag_recrawl": "Omar: cào lại hashtag từ đầu",
     "omar_hashtag_finished": "Omar: xong một hashtag",
     "omar_hashtag_info_failed": "Omar: lấy thông tin hashtag thất bại",
     "omar_hashtag_stalled": "Omar: hashtag không tiến triển",
