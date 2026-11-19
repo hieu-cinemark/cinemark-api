@@ -423,7 +423,8 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     """Một lượt mỗi giờ: settings.omar_concurrency worker, mỗi worker cào một hashtag TỚI HẾT video rồi nhận hashtag kế
     (hashtag chưa bắt đầu đứng đầu hàng), tới khi hết ngân sách. Con trỏ mỗi hashtag lưu trong
     Redis sau mỗi trang, lượt sau / hôm sau đi tiếp; cào tới has_more = false thì xong, cào lại từ đầu sau
-    settings.omar_recrawl_days ngày, hoặc sớm hơn khi lượt còn ngân sách dư (hashtag xong lâu nhất trước).
+    settings.omar_recrawl_days ngày (mặc định 1: mỗi ngày, cùng hàng ưu tiên với hashtag đang cào, chạy song song với bình
+    luận), hoặc sớm hơn khi lượt còn ngân sách dư (hashtag xong lâu nhất trước).
 
     Ngân sách: CHẠY LIÊN TỤC - toàn bộ hạn mức ngày tự đặt còn lại (omar_daily_requests, trừ settings.omar_daily_reserve) dùng
     ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ Supabase mỗi lượt).
@@ -486,17 +487,17 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             return _stop_requested or halted
 
         halted = False
-        # Bình luận (app/services/omar/omar_comments.py) chạy SAU phần video mới (hashtag chưa xong), tối đa
-        # settings.omar_comments_budget_share ngân sách, và TRƯỚC phần cào lại hashtag đã xong (phần đó dùng hết hạn mức
-        # còn lại nên đặt sau thì bình luận không bao giờ tới lượt). Ưu tiên video; trước đó bình luận chạy
-        # song song và tranh nhịp gọi mỗi phút với video. Trước 12/10/2026 nó chạy trước và chặn mọi hashtag.
+        # Bình luận (app/services/omar/omar_comments.py) chạy SONG SONG với phần hashtag cần cào (mới và đến hạn cào lại),
+        # tối đa settings.omar_comments_budget_share ngân sách, và TRƯỚC phần cào lại bằng ngân sách dư (phần đó dùng hết hạn
+        # mức còn lại nên đặt sau thì bình luận không bao giờ tới lượt). Trước 12/10/2026 bình luận chạy trước và chặn mọi
+        # hashtag; từ 12/10 chạy sau video; từ 19/11/2026 chạy song song để hashtag không phải đợi bình luận.
         comment_budget = Budget(int(budget * settings.omar_comments_budget_share), parent=spend)
 
-        async def run_comments() -> None:
+        async def run_comments(comment_workers: int) -> None:
             nonlocal halted
             try:
                 await omar_comments.process_queue(
-                    client, pacer, api_key, comment_budget, stats, should_stop, workers=workers
+                    client, pacer, api_key, comment_budget, stats, should_stop, workers=comment_workers
                 )
             except OmarStop as exc:
                 if not halted:
@@ -685,14 +686,20 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         # hashtag; hashtag chưa bắt đầu đứng đầu hàng nên hashtag mới thêm được cào ngay.
         stats["keywords"] = len(deep)
         stats["concurrency"] = workers
-        await run_round_robin(
-            deep,
-            crawl_page,
-            workers=workers,
-            should_stop=lambda: should_stop() or spend.exhausted,
+        # 19/11/2026: hashtag và bình luận chạy SONG SONG (người vận hành muốn hashtag cào lại mỗi ngày mà không đợi bình luận
+        # xong). Số worker chia đôi để tổng request đồng thời vẫn bằng `workers`; nhịp mỗi phút do chung một _Pacer nên
+        # không vượt giới hạn của gói, bình luận bị chặn ở omar_comments_budget_share nên không nuốt hết ngân sách hashtag.
+        comment_workers = max(1, workers // 2)
+        hashtag_workers = max(1, workers - comment_workers)
+        await asyncio.gather(
+            run_round_robin(
+                deep,
+                crawl_page,
+                workers=hashtag_workers,
+                should_stop=lambda: should_stop() or spend.exhausted,
+            ),
+            run_comments(comment_workers),
         )
-        if not spend.exhausted and not should_stop():
-            await run_comments()
         # Còn ngân sách: cào lại TỪ ĐẦU các hashtag đã xong lâu nhất (crawl tự đặt lại con trỏ khi có done_at) - bắt video
         # mới và cập nhật tương tác thay vì để hạn mức ngày bỏ phí.
         stats["recrawl_keywords"] = len(fresh)

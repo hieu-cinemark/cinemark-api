@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # Lượt cào hashtag TikTok mỗi giờ (app/services/omar/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt comment ở
     # phút 5). Mỗi hashtag cào tới hết, con trỏ lưu trong Redis. Ngân sách: phần còn lại của hạn mức ngày của gói (GET /usage)
     # trừ omar_daily_reserve để chừa cho chạy tay, trần omar_requests_per_hour (0 = không trần riêng). Hashtag đã cào hết
-    # được cào lại từ đầu sau omar_recrawl_days ngày. Giới hạn mỗi phút theo gói (Lite 10, Basic 40, Pro 70, Premium+ 150,
+    # được cào lại từ đầu sau omar_recrawl_days ngày (mặc định 1 từ 19/11/2026: mỗi ngày, ưu tiên cùng hashtag đang cào). Giới hạn mỗi phút theo gói (Lite 10, Basic 40, Pro 70, Premium+ 150,
     # Enterprise 500) - đọc từ GET /usage mỗi lượt, omar_requests_per_minute chỉ là dự phòng khi không đọc được; trần thấp
     # hơn đặt ở tab Omar.
     omar_round_minute: int = 20
@@ -212,11 +212,11 @@ class Settings(BaseSettings):
     omar_concurrency: int = 8
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_seen._claim_unseen.
     omar_republish_hours: float = 48
-    omar_recrawl_days: int = 7
+    omar_recrawl_days: int = 1
     # Bình luận TikTok qua Omar (app/services/omar/omar_comments.py): mỗi ngày (omar_comments_cadence="daily") hoặc mỗi tuần
     # vào thứ omar_comments_weekday (0 = thứ Hai), lúc omar_comments_time giờ VN, mỗi hashtag lấy omar_comments_top_per_hashtag
     # video đăng trong 7 ngày qua, tương tác cao nhất, cào HẾT bình luận (kèm trả lời nếu omar_comments_replies). Hàng đợi chạy
-    # sau phần video mới của mỗi lượt Omar (ưu tiên video). Chạy mỗi ngày thì chỉ lấy video Omar chưa cào, hoặc đã cào nhưng
+    # song song với phần hashtag của mỗi lượt Omar. Chạy mỗi ngày thì chỉ lấy video Omar chưa cào, hoặc đã cào nhưng
     # số bình luận tăng từ omar_comments_regrowth_min và từ omar_comments_regrowth_ratio (tỉ lệ) kể từ lần cào.
     omar_comments_cadence: str = "daily"
     omar_comments_regrowth_min: int = 20

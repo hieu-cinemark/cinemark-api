@@ -2,7 +2,7 @@
 
 Cào TikTok qua Omar API (dev.omar-thing.site, thay ShortVid từ 18/11/2026). Chỉ dùng hai nhóm endpoint:
 
-- **hashtag** (`omar_tiktok.py`): `hashtag_videos` + `hashtag_info`. Mỗi hashtag cào tới hết, con trỏ lưu ở Redis
+- **hashtag** (`omar_tiktok.py`): `hashtag_videos` + `hashtag_info`. Mỗi hashtag cào tới hết, cào lại từ đầu mỗi ngày (`omar_recrawl_days = 1`, song song với bình luận), con trỏ lưu ở Redis
   (`omar:hashtag_state`), video đi qua đúng đường ingest của spider (topic `raw_posts`).
 - **bình luận + trả lời** (`omar_comments.py`): `comments` + `comment_replies` cho các video nhiều tương tác nhất của mỗi
   hashtag, xếp hàng mỗi ngày (hoặc mỗi tuần), cào hết bình luận rồi trả lời.
