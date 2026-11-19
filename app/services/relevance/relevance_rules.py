@@ -295,6 +295,15 @@ _STRONG_FILM_PHRASES: tuple[str, ...] = (
     "cinestar",
     "premiere",
     "showtime",
+    # 19/11/2026: sự kiện/báo chí quanh phim. Bài "Casting Call Cộng Trừ Nhân Chia", "Showcase Mẹ Mìn" bị ẩn
+    # vì phim có tên mơ hồ (ambiguous/strict) không có tín hiệu nào qua được; các từ này chỉ tính khi sát tên phim (<= 4 từ). Không thêm "cinetour": #cinetour là hashtag chung, đứng cạnh hashtag tên phim sẽ làm yếu luật phim chặt.
+    "casting call",
+    "casting",
+    "showcase",
+    "hop bao",
+    "ra mat phim",
+    "buoi ra mat",
+    "tham do",
 )
 # Từ điện ảnh mạnh phải cách tên phim đích không quá chừng này từ: "Người Được Chọn dự kiến
 # khởi chiếu" là về phim này, còn "...chưa phải người được chọn. Phim Madam T | Khởi chiếu
@@ -382,6 +391,25 @@ def _film_specific_keyword_hashtag(tags: set[str], movie: dict) -> bool:
     return False
 
 
+# 19/11/2026 (đo trên 628 bài rà soát tay, scripts/tools/eval_relevance_rules.py): hai tín hiệu đặc trưng mà luật cũ bỏ sót.
+# - Tên viết tắt của phim (#amxhh, #NHSNH, CCEE3): chỉ tin khi từ viết tắt đủ dài (ACRONYM_MIN_LEN) - viết tắt ngắn dễ trùng.
+#   Số phần phim là một "từ" của tên nên "Chị Chị Em Em 3" -> "ccee3" (khác "#CCEE" của hoạt hình Đám Cưới Mộng Mơ).
+# - Hashtag chiến dịch của agency "<tên phim>by<agency>" (#congtrunhanchiabymoli, #ngayconconmebymoli): chỉ khi tên phim không có
+#   phần phụ sau ":" (nếu có, phần đứng trước là tên loạt phim, dùng chung với phần cũ: #thamtukienbysunsee).
+ACRONYM_MIN_LEN = 5
+AGENCY_MIN_NAME_LEN = 8
+
+
+def _agency_hashtag(tags: set[str], title: str | None) -> bool:
+    raw = str(title or "")
+    if re.search(r"[:(（]", raw):
+        return False
+    name = _squash(normalize_title(raw))
+    return len(name) >= AGENCY_MIN_NAME_LEN and any(
+        tag.startswith(name + "by") and len(tag) > len(name) + 3 for tag in tags
+    )
+
+
 def film_context_reason(
     content: str | None, movie: dict | None = None, *, allow_title_hashtag: bool = False, allow_names: bool = True
 ) -> str | None:
@@ -421,6 +449,12 @@ def film_context_reason(
 
     # Xét sau mọi tín hiệu theo tên phim để lý do cũ giữ nguyên; dùng cả khi bài không chứa nguyên văn tên phim.
     keyword_hashtag = "keyword_hashtag" if allow_title_hashtag and _film_specific_keyword_hashtag(tags, movie) else None
+    if allow_title_hashtag:
+        acronym = title_acronym(movie.get("title"))
+        if acronym and len(acronym) >= ACRONYM_MIN_LEN and (acronym in tags or _contains_phrase(text, acronym)):
+            return "acronym"
+        if _agency_hashtag(tags, movie.get("title")):
+            return "agency_hashtag"
 
     title = normalize_title(movie.get("title"))
     if not title:
@@ -504,7 +538,12 @@ def mentions_full_title(content: str | None, title: str | None) -> bool:
     """Bài có đủ tên phim (bỏ dấu/hoa thường/khoảng trắng/dấu câu) - xem full_title_variants. Tên ngắn ("Mẹ Mìn", "Huyết
     Thống", "Loạn Thế") trùng từ ngữ thường ngày nên không tính. Tên kết thúc bằng số không khớp khi ngay sau là chữ số
     khác ("quyantang4" không khớp "quyantang40")."""
-    text = _squash(normalize_title(content))
+    spaced = normalize_title(content)
+    words = normalize_title(title).split()
+    # So theo từng từ trước: khi dính liền chữ, số phần phim dính vào số đứng sau ("chị chị em em 3 - 6/10" -> "...em36").
+    if len(words) >= FULL_TITLE_MIN_WORDS and _contains_phrase(spaced, " ".join(words)):
+        return True
+    text = _squash(spaced)
     return any(re.search(re.escape(_squash(variant)) + r"(?!\d)", text) for variant in full_title_variants(title))
 
 
@@ -529,6 +568,37 @@ def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None
             return True
     folded_title = _squash(normalize_title(title))
     return bool(folded_title) and folded_title in text
+
+
+# 19/11/2026: phim tên mơ hồ (settings.ambiguous_title_movie_slugs) bị tắt luật "đủ tên phim" nên bài thật như "review Bò Sữa Bay",
+# "pass 3 vé bò sữa bay", "CINETOUR BÒ SỮA BAY" bị ẩn. Mở lại CÓ ĐIỀU KIỆN: đủ tên phim (từ FULL_TITLE_MIN_WORDS chữ) VÀ có từ chỉ
+# việc xem/đánh giá phim ở rạp. Phim "chặt" (strict) không dùng luật này.
+_CINEMA_INTENT_PHRASES = (
+    "review",
+    "spoil",
+    "seeding",
+    "cinetour",
+    "teaser",
+    "trailer",
+    "suat chieu",
+    "khoi chieu",
+    "cong chieu",
+    "ra rap",
+    "di xem",
+    "di coi",
+    "pass ve",
+    "mua ve",
+    "dat ve",
+    "bom tan",
+    "phim dien anh",
+)
+
+
+def mentions_full_title_with_intent(content: str | None, title: str | None) -> bool:
+    if not mentions_full_title(content, title):
+        return False
+    text = normalize_title(content)
+    return any(_contains_phrase(text, phrase) for phrase in _CINEMA_INTENT_PHRASES)
 
 
 # --- Quy tắc "quanh ngày công chiếu" (release_window, 17/10/2026) ---
@@ -692,6 +762,8 @@ def resolve_relevance(
         return True, "related", "release_window"
     if not strict and full_title_rule and mentions_short_title(content, movie, posted_at):
         return True, "related", "short_title"
+    if not strict and not full_title_rule and mentions_full_title_with_intent(content, movie.get("title")):
+        return True, "related", "full_title_intent"
     if has_keyword or label == "uncertain":
         return False, label or "uncertain", None
     return None, label, None

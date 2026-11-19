@@ -8,8 +8,10 @@ from app.services.relevance.relevance_rules import (
     film_context_reason,
     foreign_language_reason,
     has_film_context,
+    mentions_full_title,
     mentions_keyword_or_title,
     mentions_other_film,
+    resolve_relevance,
 )
 
 TRACKED = ["Án Mạng Karaoke", "Án Mạng Xém Hoàn Hảo", "Trại Buôn Người", "Trại Giam Hạnh Phúc", "Út Lan", "Út Lan 2"]
@@ -332,3 +334,76 @@ def test_release_window_lifts_series_name_with_cinema_words_near_release():
     tee = {"title": "QUỶ ĂN TẠNG 4: HỔ TINH (Tee Yod)", "released_at": "2026-10-09"}
     assert "tee yod" in franchise_names(tee["title"])
     assert in_release_window("buổi ra mắt phim Tee Yod 4 #premiere", tee, "2026-10-08")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Người mẫu Lê Hoàng Long tại buổi Casting Call Cộng Trừ Nhân Chia  #Movie #KaoEntertainment",
+        "Rima Thanh Vy kể trọn hành trình với vai Zoe | Showcase Mẹ Mìn",
+    ],
+)
+def test_event_words_next_to_ambiguous_title_count_as_film_context(text: str) -> None:
+    title = next(t for t in ("Cộng Trừ Nhân Chia", "Mẹ Mìn") if t.lower() in text.lower())
+    assert film_context_reason(text, {"title": title}) == "strong_near_title"
+
+
+def test_event_word_far_from_title_is_not_enough() -> None:
+    text = "Showcase album mới của ca sĩ A, cuối buổi có nhắc tới mẹ mìn trong câu chuyện tuổi thơ của chị"
+    assert film_context_reason(text, {"title": "Mẹ Mìn"}) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "title", "reason"),
+    [
+        ("đạo diễn tới nè #amxhh", "Án Mạng Xém Hoàn Hảo", "acronym"),
+        ("Sao dìa quê hỏng thấy diễn viên #truonghoaikhanh #NHSNH", "Nghỉ Hè Sợ Nghỉ Hưu", "acronym"),
+        ("Cinetour CCEE3 - 301026 hậu trường", "Chị Chị Em Em 3", "acronym"),
+        ("Hóng tạo hình trong phim #lamthanhmy #congtrunhanchiabymoli", "Cộng Trừ Nhân Chia", "agency_hashtag"),
+    ],
+)
+def test_acronym_and_agency_hashtag_are_film_signals(text: str, title: str, reason: str) -> None:
+    assert film_context_reason(text, {"title": title}, allow_title_hashtag=True) == reason
+
+
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        # "#CCEE" (hoạt hình Đám Cưới Mộng Mơ) khác "ccee3" của phim phần 3.
+        ("Hoạt hình Đám Cưới Mộng Mơ tập 4 #chichiemem #CCEE #damcuoimongmo", "Chị Chị Em Em 3"),
+        # hashtag chiến dịch của loạt phim (tên trước ":") dùng chung với phần cũ.
+        ("Phim hay #thamtukienbysunsee", "Thám Tử Kiên: Lời Nguyền Hoàng Kim"),
+        # viết tắt ngắn (4 chữ) quá dễ trùng.
+        ("Một bộ phim hay #NCCM", "Ngày Con Còn Mẹ"),
+        # phim "chặt" không nhận hashtag.
+        ("đạo diễn tới nè #amxhh", "Án Mạng Xém Hoàn Hảo"),
+    ],
+)
+def test_acronym_and_agency_hashtag_do_not_overreach(text: str, title: str) -> None:
+    allow = "Án Mạng" not in title
+    assert film_context_reason(text, {"title": title}, allow_title_hashtag=allow) is None
+
+
+def test_ambiguous_title_needs_cinema_intent_word() -> None:
+    movie = {"title": "Bò Sữa Bay", "slug": "bo-sua-bay"}
+    assert (
+        resolve_relevance(
+            None, "Mình xin tí review Bò Sữa Bay nào mn", movie, has_keyword=True, strict=False, full_title_rule=False
+        )[2]
+        == "full_title_intent"
+    )
+    assert (
+        resolve_relevance(
+            None, "Nhà em có con bò sữa bay lên trời", movie, has_keyword=True, strict=False, full_title_rule=False
+        )[0]
+        is False
+    )
+    assert (
+        resolve_relevance(None, "Review Bò Sữa Bay", movie, has_keyword=True, strict=True, full_title_rule=False)[0]
+        is False
+    )
+
+
+def test_full_title_digit_boundary_uses_words() -> None:
+    assert mentions_full_title("Review chị chị em em 3 - 6/10 : hay", "Chị Chị Em Em 3")
+    assert not mentions_full_title("chị chị em em 30 tỷ", "Chị Chị Em Em 3")
