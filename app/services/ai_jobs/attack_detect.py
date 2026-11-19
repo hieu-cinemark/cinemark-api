@@ -1,7 +1,8 @@
 """Attack Detection hằng giờ cho phim đang chiếu (docs/review-angles-va-attack.md mục 2).
 
-Mỗi phim: đọc số chê theo giờ (16 ngày) + bình luận chê 48 giờ + embedding -> dấu hiệu A (spikes) và B (similar) ->
-verdict.decide -> một dòng attack_signals. Không gọi AI (dấu hiệu E và câu tóm tắt chưa làm).
+Mỗi phim: đọc số chê theo giờ (16 ngày) + bình luận chê 48 giờ + embedding -> dấu hiệu A (spikes), B (similar), C (accounts),
+D (spread), E (claims, bản quy tắc không AI) -> verdict.decide -> một dòng attack_signals. Không gọi AI. Chạy backfill thì ghi thêm
+data/attack_backtest/<movieId>.jsonl (mỗi mốc một dòng) để thử ngưỡng.
 
 Lịch: scheduler/ai_jobs.py (AI_JOB_EVERY["attack_detect"]). Chạy tay:
     python -m app.services.ai_jobs.attack_detect --backfill-days 30 --step-hours 6   # tính lại quá khứ, GHI D1 (chạy lại không trùng)
@@ -16,17 +17,41 @@ import argparse
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from app.core.logging import get_logger
 from app.services.attack import data, store
-from app.services.attack.similar import similar_signal
+from app.services.attack.accounts import account_signal
+from app.services.attack.claims import claims_signal
+from app.services.attack.similar import similar_clusters, similar_signal
 from app.services.attack.spikes import spike_signal
+from app.services.attack.spread import spread_signal
 from app.services.attack.verdict import decide
 
 logger = get_logger(__name__)
 
 WINDOW_HOURS = 48
+BACKTEST_DIR = Path(__file__).resolve().parents[3] / "data" / "attack_backtest"
+
+
+def backtest_line(result: dict[str, Any]) -> dict[str, Any]:
+    """Một dòng gọn cho file thử ngưỡng: mốc, trạng thái, lý do và điểm từng dấu hiệu (không kèm bằng chứng)."""
+    return {
+        "at": result["computed_at"],
+        "status": result["status"],
+        "confidence": result["confidence"],
+        "reasons": result["reasons"],
+        "signals": {
+            s["key"]: {"fired": s["fired"], "strong": s["strong"], "score": s["score"]} for s in result["signals"]
+        },
+    }
+
+
+def append_backtest(result: dict[str, Any], directory: Path = BACKTEST_DIR) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{result['movie_id']}.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(backtest_line(result), ensure_ascii=False) + "\n")
 
 
 async def detect(movie_id: str, now: datetime | None = None) -> dict[str, Any]:
@@ -37,9 +62,13 @@ async def detect(movie_id: str, now: datetime | None = None) -> dict[str, Any]:
         data.load_hours(movie_id, now), data.load_events(movie_id), data.load_negative_comments(movie_id, now)
     )
     vectors = await asyncio.to_thread(data.load_vectors, [r["id"] for r in negatives])
+    clusters = similar_clusters(negatives, vectors)  # tính một lần, B/C/D dùng chung
     signals = [
         spike_signal(hours, events, since_hour=data.vn_hour(start)),
-        similar_signal(negatives, vectors),
+        similar_signal(negatives, vectors, clusters=clusters),
+        account_signal(negatives, clusters),
+        spread_signal(negatives, clusters),
+        claims_signal(negatives),
     ]
     status, confidence, reasons = decide(signals, data.coverage(hours, negatives))
     return {
@@ -119,6 +148,7 @@ async def backfill(
                 continue
             try:
                 result = await detect(movie["id"], at)
+                append_backtest(result)
                 if dry_run or await store.save(result):
                     counts[result["status"]] = counts.get(result["status"], 0) + 1
             except Exception as exc:  # noqa: BLE001 - một mốc lỗi không dừng cả lượt

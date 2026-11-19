@@ -97,6 +97,7 @@ def similar_clusters(
         clusters.append(
             {
                 "size": len(items),
+                "member_ids": [rows[i]["id"] for i in members],  # để dấu hiệu C/D tra ngược lại dòng bình luận
                 "accounts": len(accounts),
                 "posts": len({r["post_id"] for r in items}),
                 "platforms": sorted({r.get("platform") or "" for r in items} - {""}),
@@ -122,8 +123,11 @@ def similar_clusters(
     return sorted(clusters, key=lambda c: (-c["accounts"], -c["size"]))
 
 
-def similar_signal(rows: list[dict[str, Any]], vectors: np.ndarray | None) -> Signal:
-    clusters = similar_clusters(rows, vectors)
+def similar_signal(
+    rows: list[dict[str, Any]], vectors: np.ndarray | None, clusters: list[dict[str, Any]] | None = None
+) -> Signal:
+    """`clusters`: cụm đã tính sẵn (C/D dùng chung); None thì tự tính."""
+    clusters = clusters if clusters is not None else similar_clusters(rows, vectors)
     if not clusters:
         return Signal(key="similar", fired=False, strong=False, score=0.0, detail={"comments": len(rows)})
     top = clusters[0]
@@ -141,6 +145,6 @@ def similar_signal(rows: list[dict[str, Any]], vectors: np.ndarray | None) -> Si
         evidence=lead["evidence"],
         detail={
             "comments": len(rows),
-            "clusters": [{k: v for k, v in c.items() if k != "evidence"} for c in clusters[:5]],
+            "clusters": [{k: v for k, v in c.items() if k not in ("evidence", "member_ids")} for c in clusters[:5]],
         },
     )

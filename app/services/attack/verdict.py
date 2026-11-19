@@ -3,7 +3,9 @@
 | insufficient | < MIN_COMMENTS_7D bình luận trong 7 ngày                                    |
 | clear        | không dấu hiệu nào strong (dấu hiệu chỉ fired vẫn ghi lý do để người đọc biết) |
 | suspicious   | có >= 1 dấu hiệu strong                                                     |
-| coordinated  | >= 2 dấu hiệu strong có window chồng nhau (vd đợt tăng A chứa cụm B)         |
+| coordinated  | >= 2 dấu hiệu strong có window chồng nhau (vd đợt tăng A chứa cụm B, hoặc nhóm tài khoản C) |
+
+Chỉ A, B, C được "strong". D (lan rộng) và E (khẳng định cần kiểm tra) luôn strong=False: chỉ thêm lý do/ngữ cảnh.
 
 Ngưỡng của từng dấu hiệu ở spikes.py / similar.py - chưa thử trên dữ liệu cũ (docs mục 2.9), sẽ chỉnh sau backtest.
 Độ tin cậy dựa trên độ phủ dữ liệu, KHÔNG phải xác suất bị tấn công.
@@ -55,4 +57,16 @@ def _reason(signal: Signal) -> str:
             f"{top.get('size', 0)} bình luận chê có nội dung gần như giống nhau từ {int(signal.score)} tài khoản, "
             f"{round((top.get('burst') or 0) * 100)}% đăng trong 2 giờ"
         )
+    if signal.key == "accounts":
+        g = (signal.detail.get("groups") or [{}])[0]
+        return (
+            f"Nhóm {int(signal.score)} tài khoản có hành vi giống nhau "
+            f"(cùng bình luận dưới {g.get('posts', 0)} bài, cách nhau dưới 10 phút)"
+        )
+    if signal.key == "spread":
+        s = (signal.detail.get("spread") or [{}])[0]
+        text = f"Một luận điểm lan qua {s.get('channels')} kênh / {s.get('platforms')} nền tảng"
+        return text + (" - phần lớn từ một bài gốc" if s.get("common_source") else "")
+    if signal.key == "claims":
+        return f"{int(signal.score)} bình luận nêu khẳng định cần kiểm tra (không phải kết luận là sai)"
     return signal.key

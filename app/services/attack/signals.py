@@ -11,7 +11,7 @@ MAX_EVIDENCE = 10
 
 @dataclass
 class Signal:
-    key: str  # "spike" | "similar"
+    key: str  # "spike" | "similar" | "accounts" | "spread" | "claims"
     fired: bool  # vượt ngưỡng
     strong: bool  # đủ mạnh để tự nâng trạng thái
     score: float  # số đo chính (bội số so với mức thường, số tài khoản...)

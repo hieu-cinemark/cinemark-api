@@ -15,7 +15,7 @@ from app.repositories.d1.comment_hourly import movie_comment_hourly, vn_hour
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
-from app.repositories.d1.tables import movie_measure_settings, movies
+from app.repositories.d1.tables import movie_events, movie_measure_settings, movies
 from app.repositories.d1.tables import posts as posts_table
 
 # Cùng file với scripts/jobs/embed_comments.py (DB_PATH).
@@ -44,7 +44,8 @@ async def load_hours(movie_id: str, now: datetime, days: int = 16) -> list[dict[
 
 
 async def load_events(movie_id: str) -> list[str]:
-    """Mốc sự kiện của phim (giờ VN 'YYYY-MM-DDT00'): ngày chiếu sớm, ngày khởi chiếu. Mốc tay chưa có (docs mục 2.9)."""
+    """Mốc sự kiện của phim (giờ VN 'YYYY-MM-DDTHH'): ngày chiếu sớm và ngày khởi chiếu (mốc ngày, giờ 00) cộng các mốc nhập tay
+    trong bảng movie_events (có giờ thật). Bảng chưa có (Worker chưa tạo) thì chỉ dùng mốc ngày."""
     m, s = movies.alias("m"), movie_measure_settings.alias("s")
     rows = await d1_exec(
         select(m.c.released_at, s.c.premiere_date)
@@ -54,7 +55,14 @@ async def load_events(movie_id: str) -> list[str]:
     )
     row = (rows or [{}])[0]
     days = {str(v)[:10] for v in (row.get("premiere_date"), row.get("released_at")) if v}
-    return sorted(f"{day}T00" for day in days)
+    marks = {f"{day}T00" for day in days}
+    manual = await d1_exec(select(movie_events.c.at).where(movie_events.c.movie_id == movie_id), quiet=True) or []
+    for item in manual:
+        try:
+            marks.add(vn_hour(datetime.fromisoformat(str(item["at"]))))
+        except ValueError, TypeError, KeyError:
+            continue  # mốc nhập sai định dạng: bỏ qua, không chặn cả lượt tính
+    return sorted(marks)
 
 
 async def load_negative_comments(movie_id: str, now: datetime, hours: int = 48) -> list[dict[str, Any]]:
@@ -73,6 +81,7 @@ async def load_negative_comments(movie_id: str, now: datetime, hours: int = 48) 
             func.substr(c.c.message, 1, 600).label("message"),
             c.c.reactions_count.label("likes"),
             p.c.url.label("post_url"),
+            p.c.author.label("post_author"),  # dấu hiệu D: kênh của bài
         )
         .select_from(c.join(p, p.c.id == c.c.post_id))
         .where(

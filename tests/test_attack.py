@@ -2,14 +2,18 @@
 
 import asyncio
 import sqlite3
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 from sqlalchemy import create_engine, select
 
 from app.services.attack import data, store
+from app.services.attack.accounts import account_signal
+from app.services.attack.claims import claims_signal
 from app.services.attack.signals import Signal, mask_name
 from app.services.attack.similar import normalize, similar_clusters, similar_signal
 from app.services.attack.spikes import find_spikes, spike_signal
+from app.services.attack.spread import spread_signal
 from app.services.attack.verdict import decide
 
 # --- A: chê dồn dập ---
@@ -181,3 +185,138 @@ def test_store_save_and_prune_on_sqlite(monkeypatch):
         rows = conn.execute(select(store.attack_signals.c.computed_at, store.attack_signals.c.reasons_json)).all()
     assert [r.computed_at for r in rows] == ["2026-11-17T08:00:00+00:00"]
     assert "Bình luận chê tăng" in rows[0].reasons_json
+
+
+# --- C: nhóm tài khoản hành vi giống nhau ---
+
+T0 = datetime(2026, 11, 16, 10, 0, tzinfo=UTC)
+TEXT = "Phim dở tệ, đừng ai đi xem, phí tiền!"
+
+
+def _crow(i, author, post, minute, text=TEXT, platform="facebook"):
+    return {
+        "id": f"c{i}",
+        "author_id": author,
+        "author_name": "Nguyễn Văn An",
+        "post_id": post,
+        "post_url": f"https://www.facebook.com/page{post}/posts/1",
+        "post_author": f"page{post}",
+        "platform": platform,
+        "posted_at": (T0 + timedelta(minutes=minute)).isoformat(),
+        "message": text,
+        "likes": 1,
+    }
+
+
+def _campaign(gap_minutes_between_accounts):
+    """6 tài khoản cùng bình luận dưới 5 bài, mỗi bài cách nhau 1 giờ."""
+    rows, n = [], 0
+    for p in range(5):
+        for a in range(6):
+            rows.append(_crow(n, f"acc{a}", f"p{p}", p * 60 + a * gap_minutes_between_accounts))
+            n += 1
+    return rows
+
+
+def test_accounts_strong_when_pairs_comment_close_together_on_many_posts():
+    rows = _campaign(3)  # cách nhau 3 phút -> cặp L2; 5 bài trong 24 giờ -> L1
+    signal = account_signal(rows, similar_clusters(rows, None))
+    assert signal.fired and signal.strong and signal.score == 6
+    assert all("author_id" not in e for e in signal.evidence)  # không lộ id thật
+
+
+def test_accounts_not_strong_when_far_apart_in_time():
+    rows = _campaign(180)  # cách nhau 3 giờ -> không có cặp L2, chỉ còn L1
+    assert not account_signal(rows, similar_clusters(rows, None)).strong
+
+
+def test_one_account_many_posts_is_not_a_group():
+    rows = [_crow(i, "solo", f"p{i}", i * 90, text=f"ý kiến riêng khác nhau số {i}") for i in range(6)]
+    assert not account_signal(rows, similar_clusters(rows, None)).fired
+
+
+def test_accounts_ignore_rows_without_author_id():
+    rows = [{**r, "author_id": None} for r in _campaign(3)]
+    assert not account_signal(rows, similar_clusters(rows, None)).fired
+
+
+def test_similar_clusters_expose_member_ids_but_signal_detail_does_not():
+    rows = [_crow(i, f"u{i}", "p", i) for i in range(8)]
+    clusters = similar_clusters(rows, None)
+    assert sorted(clusters[0]["member_ids"]) == sorted(r["id"] for r in rows)
+    assert "member_ids" not in similar_signal(rows, None, clusters=clusters).detail["clusters"][0]
+
+
+# --- D: luận điểm lan rộng ---
+
+
+def test_spread_single_post_is_common_source_and_not_fired():
+    rows = [_crow(i, f"u{i}", "same", i) for i in range(10)]
+    signal = spread_signal(rows, similar_clusters(rows, None))
+    assert not signal.fired and signal.detail["spread"][0]["common_source"]
+
+
+def test_spread_wide_is_fired_but_never_strong():
+    rows = [_crow(i, f"u{i}", f"q{i % 4}", i * 2, platform="facebook" if i % 4 < 2 else "tiktok") for i in range(12)]
+    for r in rows:
+        if r["platform"] == "tiktok":
+            r["post_url"] = f"https://www.tiktok.com/@creator{r['post_id']}/video/1"
+    signal = spread_signal(rows, similar_clusters(rows, None))
+    assert signal.fired and not signal.strong and signal.score == 4
+
+
+# --- E: khẳng định cần kiểm tra ---
+
+
+def test_claims_need_enough_comments_and_accounts_and_never_strong():
+    rows = [_crow(i, f"u{i}", "p", i, text="Phim này đạo nhái hoàn toàn, sao chép phim Hàn") for i in range(6)]
+    signal = claims_signal(rows)
+    assert signal.fired and not signal.strong and signal.detail["claims"][0]["label"] == "Đạo nhái / sao chép"
+    assert not claims_signal([_crow(1, "a", "p", 1, text="phim dở")]).fired
+
+
+# --- trạng thái với C/D/E ---
+
+
+def test_decide_coordinated_needs_overlapping_windows_for_accounts():
+    ok = {"comments_7d": 3000, "platforms": 2}
+    assert decide([_sig("similar"), _sig("accounts")], ok)[0] == "coordinated"
+    assert decide([_sig("similar"), _sig("accounts", window=("2026-11-17T08", "2026-11-17T09"))], ok)[0] == "suspicious"
+    status, _, reasons = decide([_sig("spread", strong=False), _sig("claims", strong=False)], ok)
+    assert status == "clear" and len(reasons) == 2
+
+
+# --- mốc sự kiện nhập tay và file thử ngưỡng ---
+
+
+def test_load_events_adds_manual_marks_in_vn_hours(monkeypatch):
+    async def fake_exec(stmt, **kwargs):
+        text = str(stmt)
+        if "movie_events" in text:
+            return [{"at": "2026-11-16T13:00:00+00:00"}, {"at": "không phải ngày"}]
+        return [{"released_at": "2026-11-15", "premiere_date": None}]
+
+    monkeypatch.setattr(data, "d1_exec", fake_exec)
+    assert asyncio.run(data.load_events("m1")) == ["2026-11-15T00", "2026-11-16T20"]
+
+
+def test_manual_event_makes_a_nearby_spike_not_strong():
+    spikes = find_spikes(_hours(16, "2026-11-16T21", 60), ["2026-11-16T20"])
+    assert spikes and not spikes[0]["strong"]
+
+
+def test_backtest_file_is_one_compact_line_per_point(tmp_path):
+    from app.services.ai_jobs.attack_detect import append_backtest
+
+    result = {
+        "movie_id": "m1",
+        "computed_at": "2026-11-17T08:00:00+00:00",
+        "status": "clear",
+        "confidence": "high",
+        "reasons": ["x"],
+        "signals": [_sig("spike").as_dict()],
+    }
+    append_backtest(result, tmp_path)
+    append_backtest(result, tmp_path)
+    lines = (tmp_path / "m1.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2 and '"spike"' in lines[0] and "evidence" not in lines[0]

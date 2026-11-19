@@ -183,3 +183,13 @@ config_settings = Table("settings", metadata, Column("key", Text, primary_key=Tr
 movie_measure_settings = Table(
     "movie_measure_settings", metadata, Column("movie_id", Text, primary_key=True), Column("premiere_date", Text)
 )
+
+
+# Mốc sự kiện nhập tay (trailer, họp báo, drama...) - Worker cinemark tạo bảng (ensureMoviePlanTables); Attack Detection đọc để
+# dấu hiệu A không báo nhầm quanh các mốc này.
+movie_events = Table(
+    "movie_events",
+    metadata,
+    Column("id", Text, primary_key=True),
+    *_text("movie_id", "kind", "name", "at", "created_by", "updated_at"),
+)

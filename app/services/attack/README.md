@@ -9,10 +9,13 @@ cùng dữ liệu luôn ra cùng kết quả, giải thích được với nhà 
 
 | File | Việc nó làm |
 |---|---|
+| `accounts.py` | Dấu hiệu C: nhóm tài khoản hành vi giống nhau (nhiều bài trong 24 giờ, đi cặp dưới 10 phút, có mặt ở nhiều cụm B); `strong` khi từ 5 tài khoản đạt từ 2 luật. |
+| `claims.py` | Dấu hiệu E (bản quy tắc, không AI): bình luận chê nêu khẳng định cần đối chiếu nguồn (đạo nhái, seeding, vé ảo...). Không bao giờ `strong`. |
 | `data.py` | Đọc dữ liệu cho Attack Detection: số theo giờ (movie_comment_hourly), mốc sự kiện, bình luận chê gần đây (D1) và embedding (file SQLite do scripts/jobs/embed_comments.py ghi trên cùng máy - VPS: timer cinemark-embed). |
 | `signals.py` | Kiểu dữ liệu chung của các dấu hiệu. |
 | `similar.py` | Dấu hiệu B: nhiều tài khoản đăng bình luận chê gần như giống nhau trong thời gian ngắn. |
 | `spikes.py` | Dấu hiệu A: số bình luận chê của một giờ cao bất thường so với cùng giờ đó trong 14 ngày trước. |
+| `spread.py` | Dấu hiệu D: một luận điểm chê lan qua nhiều kênh / nền tảng, kèm `common_source`. Chỉ là ngữ cảnh, không bao giờ `strong`. |
 | `store.py` | Bảng attack_signals (D1 scraper): mỗi lần tính một dòng, giữ KEEP_DAYS ngày (docs mục 2.6). |
 | `verdict.py` | Quy tắc ra trạng thái (docs mục 2.5) - hàm thuần, cùng dữ liệu luôn ra cùng kết quả. |
 
@@ -36,7 +39,7 @@ trùng khoảng giờ). Độ tin cậy (`high|medium|low`) theo độ phủ d�
 - **Chạy thử một phim** (không ghi): `python -m app.services.ai_jobs.attack_detect --movie-id <id> --dry-run` (`--at <ISO>` thử mốc cũ).
 - **Chỉnh ngưỡng**: hằng số đầu `spikes.py` / `similar.py` / `verdict.py`. Chưa thử trên dữ liệu cũ (Bước 4 trong tài liệu) nên ngưỡng
   hiện là đề xuất; chỉnh xong phải cập nhật test `tests/test_attack.py`.
-- **Thêm dấu hiệu mới** (C nhóm tài khoản, D lan rộng, E khẳng định cần kiểm tra): file mới trả `Signal` (`signals.py`), thêm vào danh
+- **Thêm dấu hiệu mới** (đã có A-E; làm theo cách C/D/E trong `accounts.py`, `spread.py`, `claims.py`): file mới trả `Signal` (`signals.py`), thêm vào danh
   sách trong `ai_jobs/attack_detect.detect`, thêm câu giải thích trong `verdict._reason`, và kiểu `AttackSignal` bên Worker
   (`cinemark/packages/contracts/src/types/attackDetection.ts`).
 - **Đổi cột `attack_signals`**: sửa `store.py` VÀ `cinemark/apps/api/src/services/socialTopic/attack.ts` - deploy cinemark-api trước, Worker sau.
