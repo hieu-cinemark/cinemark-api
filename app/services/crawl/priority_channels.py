@@ -8,7 +8,7 @@ cinemark) mà D1 chưa có bài nào - Worker ghi vào bảng D1 priority_channe
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import Column, Table, Text, select, update
@@ -47,22 +47,6 @@ async def _ensure_table() -> None:
     if not _table_ready:
         await d1_exec(CreateTable(priority_channels, if_not_exists=True))
         _table_ready = True
-
-
-async def priority_tiktok_handles() -> list[str]:
-    """Handle TikTok được yêu cầu trong KEEP_DAYS ngày, mới yêu cầu trước."""
-    try:
-        await _ensure_table()
-        since = (datetime.now(tz=UTC) - timedelta(days=KEEP_DAYS)).isoformat()
-        pc = priority_channels.c
-        rows = await d1_exec(
-            select(pc.handle).where(pc.platform == "tiktok", pc.requested_at >= since).order_by(pc.requested_at.desc()),
-            quiet=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - lỗi bảng ưu tiên không được chặn lượt cào kênh
-        logger.warning("priority_channels_load_failed", error=str(exc)[:200])
-        return []
-    return [str(row["handle"]) for row in rows or []]
 
 
 async def process_pending() -> dict[str, int]:

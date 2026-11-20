@@ -57,18 +57,6 @@ class RunCommentsResponse(BaseModel):
     published: bool
 
 
-class RunChannelVideosRequest(BaseModel):
-    """Crawl lưới video của một kênh TikTok - username có hoặc không có @ ở đầu."""
-
-    username: str
-    max_pages: int | None = None
-    keyword_id: str | None = None
-
-
-class RunChannelVideosResponse(BaseModel):
-    published: bool
-
-
 class TriggerTokenRefreshResponse(BaseModel):
     ok: bool
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.core.logging import get_logger
@@ -12,6 +13,11 @@ from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_s
 AI_SETTINGS_COLUMNS = "id, enabled, prompts, active_provider, updated_at"
 
 _ai_settings_ready = False
+
+# Cache ngắn trong tiến trình: mọi lời gọi AI đều đọc dòng này (kèm cả prompts) nên là nguồn egress Supabase lớn nhất. Ghi trong
+# tiến trình này thì xoá cache ngay; tiến trình khác (web <-> scheduler) thấy thay đổi trong tối đa _AI_SETTINGS_TTL giây.
+_AI_SETTINGS_TTL = 30.0
+_ai_settings_cache: tuple[float, dict[str, Any]] | None = None
 
 
 async def _ensure_ai_settings_table() -> None:
@@ -45,11 +51,21 @@ async def _ensure_ai_settings_table() -> None:
     _ai_settings_ready = True
 
 
+def _forget_ai_settings() -> None:
+    global _ai_settings_cache
+    _ai_settings_cache = None
+
+
 async def get_ai_settings() -> dict[str, Any]:
+    global _ai_settings_cache
+    if _ai_settings_cache is not None and time.monotonic() - _ai_settings_cache[0] < _AI_SETTINGS_TTL:
+        return _ai_settings_cache[1]
     await _ensure_ai_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_SETTINGS_COLUMNS} FROM ai_settings WHERE id = 1")
         row = await cur.fetchone()
+    if row:
+        _ai_settings_cache = (time.monotonic(), row)
     return row or {
         "id": 1,
         "enabled": False,
@@ -64,6 +80,7 @@ async def set_active_ai_provider(key: str) -> None:
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("UPDATE ai_settings SET active_provider = %s, updated_at = now() WHERE id = 1", (key,))
         await conn.commit()
+    _forget_ai_settings()
 
 
 async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[str, Any]:
@@ -87,6 +104,7 @@ async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[
         )
         row = await cur.fetchone()
         await conn.commit()
+    _forget_ai_settings()
     return row  # type: ignore[return-value]
 
 

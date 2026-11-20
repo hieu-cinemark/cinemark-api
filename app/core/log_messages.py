@@ -85,7 +85,6 @@ MESSAGES: dict[str, str] = {
     "channel_profiles_refreshed": "Đã làm mới hồ sơ kênh",
     "channel_profiles_threads_collect_failed": "Thu hồ sơ Threads thất bại",
     "priority_channels_failed": "Cào kênh ưu tiên thất bại",
-    "priority_channels_load_failed": "Không đọc được danh sách kênh ưu tiên",
     "priority_channels_processed": "Đã xử lý kênh ưu tiên",
     "threads_channels_auto_added": "Đã tự thêm kênh Threads",
     "threads_channels_queued": "Đã xếp hàng đọc kênh Threads",
