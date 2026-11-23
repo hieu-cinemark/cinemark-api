@@ -172,3 +172,35 @@ def test_omar_stop_halts_the_round_and_is_reported(monkeypatch):
     monkeypatch.setattr(ot, "fetch_page", stop)
     result = run()
     assert result["stopped"].startswith("daily_limit") and result["finished"] == 0
+
+
+def test_empty_pages_mid_hashtag_are_retried_then_treated_as_a_normal_page(monkeypatch):
+    redis, calls, _ = _setup(
+        monkeypatch,
+        keywords=[{"id": "kw1", "keyword": "#alpha", "movie_id": "m1"}],
+        pages={
+            ("alpha", "0"): ([RAW], "c1", "h1"),
+            ("alpha", "c1"): ([], "c2", "h1"),
+            ("alpha", "c2"): ([RAW], None, "h1"),
+        },
+    )
+    monkeypatch.setattr(ot, "_EMPTY_RETRY_SECONDS", 0.0)
+    result = run()
+    # trang rỗng gọi lại 3 lần chờ + 1 lần chấp nhận (vẫn còn cursor), rồi tới trang cuối
+    assert [c for c in calls if c[1] == "c1"] == [("alpha", "c1")] * 4
+    assert result["empty_retries"] == 3 and result["finished"] == 1
+    state = json.loads(redis.state["kw1"])
+    assert state["done_at"] and state["pages"] == 3  # lần thử lại không tính là trang
+
+
+def test_hashtag_that_stays_empty_without_cursor_is_left_for_the_next_round(monkeypatch):
+    redis, _calls, _ = _setup(
+        monkeypatch,
+        keywords=[{"id": "kw1", "keyword": "#alpha", "movie_id": "m1"}],
+        pages={("alpha", "0"): ([RAW], "c1", "h1"), ("alpha", "c1"): ([], None, "h1")},
+    )
+    monkeypatch.setattr(ot, "_EMPTY_RETRY_SECONDS", 0.0)
+    result = run()
+    state = json.loads(redis.state["kw1"])
+    assert result["stalled"] == 1 and result["finished"] == 0
+    assert state["cursor"] == "c1" and state["stalls"] == 1 and "done_at" not in state
