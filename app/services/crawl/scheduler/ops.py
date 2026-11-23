@@ -9,7 +9,7 @@ from app.core.logging import get_logger
 from app.services.crawl.scheduler.core import POLL_INTERVAL_SECONDS, TIMEZONE, claim, spawn
 from app.services.ops import health_checks, ops_alerts
 from app.services.stats import comment_rollup
-from app.services.stats.stats_summary import reconcile_recent_days
+from app.services.stats.stats_reconcile import reconcile_recent_days
 
 logger = get_logger(__name__)
 

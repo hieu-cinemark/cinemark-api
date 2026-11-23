@@ -3,7 +3,7 @@ import json
 import time
 
 from app.api.routes import stats as stats_routes
-from app.services.stats import stats_summary
+from app.services.stats import stats_reconcile
 
 
 class _FakeRedis:
@@ -74,9 +74,9 @@ def test_reconcile_recent_days_overwrites_without_deleting(monkeypatch):
     async def no_tables():
         return None
 
-    monkeypatch.setattr(stats_summary, "_q", fake_q)
-    monkeypatch.setattr(stats_summary, "ensure_stats_tables", no_tables)
-    assert asyncio.run(stats_summary.reconcile_recent_days(2))
+    monkeypatch.setattr(stats_reconcile, "_q", fake_q)
+    monkeypatch.setattr(stats_reconcile, "ensure_stats_tables", no_tables)
+    assert asyncio.run(stats_reconcile.reconcile_recent_days(2))
     assert len(executed) == 4
     assert not any("DELETE" in sql for sql, _ in executed)
     assert all("DO UPDATE SET" in sql and "+ excluded" not in sql for sql, _ in executed)
@@ -93,7 +93,7 @@ def test_reconcile_stops_on_failed_step(monkeypatch):
     async def no_alert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(stats_summary, "_q", failing_q)
-    monkeypatch.setattr(stats_summary, "ensure_stats_tables", no_tables)
-    monkeypatch.setattr(stats_summary, "_note_rollup_failure", no_alert)  # báo lỗi rollup ghi Redis - không chạm thật
-    assert asyncio.run(stats_summary.reconcile_recent_days(2)) is False
+    monkeypatch.setattr(stats_reconcile, "_q", failing_q)
+    monkeypatch.setattr(stats_reconcile, "ensure_stats_tables", no_tables)
+    monkeypatch.setattr(stats_reconcile, "_note_rollup_failure", no_alert)  # báo lỗi rollup ghi Redis - không chạm thật
+    assert asyncio.run(stats_reconcile.reconcile_recent_days(2)) is False

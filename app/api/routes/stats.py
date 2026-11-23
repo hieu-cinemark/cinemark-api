@@ -36,7 +36,7 @@ from app.schemas.stats import (
     PostPage,
     TimeseriesPoint,
 )
-from app.services.stats.stats_summary import get_hourly_counts, get_ingest_funnel
+from app.services.stats.stats_hourly import get_hourly_counts, get_ingest_funnel
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 logger = get_logger(__name__)
@@ -93,7 +93,7 @@ async def timeseries_stats(days: int = Query(default=14, ge=1, le=90)) -> list[T
 
 @router.get("/hourly", response_model=list[HourlyPoint])
 async def hourly_stats(hours: int = Query(default=24, ge=1, le=72)) -> list[HourlyPoint]:
-    # Bộ đếm Redis (xem stats_summary.get_hourly_counts), không đụng tới D1.
+    # Bộ đếm Redis (xem stats_hourly.get_hourly_counts), không đụng tới D1.
     rows = await get_hourly_counts(hours)
     return [HourlyPoint(**row) for row in rows]
 

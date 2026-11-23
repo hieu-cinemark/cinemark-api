@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 
 from app.repositories.d1.sql import compile_sql
-from app.services.stats import stats_summary
+from app.services.stats import stats_reconcile
 
 SCHEMA = """
 CREATE TABLE posts (
@@ -164,10 +164,10 @@ def _seed(db: sqlite3.Connection) -> None:
 def _new_statements() -> list[tuple[str, list]]:
     out: list[tuple[str, list]] = []
     for builder in (
-        stats_summary._platform_posts_insert,
-        stats_summary._platform_comments_insert,
-        stats_summary._keyword_posts_insert,
-        stats_summary._keyword_comments_insert,
+        stats_reconcile._platform_posts_insert,
+        stats_reconcile._platform_comments_insert,
+        stats_reconcile._keyword_posts_insert,
+        stats_reconcile._keyword_comments_insert,
     ):
         out.append(compile_sql(builder()))
     return out
@@ -209,7 +209,7 @@ def test_reconcile_old_and_new_queries_produce_identical_tables(since: str):
 
     db_new = sqlite3.connect(":memory:")
     _seed(db_new)
-    for stmt, _label in stats_summary._reconcile_statements(since):
+    for stmt, _label in stats_reconcile._reconcile_statements(since):
         sql, params = compile_sql(stmt)
         db_new.execute(sql, params)
     db_new.commit()
@@ -219,7 +219,7 @@ def test_reconcile_old_and_new_queries_produce_identical_tables(since: str):
 
 def test_reconcile_upserts_overwrite_without_adding_or_deleting():
     """Bản mới: mỗi câu ghi đè, không cộng dồn và không DELETE - số trong bảng luôn bằng số đếm từ bảng gốc."""
-    for stmt, _label in stats_summary._reconcile_statements("2026-10-01"):
+    for stmt, _label in stats_reconcile._reconcile_statements("2026-10-01"):
         sql, _params = compile_sql(stmt)
         assert "DO UPDATE SET" in sql
         assert "excluded.posts +" not in sql
@@ -248,12 +248,12 @@ def test_subtract_deleted_matches_the_raw_update():
         db.execute(sql, params or [])
         return []
 
-    original = stats_summary._q
-    stats_summary._q = fake_q
+    original = stats_reconcile._q
+    stats_reconcile._q = fake_q
     try:
-        asyncio.run(stats_summary.subtract_deleted(deleted_posts, deleted_comments))
+        asyncio.run(stats_reconcile.subtract_deleted(deleted_posts, deleted_comments))
     finally:
-        stats_summary._q = original
+        stats_reconcile._q = original
     db.commit()
 
     # Bản cũ: 4 câu UPDATE (2 bảng x 2 kind) với cùng tham số.

@@ -38,7 +38,7 @@ from app.repositories.d1.tables import movies, post_comment_value, post_engageme
 from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts.config_db import cleanup as cleanup_cfg
 from app.services.relevance.relevance_rules import film_context_reason
-from app.services.stats.stats_summary import subtract_deleted
+from app.services.stats.stats_reconcile import subtract_deleted
 
 logger = get_logger(__name__)
 

@@ -49,7 +49,7 @@ from app.services.relevance.relevance_rules import (
     resolve_relevance,
 )
 from app.services.relevance.text_rules import foreign_language_reason, no_diacritics_reason
-from app.services.stats.stats_summary import bump_ingest_decision
+from app.services.stats.stats_hourly import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 
 logger = get_logger(__name__)
@@ -257,7 +257,7 @@ async def _decide(
 ) -> None:
     """Mỗi bài một event trên topic ingest_decisions - được app/workers/lake_writer lưu lên
     lake R2, nên mọi quyết định giữ/loại và lý do đều có hồ sơ. Đồng thời cộng phễu ingest
-    theo giờ cho dashboard (stats_summary.bump_ingest_decision)."""
+    theo giờ cho dashboard (stats_hourly.bump_ingest_decision)."""
     await bump_ingest_decision(platform, decision, reason)
     await publish_ingest_decision(
         {
