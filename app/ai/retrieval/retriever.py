@@ -5,8 +5,9 @@ from app.ai.retrieval.base import Embedder, ScoredDocument, VectorStore
 
 class VectorRetriever:
     """
-        Lấy vector từ vector store và trả về các document có điểm số cao nhất.
+    Lấy vector từ vector store và trả về các document có điểm số cao nhất.
     """
+
     def __init__(self, embedder: Embedder, store: VectorStore) -> None:
         self._embedder = embedder
         self._store = store

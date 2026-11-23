@@ -338,9 +338,7 @@ async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
                 break
             except Exception as exc:  # noqa: BLE001 - thử lại đúng trang, lỗi liền thì để lượt Omar đi tiếp
                 failed += 1
-                logger.warning(
-                    "omar_manual_page_failed", hashtag=keyword["keyword"], cursor=cursor, error=exc
-                )
+                logger.warning("omar_manual_page_failed", hashtag=keyword["keyword"], cursor=cursor, error=exc)
                 if failed >= _MAX_PAGE_FAILURES:
                     if cursor == "0" and not entry.get("pages"):
                         entry["missing_at"] = datetime.now(tz=UTC).isoformat()

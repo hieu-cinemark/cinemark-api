@@ -25,8 +25,9 @@ class AskCommentsRequest(BaseModel):
 @router.post("/ask-comments")
 async def ask_comments_route(body: AskCommentsRequest) -> dict[str, Any]:
     try:
-        return await ask_comments(body.question, movie_id=body.movie_id, platform=body.platform,
-                                  sentiment=body.sentiment, limit=body.limit)
+        return await ask_comments(
+            body.question, movie_id=body.movie_id, platform=body.platform, sentiment=body.sentiment, limit=body.limit
+        )
     except RuntimeError as exc:  # call_llm: AI tắt/cấu hình sai/provider lỗi
         raise UpstreamError(f"AI could not answer: {exc}") from exc
     except Exception as exc:

@@ -51,7 +51,9 @@ def run(coro):
 
 @pytest.fixture
 def store(monkeypatch):
-    monkeypatch.setattr(qdrant_store, "COLLECTION", f"test_{uuid.uuid4().hex[:8]}")  # không đụng collection "comments" thật
+    monkeypatch.setattr(
+        qdrant_store, "COLLECTION", f"test_{uuid.uuid4().hex[:8]}"
+    )  # không đụng collection "comments" thật
     client = AsyncQdrantClient(url=QDRANT_URL) if QDRANT_URL else AsyncQdrantClient(":memory:")
     run(qdrant_store.ensure_collection(client))
     yield Store(client), client
@@ -92,7 +94,9 @@ def test_ensure_collection_is_idempotent(store):
 @pytest.mark.skipif(not QDRANT_URL, reason="Qdrant in-memory không giữ chỉ mục payload (đặt QDRANT_URL)")
 def test_ensure_collection_creates_payload_indexes(store):
     info = run(store[1].get_collection(qdrant_store.COLLECTION))
-    assert {"movie_id", "platform", "sentiment", "posted_at"} <= set(info.payload_schema)  # "sentiment" viết đúng chính tả
+    assert {"movie_id", "platform", "sentiment", "posted_at"} <= set(
+        info.payload_schema
+    )  # "sentiment" viết đúng chính tả
 
 
 def test_search_ranks_by_similarity_and_returns_text(store):

@@ -31,7 +31,9 @@ Fetch = Callable[[list[str]], Awaitable[dict[str, dict[str, Any]]]]
 def connect(path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     # Phân trang theo (movie_id, comment_id): thiếu chỉ mục này mỗi trang phải sắp lại toàn bộ comment của phim.
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_comment_embeddings_movie_comment ON comment_embeddings (movie_id, comment_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_comment_embeddings_movie_comment ON comment_embeddings (movie_id, comment_id)"
+    )
     return conn
 
 
@@ -63,8 +65,11 @@ def build_documents(movie_id, vector_rows, comments, *, min_chars: int) -> tuple
         if row is None or len(text) < min_chars or vector.shape[0] != DIM:
             continue
         metadata = {
-            "movie_id": movie_id, "platform": row.get("platform"), "sentiment": row.get("sentiment"),
-            "reactions": int(row.get("reactions_count") or 0), "posted_at": iso_utc(row.get("posted_at")),
+            "movie_id": movie_id,
+            "platform": row.get("platform"),
+            "sentiment": row.get("sentiment"),
+            "reactions": int(row.get("reactions_count") or 0),
+            "posted_at": iso_utc(row.get("posted_at")),
         }
         docs.append(Document(comment_id, text, {k: v for k, v in metadata.items() if v is not None}))
         vectors.append(vector.tolist())
@@ -73,7 +78,9 @@ def build_documents(movie_id, vector_rows, comments, *, min_chars: int) -> tuple
 
 async def fetch_comments(ids: list[str]) -> dict[str, dict[str, Any]]:
     c = comments_table.c
-    stmt = select(c.id, c.message, c.platform, c.posted_at, c.sentiment, c.reactions_count).where(c.id.in_(json_values(ids)))
+    stmt = select(c.id, c.message, c.platform, c.posted_at, c.sentiment, c.reactions_count).where(
+        c.id.in_(json_values(ids))
+    )
     while True:  # D1 quá tải thì nghỉ rồi thử lại, như embed_comments.py
         rows = await d1_exec(stmt, timeout=60.0, quiet=True)
         if rows is not None:
@@ -85,7 +92,7 @@ async def fetch_comments(ids: list[str]) -> dict[str, dict[str, Any]]:
 def load_cursor(path: Path = CURSOR_PATH) -> dict[str, str]:
     try:
         return json.loads(path.read_text())
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
 
 
@@ -95,9 +102,19 @@ def save_cursor(cursor: dict[str, str], path: Path = CURSOR_PATH) -> None:
     tmp.replace(path)  # ghi nguyên tử: dừng giữa chừng không để lại file hỏng
 
 
-async def load_movie(conn, store: QdrantVectorStore, movie_id: str, *, after: str = "", limit: int | None = None,
-                     min_chars: int = 20, page_size: int = PAGE_SIZE, dry_run: bool = False,
-                     fetch: Fetch = fetch_comments, on_page: Callable[[str], None] | None = None) -> dict[str, int]:
+async def load_movie(
+    conn,
+    store: QdrantVectorStore,
+    movie_id: str,
+    *,
+    after: str = "",
+    limit: int | None = None,
+    min_chars: int = 20,
+    page_size: int = PAGE_SIZE,
+    dry_run: bool = False,
+    fetch: Fetch = fetch_comments,
+    on_page: Callable[[str], None] | None = None,
+) -> dict[str, int]:
     """Nạp một phim theo trang. Trả {"seen": số vector đã đọc, "loaded": số điểm đã (hoặc sẽ, nếu dry_run) ghi}."""
     seen = loaded = 0
     while limit is None or seen < limit:
@@ -119,8 +136,14 @@ async def main(args: argparse.Namespace) -> None:
     try:
         await ensure_collection(client)
         store = QdrantVectorStore(client)
-        movie_ids = [args.movie_id] if args.movie_id else [
-            r[0] for r in conn.execute("SELECT DISTINCT movie_id FROM comment_embeddings WHERE movie_id IS NOT NULL")]
+        movie_ids = (
+            [args.movie_id]
+            if args.movie_id
+            else [
+                r[0]
+                for r in conn.execute("SELECT DISTINCT movie_id FROM comment_embeddings WHERE movie_id IS NOT NULL")
+            ]
+        )
         cursor = {} if args.reset_cursor else load_cursor()
         for movie_id in movie_ids:
             started = time.monotonic()
@@ -129,9 +152,20 @@ async def main(args: argparse.Namespace) -> None:
                 cursor[movie_id] = last_id
                 save_cursor(cursor)
 
-            stats = await load_movie(conn, store, movie_id, after=cursor.get(movie_id, ""), limit=args.limit,
-                                     min_chars=args.min_chars, dry_run=args.dry_run, on_page=remember)
-            print(f"{movie_id}: đọc {stats['seen']}, nạp {stats['loaded']} trong {time.monotonic() - started:.0f}s", flush=True)
+            stats = await load_movie(
+                conn,
+                store,
+                movie_id,
+                after=cursor.get(movie_id, ""),
+                limit=args.limit,
+                min_chars=args.min_chars,
+                dry_run=args.dry_run,
+                on_page=remember,
+            )
+            print(
+                f"{movie_id}: đọc {stats['seen']}, nạp {stats['loaded']} trong {time.monotonic() - started:.0f}s",
+                flush=True,
+            )
         print(f"collection {COLLECTION}: {(await client.get_collection(COLLECTION)).points_count} điểm", flush=True)
     finally:
         await client.close()

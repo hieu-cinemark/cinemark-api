@@ -539,7 +539,9 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     if not re.fullmatch(r"[a-z0-9_-]{1,40}", key):
-        raise ValidationError("Provider name may only contain lowercase letters, digits, hyphens and underscores (max 40 characters)")
+        raise ValidationError(
+            "Provider name may only contain lowercase letters, digits, hyphens and underscores (max 40 characters)"
+        )
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
     row = await db.upsert_ai_provider(
         key,

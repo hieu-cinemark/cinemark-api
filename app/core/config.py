@@ -295,7 +295,7 @@ class Settings(BaseSettings):
     # Ví AI hết tiền: cảnh báo nếu lỗi 402/hết số dư gần nhất xảy ra trong chừng này giờ.
     ops_ai_wallet_window_hours: float = 1
     # Chi phí Jev hôm nay (giờ VN, ước từ token đầu vào) vượt mức này (USD).
-    
+
     # app/core/config.py  (trong class Settings, sau config_db_backend)
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
