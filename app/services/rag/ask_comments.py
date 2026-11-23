@@ -33,7 +33,10 @@ async def ask_comments(
         temperature=0.2,
         force=True,  # người dùng bấm hỏi: chạy cả khi công tắc AI chung đang tắt
     )
-    answer = strip_invalid_citations(raw.strip(), len(sources))
+    answer = strip_invalid_citations((raw or "").strip(), len(sources))
+    if not answer:
+        logger.warning("rag_empty_answer", movie_id=movie_id, sources=len(sources), raw_chars=len(raw or ""))
+        raise RuntimeError("The AI model returned an empty answer")
     logger.info("rag_answered", movie_id=movie_id, sources=len(sources), cited=len(cited_sources(answer, len(sources))))
     return {
         "answer": answer,

@@ -203,6 +203,14 @@ def filled(qstore, monkeypatch):
     return retriever
 
 
+@pytest.mark.parametrize("raw", ["", "   ", None, "[9]"])
+def test_service_rejects_empty_model_answer(filled, monkeypatch, raw):
+    """Model trả rỗng (hoặc chỉ còn trích dẫn bịa) là lỗi, không phải câu trả lời 200 rỗng."""
+    monkeypatch.setattr(service, "call_llm", AsyncMock(return_value=raw))
+    with pytest.raises(RuntimeError, match="empty answer"):
+        run(service.ask_comments("nhạc phim thế nào", movie_id="m1", limit=5))
+
+
 def test_service_answers_with_valid_citations_and_filters(filled, monkeypatch):
     llm = AsyncMock(return_value="Khen nhạc phim [1], và một ý bịa [9].")
     monkeypatch.setattr(service, "call_llm", llm)

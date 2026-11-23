@@ -322,6 +322,7 @@ MESSAGES: dict[str, str] = {
     "omar_usage_failed": "Omar: không lấy được hạn mức",
     # --- RAG ---
     "rag_answered": "RAG: đã trả lời câu hỏi từ bình luận",
+    "rag_empty_answer": "RAG: model AI trả về câu trả lời rỗng",
     "rag_vector_store_failed": "RAG: kho vector Qdrant lỗi",
 }
 
