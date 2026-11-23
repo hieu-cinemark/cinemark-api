@@ -36,7 +36,7 @@ from sqlalchemy import func, select
 from app.ai.domain.accuracy import compute_metrics, parse_human_aspects, parse_human_sentiment, parse_human_yes_no
 from app.ai.tasks.sentiment_rules import rule_sentiment
 from app.repositories.d1.comments import ensure_comment_insight_columns
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import posts as posts_table

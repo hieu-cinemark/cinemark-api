@@ -26,7 +26,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_or_create_keyword
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table

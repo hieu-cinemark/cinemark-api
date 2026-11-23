@@ -28,7 +28,8 @@ from app.clients.kafka import publish_comments_crawl_request
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.logging import get_logger
 from app.repositories.d1.author_reputation import reputable_authors
-from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post
+from app.repositories.d1.post_filters import relevant_post
+from app.repositories.d1.post_schema import ensure_post_voice_columns
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies, posts
 from app.services.accounts.config_db.proxy_settings import crawl_setting

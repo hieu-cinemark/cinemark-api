@@ -24,7 +24,7 @@ from sqlalchemy import case, func, select
 
 from app.ai.local.embedding import embed_texts
 from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import posts as posts_table

@@ -25,7 +25,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 
 from app.clients.d1 import d1_query
-from app.repositories.d1.posts import MIN_CONTENT_LENGTH
+from app.repositories.d1.post_filters import MIN_CONTENT_LENGTH
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 

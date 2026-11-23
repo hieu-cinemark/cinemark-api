@@ -20,7 +20,7 @@ from sqlalchemy.schema import CreateTable
 from app.ai.prompts.author_tiers import AUTHOR_TIERS_SYSTEM
 from app.ai.runtime import call_llm_json
 from app.core.logging import get_logger
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec, d1_insert_many, metadata
 from app.repositories.d1.tables import movies, posts
 from app.services.ai_jobs.channels import extract_handle

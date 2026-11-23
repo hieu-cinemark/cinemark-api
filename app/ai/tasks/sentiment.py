@@ -20,7 +20,7 @@ from app.ai.runtime import ai_is_enabled, call_llm, parse_json_response
 from app.ai.tasks.sentiment_rules import cached_comment_labels, is_tag_or_icon, remember_comment_labels, rule_sentiment
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import MIN_CONTENT_LENGTH
+from app.repositories.d1.post_filters import MIN_CONTENT_LENGTH
 
 logger = get_logger(__name__)
 

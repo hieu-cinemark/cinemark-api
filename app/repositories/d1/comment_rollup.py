@@ -28,7 +28,7 @@ from datetime import date, timedelta
 
 from app.clients.d1 import d1_query
 from app.core.logging import get_logger
-from app.repositories.d1.posts import RELEVANT_POST_SQL
+from app.repositories.d1.post_filters import RELEVANT_POST_SQL
 
 logger = get_logger(__name__)
 

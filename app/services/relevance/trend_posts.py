@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select, update
 
 from app.clients.d1 import d1_query
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec, json_values
 from app.repositories.d1.tables import movie_measure_settings, movies
 from app.repositories.d1.tables import posts as posts_table

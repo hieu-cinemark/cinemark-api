@@ -30,7 +30,7 @@ from sqlalchemy import and_, func, or_, select, text
 from app.ai.tasks.sentiment_rules import rule_sentiment, strip_placeholders, with_parent_context
 from app.clients.d1 import d1_query
 from app.core.logging import get_logger
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import movie_measure_settings, movies

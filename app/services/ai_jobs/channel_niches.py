@@ -17,7 +17,7 @@ from app.ai.prompts.channel_niches import CHANNEL_NICHES_SYSTEM, DEFAULT_NICHES
 from app.ai.runtime import call_llm_json
 from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec, json_rows
 from app.repositories.d1.tables import channel_profiles, config_settings, posts
 from app.services.ai_jobs.channels import channel_of_post

@@ -30,7 +30,7 @@ from app.ai.domain.movie_context import cast_list, movie_context_block
 from app.ai.runtime import call_llm, parse_json_response
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import add_keyword, enable_keyword
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import movies as movies_table

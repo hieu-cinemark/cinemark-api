@@ -121,12 +121,12 @@ async def on_startup() -> None:
 
 async def _build_tab_filter_indexes() -> None:
     from app.repositories.d1 import comments as comments_repo
-    from app.repositories.d1 import posts as posts_repo
+    from app.repositories.d1 import post_schema
 
     # Để các query đầu tiên của dashboard chạy xong trước khi chiếm D1 bằng CREATE INDEX.
     await asyncio.sleep(8)
     try:
-        await posts_repo.ensure_tab_filter_indexes()
+        await post_schema.ensure_tab_filter_indexes()
         await comments_repo.ensure_tab_filter_indexes()
     except Exception as exc:  # noqa: BLE001 - tạo index lỗi không được chặn API (tạo lại ở lần khởi động sau)
         logger.warning("tab_filter_indexes_failed", error=exc)

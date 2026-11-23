@@ -38,7 +38,7 @@ from sqlalchemy import delete, func, select
 from app.clients.d1 import d1_query
 from app.clients.lake import lake_configured, put_object
 from app.core.logging import get_logger
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movie_scenes, movies, post_visuals
 from app.repositories.d1.tables import posts as posts_table

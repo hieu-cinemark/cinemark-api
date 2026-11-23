@@ -22,7 +22,7 @@ from sqlalchemy import not_, select
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import movies as movies_table

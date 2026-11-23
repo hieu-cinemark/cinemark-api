@@ -25,7 +25,12 @@ def test_relevant_post_and_engagement_score_match_raw_sql():
 
     from sqlalchemy.dialects import sqlite
 
-    from app.repositories.d1.posts import ENGAGEMENT_SCORE_SQL, RELEVANT_POST_SQL, engagement_score, relevant_post
+    from app.repositories.d1.post_filters import (
+        ENGAGEMENT_SCORE_SQL,
+        RELEVANT_POST_SQL,
+        engagement_score,
+        relevant_post,
+    )
     from app.repositories.d1.tables import posts
 
     p = posts.alias("p")

@@ -67,7 +67,7 @@ async def _ensure_comment_indexes() -> None:
 
 async def ensure_tab_filter_indexes() -> None:
     """CREATE INDEX cho các tab cảm xúc của CommentsReview. Task nền lúc khởi động - xem
-    posts.ensure_tab_filter_indexes."""
+    post_schema.ensure_tab_filter_indexes."""
     for sql in _TAB_FILTER_INDEXES:
         await d1_query(sql, quiet=True, timeout=90.0)
 

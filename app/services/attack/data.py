@@ -12,7 +12,7 @@ import numpy as np
 from sqlalchemy import func, select
 
 from app.repositories.d1.comment_hourly import movie_comment_hourly, vn_hour
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import movie_events, movie_measure_settings, movies

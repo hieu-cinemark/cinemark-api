@@ -31,7 +31,7 @@ from app.core.config import settings
 from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec, d1_insert_many, json_values, metadata
 from app.repositories.d1.tables import posts
 

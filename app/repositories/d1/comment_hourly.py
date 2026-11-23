@@ -21,7 +21,7 @@ from sqlalchemy import Column, Integer, Table, Text, and_, case, delete, func, s
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.schema import CreateTable
 
-from app.repositories.d1.posts import relevant_post
+from app.repositories.d1.post_filters import relevant_post
 from app.repositories.d1.sql import d1_exec, metadata
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import posts as posts_table

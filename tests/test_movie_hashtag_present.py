@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from app.repositories.d1.post_filters import RELEVANT_POST_SQL
 from app.repositories.d1.post_matching import movie_hashtag_present
-from app.repositories.d1.posts import RELEVANT_POST_SQL
 
 SCOTTY = "SCOTTY: GIẢI CỨU HOÀNG THƯỢNG"
 
