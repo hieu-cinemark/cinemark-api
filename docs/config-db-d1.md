@@ -1,36 +1,54 @@
 # Chuyển bảng cấu hình từ Supabase sang D1
 
-Giai đoạn 1 (23/11/2026): `ai_settings`, `ai_providers`, `ai_accuracy_runs`, `proxy_settings` có thể nằm ở D1 `cinemark-config-db`
-thay vì Supabase. Mặc định vẫn là Supabase; chọn nơi lưu bằng `CONFIG_DB_BACKEND=postgres|d1` (cinemark-api và spider-hub).
+Từ 23/11/2026 toàn bộ bảng cấu hình có thể nằm ở D1 `cinemark-config-db` thay vì Supabase. Mặc định vẫn là Supabase; chọn nơi lưu bằng
+`CONFIG_DB_BACKEND=postgres|d1` (một cờ chung cho cinemark-api và spider-hub).
 
-## Cách hoạt động
+## Bảng đã có bản D1
 
-| Phần | Việc |
-|---|---|
-| `app/services/accounts/config_db/d1_store.py` | Bản D1 của 4 bảng, dựng query bằng SQLAlchemy Core (dialect SQLite), gửi qua `d1_exec(..., database="config")`. Tự tạo bảng (IF NOT EXISTS). |
-| `config_db/ai_config.py`, `config_db/proxy_settings.py` | Mỗi hàm có một nhánh `if d1_store.enabled()` ở đầu; chữ ký và dữ liệu trả về giữ nguyên (bool, dict, datetime). |
-| `scripts/tools/copy_config_to_d1.py` | Chép dữ liệu từ Postgres sang D1 (mặc định chỉ xem trước, `--apply` mới ghi; chạy lại được). |
-| spider-hub `social_crawler/db/d1.py` | Client D1 đồng bộ (httpx) để đọc `ai_settings`, `ai_providers`, `proxy_settings`; cache 60 giây như cũ. |
+| Nhóm | Bảng | cinemark-api | spider-hub |
+|---|---|---|---|
+| AI + cào | `ai_settings`, `ai_providers`, `ai_accuracy_runs`, `proxy_settings` | `config_db/d1_store.py` | `db/config.py`, `db/proxy_settings.py` (đọc) |
+| Vận hành | `filter_keywords`, `crawl_schedules`, `comment_crawl_schedules`, `cleanup_settings`, `cleanup_run_history`, `discovery_settings`, `omar_api_settings` | `config_db/d1_ops.py` | không đọc |
+| Tài khoản/proxy | `platform_accounts`, `platform_proxies`, `proxy_providers`, `account_events` | `config_db/d1_accounts.py` | `db/d1_pool.py` (đọc + ghi, qua `accounts.py`, `proxies.py`, `account_events.py`, `proxy_settings.py`, `runtime/proxy_lease.py`) |
 
-Chưa chuyển (giai đoạn sau): `proxy_providers` + `platform_proxies` (xoá nguồn proxy cần đếm proxy đang dùng nó, nên hai bảng đi cùng
-nhau), `platform_accounts`, `account_events`, `crawl_schedules`, `comment_crawl_schedules`, `filter_keywords`, `cleanup_*`, `discovery_settings`,
-`omar_api_settings`.
+- cinemark-api dựng query bằng SQLAlchemy Core (dialect SQLite) rồi gửi qua `d1_exec(..., database="config")`; mỗi hàm trong `config_db/*.py`
+  có một nhánh `if d1_store.enabled()` ở đầu, chữ ký và dữ liệu trả về giữ nguyên (bool, dict, datetime).
+- cinemark-api là nơi TẠO bảng (`ensure_tables`, `IF NOT EXISTS`, chạy ở lần dùng đầu và khi khởi động). spider-hub chỉ đọc/ghi dữ liệu, nên
+  deploy cinemark-api (hoặc chạy script chép) trước khi bật cờ ở spider-hub.
+- spider-hub không dùng SQLAlchemy: `db/d1.py` là client httpx đồng bộ, `db/d1_pool.py` viết SQL SQLite trực tiếp (thời gian tính ở Python,
+  tên sự kiện log giữ nguyên bản Postgres). Script trong `scripts/` dùng `db/script_connect.py` (tự chọn Postgres hoặc D1).
+- Định dạng thời gian trong D1: chuỗi ISO-8601 UTC độ rộng cố định (`2026-11-23T02:17:34.025795+00:00`) để so sánh chuỗi đúng thứ tự.
+- Khác biệt so với Postgres:
+  - Chọn-và-giữ chỗ tài khoản/proxy (`claim_account`, `claim_proxy`) là MỘT câu `UPDATE ... WHERE id = (SELECT ... LIMIT 1) RETURNING`, D1 chạy
+    từng câu nguyên tử nên thay được `FOR UPDATE SKIP LOCKED`.
+  - Cooldown luỹ thừa tính bằng `strftime('now', '+N minutes')` với số mũ chặn ở 20 và trần 2 giờ / `cooldown_max_minutes`.
+  - Bảng Postgres cũ còn các cột không code nào dùng (`assigned_proxy_id`, `needs_manual_login`, `last_relogin_*`, `session_client*`,
+    `manual_nurture_days`, `proxy_providers.kind/ip_allowlist`): không chép sang D1.
 
 ## Cutover (làm đúng thứ tự)
 
-1. Thêm `CLOUDFLARE_D1_CONFIG_DATABASE_ID` (id của `cinemark-config-db`, xem `wrangler d1 list`) vào `.env` của cinemark-api và `CLOUDFLARE_ACCOUNT_ID`,
-   `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_D1_CONFIG_DATABASE_ID` vào `.env` của spider-hub (VPS và Mac). Token cần quyền D1 Edit.
-2. Deploy bản mới của cả hai repo (cờ còn là `postgres`, chưa đổi hành vi).
-3. Ngừng sửa cấu hình trên dashboard, rồi chép lại dữ liệu mới nhất:
-   `python -m scripts.tools.copy_config_to_d1` (xem trước) rồi `--apply`.
-4. Đặt `CONFIG_DB_BACKEND=d1` ở cinemark-api (web + scheduler) và spider-hub (mọi tiến trình), restart. Hai bên phải cùng giá trị: bên còn
-   `postgres` sẽ đọc dữ liệu cũ.
-5. Mở dashboard, sửa thử một cài đặt AI/proxy, kiểm tra spider-hub nhận trong vòng một phút.
-6. Quay lại: đặt `CONFIG_DB_BACKEND=postgres` ở cả hai bên và restart (dữ liệu sửa lúc ở D1 sẽ không tự về Postgres).
+1. Thêm biến vào `.env`: cinemark-api cần `CLOUDFLARE_D1_CONFIG_DATABASE_ID` (id của `cinemark-config-db`, xem `wrangler d1 list`); spider-hub
+   cần `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_D1_CONFIG_DATABASE_ID` (VPS và Mac). Token cần quyền D1 Edit.
+2. Deploy bản mới của cả hai repo (cờ còn `postgres`, chưa đổi hành vi).
+3. Tạm dừng crawler (spider-hub-crawl) và ngừng sửa cài đặt trên dashboard, rồi chép dữ liệu mới nhất, vì cookie/phiên tài khoản và cooldown
+   đổi liên tục: `python -m scripts.tools.copy_config_to_d1` (xem trước số dòng) rồi `--apply`.
+4. Đặt `CONFIG_DB_BACKEND=d1` ở cinemark-api (web + scheduler) và spider-hub (mọi tiến trình: crawl, consumer, dashboard nếu có), restart. Hai
+   bên phải cùng giá trị: bên còn `postgres` sẽ đọc/ghi dữ liệu cũ.
+5. Bật lại crawler. Kiểm tra: dashboard hiện đủ tài khoản/proxy; sửa thử một cài đặt rồi thấy spider-hub nhận trong vòng một phút; một lượt cào
+   ghi `last_used_at` và `account_events` vào D1.
+6. Quay lại nếu cần: đặt `CONFIG_DB_BACKEND=postgres` ở cả hai bên và restart (dữ liệu ghi lúc đang ở D1 không tự về Postgres).
+
+## Bỏ hẳn Supabase (làm sau khi D1 chạy ổn một thời gian)
+
+Chưa làm trong đợt này để còn đường quay lại. Khi đã yên tâm: xoá nhánh Postgres trong `config_db/*.py` và `db/*.py` (cùng `conn.py`,
+`db/connection.py`, `scripts/dev_db_sync.py`, `scripts/migrate_proxy_providers.py`, `scripts/dev_db_schema.sql`), bỏ `psycopg`/`psycopg_pool`
+khỏi requirements, bỏ `DATABASE_URL`/`LOCAL_DATABASE_URL`, rồi đóng project Supabase (giữ một bản `pg_dump` làm sao lưu).
 
 ## Lưu ý
 
-- Worker cinemark vẫn đọc cấu hình AI qua bảng `ai_runtime` (đồng bộ từ `app/ai/runtime.py`), không đổi.
-- D1 không có transaction nhiều câu hay `SELECT ... FOR UPDATE`: các bảng giai đoạn 1 chỉ có ghi một dòng nên không cần; giai đoạn
-  `platform_accounts` phải thiết kế lại chỗ chọn tài khoản rảnh.
-- `proxy_settings` ~90 khoá lưu một dòng JSON (TEXT) - D1 giới hạn mỗi dòng 2 MB, hiện dùng chưa tới 10 KB.
+- Worker cinemark vẫn đọc cấu hình AI qua bảng `ai_runtime` (đồng bộ từ `app/services/ops/ai_runtime_sync.py`), không đổi.
+- D1 không có transaction nhiều câu: các hàm ở trên chỉ ghi một dòng mỗi câu nên không cần; `delete_proxy_provider` kiểm tra rồi mới xoá (có
+  khoảng hở rất nhỏ giữa hai bước, chấp nhận được với thao tác thủ công trên dashboard).
+- Mỗi lượt cào gọi D1 qua mạng (vài chục ms đến vài trăm ms mỗi câu) - ngang Supabase trước đây. Cài đặt vẫn cache 60 giây ở spider-hub.
+- Schema D1 khai ở `d1_store.py`/`d1_ops.py`/`d1_accounts.py` (cinemark-api); `tests/test_d1_pool.py` của spider-hub có bản DDL chép tay để
+  chạy SQL thật trên SQLite - đổi cột ở cinemark-api thì sửa cả hai.

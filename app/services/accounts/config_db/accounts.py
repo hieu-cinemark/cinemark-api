@@ -11,6 +11,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+from app.services.accounts.config_db import d1_accounts, d1_store
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
 ACCOUNT_COLUMNS = (
@@ -123,6 +124,8 @@ async def count_crawl_ready_accounts(platform: str) -> int:
     """Số tài khoản pool có thể giao cho crawler lúc này (giống get_accounts của spider-hub: bật, không checkpoint, không
     cooldown, không "chỉ nuôi") - nhịp đào bài cũ (crawl_lanes) xếp số job theo con số này. Chưa trừ tài khoản đang trong
     giai đoạn nuôi (đếm trong Redis của spider-hub) - xếp dư thì job thừa chỉ bị bỏ qua."""
+    if d1_store.enabled():
+        return await d1_accounts.count_crawl_ready_accounts(platform)
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -137,6 +140,9 @@ async def count_crawl_ready_accounts(platform: str) -> int:
 
 async def record_account_event(account: dict[str, Any], event: str, **details: Any) -> None:
     """Dòng thời gian của tài khoản (spider-hub db/account_events.py). Ghi lỗi không làm hỏng thao tác của người vận hành."""
+    if d1_store.enabled():
+        await d1_accounts.record_account_event(account, event, **details)
+        return
     key = str(account.get("email") or account.get("account_id") or "").strip().lower()
     try:
         await _ensure_pool_columns()
@@ -151,6 +157,8 @@ async def record_account_event(account: dict[str, Any], event: str, **details: A
 
 
 async def list_accounts(platform: str | None = None, *, with_secrets: bool = True) -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_accounts.list_accounts(platform, with_secrets=with_secrets)
     await _ensure_pool_columns()
     columns = ACCOUNT_COLUMNS if with_secrets else _ACCOUNT_LIST_COLUMNS
     async with _connect() as conn, conn.cursor() as cur:
@@ -162,6 +170,8 @@ async def list_accounts(platform: str | None = None, *, with_secrets: bool = Tru
 
 
 async def get_account(account_id: int) -> dict[str, Any] | None:
+    if d1_store.enabled():
+        return await d1_accounts.get_account(account_id)
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {ACCOUNT_COLUMNS} FROM platform_accounts WHERE id = %s", (account_id,))
@@ -169,6 +179,8 @@ async def get_account(account_id: int) -> dict[str, Any] | None:
 
 
 async def create_account(fields: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_accounts.create_account(fields)
     await _ensure_pool_columns()
     columns = [c for c in _ACCOUNT_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
@@ -191,6 +203,8 @@ async def create_account(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_account(account_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_accounts.update_account(account_id, fields)
     columns = [c for c in _ACCOUNT_CREATE_COLUMNS if c in fields]
     if not columns:
         raise NotFoundError("No fields to update")
@@ -217,6 +231,8 @@ async def update_account_check_result(account_id: int, *, status: str) -> dict[s
     ý tách khỏi update_account ở trên: các cột này do hệ thống ghi từ một lần kiểm tra tự
     động, người dùng không bao giờ sửa qua form tài khoản, nên chúng hoàn toàn không nằm
     trong _ACCOUNT_CREATE_COLUMNS."""
+    if d1_store.enabled():
+        return await d1_accounts.update_account_check_result(account_id, status=status)
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:
         # Kiểm tra này thụ động, không biết gì về phiên: nó từng ghi đè 'dead' mỗi 6 giờ, nên cookie vừa bị Facebook từ chối lại
@@ -241,6 +257,8 @@ async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
     """Bật/tắt tay một tài khoản từ dashboard. Tắt: chỉ enabled = false. Bật: như reactivate_account của
     spider-hub (db/accounts.py) - gỡ cả status 'checkpoint', cooldown và chuỗi lỗi, vì pool (get_accounts) bỏ qua tài
     khoản checkpoint/cooldown dù enabled = true; chỉ bật enabled thì tài khoản vẫn nằm ngoài pool."""
+    if d1_store.enabled():
+        return await d1_accounts.set_account_enabled(account_id, enabled)
     await _ensure_pool_columns()
     reset = ", status = 'active', consecutive_failures = 0, cooldown_until = NULL" if enabled else ""
     async with _connect() as conn, conn.cursor() as cur:
@@ -256,6 +274,9 @@ async def set_account_enabled(account_id: int, enabled: bool) -> dict[str, Any]:
 
 
 async def delete_account(account_id: int) -> None:
+    if d1_store.enabled():
+        await d1_accounts.delete_account(account_id)
+        return
     account = await get_account(account_id)
     if account is not None:
         await record_account_event(account, "account_deleted", last_check_status=account.get("last_check_status"))
@@ -275,6 +296,8 @@ _PROXY_LIST_COLUMNS = (
 
 
 async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_accounts.list_proxies(platform)
     await _ensure_pool_columns()
     from app.services.accounts.config_db.proxy_settings import (
         _ensure_proxy_settings_tables,  # vòng import: proxy_settings dùng accounts
@@ -300,6 +323,8 @@ async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
 
 
 async def create_proxy(fields: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_accounts.create_proxy(fields)
     await _ensure_pool_columns()
     columns = [c for c in _PROXY_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
@@ -320,6 +345,8 @@ async def create_proxy(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_accounts.update_proxy(proxy_id, fields)
     columns = [c for c in _PROXY_CREATE_COLUMNS if c in fields]
     if not columns:
         raise NotFoundError("No fields to update")
@@ -345,6 +372,9 @@ async def update_proxy(proxy_id: int, fields: dict[str, Any]) -> dict[str, Any]:
 
 
 async def delete_proxy(proxy_id: int) -> None:
+    if d1_store.enabled():
+        await d1_accounts.delete_proxy(proxy_id)
+        return
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM platform_proxies WHERE id = %s", (proxy_id,))
         deleted = cur.rowcount

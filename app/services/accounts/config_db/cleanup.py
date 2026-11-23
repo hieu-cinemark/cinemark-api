@@ -7,6 +7,7 @@ from typing import Any
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+from app.services.accounts.config_db import d1_ops, d1_store
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
 # cleanup_settings: jsonb singleton chứa các tham số sửa được trên dashboard cho lượt
@@ -59,6 +60,8 @@ async def _ensure_cleanup_settings_tables() -> None:
 async def get_cleanup_settings() -> dict[str, Any]:
     """{"settings": {...chỉ các key đã lưu...}, "updated_at": ...} - việc trộn lên trên giá
     trị mặc định của CleanupSettings là việc của schema."""
+    if d1_store.enabled():
+        return await d1_ops.get_cleanup_settings()
     await _ensure_cleanup_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM cleanup_settings WHERE id = 1")
@@ -69,6 +72,8 @@ async def get_cleanup_settings() -> dict[str, Any]:
 async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
     """Chỉ ghi các key có trong `values` - key thiếu giữ giá trị đã lưu trước đó. Cho
     PUT /settings/cleanup hoạt động như cập nhật một phần thay vì phải gửi mọi key."""
+    if d1_store.enabled():
+        return await d1_ops.upsert_cleanup_settings(values)
     from psycopg.types.json import Json
 
     await _ensure_cleanup_settings_tables()
@@ -94,6 +99,8 @@ async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
 
 
 async def record_cleanup_run_start(*, dry_run: bool, triggered_by: str) -> int:
+    if d1_store.enabled():
+        return await d1_ops.record_cleanup_run_start(dry_run=dry_run, triggered_by=triggered_by)
     await _ensure_cleanup_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -111,6 +118,9 @@ async def record_cleanup_run_finish(
     summary: dict[str, Any],
     error: str | None = None,
 ) -> None:
+    if d1_store.enabled():
+        await d1_ops.record_cleanup_run_finish(run_id, summary=summary, error=error)
+        return
     await _ensure_cleanup_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -139,6 +149,8 @@ async def record_cleanup_run_finish(
 
 
 async def list_cleanup_run_history(limit: int = 20) -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_ops.list_cleanup_run_history(limit)
     await _ensure_cleanup_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(

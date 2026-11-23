@@ -7,6 +7,7 @@ from typing import Any
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+from app.services.accounts.config_db import d1_ops, d1_store
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
 # --- Cấu hình Omar API -----------------------------------------------------
@@ -39,6 +40,8 @@ async def _ensure_discovery_settings_table() -> None:
 
 async def get_discovery_settings() -> dict[str, Any]:
     """{"enabled": bool, "updated_at": ...} - chưa có dòng nào thì bật (hành vi trước khi có công tắc)."""
+    if d1_store.enabled():
+        return await d1_ops.get_discovery_settings()
     await _ensure_discovery_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT enabled, updated_at FROM discovery_settings WHERE id = 1")
@@ -47,6 +50,8 @@ async def get_discovery_settings() -> dict[str, Any]:
 
 
 async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_ops.set_discovery_enabled(enabled)
     await _ensure_discovery_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -64,6 +69,8 @@ async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
 
 async def get_omar_api_settings() -> dict[str, Any] | None:
     """Trả về {"api_key", "requests_per_minute", "daily_requests", "concurrency", "updated_at"} hoặc None nếu chưa có."""
+    if d1_store.enabled():
+        return await d1_ops.get_omar_api_settings()
     await _ensure_omar_api_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -105,7 +112,6 @@ async def set_omar_limits(
     *, requests_per_minute: int | None = None, daily_requests: int | None = None, concurrency: int | None = None
 ) -> None:
     """Lưu các giới hạn người dùng đặt (None = giữ nguyên, 0 = theo gói / mặc định)."""
-    await _ensure_omar_api_settings_table()
     values = {
         "requests_per_minute": requests_per_minute,
         "daily_requests": daily_requests,
@@ -114,6 +120,10 @@ async def set_omar_limits(
     changes = {name: max(0, int(value)) for name, value in values.items() if value is not None}
     if not changes:
         return
+    if d1_store.enabled():
+        await d1_ops.set_omar_limits(changes)
+        return
+    await _ensure_omar_api_settings_table()
     columns = ", ".join(changes)
     placeholders = ", ".join(["%s"] * len(changes))
     updates = ", ".join(f"{name} = EXCLUDED.{name}" for name in changes)
@@ -160,6 +170,8 @@ async def _ensure_omar_api_settings_table() -> None:
 
 async def upsert_omar_api_key(api_key: str | None) -> dict[str, Any]:
     """Upsert API key - None/rỗng thì xoá (để toggle không dùng được)."""
+    if d1_store.enabled():
+        return await d1_ops.upsert_omar_api_key(api_key or "")
     await _ensure_omar_api_settings_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(

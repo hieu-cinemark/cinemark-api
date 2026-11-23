@@ -8,7 +8,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
-from app.services.accounts.config_db import d1_store
+from app.services.accounts.config_db import d1_accounts, d1_store
 from app.services.accounts.config_db.accounts import _ensure_pool_columns
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
@@ -151,6 +151,8 @@ PROXY_PROVIDER_COLUMNS = "key, api_url, token, updated_at, last_used_at, last_st
 
 
 async def list_proxy_providers() -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_accounts.list_proxy_providers()
     await _ensure_proxy_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -165,6 +167,8 @@ async def upsert_proxy_provider(key: str, *, api_url: str, token: str | None) ->
     """token=None thì giữ nguyên key đã lưu (cùng hợp đồng với api_key của
     upsert_ai_provider). Mỗi nguồn là một link reset + một key - mọi nhà cung cấp dùng
     chung một cơ chế nên không có trường phân loại."""
+    if d1_store.enabled():
+        return await d1_accounts.upsert_proxy_provider(key, api_url=api_url, token=token)
     await _ensure_proxy_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         if token is None:
@@ -196,6 +200,10 @@ async def delete_proxy_provider(key: str) -> None:
     """Xoá nguồn proxy. Nguồn đang được dùng (có proxy trong platform_proxies trỏ tới, hoặc
     là nguồn của tiktok_synthetic_provider) thì không xoá - xoá nó sẽ để các proxy đó mồ
     côi (không ai xoay IP cho chúng nữa) mà không ai hỏi."""
+    if d1_store.enabled():
+        settings = (await get_proxy_settings()).get("settings") or {}
+        await d1_accounts.delete_proxy_provider(key, settings.get("tiktok_synthetic_provider"))
+        return
     await _ensure_proxy_settings_tables()
     await _ensure_pool_columns()
     async with _connect() as conn, conn.cursor() as cur:

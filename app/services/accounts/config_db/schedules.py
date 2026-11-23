@@ -10,6 +10,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+from app.services.accounts.config_db import d1_ops, d1_store
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
 # --- từ khoá lọc -------------------------------------------------------
@@ -23,6 +24,8 @@ _FILTER_KEYWORD_CREATE_COLUMNS = ("keyword", "category", "enabled")
 
 
 async def list_filter_keywords(category: str | None = None) -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_ops.list_filter_keywords(category)
     async with _connect() as conn, conn.cursor() as cur:
         if category:
             await cur.execute(
@@ -35,6 +38,8 @@ async def list_filter_keywords(category: str | None = None) -> list[dict[str, An
 
 
 async def create_filter_keyword(fields: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_ops.create_filter_keyword(fields)
     columns = [c for c in _FILTER_KEYWORD_CREATE_COLUMNS if c in fields]
     values = [fields[c] for c in columns]
     try:
@@ -54,6 +59,8 @@ async def create_filter_keyword(fields: dict[str, Any]) -> dict[str, Any]:
 
 
 async def update_filter_keyword(keyword_id: int, fields: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_ops.update_filter_keyword(keyword_id, fields)
     columns = [c for c in _FILTER_KEYWORD_CREATE_COLUMNS if c in fields]
     if not columns:
         raise NotFoundError("No fields to update")
@@ -78,6 +85,9 @@ async def update_filter_keyword(keyword_id: int, fields: dict[str, Any]) -> dict
 
 
 async def delete_filter_keyword(keyword_id: int) -> None:
+    if d1_store.enabled():
+        await d1_ops.delete_filter_keyword(keyword_id)
+        return
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM filter_keywords WHERE id = %s", (keyword_id,))
         deleted = cur.rowcount
@@ -116,6 +126,8 @@ async def _ensure_crawl_schedule_nurture_columns() -> None:
 
 
 async def list_crawl_schedules() -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_ops.list_crawl_schedules()
     await _ensure_crawl_schedule_nurture_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {CRAWL_SCHEDULE_COLUMNS} FROM crawl_schedules ORDER BY platform")
@@ -133,6 +145,9 @@ async def ensure_default_crawl_schedules(platforms: set[str]) -> None:
     mà mặc định cột của bảng vốn đã có (scripts/dev_db_schema.sql), ON CONFLICT DO
     NOTHING để một nền tảng người vận hành đã cấu hình (hoặc cố ý tắt) từ dashboard không
     bao giờ bị đụng tới."""
+    if d1_store.enabled():
+        await d1_ops.ensure_default_crawl_schedules(platforms)
+        return
     await _ensure_crawl_schedule_nurture_columns()
     async with _connect() as conn, conn.cursor() as cur:
         for platform in platforms:
@@ -149,6 +164,10 @@ async def upsert_crawl_schedule(
     """Lần ghi phía dashboard - run_time/enabled/nurture_* do người dùng đặt. ON CONFLICT để
     dashboard không cần biết dòng của nền tảng đã có hay chưa (mọi nền tảng ban đầu đều
     không có dòng nào cho tới khi lịch của nó được lưu lần đầu)."""
+    if d1_store.enabled():
+        return await d1_ops.upsert_crawl_schedule(
+            platform, run_time=run_time, enabled=enabled, nurture_before=nurture_before, nurture_after=nurture_after
+        )
     await _ensure_crawl_schedule_nurture_columns()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -168,6 +187,9 @@ async def mark_crawl_schedule_triggered(platform: str, triggered_date: str) -> N
     """Lần ghi chống chạy lặp của chính scheduler.py - xem comment của cột
     crawl_schedules.last_triggered_date. Không dành cho người dùng, không route nào gọi
     thẳng hàm này."""
+    if d1_store.enabled():
+        await d1_ops.mark_crawl_schedule_triggered(platform, triggered_date)
+        return
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
             "UPDATE crawl_schedules SET last_triggered_date = %s WHERE platform = %s",
@@ -208,6 +230,8 @@ async def _ensure_comment_crawl_schedules_table() -> None:
 
 
 async def list_comment_crawl_schedules() -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_ops.list_comment_crawl_schedules()
     await _ensure_comment_crawl_schedules_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {COMMENT_SCHEDULE_COLUMNS} FROM comment_crawl_schedules ORDER BY platform")
@@ -219,6 +243,9 @@ async def ensure_default_comment_crawl_schedules(platforms: set[str]) -> None:
     đây đơn giản là không bao giờ xuất hiện trong vòng lặp của _comments_tick, mà không
     có gì báo ra lỗ hổng đó. ON CONFLICT DO NOTHING để một nền tảng người vận hành đã cấu
     hình (hoặc cố ý tắt) không bao giờ bị đụng tới."""
+    if d1_store.enabled():
+        await d1_ops.ensure_default_comment_crawl_schedules(platforms)
+        return
     await _ensure_comment_crawl_schedules_table()
     async with _connect() as conn, conn.cursor() as cur:
         for platform in platforms:
@@ -232,6 +259,8 @@ async def ensure_default_comment_crawl_schedules(platforms: set[str]) -> None:
 async def upsert_comment_crawl_schedule(platform: str, *, run_time: str, enabled: bool, top_n: int) -> dict[str, Any]:
     """Lần ghi phía dashboard - ON CONFLICT để dashboard không cần biết dòng của nền tảng
     này đã có hay chưa."""
+    if d1_store.enabled():
+        return await d1_ops.upsert_comment_crawl_schedule(platform, run_time=run_time, enabled=enabled, top_n=top_n)
     await _ensure_comment_crawl_schedules_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(
