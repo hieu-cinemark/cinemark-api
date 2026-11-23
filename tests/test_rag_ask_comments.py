@@ -276,3 +276,13 @@ def test_factory_builds_once_and_closes(monkeypatch):
 
 def test_upstream_error_type_is_used_by_route():
     assert issubclass(UpstreamError, Exception)
+
+
+def test_validation_error_uses_flat_error_body(monkeypatch):
+    """Body sai định dạng trả 422 theo chuẩn {error, code}, không phải {"detail": [...]} mặc định của FastAPI."""
+    resp = _client(monkeypatch, AsyncMock()).post("/rag/ask-comments", json={"movie_id": "m"})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "request_invalid"
+    assert body["error"].startswith("Invalid request: ") and "question" in body["error"]
+    assert "detail" not in body

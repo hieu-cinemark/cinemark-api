@@ -20,6 +20,7 @@ MESSAGES: dict[str, str] = {
     "json_decode_skipped": "Bỏ qua một bản ghi JSON hỏng",
     "request_failed": "Request thất bại",
     "request_handled": "Đã xử lý request",
+    "request_validation_failed": "Request sai định dạng, không xử lý được",
     "shutdown_step_timeout": "Một bước tắt dịch vụ quá thời gian",
     "unhandled_error": "Lỗi không xử lý được",
     "websocket_close_failed": "Đóng WebSocket thất bại (đã đứt)",

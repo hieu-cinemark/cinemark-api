@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import structlog
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.core.logging import get_logger
@@ -92,6 +93,17 @@ def register_exception_handlers(app: FastAPI) -> None:
             "app_error", error=exc.message, error_type=type(exc).__name__, error_code=exc.code, path=request.url.path
         )
         return _error_response(exc.status_code, exc.code, exc.message)
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        # Body sai định dạng: gom "<trường>: <lý do>" của Pydantic vào một câu tiếng Anh, giữ status 422.
+        problems = [
+            f"{'.'.join(str(part) for part in err['loc'] if part != 'body') or 'body'}: {err['msg']}"
+            for err in exc.errors()[:5]
+        ]
+        message = "Invalid request: " + "; ".join(problems)
+        logger.info("request_validation_failed", path=request.url.path, error=message)
+        return _error_response(422, "request_invalid", message)
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
