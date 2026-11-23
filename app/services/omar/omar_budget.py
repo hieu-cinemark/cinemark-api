@@ -5,10 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from app.core.logging import get_logger
 from app.services.accounts.config_db.omar import omar_requests_cap
-
-logger = get_logger(__name__)
 
 _CAP_REFRESH_SECONDS = 60.0
 

@@ -5,9 +5,6 @@ from __future__ import annotations
 import asyncio
 
 from app.clients.d1 import d1_query
-from app.core.logging import get_logger
-
-logger = get_logger(__name__)
 
 # --- cột "tiếng nói" của bài + trạng thái quét comment -----------------------
 # Nội dung bài cũng là tiếng nói khán giả (trên Threads phần lớn cảm nhận nằm ở chính bài, ít

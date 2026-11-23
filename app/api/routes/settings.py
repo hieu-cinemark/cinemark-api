@@ -213,7 +213,7 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
 @router.post("/accounts/{account_id}/enabled", response_model=AccountOut)
 async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> AccountOut:
     """Nút bật/tắt tài khoản trên dashboard - bật lại cũng gỡ checkpoint/cooldown (xem
-    app/services/platform_config_db.set_account_enabled)."""
+    config_db/accounts.set_account_enabled)."""
     row = await accounts_cfg.set_account_enabled(account_id, payload.enabled)
     await accounts_cfg.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
     return AccountOut.masked(row)

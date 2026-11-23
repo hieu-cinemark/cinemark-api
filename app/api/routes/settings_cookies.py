@@ -3,12 +3,9 @@
 from __future__ import annotations
 
 from app.core.errors import CookieRefusedError
-from app.core.logging import get_logger
 from app.services.accounts.config_db import accounts as accounts_cfg
 from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.user_agent import merge_user_agent
-
-logger = get_logger(__name__)
 
 
 def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:

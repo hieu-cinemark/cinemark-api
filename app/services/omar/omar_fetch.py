@@ -9,12 +9,9 @@ import httpx
 from app.clients.kafka import publish_raw_post
 from app.clients.omar import hashtag_info, next_cursor, omar_get, videos_of
 from app.core.config import settings
-from app.core.logging import get_logger
 from app.services.accounts.config_db.omar import get_omar_api_settings
 from app.services.omar.omar_budget import _Pacer
 from app.services.omar.omar_seen import _claim_unseen, _forget_seen
-
-logger = get_logger(__name__)
 
 
 async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: dict[str, Any]) -> None:
