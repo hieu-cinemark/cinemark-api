@@ -7,15 +7,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
+from app.clients.omar import OmarStop
 from app.core.config import settings
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords, get_or_create_keyword, set_keyword_enabled
 from app.services.accounts.config_db.omar import get_omar_api_settings, omar_limits
-from app.services.omar import omar_comments, omar_fetch, omar_hashtag, omar_pause, omar_tiktok
+from app.services.omar import omar_comments, omar_fetch, omar_hashtag, omar_hashtag_stats, omar_pause, omar_tiktok
 
 logger = get_logger(__name__)
 
@@ -161,6 +162,28 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     started = omar_hashtag.crawl_hashtag_now(row)
     logger.info("omar_hashtag_added", hashtag=row["keyword"], movie_id=payload.movie_id, started=started)
     return {"keyword": row, "started": started, "verified": exists is True}
+
+
+@router.get("/hashtags/search")
+async def omar_search_hashtags(q: str = Query(min_length=2, max_length=60)) -> dict[str, Any]:
+    """Nút "Tìm hashtag liên quan" ở tab Omar: các hashtag TikTok có tên chứa `q` kèm tổng video / lượt xem, tách mục khớp
+    chính xác và các biến thể; `tracked` cho biết hashtag đã là từ khoá của một phim (omar_hashtag_stats.search)."""
+    name = omar_hashtag_stats.clean_name(q)
+    if len(name) < 2:
+        raise ValidationError("Invalid hashtag")
+    try:
+        result = await asyncio.wait_for(
+            omar_hashtag_stats.search(name), timeout=omar_hashtag_stats.SEARCH_TIMEOUT_SECONDS
+        )
+    except TimeoutError as exc:
+        raise UpstreamError("Omar did not answer the hashtag search in time") from exc
+    except OmarStop as exc:
+        raise UpstreamError(f"Omar refused the search: {exc}") from exc
+    except Exception as exc:
+        raise UpstreamError(f"Omar hashtag search failed: {type(exc).__name__}") from exc
+    if result is None:
+        raise ValidationError("Omar API key is not set")
+    return result
 
 
 @router.post("/hashtags/{keyword_id}/recrawl")

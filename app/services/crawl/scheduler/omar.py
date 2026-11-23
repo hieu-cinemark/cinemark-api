@@ -8,7 +8,7 @@ from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, spawn
-from app.services.omar import omar_comments
+from app.services.omar import omar_comments, omar_hashtag_stats
 from app.services.omar.omar_pause import clear_pause as clear_omar_pause
 from app.services.omar.omar_pause import get_pause as get_omar_pause
 from app.services.omar.omar_pause import pause_over as omar_pause_over
@@ -77,3 +77,17 @@ async def omar_tick() -> None:
     await redis.set(_OMAR_ROUND_KEY, hour_key, ex=2 * 3600)
     logger.info("omar_round_firing", hour=hour_key)
     spawn(_run_omar_round("schedule"))
+
+
+async def _run_hashtag_stats() -> None:
+    try:
+        await omar_hashtag_stats.snapshot_all()
+    except Exception as exc:  # noqa: BLE001 - bản chụp hôm nay hỏng thì ngày mai chụp lại
+        logger.error("omar_hashtag_stats_job_failed", error=exc)
+
+
+async def hashtag_stats_tick() -> None:
+    """Mỗi ngày một lần (từ 06:00 giờ Việt Nam): chụp tổng video / lượt xem của các hashtag TikTok đang theo dõi cho biểu đồ
+    tăng trưởng ở Social Topic. Chạy nền để không chiếm nhịp."""
+    if await omar_hashtag_stats.snapshot_due(datetime.now(TIMEZONE)):
+        spawn(_run_hashtag_stats())

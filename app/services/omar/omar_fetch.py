@@ -7,7 +7,7 @@ from typing import Any
 import httpx
 
 from app.clients.kafka import publish_raw_post
-from app.clients.omar import hashtag_info, next_cursor, omar_get, videos_of
+from app.clients.omar import hashtag_info, hashtag_search_results, next_cursor, omar_get, videos_of
 from app.core.config import settings
 from app.services.accounts.config_db.omar import get_omar_api_settings
 from app.services.omar.omar_budget import Pacer
@@ -72,3 +72,17 @@ async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: Pacer, api_key: s
     # 424 ở endpoint này thường là "Hashtag not found or lookup failed" - chỉ thử lại một lần.
     data = await omar_get(client, pacer.wait, api_key, "hashtag_info", {"name": hashtag, "format": "clean"}, retries=1)
     return hashtag_info(data)
+
+
+async def search_hashtags(client: httpx.AsyncClient, pacer: Pacer, api_key: str, query: str) -> list[dict[str, Any]]:
+    """Các hashtag TikTok có tên chứa `query` (search_hashtags, format=clean), kèm số video / lượt xem của từng cái. Một trang
+    (tối đa ~10 hashtag) là đủ để thấy hashtag chính và các biến thể gần giống."""
+    data = await omar_get(
+        client,
+        pacer.wait,
+        api_key,
+        "search_hashtags",
+        {"query": query.lstrip("#"), "cursor": "0", "format": "clean"},
+        retries=1,
+    )
+    return hashtag_search_results(data)

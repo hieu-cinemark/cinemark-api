@@ -211,3 +211,30 @@ def hashtag_info(data: dict[str, Any] | None) -> dict[str, Any]:
         "video_count": pick("video_count", "videoCount", "user_count", "use_count"),
         "view_count": pick("view_count", "viewCount", "play_count"),
     }
+
+
+def hashtag_search_results(data: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """`data` của search_hashtags (format=clean) -> các hashtag khớp tên: {hashtag_id, name, video_count, view_count,
+    description}. `name` không có dấu "#". Bỏ mục không có tên; số không đọc được coi là 0."""
+
+    def number(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except TypeError, ValueError:
+            return 0
+
+    out: list[dict[str, Any]] = []
+    for item in (data or {}).get("results") or []:
+        name = str(item.get("name") or "").strip().lstrip("#")
+        if not name:
+            continue
+        out.append(
+            {
+                "hashtag_id": str(item.get("hashtag_id") or item.get("id") or "") or None,
+                "name": name,
+                "video_count": number(item.get("video_count")),
+                "view_count": number(item.get("view_count")),
+                "description": str(item.get("description") or ""),
+            }
+        )
+    return out

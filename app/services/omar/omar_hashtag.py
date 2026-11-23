@@ -8,13 +8,14 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.clients.omar import OmarStop, map_video
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
+from app.repositories.d1 import hashtag_stats
 from app.repositories.d1.keywords import get_enabled_keywords
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
@@ -22,6 +23,7 @@ from app.services.accounts.config_db.omar import get_omar_api_settings
 from app.services.omar.omar_budget import Pacer
 from app.services.omar.omar_fetch import fetch_page, publish_videos
 from app.services.omar.omar_seen import count_cooccur
+from app.services.stats.stats_tables import keyword_daily
 
 logger = get_logger(__name__)
 
@@ -129,6 +131,30 @@ def crawl_hashtag_now(keyword: dict[str, Any]) -> bool:
     return True
 
 
+async def _crawled_posts() -> dict[str, int]:
+    """keyword_id -> số bài TikTok đã lưu (tổng bảng thống kê theo ngày, nhỏ hơn nhiều so với đếm bảng posts). Lỗi D1 thì
+    rỗng: bảng tiến độ vẫn hiện, chỉ thiếu cột "đã cào"."""
+    try:
+        rows = await d1_exec(
+            select(keyword_daily.c.keyword_id, func.sum(keyword_daily.c.posts).label("posts"))
+            .where(keyword_daily.c.platform == "tiktok")
+            .group_by(keyword_daily.c.keyword_id),
+            quiet=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - chỉ là số liệu phụ của bảng tiến độ
+        logger.warning("omar_crawled_posts_failed", error=exc)
+        return {}
+    return {row["keyword_id"]: int(row["posts"] or 0) for row in rows or []}
+
+
+async def _latest_scale() -> dict[str, dict[str, Any]]:
+    try:
+        return await hashtag_stats.latest_by_keyword()
+    except Exception as exc:  # noqa: BLE001 - bảng bản chụp chưa tạo hoặc D1 lỗi: dùng số của hashtag_info
+        logger.warning("omar_hashtag_scale_failed", error=exc)
+        return {}
+
+
 async def hashtag_progress() -> list[dict[str, Any]]:
     """Mỗi hashtag TikTok đang bật: tên, phim, số trang đã lấy, cursor, đã cào xong lúc nào (từ Redis omar:hashtag_state)."""
     keywords = [k for k in await get_enabled_keywords(platform="tiktok") if str(k["keyword"]).startswith("#")]
@@ -139,9 +165,11 @@ async def hashtag_progress() -> list[dict[str, Any]]:
         parsed = loads_or_none(value, source="omar_hashtag_state")
         if parsed is not None:
             state[key.decode() if isinstance(key, bytes) else key] = parsed
+    crawled, scale = await _crawled_posts(), await _latest_scale()
     out = []
     for kw in keywords:
         entry = state.get(kw["id"]) or {}
+        snap = scale.get(kw["id"]) or {}
         out.append(
             {
                 "keyword_id": kw["id"],
@@ -151,8 +179,11 @@ async def hashtag_progress() -> list[dict[str, Any]]:
                 "cursor": entry.get("cursor"),
                 "done_at": entry.get("done_at"),
                 "fresh_at": entry.get("fresh_at"),
-                "video_count": entry.get("video_count"),
-                "view_count": entry.get("view_count"),
+                # Tổng TikTok báo: bản chụp hằng ngày mới nhất (search_hashtags), chưa có thì số của hashtag_info.
+                "video_count": snap.get("video_count") or entry.get("video_count"),
+                "view_count": snap.get("view_count") or entry.get("view_count"),
+                "scale_day": snap.get("day"),
+                "crawled_posts": crawled.get(kw["id"], 0),
                 "info_at": entry.get("info_at"),
                 "missing_at": entry.get("missing_at"),
             }

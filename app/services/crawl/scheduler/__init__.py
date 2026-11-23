@@ -71,6 +71,7 @@ TICKS: list[tuple[str, Callable[[], Awaitable[None]], bool]] = [
     ("youtube_continuous", public_continuous.youtube_idle_tick, False),
     ("hashtag", discovery.hashtag_tick, False),
     ("omar", omar.omar_tick, False),
+    ("omar_hashtag_stats", omar.hashtag_stats_tick, False),
     ("trend_posts", refresh.trend_posts_tick, False),
     ("watch_pages", refresh.watch_pages_tick, False),
     ("channel_profiles", refresh.channel_profiles_tick, False),
