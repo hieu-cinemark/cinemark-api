@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.core.logging import get_logger
-from app.services.accounts.config_db import schedules as schedules_cfg
+from app.services.accounts.config_db.schedules import list_comment_crawl_schedules
 from app.services.crawl.comment_planner import run_comment_round, run_youtube_comment_round
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS
 from app.services.crawl.scheduler.core import TIMEZONE, spawn
@@ -42,7 +42,7 @@ async def comments_tick() -> None:
     if now.minute < COMMENT_ROUND_MINUTE:
         return
     hour_key = now.strftime("%Y-%m-%dT%H")
-    for sched in await schedules_cfg.list_comment_crawl_schedules():
+    for sched in await list_comment_crawl_schedules():
         platform = sched["platform"]
         if (
             not sched["enabled"]

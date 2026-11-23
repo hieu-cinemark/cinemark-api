@@ -17,7 +17,7 @@ from app.schemas.settings import (
     AiSettingsOut,
     AiSettingsUpdate,
 )
-from app.services.accounts.config_db import ai_config as ai_config_cfg
+from app.services.accounts.config_db import ai_config as ai_config_db
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -28,7 +28,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
     from app.ai.providers.client import active_provider_key
 
     active = await active_provider_key()
-    provider = await ai_config_cfg.get_ai_provider(active) if active else None
+    provider = await ai_config_db.get_ai_provider(active) if active else None
     defaults = default_system_prompts()
     stored = value if isinstance(value := row.get("prompts"), dict) else {}
     prompts = []
@@ -55,7 +55,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
 
 @router.get("/ai", response_model=AiSettingsOut)
 async def get_ai_settings() -> AiSettingsOut:
-    row = await ai_config_cfg.get_ai_settings()
+    row = await ai_config_db.get_ai_settings()
     return await _ai_settings_out(row)
 
 
@@ -67,7 +67,7 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
-    row = await ai_config_cfg.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
+    row = await ai_config_db.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
     invalidate_ai_runtime_cache()
     logger.info("ai_settings_updated", enabled=payload.enabled, prompt_tasks=sorted(prompts))
     return await _ai_settings_out(row)
@@ -93,15 +93,15 @@ async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsO
     from app.ai.runtime import invalidate_ai_runtime_cache
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
-    row = await ai_config_cfg.get_ai_provider(payload.provider)
+    row = await ai_config_db.get_ai_provider(payload.provider)
     if not row or not row.get("base_url") or not row.get("api_key") or not row.get("model"):
         raise ValidationError(f"Provider {payload.provider} is missing base URL / API key / model")
-    await ai_config_cfg.set_active_ai_provider(payload.provider)
+    await ai_config_db.set_active_ai_provider(payload.provider)
     invalidate_provider_cache()
     invalidate_ai_runtime_cache()
     await sync_ai_runtime()
     logger.info("ai_active_provider_set", provider=payload.provider)
-    return await _ai_settings_out(await ai_config_cfg.get_ai_settings())
+    return await _ai_settings_out(await ai_config_db.get_ai_settings())
 
 
 @router.get("/ai/providers", response_model=list[AiProviderOut])
@@ -110,7 +110,7 @@ async def list_ai_providers() -> list[AiProviderOut]:
     from app.ai.providers.client import active_provider_key
 
     active = await active_provider_key()
-    return [_ai_provider_out(row, active) for row in await ai_config_cfg.list_ai_providers()]
+    return [_ai_provider_out(row, active) for row in await ai_config_db.list_ai_providers()]
 
 
 @router.put("/ai/providers/{key}", response_model=AiProviderOut)
@@ -126,7 +126,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
             "Provider name may only contain lowercase letters, digits, hyphens and underscores (max 40 characters)"
         )
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
-    row = await ai_config_cfg.upsert_ai_provider(
+    row = await ai_config_db.upsert_ai_provider(
         key,
         base_url=payload.base_url.strip(),
         api_key=api_key,
@@ -135,7 +135,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     )
     active = await active_provider_key()
     if not active and row.get("base_url") and row.get("api_key") and row.get("model"):
-        await ai_config_cfg.set_active_ai_provider(key)
+        await ai_config_db.set_active_ai_provider(key)
         active = key
     invalidate_provider_cache()
     invalidate_ai_runtime_cache()
@@ -152,7 +152,7 @@ async def delete_ai_provider(key: str) -> None:
 
     if key == await active_provider_key():
         raise ValidationError("This provider is currently in use - select another provider before deleting it")
-    if not await ai_config_cfg.delete_ai_provider(key):
+    if not await ai_config_db.delete_ai_provider(key):
         raise NotFoundError(f"Provider {key} not found")
     invalidate_provider_cache()
     await sync_ai_runtime()
@@ -166,7 +166,7 @@ async def list_ai_models(payload: AiModelsRequest) -> AiModelsOut:
 
     api_key = (payload.api_key or "").strip()
     if not api_key and payload.key:
-        api_key = str((await ai_config_cfg.get_ai_provider(payload.key) or {}).get("api_key") or "")
+        api_key = str((await ai_config_db.get_ai_provider(payload.key) or {}).get("api_key") or "")
     if not api_key:
         raise ValidationError("An API key is required (or choose a provider with a saved key) to list models")
     url = payload.base_url.strip().rstrip("/")

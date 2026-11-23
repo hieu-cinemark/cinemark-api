@@ -17,7 +17,7 @@ from app.services.crawl.scheduler import core, crawl_slots
 def test_background_work_needs_both_switches(monkeypatch, background, enabled, expected):
     monkeypatch.setattr(core.settings, "facebook_background_crawl_enabled", background)
     schedules = AsyncMock(return_value=[{"platform": "facebook", "enabled": enabled}])
-    monkeypatch.setattr(core.schedules_cfg, "list_crawl_schedules", schedules)
+    monkeypatch.setattr(core, "list_crawl_schedules", schedules)
     assert asyncio.run(core.facebook_crawl_enabled()) is expected
     assert schedules.call_count == int(background)
 
@@ -26,7 +26,7 @@ def test_disabled_background_does_not_disable_the_explicit_daily_slot(monkeypatc
     monkeypatch.setattr(core.settings, "facebook_background_crawl_enabled", False)
     monkeypatch.setattr(crawl_slots, "datetime", AtSlot)
     monkeypatch.setattr(
-        core.schedules_cfg,
+        crawl_slots,
         "list_crawl_schedules",
         AsyncMock(
             return_value=[
@@ -144,7 +144,7 @@ def test_nurture_all_only_queues_threads(monkeypatch):
 def test_nurture_cannot_target_a_facebook_account(monkeypatch):
     from app.api.routes import settings as routes
 
-    monkeypatch.setattr(routes.accounts_cfg, "get_account", AsyncMock(return_value={"id": 1, "platform": "facebook"}))
+    monkeypatch.setattr(routes.accounts_db, "get_account", AsyncMock(return_value={"id": 1, "platform": "facebook"}))
     publish = AsyncMock()
     monkeypatch.setattr(routes, "publish_nurture_request", publish)
     with pytest.raises(routes.ValidationError):
@@ -163,7 +163,7 @@ def test_saving_facebook_schedule_discards_old_nurture_flags(monkeypatch):
             "updated_at": "2026-11-04T12:30:00Z",
         }
     )
-    monkeypatch.setattr(routes.schedules_cfg, "upsert_crawl_schedule", save)
+    monkeypatch.setattr(routes.schedules_db, "upsert_crawl_schedule", save)
     asyncio.run(
         routes.set_crawl_schedule(
             "facebook",

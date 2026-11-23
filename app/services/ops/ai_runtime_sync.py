@@ -16,7 +16,7 @@ from sqlalchemy.schema import CreateTable
 from app.ai.providers.client import active_provider_key
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec, d1_insert_many, metadata
-from app.services.accounts.config_db import ai_config as ai_config_cfg
+from app.services.accounts.config_db.ai_config import list_ai_providers
 
 logger = get_logger(__name__)
 
@@ -46,7 +46,7 @@ async def sync_ai_runtime() -> int:
     """Số nhà cung cấp đã chép; -1 khi lỗi (đã log)."""
     try:
         active = await active_provider_key()
-        rows = [row for row in await ai_config_cfg.list_ai_providers() if row.get("base_url")]
+        rows = [row for row in await list_ai_providers() if row.get("base_url")]
         if await d1_exec(CreateTable(ai_runtime, if_not_exists=True), quiet=True) is None:
             raise RuntimeError("ai_runtime_create_failed")
         now = datetime.now(tz=UTC).isoformat(timespec="seconds")

@@ -45,9 +45,9 @@ from app.schemas.settings import (
     parse_run_times,
 )
 from app.services.accounts.account_health import evaluate_account_health
-from app.services.accounts.config_db import accounts as accounts_cfg
-from app.services.accounts.config_db import proxy_settings as proxy_settings_cfg
-from app.services.accounts.config_db import schedules as schedules_cfg
+from app.services.accounts.config_db import accounts as accounts_db
+from app.services.accounts.config_db import proxy_settings as proxy_settings_db
+from app.services.accounts.config_db import schedules as schedules_db
 from app.services.accounts.platform_token import account_key as _account_key
 from app.services.accounts.user_agent import merge_user_agent, split_user_agent
 
@@ -57,7 +57,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 @router.get("/accounts", response_model=list[AccountOut])
 async def list_accounts(platform: str | None = Query(default=None)) -> list[AccountOut]:
-    rows = await accounts_cfg.list_accounts(platform, with_secrets=False)
+    rows = await accounts_db.list_accounts(platform, with_secrets=False)
     return [AccountOut.masked(row) for row in rows]
 
 
@@ -65,7 +65,7 @@ async def list_accounts(platform: str | None = Query(default=None)) -> list[Acco
 async def create_account(payload: AccountCreate) -> AccountOut:
     fields = _with_user_agent(payload.model_dump())
     _refuse_bad_cookie(fields["platform"], fields["account_id"], fields.get("cookie") or "")
-    row = await accounts_cfg.create_account(fields)
+    row = await accounts_db.create_account(fields)
     await _record_cookie_saved(row)
     return AccountOut.masked(row)
 
@@ -84,7 +84,7 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
     # giữ UA đang lưu.
     user_agent = (changes.pop("user_agent", None) or "").strip()
     if user_agent or "cookie" in changes:
-        current = await accounts_cfg.get_account(account_id)
+        current = await accounts_db.get_account(account_id)
         if current is None:
             raise NotFoundError(f"Account {account_id} not found.")
         stored_cookie = current.get("cookie") or ""
@@ -98,11 +98,11 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
         elif "cookie" in changes:
             _refuse_bad_cookie(current["platform"], current["account_id"], changes["cookie"])
     if not changes:
-        row = await accounts_cfg.get_account(account_id)
+        row = await accounts_db.get_account(account_id)
         if row is None:
             raise NotFoundError(f"Account {account_id} not found.")
         return AccountOut.masked(row)
-    row = await accounts_cfg.update_account(account_id, changes)
+    row = await accounts_db.update_account(account_id, changes)
     if "cookie" in changes:
         await _record_cookie_saved(row)
     return AccountOut.masked(row)
@@ -110,7 +110,7 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
 
 @router.get("/accounts/{account_id}/credentials", response_model=AccountCredentialsOut)
 async def get_account_credentials(account_id: int) -> AccountCredentialsOut:
-    row = await accounts_cfg.get_account(account_id)
+    row = await accounts_db.get_account(account_id)
     if row is None:
         raise NotFoundError(f"Account {account_id} not found.")
     logger.info("account_credentials_viewed", account_id=account_id)
@@ -125,8 +125,8 @@ _ACCOUNT_REDIS_KEYS = ("session_cache", "storage_state", "comments_query", "repl
 
 @router.delete("/accounts/{account_id}")
 async def delete_account(account_id: int) -> dict[str, bool]:
-    account = await accounts_cfg.get_account(account_id)
-    await accounts_cfg.delete_account(account_id)
+    account = await accounts_db.get_account(account_id)
+    await accounts_db.delete_account(account_id)
     if account is not None and account.get("platform") in ("facebook", "threads"):
         # Không dọn thì session cache + con trỏ active_account của tài khoản đã xoá vẫn còn: token-status vẫn báo tài
         # khoản đó và crawler vẫn dùng tiếp session của nó.
@@ -149,7 +149,7 @@ async def nurture_accounts(payload: NurtureRequest) -> NurtureResponse:
     Facebook không còn luồng nuôi; chỉ cần bật account và lịch crawl."""
     targets: list[tuple[str, str | None]] = []
     if payload.account_id is not None:
-        account = await accounts_cfg.get_account(payload.account_id)
+        account = await accounts_db.get_account(payload.account_id)
         if account is None:
             raise NotFoundError(f"Account {payload.account_id} not found")
         platform = account["platform"]
@@ -180,11 +180,11 @@ async def check_account(account_id: int) -> AccountOut:
     """Kiểm tra sức khoẻ thụ động - đọc các tín hiệu spider-hub vốn đã duy trì (bộ đếm bị
     chặn trong Redis, cache session) thay vì gửi request mới tới nền tảng. Xem
     app/services/accounts/account_health.py."""
-    account = await accounts_cfg.get_account(account_id)
+    account = await accounts_db.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
     status = await evaluate_account_health(account)
-    row = await accounts_cfg.update_account_check_result(account_id, status=status)
+    row = await accounts_db.update_account_check_result(account_id, status=status)
     return AccountOut.masked(row)
 
 
@@ -194,7 +194,7 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
     đúng phép tính mà một app authenticator làm. Dành cho người đang tự đăng nhập *bằng
     tay* khi việc đăng nhập tự động không qua được - họ vẫn đọc mã rồi tự gõ, endpoint
     này chỉ đỡ cho họ phải chạy `pyotp.TOTP(secret).now()` trong terminal."""
-    account = await accounts_cfg.get_account(account_id)
+    account = await accounts_db.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
     # App/người bán thường cho secret dạng "ABCD EFGH ...", pyotp từ chối khoảng trắng.
@@ -214,8 +214,8 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
 async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> AccountOut:
     """Nút bật/tắt tài khoản trên dashboard - bật lại cũng gỡ checkpoint/cooldown (xem
     config_db/accounts.set_account_enabled)."""
-    row = await accounts_cfg.set_account_enabled(account_id, payload.enabled)
-    await accounts_cfg.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
+    row = await accounts_db.set_account_enabled(account_id, payload.enabled)
+    await accounts_db.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
     return AccountOut.masked(row)
 
 
@@ -226,7 +226,7 @@ async def reset_tiktok_cookies(account_id: int) -> dict[str, bool]:
     trong app/clients/kafka.py. Chỉ dành cho TikTok: Facebook/Threads dùng các route
     token_refresh cho cả nền tảng (xem app/api/routes/token_refresh.py), chạy lại luồng
     bootstrap trình duyệt bằng mật khẩu/2FA của riêng chúng thay vì nhắm một dòng."""
-    account = await accounts_cfg.get_account(account_id)
+    account = await accounts_db.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
     if account["platform"] != "tiktok":
@@ -237,31 +237,31 @@ async def reset_tiktok_cookies(account_id: int) -> dict[str, bool]:
 
 @router.get("/proxies", response_model=list[ProxyOut])
 async def list_proxies(platform: str | None = Query(default=None)) -> list[ProxyOut]:
-    rows = await accounts_cfg.list_proxies(platform)
+    rows = await accounts_db.list_proxies(platform)
     return [ProxyOut(**row) for row in rows]
 
 
 @router.post("/proxies", response_model=ProxyOut)
 async def create_proxy(payload: ProxyCreate) -> ProxyOut:
-    row = await accounts_cfg.create_proxy(payload.model_dump())
+    row = await accounts_db.create_proxy(payload.model_dump())
     return ProxyOut(**row)
 
 
 @router.patch("/proxies/{proxy_id}", response_model=ProxyOut)
 async def update_proxy(proxy_id: int, payload: ProxyUpdate) -> ProxyOut:
-    row = await accounts_cfg.update_proxy(proxy_id, payload.model_dump(exclude_unset=True))
+    row = await accounts_db.update_proxy(proxy_id, payload.model_dump(exclude_unset=True))
     return ProxyOut(**row)
 
 
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int) -> dict[str, bool]:
-    await accounts_cfg.delete_proxy(proxy_id)
+    await accounts_db.delete_proxy(proxy_id)
     return {"ok": True}
 
 
 def _proxy_settings_out(row: dict) -> ProxySettingsOut:
     settings = row.get("settings") if isinstance(row.get("settings"), dict) else {}
-    merged = proxy_settings_cfg.merge_proxy_settings(settings)
+    merged = proxy_settings_db.merge_proxy_settings(settings)
     return ProxySettingsOut(values=ProxySettings(**merged), defaults=ProxySettings(), updated_at=row.get("updated_at"))
 
 
@@ -270,7 +270,7 @@ async def get_proxy_settings() -> ProxySettingsOut:
     """Các tham số tinh chỉnh hành vi proxy mà spider-hub đọc (ghim proxy, cooldown, health
     check, nhịp gọi API của nhà cung cấp, backoff khi xếp hàng lại, số lần thử danh tính
     synthetic của TikTok)."""
-    return _proxy_settings_out(await proxy_settings_cfg.get_proxy_settings())
+    return _proxy_settings_out(await proxy_settings_db.get_proxy_settings())
 
 
 @router.put("/proxy", response_model=ProxySettingsOut)
@@ -279,7 +279,7 @@ async def set_proxy_settings(payload: ProxySettings) -> ProxySettingsOut:
         raise ValidationError("cooldown_base_minutes must not exceed cooldown_max_minutes")
     if payload.exhausted_backoff_base_seconds > payload.exhausted_backoff_max_seconds:
         raise ValidationError("exhausted_backoff_base_seconds must not exceed exhausted_backoff_max_seconds")
-    row = await proxy_settings_cfg.upsert_proxy_settings(payload.model_dump())
+    row = await proxy_settings_db.upsert_proxy_settings(payload.model_dump())
     logger.info("proxy_settings_updated", **payload.model_dump())
     return _proxy_settings_out(row)
 
@@ -301,7 +301,7 @@ async def list_proxy_providers() -> list[ProxyProviderOut]:
     """Các nguồn proxy của nhà cung cấp (dòng proxy_providers) - nơi duy nhất
     spider-hub đọc key của nhà cung cấp. Không bao giờ trả về key, chỉ cho biết đã
     lưu key hay chưa."""
-    return [_proxy_provider_out(row) for row in await proxy_settings_cfg.list_proxy_providers()]
+    return [_proxy_provider_out(row) for row in await proxy_settings_db.list_proxy_providers()]
 
 
 @router.put("/proxy/providers/{key}", response_model=ProxyProviderOut)
@@ -314,7 +314,7 @@ async def set_proxy_provider(key: str, payload: ProxyProviderUpdate) -> ProxyPro
     if not re.fullmatch(r"[a-z0-9_]{1,64}", key):
         raise ValidationError("provider key must be 1-64 chars of a-z, 0-9, _")
     token = payload.token.strip() if payload.token and payload.token.strip() else None
-    row = await proxy_settings_cfg.upsert_proxy_provider(key, api_url=payload.api_url.strip(), token=token)
+    row = await proxy_settings_db.upsert_proxy_provider(key, api_url=payload.api_url.strip(), token=token)
     logger.info("proxy_provider_updated", key=key, api_url=payload.api_url.strip(), token_changed=token is not None)
     return _proxy_provider_out(row)
 
@@ -324,38 +324,38 @@ async def delete_proxy_provider(key: str) -> dict[str, bool]:
     """Xoá nguồn proxy. Nguồn đang được dùng (có dòng platform_proxies trỏ tới, hoặc là
     nguồn của tiktok_synthetic_provider) thì bị từ chối - xoá nó sẽ để những proxy đó mồ
     côi mà không ai hỏi."""
-    await proxy_settings_cfg.delete_proxy_provider(key)
+    await proxy_settings_db.delete_proxy_provider(key)
     logger.info("proxy_provider_deleted", key=key)
     return {"ok": True}
 
 
 @router.get("/filter-keywords", response_model=list[FilterKeywordOut])
 async def list_filter_keywords(category: str | None = Query(default=None)) -> list[FilterKeywordOut]:
-    rows = await schedules_cfg.list_filter_keywords(category)
+    rows = await schedules_db.list_filter_keywords(category)
     return [FilterKeywordOut(**row) for row in rows]
 
 
 @router.post("/filter-keywords", response_model=FilterKeywordOut)
 async def create_filter_keyword(payload: FilterKeywordCreate) -> FilterKeywordOut:
-    row = await schedules_cfg.create_filter_keyword(payload.model_dump())
+    row = await schedules_db.create_filter_keyword(payload.model_dump())
     return FilterKeywordOut(**row)
 
 
 @router.patch("/filter-keywords/{keyword_id}", response_model=FilterKeywordOut)
 async def update_filter_keyword(keyword_id: int, payload: FilterKeywordUpdate) -> FilterKeywordOut:
-    row = await schedules_cfg.update_filter_keyword(keyword_id, payload.model_dump(exclude_unset=True))
+    row = await schedules_db.update_filter_keyword(keyword_id, payload.model_dump(exclude_unset=True))
     return FilterKeywordOut(**row)
 
 
 @router.delete("/filter-keywords/{keyword_id}")
 async def delete_filter_keyword(keyword_id: int) -> dict[str, bool]:
-    await schedules_cfg.delete_filter_keyword(keyword_id)
+    await schedules_db.delete_filter_keyword(keyword_id)
     return {"ok": True}
 
 
 @router.get("/crawl-schedule", response_model=list[CrawlScheduleOut])
 async def list_crawl_schedule() -> list[CrawlScheduleOut]:
-    rows = await schedules_cfg.list_crawl_schedules()
+    rows = await schedules_db.list_crawl_schedules()
     return [_crawl_schedule_out(row) for row in rows]
 
 
@@ -369,7 +369,7 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
     """Upsert - một nền tảng chưa có dòng nào cho tới khi lịch của nó được lưu lần đầu (xem
     app/services/crawl/scheduler/, chỗ đó chỉ bỏ qua nền tảng chưa có dòng chứ không coi đó
     là "mỗi nửa đêm" hay một mặc định ngầm nào khác)."""
-    row = await schedules_cfg.upsert_crawl_schedule(
+    row = await schedules_db.upsert_crawl_schedule(
         platform,
         run_time=",".join(payload.run_times or []),
         enabled=payload.enabled,
@@ -381,7 +381,7 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
 
 @router.get("/comment-schedule", response_model=list[CommentScheduleOut])
 async def list_comment_schedule() -> list[CommentScheduleOut]:
-    rows = await schedules_cfg.list_comment_crawl_schedules()
+    rows = await schedules_db.list_comment_crawl_schedules()
     return [CommentScheduleOut(**row) for row in rows]
 
 
@@ -389,7 +389,7 @@ async def list_comment_schedule() -> list[CommentScheduleOut]:
 async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) -> CommentScheduleOut:
     """Upsert - một nền tảng chưa có dòng ở đây cho tới khi lượt quét comment của nó được
     lưu lần đầu, giống /crawl-schedule/{platform} phía trên."""
-    row = await schedules_cfg.upsert_comment_crawl_schedule(
+    row = await schedules_db.upsert_comment_crawl_schedule(
         platform, run_time=payload.run_time, enabled=payload.enabled, top_n=payload.top_n
     )
     return CommentScheduleOut(**row)

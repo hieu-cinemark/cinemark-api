@@ -13,12 +13,12 @@ def test_discovery_enabled_reads_the_toggle(monkeypatch):
     async def broken():
         raise RuntimeError("db down")
 
-    monkeypatch.setattr(scheduler.omar_cfg, "get_discovery_settings", off)
+    monkeypatch.setattr(scheduler, "get_discovery_settings", off)
     assert asyncio.run(scheduler.discovery_enabled()) is False
-    monkeypatch.setattr(scheduler.omar_cfg, "get_discovery_settings", on)
+    monkeypatch.setattr(scheduler, "get_discovery_settings", on)
     assert asyncio.run(scheduler.discovery_enabled()) is True
     # Không đọc được: giữ hành vi cũ (bật) thay vì lặng lẽ tắt.
-    monkeypatch.setattr(scheduler.omar_cfg, "get_discovery_settings", broken)
+    monkeypatch.setattr(scheduler, "get_discovery_settings", broken)
     assert asyncio.run(scheduler.discovery_enabled()) is True
 
 
@@ -44,7 +44,7 @@ def _tick(monkeypatch, *, enabled):
 
     monkeypatch.setattr(scheduler, "get_redis_client", lambda: _FakeRedis())
     monkeypatch.setattr(scheduler, "is_due", lambda run_time, now: True)
-    monkeypatch.setattr(scheduler.omar_cfg, "get_discovery_settings", settings_row)
+    monkeypatch.setattr(scheduler, "get_discovery_settings", settings_row)
     monkeypatch.setattr(scheduler.threads_channels, "auto_add_authors", lambda: job("threads"))
     monkeypatch.setattr(scheduler, "run_query_discovery", lambda: job("queries"))
     monkeypatch.setattr(scheduler, "review_source_pages", lambda: job("sources"))

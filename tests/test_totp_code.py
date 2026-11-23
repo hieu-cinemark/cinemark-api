@@ -15,7 +15,7 @@ def _call(monkeypatch, secret):
     async def get_account(account_id):
         return {"totp_secret": secret}
 
-    monkeypatch.setattr(routes.accounts_cfg, "get_account", get_account)
+    monkeypatch.setattr(routes.accounts_db, "get_account", get_account)
     return asyncio.run(routes.get_totp_code(122))
 
 

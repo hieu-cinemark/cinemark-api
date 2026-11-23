@@ -14,7 +14,7 @@ from app.schemas.settings import (
     ImportParseRequest,
     ImportParseResponse,
 )
-from app.services.accounts.config_db import accounts as accounts_cfg
+from app.services.accounts.config_db.accounts import create_account, create_proxy
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -56,9 +56,9 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
                 _refuse_bad_cookie(
                     payload.platform, str(account_fields.get("account_id") or ""), account_fields.get("cookie") or ""
                 )
-                await _record_cookie_saved(await accounts_cfg.create_account(account_fields))
+                await _record_cookie_saved(await create_account(account_fields))
             else:
-                await accounts_cfg.create_proxy(fields)
+                await create_proxy(fields)
             created += 1
         except Exception as exc:  # noqa: BLE001 - một dòng nhập lỗi chỉ tính vào số dòng thất bại, các dòng khác vẫn lưu
             logger.warning("import_commit_row_failed", target=payload.target, error=exc)

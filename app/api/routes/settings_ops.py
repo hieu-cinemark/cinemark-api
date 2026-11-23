@@ -16,8 +16,8 @@ from app.schemas.settings import (
     OmarApiSettingsOut,
     OmarApiSettingsUpdate,
 )
-from app.services.accounts.config_db import cleanup as cleanup_cfg
-from app.services.accounts.config_db import omar as omar_cfg
+from app.services.accounts.config_db import cleanup as cleanup_db
+from app.services.accounts.config_db import omar as omar_db
 from app.services.crawl.scheduler import purge_in_progress, run_purge_now
 
 logger = get_logger(__name__)
@@ -50,8 +50,8 @@ async def get_cleanup_route() -> CleanupSettingsOut:
     """Các tham số đang có hiệu lực (giá trị lưu trên dashboard đè lên mặc định từ env),
     dòng của lần chạy gần nhất trong cleanup_run_history, và có lượt chạy nào đang diễn
     ra không (dashboard dùng thông tin này để khoá nút Run-now và hiện "Running…")."""
-    row = await cleanup_cfg.get_cleanup_settings()
-    history = await cleanup_cfg.list_cleanup_run_history(limit=1)
+    row = await cleanup_db.get_cleanup_settings()
+    history = await cleanup_db.list_cleanup_run_history(limit=1)
     return _cleanup_settings_out(row, last_run=history[0] if history else None)
 
 
@@ -62,9 +62,9 @@ async def set_cleanup_route(payload: CleanupSettingsUpdate) -> CleanupSettingsOu
     allowed = {"run_time", "enabled", "grace_hours"}
     set_fields = set(payload.model_fields_set) & allowed
     values_to_write = {key: getattr(payload, key) for key in set_fields}
-    row = await cleanup_cfg.upsert_cleanup_settings(values_to_write)
+    row = await cleanup_db.upsert_cleanup_settings(values_to_write)
     logger.info("cleanup_settings_updated", **values_to_write)
-    history = await cleanup_cfg.list_cleanup_run_history(limit=1)
+    history = await cleanup_db.list_cleanup_run_history(limit=1)
     return _cleanup_settings_out(row, last_run=history[0] if history else None)
 
 
@@ -83,19 +83,19 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
     """Danh sách các dòng cleanup_run_history, mới nhất trước, giới hạn bởi `limit` (mặc
     định 20). Số liệu của mỗi mục là số id thật từ DELETE RETURNING trong cleanup.py -
     cùng con số được log trong `irrelevant_purge_done telegram=True`."""
-    rows = await cleanup_cfg.list_cleanup_run_history(limit=limit)
+    rows = await cleanup_db.list_cleanup_run_history(limit=limit)
     return [CleanupRunHistoryEntry(**row) for row in rows]
 
 
 @router.get("/discovery", response_model=DiscoverySettings)
 async def get_discovery_settings() -> DiscoverySettings:
     """AI có đang tự thêm hashtag / câu tìm kiếm / trang nguồn mới không (scheduler/discovery.discovery_enabled)."""
-    return DiscoverySettings(**await omar_cfg.get_discovery_settings())
+    return DiscoverySettings(**await omar_db.get_discovery_settings())
 
 
 @router.put("/discovery", response_model=DiscoverySettings)
 async def set_discovery_settings(payload: DiscoverySettingsUpdate) -> DiscoverySettings:
-    return DiscoverySettings(**await omar_cfg.set_discovery_enabled(payload.enabled))
+    return DiscoverySettings(**await omar_db.set_discovery_enabled(payload.enabled))
 
 
 @router.get("/omar-api", response_model=OmarApiSettingsOut)
@@ -104,7 +104,7 @@ async def get_omar_api_settings() -> OmarApiSettingsOut:
     ngày và số request đồng thời. API key được đọc từ bảng omar_api_settings trên D1."""
     from app.core.config import settings as app_settings
 
-    row = await omar_cfg.get_omar_api_settings()
+    row = await omar_db.get_omar_api_settings()
     return OmarApiSettingsOut(
         api_key_set=bool(row and row.get("api_key")),
         base_url=app_settings.omar_api_base_url,
@@ -127,8 +127,8 @@ async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettin
     from app.services.omar import omar_pause
 
     if payload.api_key is not None:
-        await omar_cfg.upsert_omar_api_key(payload.api_key.strip())
-    await omar_cfg.set_omar_limits(
+        await omar_db.upsert_omar_api_key(payload.api_key.strip())
+    await omar_db.set_omar_limits(
         requests_per_minute=payload.requests_per_minute,
         daily_requests=payload.daily_requests,
         concurrency=payload.concurrency,
@@ -138,7 +138,7 @@ async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettin
         app_settings.omar_api_base_url = payload.base_url.strip()
 
     result = await get_omar_api_settings()
-    key = ((await omar_cfg.get_omar_api_settings()) or {}).get("api_key") or ""
+    key = ((await omar_db.get_omar_api_settings()) or {}).get("api_key") or ""
     if payload.api_key is not None and key:
         usage = await fetch_usage(key)
         # /usage trả status "active" khi key dùng được; không đọc được (key sai / Omar lỗi) thì usage là None.

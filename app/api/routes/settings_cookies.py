@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.core.errors import CookieRefusedError
-from app.services.accounts.config_db import accounts as accounts_cfg
+from app.services.accounts.config_db.accounts import record_account_event
 from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.user_agent import merge_user_agent
 
@@ -22,9 +22,7 @@ def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
 
 async def _record_cookie_saved(row: dict) -> None:
     if row.get("platform") == "facebook" and row.get("cookie"):
-        await accounts_cfg.record_account_event(
-            row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts
-        )
+        await record_account_event(row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts)
 
 
 def _with_user_agent(fields: dict) -> dict:
