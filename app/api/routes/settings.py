@@ -11,13 +11,12 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Query
-from pydantic import ValidationError as PydanticValidationError
 from pyotp import TOTP
 
-from app.ai.tasks.import_parser import parse_import
+from app.api.routes.settings_cookies import _record_cookie_saved, _refuse_bad_cookie, _with_user_agent
 from app.clients.kafka import publish_nurture_request, publish_tiktok_identity_reset
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
-from app.core.errors import CookieRefusedError, NotFoundError, UpstreamError, ValidationError
+from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.schemas.settings import (
     ACCOUNT_SECRET_FIELDS,
@@ -26,34 +25,15 @@ from app.schemas.settings import (
     AccountOut,
     AccountSetEnabled,
     AccountUpdate,
-    AiActiveProviderUpdate,
-    AiModelsOut,
-    AiModelsRequest,
-    AiProviderOut,
-    AiProviderUpdate,
-    AiSettingsOut,
-    AiSettingsUpdate,
-    CleanupRunHistoryEntry,
-    CleanupSettings,
-    CleanupSettingsOut,
-    CleanupSettingsUpdate,
     CommentScheduleOut,
     CommentScheduleUpdate,
     CrawlScheduleOut,
     CrawlScheduleUpdate,
-    DiscoverySettings,
-    DiscoverySettingsUpdate,
     FilterKeywordCreate,
     FilterKeywordOut,
     FilterKeywordUpdate,
-    ImportCommitRequest,
-    ImportCommitResponse,
-    ImportParseRequest,
-    ImportParseResponse,
     NurtureRequest,
     NurtureResponse,
-    OmarApiSettingsOut,
-    OmarApiSettingsUpdate,
     ProxyCreate,
     ProxyOut,
     ProxyProviderOut,
@@ -66,15 +46,10 @@ from app.schemas.settings import (
 )
 from app.services.accounts.account_health import evaluate_account_health
 from app.services.accounts.config_db import accounts as accounts_cfg
-from app.services.accounts.config_db import ai_config as ai_config_cfg
-from app.services.accounts.config_db import cleanup as cleanup_cfg
-from app.services.accounts.config_db import omar as omar_cfg
 from app.services.accounts.config_db import proxy_settings as proxy_settings_cfg
 from app.services.accounts.config_db import schedules as schedules_cfg
-from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.platform_token import account_key as _account_key
 from app.services.accounts.user_agent import merge_user_agent, split_user_agent
-from app.services.crawl.scheduler import purge_in_progress, run_purge_now
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -93,33 +68,6 @@ async def create_account(payload: AccountCreate) -> AccountOut:
     row = await accounts_cfg.create_account(fields)
     await _record_cookie_saved(row)
     return AccountOut.masked(row)
-
-
-def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
-    """Cookie Facebook được kiểm tra ngay khi nhập, trước khi có request nào lên Facebook (cookie_quality.py). Cookie trống vẫn
-    lưu được: tài khoản có thể thêm trước, nhập phiên sau."""
-    if platform != "facebook" or not cookie.strip():
-        return
-    # Thiếu mỗi User-Agent thì vẫn lưu (18/11/2026): tài khoản mua sẵn thường chỉ kèm cookie, UA nhập bổ sung sau ở form sửa.
-    # Không mở được cửa nào: spider-hub (accounts/session_quality.py) vẫn chặn trước request đầu tiên cho tới khi có UA.
-    problems = [p for p in assess_cookie(cookie, account_id).problems if p != "missing_user_agent"]
-    if problems:
-        raise CookieRefusedError(",".join(problems))
-
-
-async def _record_cookie_saved(row: dict) -> None:
-    if row.get("platform") == "facebook" and row.get("cookie"):
-        await accounts_cfg.record_account_event(
-            row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts
-        )
-
-
-def _with_user_agent(fields: dict) -> dict:
-    """Ô User-Agent (form thêm tài khoản / import) -> ghép vào cookie dạng useragent=<base64> mà spider-hub đọc."""
-    user_agent = str(fields.pop("user_agent", "") or "").strip()
-    if user_agent:
-        fields["cookie"] = merge_user_agent(fields.get("cookie") or "", user_agent)
-    return fields
 
 
 @router.patch("/accounts/{account_id}", response_model=AccountOut)
@@ -447,343 +395,11 @@ async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) ->
     return CommentScheduleOut(**row)
 
 
-async def _ai_settings_out(row: dict) -> AiSettingsOut:
-    from app.ai.prompts.defaults import AI_PROMPT_TASKS, default_system_prompts
-    from app.ai.providers.client import active_provider_key
-
-    active = await active_provider_key()
-    provider = await ai_config_cfg.get_ai_provider(active) if active else None
-    defaults = default_system_prompts()
-    stored = value if isinstance(value := row.get("prompts"), dict) else {}
-    prompts = []
-    for task in AI_PROMPT_TASKS:
-        default = defaults.get(task, "")
-        current = str(stored.get(task) or "").strip() or default
-        prompts.append(
-            {
-                "task": task,
-                "system_prompt": current,
-                "default_system_prompt": default,
-            }
-        )
-    return AiSettingsOut(
-        enabled=bool(row.get("enabled")),
-        # Lấy thẳng từ ai_providers - rỗng nghĩa là "chưa đặt", không bao giờ đoán.
-        model=str((provider or {}).get("model") or ""),
-        configured=bool(provider and provider.get("base_url") and provider.get("api_key")),
-        prompts=prompts,
-        active_provider=active,
-        updated_at=row.get("updated_at"),
-    )
-
-
-@router.get("/ai", response_model=AiSettingsOut)
-async def get_ai_settings() -> AiSettingsOut:
-    row = await ai_config_cfg.get_ai_settings()
-    return await _ai_settings_out(row)
-
-
-@router.put("/ai", response_model=AiSettingsOut)
-async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
-    """Công tắc bật/tắt AI cho các bộ phân loại lúc ingest và prompt theo từng task. Nhà cung cấp và model chọn ở /ai/providers."""
-    from app.ai.prompts.defaults import AI_PROMPT_TASKS
-    from app.ai.runtime import invalidate_ai_runtime_cache
-
-    allowed = set(AI_PROMPT_TASKS)
-    prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
-    row = await ai_config_cfg.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
-    invalidate_ai_runtime_cache()
-    logger.info("ai_settings_updated", enabled=payload.enabled, prompt_tasks=sorted(prompts))
-    return await _ai_settings_out(row)
-
-
-def _ai_provider_out(row: dict, active: str = "") -> AiProviderOut:
-    return AiProviderOut(
-        key=row["key"],
-        base_url=row.get("base_url") or "",
-        api_key_set=bool(row.get("api_key")),
-        model=row.get("model") or "",
-        reasoning_effort=row.get("reasoning_effort") or "",
-        active=bool(active) and row["key"] == active,
-        updated_at=row.get("updated_at"),
-    )
-
-
-@router.put("/ai/active", response_model=AiSettingsOut)
-async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsOut:
-    """Chọn nhà cung cấp cho MỌI lời gọi AI - cinemark-api, spider-hub (đọc D1) và Worker cinemark
-    (qua ai_runtime của D1) đều theo trong vòng một phút."""
-    from app.ai.providers.client import invalidate_provider_cache
-    from app.ai.runtime import invalidate_ai_runtime_cache
-    from app.services.ops.ai_runtime_sync import sync_ai_runtime
-
-    row = await ai_config_cfg.get_ai_provider(payload.provider)
-    if not row or not row.get("base_url") or not row.get("api_key") or not row.get("model"):
-        raise ValidationError(f"Provider {payload.provider} is missing base URL / API key / model")
-    await ai_config_cfg.set_active_ai_provider(payload.provider)
-    invalidate_provider_cache()
-    invalidate_ai_runtime_cache()
-    await sync_ai_runtime()
-    logger.info("ai_active_provider_set", provider=payload.provider)
-    return await _ai_settings_out(await ai_config_cfg.get_ai_settings())
-
-
-@router.get("/ai/providers", response_model=list[AiProviderOut])
-async def list_ai_providers() -> list[AiProviderOut]:
-    """Mọi nhà cung cấp AI đã thêm ({key, base_url, model, active} - không bao giờ trả về api_key, chỉ cho biết đã đặt hay chưa)."""
-    from app.ai.providers.client import active_provider_key
-
-    active = await active_provider_key()
-    return [_ai_provider_out(row, active) for row in await ai_config_cfg.list_ai_providers()]
-
-
-@router.put("/ai/providers/{key}", response_model=AiProviderOut)
-async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
-    """Thêm hoặc sửa một nhà cung cấp (`key` mới thì tạo). Bỏ trống api_key thì giữ key đã lưu. Nhà cung cấp đầu tiên đủ thông
-    tin khi chưa có nhà cung cấp nào được chọn thì tự được chọn."""
-    from app.ai.providers.client import active_provider_key, invalidate_provider_cache
-    from app.ai.runtime import invalidate_ai_runtime_cache
-    from app.services.ops.ai_runtime_sync import sync_ai_runtime
-
-    if not re.fullmatch(r"[a-z0-9_-]{1,40}", key):
-        raise ValidationError(
-            "Provider name may only contain lowercase letters, digits, hyphens and underscores (max 40 characters)"
-        )
-    api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
-    row = await ai_config_cfg.upsert_ai_provider(
-        key,
-        base_url=payload.base_url.strip(),
-        api_key=api_key,
-        model=payload.model.strip(),
-        reasoning_effort=payload.reasoning_effort,
-    )
-    active = await active_provider_key()
-    if not active and row.get("base_url") and row.get("api_key") and row.get("model"):
-        await ai_config_cfg.set_active_ai_provider(key)
-        active = key
-    invalidate_provider_cache()
-    invalidate_ai_runtime_cache()
-    await sync_ai_runtime()
-    logger.info("ai_provider_updated", key=key, base_url=payload.base_url.strip(), model=payload.model.strip())
-    return _ai_provider_out(row, active)
-
-
-@router.delete("/ai/providers/{key}", status_code=204)
-async def delete_ai_provider(key: str) -> None:
-    """Xoá một nhà cung cấp. Không xoá được nhà cung cấp đang chọn - chọn nhà cung cấp khác trước."""
-    from app.ai.providers.client import active_provider_key, invalidate_provider_cache
-    from app.services.ops.ai_runtime_sync import sync_ai_runtime
-
-    if key == await active_provider_key():
-        raise ValidationError("This provider is currently in use - select another provider before deleting it")
-    if not await ai_config_cfg.delete_ai_provider(key):
-        raise NotFoundError(f"Provider {key} not found")
-    invalidate_provider_cache()
-    await sync_ai_runtime()
-    logger.info("ai_provider_deleted", key=key)
-
-
-@router.post("/ai/models", response_model=AiModelsOut)
-async def list_ai_models(payload: AiModelsRequest) -> AiModelsOut:
-    """Danh sách model của một nhà cung cấp (GET {base_url}/models) để chọn ở form. api_key trống thì dùng key đã lưu của `key`."""
-    import httpx
-
-    api_key = (payload.api_key or "").strip()
-    if not api_key and payload.key:
-        api_key = str((await ai_config_cfg.get_ai_provider(payload.key) or {}).get("api_key") or "")
-    if not api_key:
-        raise ValidationError("An API key is required (or choose a provider with a saved key) to list models")
-    url = payload.base_url.strip().rstrip("/")
-    url = url.removesuffix("/chat/completions")
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            resp = await client.get(f"{url}/models", headers={"Authorization": f"Bearer {api_key}"})
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        raise UpstreamError(f"Could not fetch the model list from {url}/models ({type(exc).__name__})") from exc
-    items = data.get("data") if isinstance(data, dict) else data
-    ids = sorted({str(item.get("id")) for item in items or [] if isinstance(item, dict) and item.get("id")})
-    return AiModelsOut(models=ids)
-
-
-@router.post("/import/parse", response_model=ImportParseResponse)
-async def import_parse(payload: ImportParseRequest) -> ImportParseResponse:
-    """Bước 1 của import hàng loạt có AI hỗ trợ (xem app/ai/tasks/import_parser.py) - biến
-    dữ liệu tài khoản/proxy dán vào dạng tự do thành các dòng ứng viên có cấu trúc để
-    dashboard hiển thị thành bản xem trước sửa được. Không bao giờ tự ghi vào DB; xem
-    /import/commit bên dưới cho việc đó."""
-    try:
-        rows = await parse_import(payload.target, payload.format_hint, payload.content)
-    except Exception as exc:
-        raise ValidationError(
-            f"Could not parse the pasted content ({exc}) - try describing the format more precisely, "
-            "or pasting a smaller batch."
-        ) from exc
-    if not rows:
-        raise ValidationError("No rows could be extracted from the pasted content - check the format description.")
-    return ImportParseResponse(rows=rows)
-
-
-@router.post("/import/commit", response_model=ImportCommitResponse)
-async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
-    """Bước 2 - người vận hành đã xem/sửa bản xem trước của /import/parse và đang xác
-    nhận. Ghi từng dòng bằng create_account/create_proxy (cùng đường cột được cho phép
-    mà form thêm tài khoản/proxy thông thường dùng, xem config_db/accounts.py) - dòng nào
-    lỗi (ví dụ account_id trùng) thì bỏ qua, không làm hỏng phần còn lại của lô."""
-    created = 0
-    failed = 0
-    for row in payload.rows:
-        # Giữ "enabled" mà người vận hành đã đặt rõ khi sửa bản xem trước /import/parse (ví
-        # dụ bỏ chọn một dòng đáng ngờ) - chỉ mặc định True khi dòng không có trường này.
-        fields = {**row, "platform": payload.platform, "enabled": row.get("enabled", True)}
-        try:
-            if payload.target == "accounts":
-                account_fields = _with_user_agent(fields)
-                _refuse_bad_cookie(
-                    payload.platform, str(account_fields.get("account_id") or ""), account_fields.get("cookie") or ""
-                )
-                await _record_cookie_saved(await accounts_cfg.create_account(account_fields))
-            else:
-                await accounts_cfg.create_proxy(fields)
-            created += 1
-        except Exception as exc:  # noqa: BLE001 - một dòng nhập lỗi chỉ tính vào số dòng thất bại, các dòng khác vẫn lưu
-            logger.warning("import_commit_row_failed", target=payload.target, error=exc)
-            failed += 1
-    return ImportCommitResponse(created=created, failed=failed)
-
-
 # --- Dọn bài không liên quan (app/services/relevance/cleanup.py) ---
 # Cùng dạng với /settings/proxy: giá trị đã lưu được trộn lên trên mặc định của
 # schema, nên một dòng có từ trước khi thêm trường mới (hoặc thiếu key) chỉ nhận giá
 # trị mặc định cho key đó thay vì làm trang lỗi 500.
 
 
-def _cleanup_settings_out(row: dict, *, last_run: dict | None) -> CleanupSettingsOut:
-    stored = value if isinstance(value := row.get("settings"), dict) else {}
-    defaults = CleanupSettings()
-    merged: dict = defaults.model_dump()
-    for key, value in stored.items():
-        if key not in merged:
-            continue
-        try:
-            merged[key] = getattr(CleanupSettings.model_validate({key: value}), key)
-        except PydanticValidationError:
-            logger.warning("cleanup_setting_invalid_stored_value", key=key)
-    return CleanupSettingsOut(
-        values=CleanupSettings(**merged),
-        defaults=defaults,
-        last_run_at=(last_run or {}).get("started_at") if last_run else None,
-        last_run_summary=last_run,
-        running=purge_in_progress(),
-        updated_at=row.get("updated_at"),
-    )
-
-
-@router.get("/cleanup", response_model=CleanupSettingsOut)
-async def get_cleanup_route() -> CleanupSettingsOut:
-    """Các tham số đang có hiệu lực (giá trị lưu trên dashboard đè lên mặc định từ env),
-    dòng của lần chạy gần nhất trong cleanup_run_history, và có lượt chạy nào đang diễn
-    ra không (dashboard dùng thông tin này để khoá nút Run-now và hiện "Running…")."""
-    row = await cleanup_cfg.get_cleanup_settings()
-    history = await cleanup_cfg.list_cleanup_run_history(limit=1)
-    return _cleanup_settings_out(row, last_run=history[0] if history else None)
-
-
-@router.put("/cleanup", response_model=CleanupSettingsOut)
-async def set_cleanup_route(payload: CleanupSettingsUpdate) -> CleanupSettingsOut:
-    """Cập nhật một phần - key không có trong payload giữ nguyên giá trị đã lưu. Giống PUT
-    của proxy-settings: không cần gửi lại mọi trường chỉ để bật/tắt."""
-    allowed = {"run_time", "enabled", "grace_hours"}
-    set_fields = set(payload.model_fields_set) & allowed
-    values_to_write = {key: getattr(payload, key) for key in set_fields}
-    row = await cleanup_cfg.upsert_cleanup_settings(values_to_write)
-    logger.info("cleanup_settings_updated", **values_to_write)
-    history = await cleanup_cfg.list_cleanup_run_history(limit=1)
-    return _cleanup_settings_out(row, last_run=history[0] if history else None)
-
-
-@router.post("/cleanup/run", response_model=dict)
-async def run_cleanup_route() -> dict:
-    """Kích hoạt tay từ dashboard. Trả về ngay {"started": True/False}; việc purge thật
-    chạy trong task nền mà scheduler cũng dùng, nên người vận hành có thể chuyển trang
-    mà không huỷ nó. `started: false` nghĩa là lượt trước vẫn đang chạy - dashboard nên
-    hiển thị điều đó, không thử lại."""
-    started = await run_purge_now()
-    return {"started": started}
-
-
-@router.get("/cleanup/history", response_model=list[CleanupRunHistoryEntry])
-async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]:
-    """Danh sách các dòng cleanup_run_history, mới nhất trước, giới hạn bởi `limit` (mặc
-    định 20). Số liệu của mỗi mục là số id thật từ DELETE RETURNING trong cleanup.py -
-    cùng con số được log trong `irrelevant_purge_done telegram=True`."""
-    rows = await cleanup_cfg.list_cleanup_run_history(limit=limit)
-    return [CleanupRunHistoryEntry(**row) for row in rows]
-
-
 # --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
 # Toggle dùng Omar API thay vì spider-hub cho crawl video/hashtag TikTok.
-
-
-@router.get("/discovery", response_model=DiscoverySettings)
-async def get_discovery_settings() -> DiscoverySettings:
-    """AI có đang tự thêm hashtag / câu tìm kiếm / trang nguồn mới không (scheduler/discovery.discovery_enabled)."""
-    return DiscoverySettings(**await omar_cfg.get_discovery_settings())
-
-
-@router.put("/discovery", response_model=DiscoverySettings)
-async def set_discovery_settings(payload: DiscoverySettingsUpdate) -> DiscoverySettings:
-    return DiscoverySettings(**await omar_cfg.set_discovery_enabled(payload.enabled))
-
-
-@router.get("/omar-api", response_model=OmarApiSettingsOut)
-async def get_omar_api_settings() -> OmarApiSettingsOut:
-    """Cấu hình Omar API: api_key đã lưu (không bao giờ trả về giá trị thô), base URL đang có hiệu lực, tổng request mỗi
-    ngày và số request đồng thời. API key được đọc từ bảng omar_api_settings trên D1."""
-    from app.core.config import settings as app_settings
-
-    row = await omar_cfg.get_omar_api_settings()
-    return OmarApiSettingsOut(
-        api_key_set=bool(row and row.get("api_key")),
-        base_url=app_settings.omar_api_base_url,
-        requests_per_minute=int((row or {}).get("requests_per_minute") or 0),
-        daily_requests=int((row or {}).get("daily_requests") or 0),
-        concurrency=int((row or {}).get("concurrency") or 0),
-        updated_at=(row or {}).get("updated_at"),
-    )
-
-
-@router.put("/omar-api", response_model=OmarApiSettingsOut)
-async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettingsOut:
-    """Lưu api_key (rỗng = xoá), base_url, tổng request mỗi ngày, số request đồng thời, trần request/phút.
-
-    Vừa lưu key mới: gọi GET /usage kiểm tra key. Key đúng thì bỏ trạng thái tạm dừng và mở lượt cào ngay - lượt chạy liên
-    tục, tự đi tiếp tới hết hạn mức ngày (key sai thì chỉ báo key_valid=false, không mở lượt)."""
-    from app.clients.omar import fetch_usage
-    from app.core.config import settings as app_settings
-    from app.services.crawl.scheduler import trigger_omar_now
-    from app.services.omar import omar_pause
-
-    if payload.api_key is not None:
-        await omar_cfg.upsert_omar_api_key(payload.api_key.strip())
-    await omar_cfg.set_omar_limits(
-        requests_per_minute=payload.requests_per_minute,
-        daily_requests=payload.daily_requests,
-        concurrency=payload.concurrency,
-    )
-    # Ghi base_url override nếu có (cập nhật tại runtime, mất khi restart)
-    if payload.base_url is not None and payload.base_url.strip():
-        app_settings.omar_api_base_url = payload.base_url.strip()
-
-    result = await get_omar_api_settings()
-    key = ((await omar_cfg.get_omar_api_settings()) or {}).get("api_key") or ""
-    if payload.api_key is not None and key:
-        usage = await fetch_usage(key)
-        # /usage trả status "active" khi key dùng được; không đọc được (key sai / Omar lỗi) thì usage là None.
-        result.key_valid = bool(usage) and str(usage.get("status") or "active").lower() in ("active", "ok")
-        result.usage = usage
-        if result.key_valid:
-            await omar_pause.clear_pause()
-            trigger_omar_now()
-    return result

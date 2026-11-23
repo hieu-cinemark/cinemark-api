@@ -22,6 +22,9 @@ from app.api.routes.omar import router as omar_router
 from app.api.routes.rag import router as rag_router
 from app.api.routes.research import router as research_router
 from app.api.routes.settings import router as settings_router
+from app.api.routes.settings_ai import router as settings_ai_router
+from app.api.routes.settings_import import router as settings_import_router
+from app.api.routes.settings_ops import router as settings_ops_router
 from app.api.routes.stats import router as stats_router
 from app.api.routes.threads import router as threads_router
 from app.api.routes.tiktok import router as tiktok_router
@@ -70,6 +73,9 @@ app.include_router(stats_router)
 app.include_router(logs_router)
 app.include_router(movies_router)
 app.include_router(settings_router)
+app.include_router(settings_ai_router)
+app.include_router(settings_ops_router)
+app.include_router(settings_import_router)
 app.include_router(omar_router)
 app.include_router(research_router)
 app.include_router(cron_router)
