@@ -8,6 +8,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+from app.services.accounts.config_db import d1_store
 from app.services.accounts.config_db.accounts import _ensure_pool_columns
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
@@ -59,6 +60,8 @@ async def _ensure_proxy_settings_tables() -> None:
 async def get_proxy_settings() -> dict[str, Any]:
     """{"settings": {...chỉ các key đã lưu...}, "updated_at": ...} - việc trộn lên trên giá
     trị mặc định là việc của schema (ProxySettings)."""
+    if d1_store.enabled():
+        return await d1_store.get_proxy_settings() or {"settings": {}, "updated_at": None}
     await _ensure_proxy_settings_tables()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("SELECT settings, updated_at FROM proxy_settings WHERE id = 1")
@@ -125,6 +128,8 @@ async def crawl_setting(name: str) -> Any:
 
 
 async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
+    if d1_store.enabled():
+        return await d1_store.upsert_proxy_settings(values)
     from psycopg.types.json import Json
 
     await _ensure_proxy_settings_tables()
@@ -198,11 +203,10 @@ async def delete_proxy_provider(key: str) -> None:
         used_by_proxies = int((await cur.fetchone())["count"])
         if used_by_proxies:
             raise ConflictError(f"Provider {key} is still used by {used_by_proxies} proxy row(s)")
-        await cur.execute("SELECT settings FROM proxy_settings WHERE id = 1")
-        row = await cur.fetchone()
-        settings = (row or {}).get("settings") or {}
-        if isinstance(settings, dict) and settings.get("tiktok_synthetic_provider") == key:
-            raise ConflictError(f"Provider {key} is the tiktok_synthetic_provider - point it elsewhere first")
+    settings = (await get_proxy_settings()).get("settings") or {}
+    if isinstance(settings, dict) and settings.get("tiktok_synthetic_provider") == key:
+        raise ConflictError(f"Provider {key} is the tiktok_synthetic_provider - point it elsewhere first")
+    async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM proxy_providers WHERE key = %s", (key,))
         deleted = cur.rowcount
         await conn.commit()

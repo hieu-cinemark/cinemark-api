@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     db_mode: str = "remote"  # "remote" | "local" — remote là Cloudflare D1
     local_db_path: str = str(_REPO_ROOT / ".local-db" / "scraper.sqlite")
 
+    # Nơi lưu các bảng cấu hình đã chuyển khỏi Supabase (ai_settings, ai_providers, ai_accuracy_runs, proxy_settings):
+    # "postgres" (mặc định, như cũ) hoặc "d1" (database cinemark-config-db, cần CLOUDFLARE_D1_CONFIG_DATABASE_ID). Chỉ đổi sang
+    # "d1" sau khi đã chép dữ liệu (python -m scripts.tools.copy_config_to_d1) và đặt cùng giá trị cho spider-hub
+    # (CONFIG_DB_BACKEND) - hai bên đọc khác nơi thì cấu hình lệch nhau.
+    config_db_backend: str = "postgres"
+
     # Các file log mà route /logs của dashboard đọc phần cuối - cả hai tiến trình đều là
     # file text thường do ConsoleRenderer của structlog ghi ra (xem
     # spider-hub/social_crawler/logger.py và app/core/logging.py). Mặc định giả định bố

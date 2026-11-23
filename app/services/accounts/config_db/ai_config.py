@@ -8,6 +8,7 @@ from typing import Any
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
+from app.services.accounts.config_db import d1_store
 from app.services.accounts.config_db.conn import _connect, _get_pool, _trusted_sql  # noqa: F401
 
 AI_SETTINGS_COLUMNS = "id, enabled, prompts, active_provider, updated_at"
@@ -60,10 +61,13 @@ async def get_ai_settings() -> dict[str, Any]:
     global _ai_settings_cache
     if _ai_settings_cache is not None and time.monotonic() - _ai_settings_cache[0] < _AI_SETTINGS_TTL:
         return _ai_settings_cache[1]
-    await _ensure_ai_settings_table()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute(f"SELECT {AI_SETTINGS_COLUMNS} FROM ai_settings WHERE id = 1")
-        row = await cur.fetchone()
+    if d1_store.enabled():
+        row = await d1_store.get_ai_settings()
+    else:
+        await _ensure_ai_settings_table()
+        async with _connect() as conn, conn.cursor() as cur:
+            await cur.execute(f"SELECT {AI_SETTINGS_COLUMNS} FROM ai_settings WHERE id = 1")
+            row = await cur.fetchone()
     if row:
         _ai_settings_cache = (time.monotonic(), row)
     return row or {
@@ -76,16 +80,23 @@ async def get_ai_settings() -> dict[str, Any]:
 
 
 async def set_active_ai_provider(key: str) -> None:
-    await _ensure_ai_settings_table()
-    async with _connect() as conn, conn.cursor() as cur:
-        await cur.execute("UPDATE ai_settings SET active_provider = %s, updated_at = now() WHERE id = 1", (key,))
-        await conn.commit()
+    if d1_store.enabled():
+        await d1_store.set_active_ai_provider(key)
+    else:
+        await _ensure_ai_settings_table()
+        async with _connect() as conn, conn.cursor() as cur:
+            await cur.execute("UPDATE ai_settings SET active_provider = %s, updated_at = now() WHERE id = 1", (key,))
+            await conn.commit()
     _forget_ai_settings()
 
 
 async def upsert_ai_settings(*, enabled: bool, prompts: dict[str, str]) -> dict[str, Any]:
     """Công tắc AI và prompt theo task. Nhà cung cấp/model ở ai_providers + active_provider. Các cột cũ (model,
     active_report_provider) được để nguyên trong bảng cho khỏi phải đổi schema phá huỷ; không còn gì đọc chúng."""
+    if d1_store.enabled():
+        row = await d1_store.upsert_ai_settings(enabled_flag=enabled, prompts=prompts)
+        _forget_ai_settings()
+        return row
     from psycopg.types.json import Json
 
     await _ensure_ai_settings_table()
@@ -141,6 +152,8 @@ async def _ensure_ai_providers_table() -> None:
 
 
 async def list_ai_providers() -> list[dict[str, Any]]:
+    if d1_store.enabled():
+        return await d1_store.list_ai_providers()
     await _ensure_ai_providers_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_PROVIDER_COLUMNS} FROM ai_providers ORDER BY key")
@@ -148,6 +161,8 @@ async def list_ai_providers() -> list[dict[str, Any]]:
 
 
 async def get_ai_provider(key: str) -> dict[str, Any] | None:
+    if d1_store.enabled():
+        return await d1_store.get_ai_provider(key)
     await _ensure_ai_providers_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(f"SELECT {AI_PROVIDER_COLUMNS} FROM ai_providers WHERE key = %s", (key,))
@@ -159,12 +174,14 @@ async def upsert_ai_provider(
 ) -> dict[str, Any]:
     """api_key=None thì giữ nguyên secret đã lưu - cho dashboard đổi base_url/model mà không phải gửi lại secret mỗi lần.
     reasoning_effort=None thì giữ giá trị đã lưu."""
-    await _ensure_ai_providers_table()
     fields = {"base_url": base_url, "model": model}
     if reasoning_effort is not None:
         fields["reasoning_effort"] = reasoning_effort
     if api_key is not None:
         fields["api_key"] = api_key
+    if d1_store.enabled():
+        return await d1_store.upsert_ai_provider(key, fields)
+    await _ensure_ai_providers_table()
     columns = ", ".join(fields)
     placeholders = ", ".join(["%s"] * len(fields))
     updates = ", ".join(f"{name} = EXCLUDED.{name}" for name in fields)
@@ -183,6 +200,8 @@ async def upsert_ai_provider(
 
 
 async def delete_ai_provider(key: str) -> bool:
+    if d1_store.enabled():
+        return await d1_store.delete_ai_provider(key)
     await _ensure_ai_providers_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute("DELETE FROM ai_providers WHERE key = %s", (key,))
@@ -221,6 +240,9 @@ async def _ensure_accuracy_runs_table() -> None:
 
 
 async def insert_accuracy_run(*, labeled_at: str, sample_size: int, metrics: dict[str, Any], note: str | None) -> None:
+    if d1_store.enabled():
+        await d1_store.insert_accuracy_run(labeled_at=labeled_at, sample_size=sample_size, metrics=metrics, note=note)
+        return
     from psycopg.types.json import Json
 
     await _ensure_accuracy_runs_table()
@@ -233,6 +255,8 @@ async def insert_accuracy_run(*, labeled_at: str, sample_size: int, metrics: dic
 
 
 async def get_latest_accuracy_run() -> dict[str, Any] | None:
+    if d1_store.enabled():
+        return await d1_store.get_latest_accuracy_run()
     await _ensure_accuracy_runs_table()
     async with _connect() as conn, conn.cursor() as cur:
         await cur.execute(

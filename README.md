@@ -8,7 +8,7 @@ Service Python (FastAPI) chạy trên VPS, nối spider-hub (cào dữ liệu) v
 - **API cho dashboard spider-hub:** tài khoản, proxy, từ khoá, phim, thống kê, log, hàng đợi.
 
 Service không có database riêng: dữ liệu nằm ở Cloudflare D1 (gọi qua HTTP API), cấu hình tài khoản/AI ở Postgres
-(Supabase), trạng thái ngắn hạn ở Redis, dữ liệu thô ở R2.
+(Supabase; đang chuyển dần sang D1 `cinemark-config-db`, xem [docs/config-db-d1.md](docs/config-db-d1.md)), trạng thái ngắn hạn ở Redis, dữ liệu thô ở R2.
 
 ## Luồng chính
 
