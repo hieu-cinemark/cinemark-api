@@ -65,12 +65,12 @@ import argparse, asyncio
 from sqlalchemy import select
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import posts
-from app.services.ai_jobs.review_angles import _read_json, _write_json, _root, _active_movies
+from app.services.ai_jobs.review_angles import read_json, write_json, angles_dir, _active_movies
 
 
 async def fix(movie_id: str, dry_run: bool) -> tuple[int, int]:
-    key = f"{_root(movie_id)}/state.json"
-    state = await _read_json(key)
+    key = f"{angles_dir(movie_id)}/state.json"
+    state = await read_json(key)
     if not state:
         return 0, 0
     missing = sorted({r["id"] for a in state["angles"] for r in a["refs"] if not r.get("postedAt")})
@@ -85,11 +85,11 @@ async def fix(movie_id: str, dry_run: bool) -> tuple[int, int]:
         for ref in angle["refs"]:
             if not ref.get("postedAt") and ref["id"] in found:
                 ref["postedAt"] = found[ref["id"]]
-    await _write_json(key, state)
+    await write_json(key, state)
     return len(missing), len(found)
 ```
 
-- `_root`, `_read_json`, `_write_json` có sẵn trong `review_angles.py`. `_active_movies` trả phim đang xoay vòng; muốn
+- `angles_dir`, `read_json`, `write_json` có sẵn trong `review_angles.py`. `_active_movies` trả phim đang xoay vòng; muốn
   chạy mọi phim từng có state thì liệt kê prefix trên R2.
 - **Lưu ý race:** job `review_angles` có thể ghi `state.json` cùng lúc. Chạy script lúc job tạm dừng, hoặc lấy khoá Redis
   mà job dùng (`lock_key` trong `analyze_next_batch`) trước khi đọc/ghi.
@@ -263,7 +263,7 @@ nên không suy luận theo những thứ đó.
 - **Ghép nhóm** (union-find như `similar.py`): nối 2 tài khoản khi là cặp L2, hoặc cùng nằm trong một cụm B và cả hai thoả L3.
 - `fired` khi có nhóm có ≥ 2 tài khoản đạt; `strong` khi có nhóm có ≥ `STRONG_ACCOUNTS = 5` tài khoản đạt.
 - `window` = giờ VN của bình luận sớm nhất và muộn nhất của các tài khoản đạt trong nhóm (dạng `YYYY-MM-DDTHH`, dùng
-  `similar._vn_hour`), để `verdict` đối chiếu chồng thời gian với A/B.
+  `similar.vn_hour`), để `verdict` đối chiếu chồng thời gian với A/B.
 
 **Khung code:**
 
@@ -274,7 +274,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import combinations
 from app.services.attack.signals import Signal, mask_name
-from app.services.attack.similar import _vn_hour
+from app.services.attack.similar import vn_hour
 
 MANY_POSTS, MANY_POSTS_WINDOW = 5, timedelta(hours=24)
 PAIR_POSTS, PAIR_GAP, PAIR_JACCARD = 3, timedelta(minutes=10), 0.5

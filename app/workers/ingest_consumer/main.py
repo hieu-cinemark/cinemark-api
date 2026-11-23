@@ -130,7 +130,7 @@ _TRACKED_MOVIES_TTL_SECONDS = 300.0
 _tracked_movies_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
 
 
-async def _tracked_movies() -> dict[str, dict[str, Any]]:
+async def tracked_movies() -> dict[str, dict[str, Any]]:
     global _tracked_movies_cache
     now = time.monotonic()
     if _tracked_movies_cache is not None and now - _tracked_movies_cache[0] < _TRACKED_MOVIES_TTL_SECONDS:
@@ -182,7 +182,7 @@ async def _route_post_to_film(
     bài, không cào)."""
     movie = find_film(
         content,
-        (await _tracked_movies()).values(),
+        (await tracked_movies()).values(),
         posted_at,
         exclude_movie_id=exclude_movie_id,
         strict=strict,
@@ -231,8 +231,8 @@ async def _reroute_to_other_film(
     return True
 
 
-async def _tracked_titles() -> list[str]:
-    return [m["title"] for m in (await _tracked_movies()).values()]
+async def tracked_titles() -> list[str]:
+    return [m["title"] for m in (await tracked_movies()).values()]
 
 
 async def _note_drop(platform: str, reason: str, **context: Any) -> None:
@@ -401,7 +401,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
     # Bài phải chứa đầy đủ từ khoá (hoặc dạng hashtag của nó) hoặc đầy đủ tên phim - kết quả
     # tìm kiếm của nền tảng có cả bài không hề nhắc tới phim, và AI từng gán "related" cho
     # chúng (xem relevance_rules.mentions_keyword_or_title). Loại trước khi tốn lời gọi AI.
-    movie = (await _tracked_movies()).get(keyword.get("movie_id") or "") or {"title": keyword.get("movie_title")}
+    movie = (await tracked_movies()).get(keyword.get("movie_id") or "") or {"title": keyword.get("movie_title")}
     movie_keywords = [keyword["keyword"], *movie.get("keywords", [])]
     # Phim "chặt" (cần tín hiệu gắn đúng phim): video có transcript nhắc phim đúng nghĩa phim chiếu rạp (tên phim cạnh từ điện
     # ảnh, tên đạo diễn/diễn viên...) thì coi như đủ tín hiệu, dù tiêu đề/mô tả không có (16/11/2026).
@@ -418,7 +418,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         ):
             return
         other_film = mentions_other_film(
-            draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await _tracked_titles()
+            draft.get("content"), keyword.get("movie_title"), keyword["keyword"], await tracked_titles()
         )
         reason = "other_film" if other_film else "keyword_absent"
         logger.info(
@@ -459,7 +459,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             movie=movie,
             keyword=keyword["keyword"],
             platform=platform,
-            other_titles=await _tracked_titles(),
+            other_titles=await tracked_titles(),
         )
         # Phân loại bằng AI ngay ở ingest chỉ khi bật AI_INGEST_RELEVANCE (AI chậm, có lúc 60-180 giây một lô).
         if settings.ai_ingest_relevance and not settings.relevance_rules_only and rule_relevant is not True

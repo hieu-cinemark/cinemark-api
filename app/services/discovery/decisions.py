@@ -60,7 +60,7 @@ async def _ensure_table() -> None:
         await d1_query(f"ALTER TABLE hashtag_ai_decisions ADD COLUMN {column}", quiet=True)
 
 
-async def _record(
+async def record_decision(
     movie_id: str, cand: dict[str, Any], verdict: dict[str, Any] | None, status: str, keyword_id: str | None
 ) -> None:
     verdict = verdict or {}

@@ -34,7 +34,7 @@ def normalize(text: str | None) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", value).split())
 
 
-def _vn_hour(posted_at: str) -> str:
+def vn_hour(posted_at: str) -> str:
     at = datetime.fromisoformat(posted_at).astimezone(UTC) + timedelta(hours=7)
     return at.strftime("%Y-%m-%dT%H")
 
@@ -135,7 +135,7 @@ def similar_signal(
     lead = strong[0] if strong else top
     window = None
     if lead["window"]:
-        window = (_vn_hour(lead["window"][0]), _vn_hour(lead["window"][1]))
+        window = (vn_hour(lead["window"][0]), vn_hour(lead["window"][1]))
     return Signal(
         key="similar",
         fired=True,

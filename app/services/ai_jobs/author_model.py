@@ -21,7 +21,7 @@ from typing import Any
 
 from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_insert_many, d1_query
-from app.services.ai_jobs.author_classify import _ensure_tables, classifications, review
+from app.services.ai_jobs.author_classify import classifications, ensure_tables, review
 from app.services.ai_jobs.channels import extract_handle
 
 logger = get_logger(__name__)
@@ -133,7 +133,7 @@ async def label_with_model(*, threshold: float | None = None, dry_run: bool = Fa
         return {"skipped": "no_model"}
     bundle = await asyncio.to_thread(load_bundle, MODEL_PATH)
     threshold = float(threshold if threshold is not None else await crawl_setting("author_model_threshold"))
-    await _ensure_tables()
+    await ensure_tables()
     labels = await load_labels()
     posts = await load_posts()
     authors = group_authors(posts, await load_profiles())

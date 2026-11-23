@@ -6,7 +6,7 @@ from __future__ import annotations
 # là bài về phim chiếu rạp. Cố ý KHÔNG có "phim" đứng một mình - bài review phim khác ("PHIM:
 # LAN HƯƠNG NHƯ CỐ") hay tóm tắt phim truyền hình cũng có chữ đó, và đã lọt như vậy ngày
 # 2026-10-05. Cũng không có "rap": bỏ dấu thì "rạp" trùng "rap" (nhạc).
-_STRONG_FILM_PHRASES: tuple[str, ...] = (
+STRONG_FILM_PHRASES: tuple[str, ...] = (
     "dien anh",
     "man anh",
     "ra rap",

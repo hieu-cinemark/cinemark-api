@@ -23,11 +23,11 @@ from app.repositories.d1.tables import posts as posts_table
 from app.services.stats.stats_hourly import FIRST_SEEN_COMPLETE_SINCE
 from app.services.stats.stats_tables import (
     _as_int,
-    _note_rollup_failure,
-    _q,
     ensure_stats_tables,
     keyword_daily,
+    note_rollup_failure,
     platform_daily,
+    run_stats_query,
 )
 
 logger = get_logger(__name__)
@@ -170,28 +170,28 @@ async def rebuild_from_source() -> dict[str, int]:
     await ensure_stats_tables()
     # Phép tổng hợp toàn bảng có thể vượt timeout HTTP mặc định 10s của D1.
     slow = 120.0
-    await _q(delete(platform_daily), timeout=slow)
-    await _q(delete(keyword_daily), timeout=slow)
+    await run_stats_query(delete(platform_daily), timeout=slow)
+    await run_stats_query(delete(keyword_daily), timeout=slow)
 
     # Bài theo nền tảng
-    ok = await _q(_platform_posts_insert(), timeout=slow)
+    ok = await run_stats_query(_platform_posts_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: platform posts aggregate")
     # Comment theo nền tảng (cộng vào các dòng day/platform đã có)
-    ok = await _q(_platform_comments_insert(), timeout=slow)
+    ok = await run_stats_query(_platform_comments_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: platform comments aggregate")
     # Bài theo từ khoá
-    ok = await _q(_keyword_posts_insert(), timeout=slow)
+    ok = await run_stats_query(_keyword_posts_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: keyword posts aggregate")
     # Comment theo từ khoá, qua bài cha
-    ok = await _q(_keyword_comments_insert(), timeout=slow)
+    ok = await run_stats_query(_keyword_comments_insert(), timeout=slow)
     if ok is None:
         raise RuntimeError("rebuild failed: keyword comments aggregate")
 
-    platform_rows = await _q(select(func.count().label("n")).select_from(platform_daily))
-    keyword_rows = await _q(select(func.count().label("n")).select_from(keyword_daily))
+    platform_rows = await run_stats_query(select(func.count().label("n")).select_from(platform_daily))
+    keyword_rows = await run_stats_query(select(func.count().label("n")).select_from(keyword_daily))
     return {
         "platform_days": _as_int((platform_rows or [{}])[0].get("n")),
         "keyword_days": _as_int((keyword_rows or [{}])[0].get("n")),
@@ -223,7 +223,7 @@ async def subtract_deleted(posts: list[dict[str, Any]], comments: list[dict[str,
             .where(table.c.day == d, table.c.platform == platform)
             .values(**{kind: func.max(_ZERO, table.c[kind] - n)})
         )
-        await _q(sql, params)
+        await run_stats_query(sql, params)
     for (kind, d, keyword_id), n in keyword_rows.items():
         table = keyword_daily
         sql, params = compile_sql(
@@ -231,7 +231,7 @@ async def subtract_deleted(posts: list[dict[str, Any]], comments: list[dict[str,
             .where(table.c.day == d, table.c.keyword_id == keyword_id)
             .values(**{kind: func.max(_ZERO, table.c[kind] - n)})
         )
-        await _q(sql, params)
+        await run_stats_query(sql, params)
 
 
 def _reconcile_statements(since: str) -> tuple[tuple[Any, str], ...]:
@@ -355,10 +355,10 @@ async def reconcile_recent_days(days: int = 2) -> bool:
     slow = 60.0
     for stmt, label in _reconcile_statements(since):
         # Biến câu thành chuỗi + tham số ngay ở đây: cả bốn câu dùng CHUNG một bộ tham số
-        # (đối chiếu được khi D1 quá tải giữa chừng), và _q nhận cả hai kiểu.
+        # (đối chiếu được khi D1 quá tải giữa chừng), và run_stats_query nhận cả hai kiểu.
         sql, params = compile_sql(stmt)
-        if await _q(sql, params, timeout=slow) is None:
-            await _note_rollup_failure("stats_reconcile", step=label, since=since)
+        if await run_stats_query(sql, params, timeout=slow) is None:
+            await note_rollup_failure("stats_reconcile", step=label, since=since)
             return False
     logger.info("stats_reconciled", since=since)
     return True

@@ -45,7 +45,7 @@ def _pause(redis):
 
 def test_quota_stop_pauses_until_reset(monkeypatch):
     redis = _setup(monkeypatch, usage={"day": {"remaining": 0, "resets_in": 3600}})
-    asyncio.run(ot._pause_after_round({"stopped": "daily_limit: Daily limit reached"}, "key-a", None, False))
+    asyncio.run(ot.pause_after_round({"stopped": "daily_limit: Daily limit reached"}, "key-a", None, False))
     pause = _pause(redis)
     assert pause is not None
     assert pause["reason"] == "quota"
@@ -56,20 +56,20 @@ def test_quota_stop_pauses_until_reset(monkeypatch):
 
 def test_exhausted_budget_pauses_until_reset(monkeypatch):
     redis = _setup(monkeypatch, usage={"day": {"remaining": settings.omar_daily_reserve, "resets_in": 600}})
-    asyncio.run(ot._pause_after_round({}, "key-a", None, True))
+    asyncio.run(ot.pause_after_round({}, "key-a", None, True))
     assert _pause(redis)["reason"] == "quota"
 
 
 def test_no_pause_when_quota_left_or_work_done(monkeypatch):
     redis = _setup(monkeypatch, usage={"day": {"remaining": 900, "resets_in": 600}})
-    asyncio.run(ot._pause_after_round({}, "key-a", None, True))  # gói vừa được nâng: còn hạn mức
-    asyncio.run(ot._pause_after_round({}, "key-a", None, False))  # hết việc trước khi hết ngân sách
+    asyncio.run(ot.pause_after_round({}, "key-a", None, True))  # gói vừa được nâng: còn hạn mức
+    asyncio.run(ot.pause_after_round({}, "key-a", None, False))  # hết việc trước khi hết ngân sách
     assert _pause(redis) is None
 
 
 def test_key_error_pause_ends_when_key_changes(monkeypatch):
     redis = _setup(monkeypatch, key="key-a")
-    asyncio.run(ot._pause_after_round({"stopped": "http_401: invalid key"}, "key-a", None, False))
+    asyncio.run(ot.pause_after_round({"stopped": "http_401: invalid key"}, "key-a", None, False))
     pause = _pause(redis)
     assert pause is not None
     assert pause["reason"] == "key"
@@ -117,7 +117,7 @@ def test_recrawl_clears_cursor_but_keeps_hashtag_info(monkeypatch):
 def test_recrawl_refuses_while_hashtag_is_being_crawled(monkeypatch):
     redis = _StateRedis({"cursor": "abc", "pages": 3})
     monkeypatch.setattr(oh, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(oh, "_manual_running", {"kw1"})
+    monkeypatch.setattr(oh, "manual_running", {"kw1"})
     monkeypatch.setattr(
         oh, "crawl_hashtag_now", lambda keyword: (_ for _ in ()).throw(AssertionError("must not start"))
     )

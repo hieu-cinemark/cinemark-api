@@ -8,12 +8,12 @@ from sqlalchemy import select
 
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies, posts
-from app.services.ai_jobs.review_angles import _read_json, _root, _write_json
+from app.services.ai_jobs.review_angles import angles_dir, read_json, write_json
 
 
 async def fix(movie_id: str, dry_run: bool) -> tuple[int, int]:
-    key = f"{_root(movie_id)}/state.json"
-    state = await _read_json(key)
+    key = f"{angles_dir(movie_id)}/state.json"
+    state = await read_json(key)
     if not state:
         return 0, 0
     missing = sorted({r["id"] for a in state["angles"] for r in a["refs"] if not r.get("postedAt")})
@@ -28,7 +28,7 @@ async def fix(movie_id: str, dry_run: bool) -> tuple[int, int]:
         for ref in angle["refs"]:
             if not ref.get("postedAt") and ref["id"] in found:
                 ref["postedAt"] = found[ref["id"]]
-    await _write_json(key, state)
+    await write_json(key, state)
     return len(missing), len(found)
 
 

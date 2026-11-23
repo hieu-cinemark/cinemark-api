@@ -36,7 +36,7 @@ from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import posts as posts_table
 from app.services.relevance.relevance_rules import mentions_film_manual, resolve_relevance
 from app.services.relevance.text_rules import foreign_language_reason, no_diacritics_reason
-from app.workers.ingest_consumer.main import _tracked_movies, _tracked_titles
+from app.workers.ingest_consumer.main import tracked_movies, tracked_titles
 from app.workers.ingest_consumer.sentiment_sweep import MAX_ATTEMPTS, classify_pending_posts
 
 logger = get_logger(__name__)
@@ -138,7 +138,7 @@ async def apply_rules(since: str, movie_id: str | None, dry_run: bool) -> None:
     """--rules: áp luật lọc thủ công (settings.relevance_rules_only) cho mọi bài đang chờ AI (relevance_confidence IS
     NULL) từ `since` - khớp tên phim/viết tắt/từ khoá thì "related", không dấu/tiếng nước ngoài hoặc không khớp thì ẩn
     ("not_related", keyword_match=0, không xoá). Lật trang theo con trỏ scraped_at nên chạy một lượt là xong."""
-    movies = await _tracked_movies()
+    movies = await tracked_movies()
     totals: Counter[str] = Counter()
     cursor = "9999"
     while True:
@@ -209,7 +209,7 @@ async def run(
         page = PAGE_SIZE if limit is None else min(PAGE_SIZE, limit - totals["selected"])
         rows = await _select(since, movie_id, page, exclude) if page > 0 else []
         if rows:
-            movies, titles = await _tracked_movies(), await _tracked_titles()
+            movies, titles = await tracked_movies(), await tracked_titles()
             labels = await asyncio.gather(*(_relabel(row, movies, titles, dry_run) for row in rows))
             done = [label for label in labels if label is not None]
             totals.update(selected=len(rows), labeled=len(done))

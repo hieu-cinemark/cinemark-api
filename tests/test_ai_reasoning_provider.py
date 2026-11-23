@@ -33,7 +33,7 @@ class _Stream:
 def _invoke(monkeypatch, cfg, max_tokens):
     captured = []
     fake = SimpleNamespace(chat=SimpleNamespace(completions=_Stream(captured)))
-    monkeypatch.setattr(cl, "_client_for", lambda c: fake)
+    monkeypatch.setattr(cl, "client_for", lambda c: fake)
     out = cl._invoke(cfg, model=cfg.model, system_prompt="s", user_prompt="u", temperature=0.0, max_tokens=max_tokens)
     return captured[0], out.choices[0].message.content
 

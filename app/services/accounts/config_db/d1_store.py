@@ -17,35 +17,35 @@ from sqlalchemy.schema import CreateTable
 from app.core.errors import UpstreamError
 from app.repositories.d1.sql import d1_exec
 
-_metadata = MetaData()
-_EMPTY = text("''")
-_EMPTY_JSON = text("'{}'")
+config_metadata = MetaData()
+EMPTY_TEXT = text("''")
+EMPTY_JSON_TEXT = text("'{}'")
 
 ai_settings = Table(
     "ai_settings",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True),
     Column("enabled", Integer, nullable=False, server_default=text("0")),
-    Column("model", Text, nullable=False, server_default=_EMPTY),
-    Column("prompts", Text, nullable=False, server_default=_EMPTY_JSON),
-    Column("active_provider", Text, nullable=False, server_default=_EMPTY),
+    Column("model", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("prompts", Text, nullable=False, server_default=EMPTY_JSON_TEXT),
+    Column("active_provider", Text, nullable=False, server_default=EMPTY_TEXT),
     Column("updated_at", Text, nullable=False),
 )
 
 ai_providers = Table(
     "ai_providers",
-    _metadata,
+    config_metadata,
     Column("key", Text, primary_key=True),
-    Column("base_url", Text, nullable=False, server_default=_EMPTY),
-    Column("api_key", Text, nullable=False, server_default=_EMPTY),
-    Column("model", Text, nullable=False, server_default=_EMPTY),
-    Column("reasoning_effort", Text, nullable=False, server_default=_EMPTY),
+    Column("base_url", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("api_key", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("model", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("reasoning_effort", Text, nullable=False, server_default=EMPTY_TEXT),
     Column("updated_at", Text, nullable=False),
 )
 
 ai_accuracy_runs = Table(
     "ai_accuracy_runs",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("labeled_at", Text, nullable=False),
     Column("sample_size", Integer, nullable=False),
@@ -56,9 +56,9 @@ ai_accuracy_runs = Table(
 
 proxy_settings = Table(
     "proxy_settings",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True),
-    Column("settings", Text, nullable=False, server_default=_EMPTY_JSON),
+    Column("settings", Text, nullable=False, server_default=EMPTY_JSON_TEXT),
     Column("updated_at", Text, nullable=False),
 )
 
@@ -77,7 +77,7 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _when(value: Any) -> datetime | None:
+def to_datetime(value: Any) -> datetime | None:
     if not value:
         return None
     parsed = datetime.fromisoformat(str(value))
@@ -119,7 +119,7 @@ def _settings_row(row: dict[str, Any]) -> dict[str, Any]:
         "enabled": bool(row["enabled"]),
         "prompts": _json(row["prompts"]),
         "active_provider": row["active_provider"] or "",
-        "updated_at": _when(row["updated_at"]),
+        "updated_at": to_datetime(row["updated_at"]),
     }
 
 
@@ -169,7 +169,7 @@ _PROVIDER_COLUMNS = (
 
 
 def _provider_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {**row, "updated_at": _when(row["updated_at"])}
+    return {**row, "updated_at": to_datetime(row["updated_at"])}
 
 
 async def list_ai_providers() -> list[dict[str, Any]]:
@@ -232,7 +232,7 @@ async def get_latest_accuracy_run() -> dict[str, Any] | None:
         "sample_size": row["sample_size"],
         "metrics": _json(row["metrics"]),
         "note": row["note"],
-        "created_at": _when(row["created_at"]),
+        "created_at": to_datetime(row["created_at"]),
     }
 
 
@@ -244,7 +244,7 @@ async def get_proxy_settings() -> dict[str, Any] | None:
     rows = await _run(select(proxy_settings.c.settings, proxy_settings.c.updated_at).where(proxy_settings.c.id == 1))
     if not rows:
         return None
-    return {"settings": _json(rows[0]["settings"]), "updated_at": _when(rows[0]["updated_at"])}
+    return {"settings": _json(rows[0]["settings"]), "updated_at": to_datetime(rows[0]["updated_at"])}
 
 
 async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
@@ -255,4 +255,4 @@ async def upsert_proxy_settings(values: dict[str, Any]) -> dict[str, Any]:
         index_elements=["id"], set_={"settings": stmt.excluded.settings, "updated_at": now}
     ).returning(proxy_settings.c.settings, proxy_settings.c.updated_at)
     row = (await _run(stmt))[0]
-    return {"settings": _json(row["settings"]), "updated_at": _when(row["updated_at"])}
+    return {"settings": _json(row["settings"]), "updated_at": to_datetime(row["updated_at"])}

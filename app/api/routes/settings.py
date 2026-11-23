@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 from pyotp import TOTP
 
-from app.api.routes.settings_cookies import _record_cookie_saved, _refuse_bad_cookie, _with_user_agent
+from app.api.routes.settings_cookies import record_cookie_saved, refuse_bad_cookie, with_user_agent
 from app.clients.kafka import publish_nurture_request, publish_tiktok_identity_reset
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
@@ -63,10 +63,10 @@ async def list_accounts(platform: str | None = Query(default=None)) -> list[Acco
 
 @router.post("/accounts", response_model=AccountOut)
 async def create_account(payload: AccountCreate) -> AccountOut:
-    fields = _with_user_agent(payload.model_dump())
-    _refuse_bad_cookie(fields["platform"], fields["account_id"], fields.get("cookie") or "")
+    fields = with_user_agent(payload.model_dump())
+    refuse_bad_cookie(fields["platform"], fields["account_id"], fields.get("cookie") or "")
     row = await accounts_db.create_account(fields)
-    await _record_cookie_saved(row)
+    await record_cookie_saved(row)
     return AccountOut.masked(row)
 
 
@@ -96,7 +96,7 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
         if changes.get("cookie") == stored_cookie:
             changes.pop("cookie")
         elif "cookie" in changes:
-            _refuse_bad_cookie(current["platform"], current["account_id"], changes["cookie"])
+            refuse_bad_cookie(current["platform"], current["account_id"], changes["cookie"])
     if not changes:
         row = await accounts_db.get_account(account_id)
         if row is None:
@@ -104,7 +104,7 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
         return AccountOut.masked(row)
     row = await accounts_db.update_account(account_id, changes)
     if "cookie" in changes:
-        await _record_cookie_saved(row)
+        await record_cookie_saved(row)
     return AccountOut.masked(row)
 
 

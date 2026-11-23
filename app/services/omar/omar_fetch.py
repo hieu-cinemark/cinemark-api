@@ -10,14 +10,14 @@ from app.clients.kafka import publish_raw_post
 from app.clients.omar import hashtag_info, next_cursor, omar_get, videos_of
 from app.core.config import settings
 from app.services.accounts.config_db.omar import get_omar_api_settings
-from app.services.omar.omar_budget import _Pacer
-from app.services.omar.omar_seen import _claim_unseen, _forget_seen
+from app.services.omar.omar_budget import Pacer
+from app.services.omar.omar_seen import claim_unseen, forget_seen
 
 
 async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: dict[str, Any]) -> None:
-    """Gửi video đã map lên raw_posts như spider (chống trùng qua tập seen dùng chung với spider, _claim_unseen)."""
+    """Gửi video đã map lên raw_posts như spider (chống trùng qua tập seen dùng chung với spider, claim_unseen)."""
     brand_new: set[str] = set()
-    fresh_ids = await _claim_unseen([video["video_id"] for video in mapped], brand_new)
+    fresh_ids = await claim_unseen([video["video_id"] for video in mapped], brand_new)
     for video in mapped:
         if video["video_id"] not in fresh_ids:
             stats["skipped_seen"] = int(stats.get("skipped_seen") or 0) + 1
@@ -28,11 +28,11 @@ async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: d
         stats["published"] = int(stats.get("published") or 0) + int(ok)
         if not ok:
             brand_new.discard(video["video_id"])
-            await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
+            await forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
 
 
-async def _fetch_page(
-    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str, hashtag_id: str | None = None
+async def fetch_page(
+    client: httpx.AsyncClient, pacer: Pacer, api_key: str, hashtag: str, cursor: str, hashtag_id: str | None = None
 ) -> tuple[list[dict[str, Any]], str | None, str | None]:
     """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết, hashtag_id). Có `hashtag_id` (lưu từ trang
     trước) thì gọi bằng `id` - Omar bỏ qua bước tra tên hashtag, nhanh hơn và tránh lỗi tra tên."""
@@ -54,7 +54,7 @@ async def hashtag_exists(hashtag: str) -> bool | None:
         try:
             data = await omar_get(
                 client,
-                _Pacer(settings.omar_requests_per_minute).wait,
+                Pacer(settings.omar_requests_per_minute).wait,
                 api_key,
                 "hashtag_videos",
                 {"name": hashtag.lstrip("#"), "cursor": "0"},
@@ -67,7 +67,7 @@ async def hashtag_exists(hashtag: str) -> bool | None:
     return bool(data and data.get("videos"))
 
 
-async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str) -> dict[str, Any]:
+async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: Pacer, api_key: str, hashtag: str) -> dict[str, Any]:
     """Tổng số video / lượt xem TikTok báo cho hashtag (hashtag_info, format=clean) - để biết đã cào được bao nhiêu phần."""
     # 424 ở endpoint này thường là "Hashtag not found or lookup failed" - chỉ thử lại một lần.
     data = await omar_get(client, pacer.wait, api_key, "hashtag_info", {"name": hashtag, "format": "clean"}, retries=1)

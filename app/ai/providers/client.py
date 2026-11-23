@@ -183,7 +183,7 @@ async def load_provider(key: str | None = None) -> ProviderConfig | None:
     return cfg
 
 
-def _client_for(cfg: ProviderConfig) -> OpenAI:
+def client_for(cfg: ProviderConfig) -> OpenAI:
     cache_key = (cfg.openai_base_url, cfg.api_key)
     client = _openai_clients.get(cache_key)
     if client is None:
@@ -203,7 +203,7 @@ def _concurrency_for(key: str) -> asyncio.Semaphore:
 def _invoke(
     cfg: ProviderConfig, *, model: str, system_prompt: str, user_prompt: str, temperature: float, max_tokens: int | None
 ) -> Any:
-    client = _client_for(cfg)
+    client = client_for(cfg)
     params: dict[str, Any] = {
         "model": model,
         "messages": [

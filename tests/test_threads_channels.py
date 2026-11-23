@@ -86,7 +86,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(threads_channels, "get_redis_client", lambda: redis)
     monkeypatch.setattr(threads_channels, "d1_exec", fake_exec)
-    monkeypatch.setattr(threads_channels, "_set_source", fake_set)
+    monkeypatch.setattr(threads_channels, "set_source", fake_set)
     monkeypatch.setattr(threads_channels, "_ensure_table", noop)
     monkeypatch.setattr(threads_channels, "enqueue_published", noop)
     monkeypatch.setattr(threads_channels.settings, "threads_channels_enabled", True)

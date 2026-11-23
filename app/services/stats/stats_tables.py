@@ -34,7 +34,7 @@ _ROLLUP_FAILURE_ALERT_THRESHOLD = 5
 _ROLLUP_FAILURE_WINDOW_SECONDS = 3600
 
 
-async def _note_rollup_failure(table: str, **context: Any) -> None:
+async def note_rollup_failure(table: str, **context: Any) -> None:
     logger.error("stats_rollup_write_failed", table=table, **context)
     try:
         client = get_redis_client()
@@ -61,7 +61,7 @@ def _as_int(value: Any) -> int:
         return 0
 
 
-async def _q(
+async def run_stats_query(
     sql: str | ClauseElement, params: list[Any] | None = None, *, quiet: bool = False, timeout: float = 10.0
 ) -> list[dict[str, Any]] | None:
     """Mọi câu của module đi qua đây (test vá hàm này). Nhận chuỗi SQL hoặc câu dựng bằng SQLAlchemy."""
@@ -92,9 +92,9 @@ platform_daily = _stats_table("stats_platform_daily", "platform")
 
 keyword_daily = _stats_table("stats_keyword_daily", "keyword_id")
 
-_TODAY = func.date("now")
+SQL_TODAY = func.date("now")
 
-_YESTERDAY = func.date("now", "-1 day")
+SQL_YESTERDAY = func.date("now", "-1 day")
 
 
 async def ensure_stats_tables() -> None:
@@ -106,5 +106,5 @@ async def ensure_stats_tables() -> None:
         if _ready:
             return
         for table in (platform_daily, keyword_daily):
-            await _q(CreateTable(table, if_not_exists=True), quiet=True)
+            await run_stats_query(CreateTable(table, if_not_exists=True), quiet=True)
         _ready = True

@@ -17,15 +17,15 @@ import unicodedata
 from collections.abc import Iterable
 from datetime import timedelta
 
-from app.services.relevance.film_phrases import _STRONG_FILM_PHRASES
+from app.services.relevance.film_phrases import STRONG_FILM_PHRASES
 from app.services.relevance.release_window import (
     SHORT_TITLE_AFTER_DAYS,
     SHORT_TITLE_BEFORE_DAYS,
-    _to_date,
     in_release_window,
     short_title_names,
+    to_date,
 )
-from app.services.relevance.text_rules import _contains_phrase, _hashtags, _squash, normalize_title
+from app.services.relevance.text_rules import contains_phrase, extract_hashtags, normalize_title, squash
 
 
 def mentions_other_film(
@@ -39,15 +39,15 @@ def mentions_other_film(
     squashed = text.replace(" ", "")
     own = normalize_title(movie_title)
     kw = normalize_title((keyword or "").lstrip("#"))
-    if _contains_phrase(text, own) or (own and own.replace(" ", "") in squashed):
+    if contains_phrase(text, own) or (own and own.replace(" ", "") in squashed):
         return None
-    if kw and (_contains_phrase(text, kw) or kw.replace(" ", "") in squashed):
+    if kw and (contains_phrase(text, kw) or kw.replace(" ", "") in squashed):
         return None
     for title in other_titles:
         other = normalize_title(title)
         if len(other.split()) < 3 or not own or other in own or own in other:
             continue
-        if _contains_phrase(text, other) or other.replace(" ", "") in squashed:
+        if contains_phrase(text, other) or other.replace(" ", "") in squashed:
             return title
     return None
 
@@ -90,7 +90,7 @@ _MUSIC_PHRASES = (
 def _distinctive_title(title: str) -> bool:
     """Tên đủ đặc trưng để hashtag của nó là tín hiệu phim: từ ba chữ, hoặc viết liền dài từ 10 ký
     tự. Tên ngắn như "Anh Hùng"/"Loạn Thế" là cụm từ thường ngày, hashtag của chúng không nói lên gì."""
-    return len(title.split()) >= 3 or len(_squash(title)) >= 10
+    return len(title.split()) >= 3 or len(squash(title)) >= 10
 
 
 # Số phần phim một chữ số ("Út Lan 2", #TeeYod4) - không tính năm (#TraiBuonNguoi2026).
@@ -107,13 +107,13 @@ def _film_specific_keyword_hashtag(tags: set[str], movie: dict) -> bool:
       - từ khoá mở đầu bằng tên viết tắt mà không có số (#hhcccasting - viết tắt dễ trùng);
       - từ khoá ngắn chung chung (dưới 10 ký tự viết liền, không có số, không phải dạng phim…/…movie: #memin)."""
     raw_title = str(movie.get("title") or "")
-    aliases = {_squash(normalize_title(str(k).lstrip("#"))) for k in movie.get("keywords") or ()} - {""}
+    aliases = {squash(normalize_title(str(k).lstrip("#"))) for k in movie.get("keywords") or ()} - {""}
     if not aliases & tags:
         return False
     sequel = bool(_SEQUEL_DIGIT_RE.search(normalize_title(raw_title))) or any(
         _SEQUEL_DIGIT_RE.search(a) for a in aliases
     )
-    franchise = _squash(normalize_title(raw_title.split(":", 1)[0])) if ":" in raw_title else None
+    franchise = squash(normalize_title(raw_title.split(":", 1)[0])) if ":" in raw_title else None
     acronym = title_acronym(raw_title)
     for alias in aliases & tags:
         numbered = bool(_SEQUEL_DIGIT_RE.search(alias))
@@ -141,7 +141,7 @@ def _agency_hashtag(tags: set[str], title: str | None) -> bool:
     raw = str(title or "")
     if re.search(r"[:(（]", raw):
         return False
-    name = _squash(normalize_title(raw))
+    name = squash(normalize_title(raw))
     return len(name) >= AGENCY_MIN_NAME_LEN and any(
         tag.startswith(name + "by") and len(tag) > len(name) + 3 for tag in tags
     )
@@ -174,21 +174,21 @@ def film_context_reason(
     if not text:
         return None
     movie = movie or {}
-    tags = _hashtags(content)
+    tags = extract_hashtags(content)
     for key in ("director", "cast") if allow_names else ():
         # Tách cả " và " / " and " / "&": đạo diễn "Khương Ngọc và Tấn Hoàng Thông" trước 17/10/2026 thành một tên dài
         # không bao giờ khớp. Cast lưu dạng JSON ('["Minh Hằng", ...]') - dấu ngoặc/nháy bị normalize_title bỏ đi.
         for name in re.split(r"[,;/|&\[\]\n]|\s+(?:và|and)\s+", str(movie.get(key) or "")):
             folded = normalize_title(name)
             # Tên một chữ quá dễ trùng ("Hiếu", "Linh") - chỉ tin tên từ hai chữ trở lên.
-            if len(folded.split()) >= 2 and (_contains_phrase(text, folded) or _squash(folded) in tags):
+            if len(folded.split()) >= 2 and (contains_phrase(text, folded) or squash(folded) in tags):
                 return key
 
     # Xét sau mọi tín hiệu theo tên phim để lý do cũ giữ nguyên; dùng cả khi bài không chứa nguyên văn tên phim.
     keyword_hashtag = "keyword_hashtag" if allow_title_hashtag and _film_specific_keyword_hashtag(tags, movie) else None
     if allow_title_hashtag:
         acronym = title_acronym(movie.get("title"))
-        if acronym and len(acronym) >= ACRONYM_MIN_LEN and (acronym in tags or _contains_phrase(text, acronym)):
+        if acronym and len(acronym) >= ACRONYM_MIN_LEN and (acronym in tags or contains_phrase(text, acronym)):
             return "acronym"
         if _agency_hashtag(tags, movie.get("title")):
             return "agency_hashtag"
@@ -196,19 +196,19 @@ def film_context_reason(
     title = normalize_title(movie.get("title"))
     if not title:
         return keyword_hashtag
-    squashed_text = _squash(text)
-    if not (_contains_phrase(text, title) or _squash(title) in squashed_text):
+    squashed_text = squash(text)
+    if not (contains_phrase(text, title) or squash(title) in squashed_text):
         return keyword_hashtag
-    if any(_squash(prefix + title) in squashed_text for prefix in ("phim ", "dien anh ", "movie ", "film ")):
+    if any(squash(prefix + title) in squashed_text for prefix in ("phim ", "dien anh ", "movie ", "film ")):
         return "phim_title"
     tokens = text.split()
     if _strong_phrase_near_title(tokens, title.split()):
         return "strong_near_title"
-    has_film_word = any(token.startswith("phim") for token in tokens) or _contains_phrase(text, "dien anh")
-    has_music = any(_contains_phrase(text, phrase) for phrase in _MUSIC_PHRASES)
+    has_film_word = any(token.startswith("phim") for token in tokens) or contains_phrase(text, "dien anh")
+    has_music = any(contains_phrase(text, phrase) for phrase in _MUSIC_PHRASES)
     if has_film_word and not has_music and _quoted_title(content, title):
         return "quoted_title"
-    if allow_title_hashtag and _distinctive_title(title) and _squash(title) in tags:
+    if allow_title_hashtag and _distinctive_title(title) and squash(title) in tags:
         return "title_hashtag"
     return keyword_hashtag
 
@@ -240,7 +240,7 @@ def _phrase_spans(tokens: list[str], phrase: list[str]) -> list[tuple[int, int]]
 
 def _strong_phrase_near_title(tokens: list[str], title: list[str]) -> bool:
     title_spans = _phrase_spans(tokens, title)
-    for phrase in _STRONG_FILM_PHRASES:
+    for phrase in STRONG_FILM_PHRASES:
         for start, end in _phrase_spans(tokens, phrase.split()):
             for t_start, t_end in title_spans:
                 gap = start - t_end if start >= t_end else t_start - end
@@ -278,10 +278,10 @@ def mentions_full_title(content: str | None, title: str | None) -> bool:
     spaced = normalize_title(content)
     words = normalize_title(title).split()
     # So theo từng từ trước: khi dính liền chữ, số phần phim dính vào số đứng sau ("chị chị em em 3 - 6/10" -> "...em36").
-    if len(words) >= FULL_TITLE_MIN_WORDS and _contains_phrase(spaced, " ".join(words)):
+    if len(words) >= FULL_TITLE_MIN_WORDS and contains_phrase(spaced, " ".join(words)):
         return True
-    text = _squash(spaced)
-    return any(re.search(re.escape(_squash(variant)) + r"(?!\d)", text) for variant in full_title_variants(title))
+    text = squash(spaced)
+    return any(re.search(re.escape(squash(variant)) + r"(?!\d)", text) for variant in full_title_variants(title))
 
 
 def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None], title: str | None) -> bool:
@@ -295,15 +295,15 @@ def mentions_keyword_or_title(content: str | None, keywords: Iterable[str | None
     Cổng đầu tiên của ingest, trước AI: ngày 2026-10-05 tìm kiếm Facebook trả về bài bàn về
     một phim truyền hình khác (không có chữ nào của "Người Được Chọn") và AI vẫn gán
     "related" 0,65-0,72. Không chứa từ khoá lẫn tên phim thì loại luôn, không tốn lời gọi AI."""
-    text = _squash(normalize_title(content))
+    text = squash(normalize_title(content))
     if not text:
         return False
     for keyword in keywords:
-        parts = [_squash(normalize_title(part)) for part in (keyword or "").split("+")]
+        parts = [squash(normalize_title(part)) for part in (keyword or "").split("+")]
         parts = [part for part in parts if part]
         if parts and all(part in text for part in parts):
             return True
-    folded_title = _squash(normalize_title(title))
+    folded_title = squash(normalize_title(title))
     return bool(folded_title) and folded_title in text
 
 
@@ -335,14 +335,14 @@ def mentions_full_title_with_intent(content: str | None, title: str | None) -> b
     if not mentions_full_title(content, title):
         return False
     text = normalize_title(content)
-    return any(_contains_phrase(text, phrase) for phrase in _CINEMA_INTENT_PHRASES)
+    return any(contains_phrase(text, phrase) for phrase in _CINEMA_INTENT_PHRASES)
 
 
 def mentions_short_title(content: str | None, movie: dict | None, posted_at: object) -> bool:
     """Bài nhắc tên rút gọn của phim (chữ hoặc hashtag) và đăng trong [công chiếu - SHORT_TITLE_BEFORE_DAYS, công chiếu
     + SHORT_TITLE_AFTER_DAYS]. Không có ngày công chiếu / ngày đăng thì không nhận."""
     movie = movie or {}
-    released, posted = _to_date(movie.get("released_at")), _to_date(posted_at)
+    released, posted = to_date(movie.get("released_at")), to_date(posted_at)
     if not released or not posted:
         return False
     if (
@@ -354,8 +354,8 @@ def mentions_short_title(content: str | None, movie: dict | None, posted_at: obj
     text = normalize_title(content)
     if not text:
         return False
-    tags = _hashtags(content)
-    return any(_contains_phrase(text, name) or _squash(name) in tags for name in short_title_names(movie.get("title")))
+    tags = extract_hashtags(content)
+    return any(contains_phrase(text, name) or squash(name) in tags for name in short_title_names(movie.get("title")))
 
 
 def resolve_relevance(
@@ -430,7 +430,7 @@ def find_film(
     ambiguous_slugs: Iterable[str] = (),
 ) -> dict | None:
     """Phim đang theo dõi mà bài nói tới, bỏ qua `exclude_movie_id`. Nhiều phim khớp thì lấy phim tên dài nhất (cụ thể
-    nhất). `movies`: [{"id", "title", "slug", "keywords": [...], ...}] (ingest _tracked_movies).
+    nhất). `movies`: [{"id", "title", "slug", "keywords": [...], ...}] (ingest tracked_movies).
 
     strict=False (bài trang nguồn chung - trang rạp, trang review): tên phim hoặc một từ khoá của phim
     (mentions_keyword_or_title), không có thì tên rút gọn quanh ngày công chiếu khi đúng một phim khớp.
@@ -467,4 +467,4 @@ def mentions_film_manual(content: str | None, keywords: Iterable[str | None], ti
     if mentions_keyword_or_title(content, keywords, title):
         return True
     acronym = title_acronym(title)
-    return bool(acronym) and _contains_phrase(normalize_title(content), acronym)
+    return bool(acronym) and contains_phrase(normalize_title(content), acronym)

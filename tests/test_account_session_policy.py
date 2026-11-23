@@ -52,15 +52,15 @@ def test_json_export_is_read_and_broken_json_is_refused():
 
 def test_route_refuses_facebook_only_and_allows_empty_cookie():
     with pytest.raises(CookieRefusedError, match="missing_xs"):
-        routes._refuse_bad_cookie("facebook", "123", merge_user_agent("c_user=123; datr=d", MAC_UA))
-    routes._refuse_bad_cookie("facebook", "123", "")
-    routes._refuse_bad_cookie("threads", "someone", "sessionid=x")
+        routes.refuse_bad_cookie("facebook", "123", merge_user_agent("c_user=123; datr=d", MAC_UA))
+    routes.refuse_bad_cookie("facebook", "123", "")
+    routes.refuse_bad_cookie("threads", "someone", "sessionid=x")
 
 
 def test_cookie_without_user_agent_can_be_saved_but_other_problems_still_refuse():
-    routes._refuse_bad_cookie("facebook", "123", "c_user=123; xs=a:b:2:1794032314:-1:-1; datr=d")
+    routes.refuse_bad_cookie("facebook", "123", "c_user=123; xs=a:b:2:1794032314:-1:-1; datr=d")
     with pytest.raises(CookieRefusedError, match="missing_xs") as err:
-        routes._refuse_bad_cookie("facebook", "123", "c_user=123; datr=d")
+        routes.refuse_bad_cookie("facebook", "123", "c_user=123; datr=d")
     assert "missing_user_agent" not in str(err.value)
 
 

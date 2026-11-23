@@ -8,7 +8,7 @@ from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.user_agent import merge_user_agent
 
 
-def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
+def refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
     """Cookie Facebook được kiểm tra ngay khi nhập, trước khi có request nào lên Facebook (cookie_quality.py). Cookie trống vẫn
     lưu được: tài khoản có thể thêm trước, nhập phiên sau."""
     if platform != "facebook" or not cookie.strip():
@@ -20,12 +20,12 @@ def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
         raise CookieRefusedError(",".join(problems))
 
 
-async def _record_cookie_saved(row: dict) -> None:
+async def record_cookie_saved(row: dict) -> None:
     if row.get("platform") == "facebook" and row.get("cookie"):
         await record_account_event(row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts)
 
 
-def _with_user_agent(fields: dict) -> dict:
+def with_user_agent(fields: dict) -> dict:
     """Ô User-Agent (form thêm tài khoản / import) -> ghép vào cookie dạng useragent=<base64> mà spider-hub đọc."""
     user_agent = str(fields.pop("user_agent", "") or "").strip()
     if user_agent:

@@ -105,7 +105,7 @@ _post_indexes_ready = False
 _post_indexes_lock = asyncio.Lock()
 
 
-async def _ensure_post_indexes() -> None:
+async def ensure_post_indexes() -> None:
     global _post_indexes_ready
     if _post_indexes_ready:
         return

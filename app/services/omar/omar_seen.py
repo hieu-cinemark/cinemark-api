@@ -21,7 +21,7 @@ _SEEN_PREFIX = f"{REDIS_KEY_PREFIX}omar:seen:"
 _SPIDER_SEEN_VIDEOS_KEY = f"{REDIS_KEY_PREFIX}tiktok:seen_video_ids"
 
 
-async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None) -> set[str]:
+async def claim_unseen(video_ids: list[str], brand_new: set[str] | None = None) -> set[str]:
     """Video cần gửi lên raw_posts: video MỚI (chưa có trong set đã gửi dùng chung với spider) hoặc video cũ đã quá
     settings.omar_republish_hours giờ chưa gửi lại (cập nhật tương tác). Đánh dấu luôn những video đó. Với gói lớn (~1 triệu
     video/ngày, phần lớn trùng) gửi lại mọi video làm ingest/D1 quá tải. Redis lỗi thì coi như mới hết (thà ghi trùng còn
@@ -51,7 +51,7 @@ async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None)
     return out
 
 
-async def _forget_seen(video_id: str) -> None:
+async def forget_seen(video_id: str) -> None:
     """Gửi Kafka lỗi: bỏ đánh dấu để lần sau gửi lại."""
     try:
         pipe = get_redis_client().pipeline()
@@ -67,7 +67,7 @@ async def _forget_seen(video_id: str) -> None:
 _COOCCUR_TTL_SECONDS = 14 * 24 * 3600
 
 
-async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, Any]]) -> None:
+async def count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, Any]]) -> None:
     """Cộng số video có mỗi hashtag đi kèm (khác chính hashtag đang cào). Giữ nguyên dấu, chỉ hạ chữ thường: TikTok không
     phân biệt hoa thường nhưng #trạibuônngười và #traibuonnguoi là hai hashtag khác nhau."""
     own = keyword.lstrip("#").strip().lower()

@@ -204,7 +204,7 @@ class Settings(BaseSettings):
     omar_daily_reserve: int = 50
     # Số request Omar chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
     omar_concurrency: int = 8
-    # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_seen._claim_unseen.
+    # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_seen.claim_unseen.
     omar_republish_hours: float = 48
     omar_recrawl_days: int = 1
     # Bình luận TikTok qua Omar (app/services/omar/omar_comments.py): mỗi ngày (omar_comments_cadence="daily") hoặc mỗi tuần

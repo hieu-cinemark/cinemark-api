@@ -17,7 +17,7 @@ from app.repositories.d1.tables import keywords, movies
 
 logger = get_logger(__name__)
 
-from app.repositories.d1.movies import _KEYWORD_JOIN, _KEYWORD_ROW, MOVIE_CONTEXT_FIELDS
+from app.repositories.d1.movies import KEYWORD_JOIN, KEYWORD_ROW, MOVIE_CONTEXT_FIELDS
 
 
 async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> dict[str, Any] | None:
@@ -26,8 +26,8 @@ async def get_or_create_keyword(movie_id: str, platform: str, keyword: str) -> d
     src/db/schema.ts của cinemark-scraper) để gửi lặp lại hoặc đua với một tab khác chỉ
     trả về cùng dòng đó thay vì lỗi ràng buộc."""
     existing = await d1_exec(
-        select(*_KEYWORD_ROW)
-        .select_from(_KEYWORD_JOIN)
+        select(*KEYWORD_ROW)
+        .select_from(KEYWORD_JOIN)
         .where(keywords.c.movie_id == movie_id, keywords.c.platform == platform, keywords.c.keyword == keyword)
     )
     if existing:
@@ -83,7 +83,7 @@ async def movie_of_keyword(keyword_id: str) -> dict[str, Any] | None:
     """Thông tin phim (MOVIE_CONTEXT_FIELDS) của phim sở hữu từ khoá; None khi không có hoặc D1 lỗi."""
     rows = await d1_exec(
         select(*(movies.c[f] for f in MOVIE_CONTEXT_FIELDS))
-        .select_from(_KEYWORD_JOIN)
+        .select_from(KEYWORD_JOIN)
         .where(keywords.c.id == keyword_id),
         quiet=True,
     )
@@ -96,8 +96,8 @@ async def list_keywords(platform: str) -> list[dict[str, Any]]:
     vào một từ khoá thay vì "mọi từ khoá đang bật của nền tảng này" (xem
     get_enabled_keywords bên dưới, vẫn dùng cho trường hợp chạy hàng loạt đó)."""
     rows = await d1_exec(
-        select(*_KEYWORD_ROW)
-        .select_from(_KEYWORD_JOIN)
+        select(*KEYWORD_ROW)
+        .select_from(KEYWORD_JOIN)
         .where(keywords.c.platform == platform, keywords.c.enabled == 1, movies.c.enabled == 1)
         .order_by(movies.c.title, keywords.c.keyword)
     )
@@ -116,13 +116,13 @@ async def get_keyword(keyword_id: str, platform: str, *, include_disabled: bool 
     từ khoá vẫn là bài thật của phim, trước đây bị bỏ với lý do unknown_keyword_id. Phim vẫn phải đang bật."""
     stmt = (
         select(
-            *_KEYWORD_ROW,
+            *KEYWORD_ROW,
             keywords.c.platform,
             movies.c.director.label("movie_director"),
             movies.c.cast.label("movie_cast"),
             movies.c.distributor.label("movie_distributor"),
         )
-        .select_from(_KEYWORD_JOIN)
+        .select_from(KEYWORD_JOIN)
         .where(keywords.c.id == keyword_id, keywords.c.platform == platform, movies.c.enabled == 1)
     )
     if not include_disabled:
@@ -137,7 +137,7 @@ async def get_enabled_keywords(platform: str, movie_id: str | None = None) -> li
     cron hằng ngày của một nền tảng ("chạy mọi thứ của nền tảng này")."""
     stmt = (
         select(keywords.c.id, keywords.c.movie_id, keywords.c.platform, keywords.c.keyword)
-        .select_from(_KEYWORD_JOIN)
+        .select_from(KEYWORD_JOIN)
         .where(keywords.c.platform == platform, keywords.c.enabled == 1, movies.c.enabled == 1)
     )
     if movie_id:
@@ -162,8 +162,8 @@ async def set_keyword_enabled(platform: str, keyword_id: str, enabled: bool) -> 
         logger.warning("d1_set_keyword_enabled_failed", platform=platform, keyword_id=keyword_id, enabled=enabled)
         return None
     rows = await d1_exec(
-        select(*_KEYWORD_ROW, keywords.c.enabled)
-        .select_from(_KEYWORD_JOIN)
+        select(*KEYWORD_ROW, keywords.c.enabled)
+        .select_from(KEYWORD_JOIN)
         .where(keywords.c.id == keyword_id, keywords.c.platform == platform)
     )
     return rows[0] if rows else None

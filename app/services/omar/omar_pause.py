@@ -25,18 +25,18 @@ logger = get_logger(__name__)
 # chạy được - scheduler không gọi Omar nữa (kể cả /usage) cho tới lúc đó rồi mở lượt NGAY khi hạn mức reset, không đợi
 # mốc giờ kế tiếp. Con trỏ hashtag / hàng đợi bình luận / tìm kiếm vốn lưu sau mỗi trang nên lượt sau đi tiếp đúng chỗ.
 _PAUSE_KEY = f"{REDIS_KEY_PREFIX}omar:paused"
-_LAST_ROUND_KEY = f"{REDIS_KEY_PREFIX}omar:last_round"
+LAST_ROUND_KEY = f"{REDIS_KEY_PREFIX}omar:last_round"
 # Key sai/hết hạn: thử lại khi đổi key, hoặc sau chừng này giờ nếu vẫn key cũ.
 _KEY_PAUSE_HOURS = 6
 # Hạn mức reset xong chừng này giây mới mở lượt - tránh gọi đúng lúc phía Omar chưa kịp reset.
-_RESUME_SLACK_SECONDS = 60
+RESUME_SLACK_SECONDS = 60
 
 
 def key_fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode()).hexdigest()[:12] if api_key else ""
 
 
-def _log_stop(exc: OmarStop) -> None:
+def log_stop(exc: OmarStop) -> None:
     quota = str(exc).startswith("daily_limit")
     # Hết hạn mức ngày là chuyện bình thường của chế độ chạy liên tục - chỉ báo Telegram khi key có vấn đề.
     if quota:
@@ -85,7 +85,7 @@ async def pause_over(pause: dict[str, Any]) -> bool:
     return False
 
 
-async def _pause_after_round(stats: dict[str, Any], api_key: str, reset_at: datetime | None, exhausted: bool) -> None:
+async def pause_after_round(stats: dict[str, Any], api_key: str, reset_at: datetime | None, exhausted: bool) -> None:
     """Ghi lại khi nào lượt kế tiếp chạy được, theo lý do lượt vừa dừng."""
     from app.services.omar.omar_tiktok import fetch_usage  # vòng import: omar_tiktok dùng module này
 
@@ -103,12 +103,12 @@ async def _pause_after_round(stats: dict[str, Any], api_key: str, reset_at: date
         reset_at = now + timedelta(seconds=int(day["resets_in"]))
         if int(day.get("remaining") or 0) > settings.omar_daily_reserve and not stopped.startswith("daily_limit"):
             return  # vẫn còn hạn mức (vd. gói vừa được nâng) - lượt sau chạy bình thường
-    await set_pause("quota", (reset_at or now + timedelta(hours=1)) + timedelta(seconds=_RESUME_SLACK_SECONDS))
+    await set_pause("quota", (reset_at or now + timedelta(hours=1)) + timedelta(seconds=RESUME_SLACK_SECONDS))
 
 
 async def last_round() -> dict[str, Any] | None:
     try:
-        raw = await get_redis_client().get(_LAST_ROUND_KEY)
+        raw = await get_redis_client().get(LAST_ROUND_KEY)
         return json.loads(raw) if raw else None
     except Exception:  # noqa: BLE001
         return None

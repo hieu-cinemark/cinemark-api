@@ -12,7 +12,7 @@ import json
 from collections import Counter
 from unittest.mock import AsyncMock, patch
 
-from app.ai.tasks.report import _restore_ids, build_topics_payload
+from app.ai.tasks.report import build_topics_payload, restore_ids
 from app.repositories.d1.report_data import (
     CHANNEL_MIN_POSTS,
     MIN_COMMENTS_FOR_REPORT,
@@ -223,7 +223,7 @@ def test_topics_payload_uses_short_ids_and_maps_them_back() -> None:
     assert comments[0] == {"id": "c1", "post_id": "p2", "message": "Hay quá", "likes": 50, "sentiment": "positive"}
     assert comments[1]["post_id"] is None
 
-    restored = _restore_ids(
+    restored = restore_ids(
         {
             "top_10_topics": [{"topic_name": "x", "evidence_comments": [{"id": "p1", "text": "..."}]}],
             "top_10_verbatims": [{"id": "c2", "text": "Dở quá"}, {"id": "unknown", "text": "?"}],

@@ -13,14 +13,22 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.core.errors import ConflictError, NotFoundError
-from app.services.accounts.config_db.d1_store import _EMPTY, _EMPTY_JSON, _json, _metadata, _now, _run, _when
+from app.services.accounts.config_db.d1_store import (
+    EMPTY_JSON_TEXT,
+    EMPTY_TEXT,
+    _json,
+    _now,
+    _run,
+    config_metadata,
+    to_datetime,
+)
 
 _ZERO = text("0")
 _ONE = text("1")
 
 filter_keywords = Table(
     "filter_keywords",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("keyword", Text, nullable=False),
     Column("category", Text, nullable=False),
@@ -32,7 +40,7 @@ filter_keywords = Table(
 
 crawl_schedules = Table(
     "crawl_schedules",
-    _metadata,
+    config_metadata,
     Column("platform", Text, primary_key=True),
     Column("run_time", Text, nullable=False, server_default=text("'07:00'")),
     Column("enabled", Integer, nullable=False, server_default=_ONE),
@@ -44,7 +52,7 @@ crawl_schedules = Table(
 
 comment_crawl_schedules = Table(
     "comment_crawl_schedules",
-    _metadata,
+    config_metadata,
     Column("platform", Text, primary_key=True),
     Column("run_time", Text, nullable=False, server_default=text("'08:00'")),
     Column("enabled", Integer, nullable=False, server_default=_ZERO),
@@ -55,15 +63,15 @@ comment_crawl_schedules = Table(
 
 cleanup_settings = Table(
     "cleanup_settings",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True),
-    Column("settings", Text, nullable=False, server_default=_EMPTY_JSON),
+    Column("settings", Text, nullable=False, server_default=EMPTY_JSON_TEXT),
     Column("updated_at", Text, nullable=False),
 )
 
 cleanup_run_history = Table(
     "cleanup_run_history",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("started_at", Text, nullable=False),
     Column("finished_at", Text),
@@ -80,7 +88,7 @@ cleanup_run_history = Table(
 
 discovery_settings = Table(
     "discovery_settings",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True),
     Column("enabled", Integer, nullable=False, server_default=_ONE),
     Column("updated_at", Text, nullable=False),
@@ -88,9 +96,9 @@ discovery_settings = Table(
 
 omar_api_settings = Table(
     "omar_api_settings",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True),
-    Column("api_key", Text, nullable=False, server_default=_EMPTY),
+    Column("api_key", Text, nullable=False, server_default=EMPTY_TEXT),
     Column("requests_per_minute", Integer, nullable=False, server_default=_ZERO),
     Column("daily_requests", Integer, nullable=False, server_default=_ZERO),
     Column("concurrency", Integer, nullable=False, server_default=_ZERO),
@@ -138,8 +146,8 @@ def _keyword_row(row: dict[str, Any]) -> dict[str, Any]:
     return {
         **row,
         "enabled": bool(row["enabled"]),
-        "created_at": _when(row["created_at"]),
-        "updated_at": _when(row["updated_at"]),
+        "created_at": to_datetime(row["created_at"]),
+        "updated_at": to_datetime(row["updated_at"]),
     }
 
 
@@ -217,7 +225,7 @@ def _crawl_schedule_row(row: dict[str, Any]) -> dict[str, Any]:
         "nurture_before": bool(row["nurture_before"]),
         "nurture_after": bool(row["nurture_after"]),
         "last_triggered_date": _day(row["last_triggered_date"]),
-        "updated_at": _when(row["updated_at"]),
+        "updated_at": to_datetime(row["updated_at"]),
     }
 
 
@@ -273,7 +281,7 @@ def _comment_schedule_row(row: dict[str, Any]) -> dict[str, Any]:
         **row,
         "enabled": bool(row["enabled"]),
         "last_triggered_date": _day(row["last_triggered_date"]),
-        "updated_at": _when(row["updated_at"]),
+        "updated_at": to_datetime(row["updated_at"]),
     }
 
 
@@ -315,7 +323,7 @@ async def get_cleanup_settings() -> dict[str, Any]:
     )
     if not rows:
         return {"settings": {}, "updated_at": None}
-    return {"settings": _json(rows[0]["settings"]), "updated_at": _when(rows[0]["updated_at"])}
+    return {"settings": _json(rows[0]["settings"]), "updated_at": to_datetime(rows[0]["updated_at"])}
 
 
 async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
@@ -328,7 +336,7 @@ async def upsert_cleanup_settings(values: dict[str, Any]) -> dict[str, Any]:
         index_elements=["id"], set_={"settings": stmt.excluded.settings, "updated_at": now}
     ).returning(cleanup_settings.c.settings, cleanup_settings.c.updated_at)
     row = (await _run(stmt))[0]
-    return {"settings": _json(row["settings"]), "updated_at": _when(row["updated_at"])}
+    return {"settings": _json(row["settings"]), "updated_at": to_datetime(row["updated_at"])}
 
 
 async def record_cleanup_run_start(*, dry_run: bool, triggered_by: str) -> int:
@@ -382,8 +390,8 @@ async def list_cleanup_run_history(limit: int) -> list[dict[str, Any]]:
         {
             **r,
             "dry_run": bool(r["dry_run"]),
-            "started_at": _when(r["started_at"]),
-            "finished_at": _when(r["finished_at"]),
+            "started_at": to_datetime(r["started_at"]),
+            "finished_at": to_datetime(r["finished_at"]),
         }
         for r in rows
     ]
@@ -399,7 +407,7 @@ async def get_discovery_settings() -> dict[str, Any]:
     )
     if not rows:
         return {"enabled": True, "updated_at": None}
-    return {"enabled": bool(rows[0]["enabled"]), "updated_at": _when(rows[0]["updated_at"])}
+    return {"enabled": bool(rows[0]["enabled"]), "updated_at": to_datetime(rows[0]["updated_at"])}
 
 
 async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
@@ -410,7 +418,7 @@ async def set_discovery_enabled(enabled: bool) -> dict[str, Any]:
         index_elements=["id"], set_={"enabled": stmt.excluded.enabled, "updated_at": now}
     ).returning(discovery_settings.c.enabled, discovery_settings.c.updated_at)
     row = (await _run(stmt))[0]
-    return {"enabled": bool(row["enabled"]), "updated_at": _when(row["updated_at"])}
+    return {"enabled": bool(row["enabled"]), "updated_at": to_datetime(row["updated_at"])}
 
 
 async def get_omar_api_settings() -> dict[str, Any] | None:
@@ -419,7 +427,7 @@ async def get_omar_api_settings() -> dict[str, Any] | None:
     rows = await _run(
         select(c.api_key, c.requests_per_minute, c.daily_requests, c.concurrency, c.updated_at).where(c.id == 1)
     )
-    return {**rows[0], "updated_at": _when(rows[0]["updated_at"])} if rows else None
+    return {**rows[0], "updated_at": to_datetime(rows[0]["updated_at"])} if rows else None
 
 
 async def set_omar_limits(changes: dict[str, int]) -> None:
@@ -441,4 +449,4 @@ async def upsert_omar_api_key(api_key: str) -> dict[str, Any]:
         index_elements=["id"], set_={"api_key": stmt.excluded.api_key, "updated_at": now}
     ).returning(omar_api_settings.c.api_key, omar_api_settings.c.updated_at)
     row = (await _run(stmt))[0]
-    return {**row, "updated_at": _when(row["updated_at"])}
+    return {**row, "updated_at": to_datetime(row["updated_at"])}

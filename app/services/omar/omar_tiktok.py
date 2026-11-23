@@ -42,19 +42,19 @@ from app.services.omar import omar_comments
 
 logger = get_logger(__name__)
 
-from app.services.omar.omar_budget import Budget, _Pacer
-from app.services.omar.omar_fetch import _fetch_page, fetch_hashtag_info, publish_videos
-from app.services.omar.omar_hashtag import _MAX_PAGE_FAILURES, _RESET_KEEP, _STATE_KEY, _manual_running
+from app.services.omar.omar_budget import Budget, Pacer
+from app.services.omar.omar_fetch import fetch_hashtag_info, fetch_page, publish_videos
+from app.services.omar.omar_hashtag import MAX_PAGE_FAILURES, RESET_KEEP, STATE_KEY, manual_running
 from app.services.omar.omar_pause import (
-    _LAST_ROUND_KEY,
-    _RESUME_SLACK_SECONDS,
-    _log_stop,
-    _pause_after_round,
+    LAST_ROUND_KEY,
+    RESUME_SLACK_SECONDS,
     _round,
     last_round,
+    log_stop,
+    pause_after_round,
     set_pause,
 )
-from app.services.omar.omar_seen import _count_cooccur
+from app.services.omar.omar_seen import count_cooccur
 
 # Trang rỗng liên tiếp mà vẫn has_more: coi như đã hết (tránh lặp vô hạn nếu Omar trả cursor lỗi).
 _MAX_EMPTY_PAGES = 3
@@ -188,7 +188,7 @@ async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
         _round.update(running=False, finished_at=datetime.now(tz=UTC).isoformat())
         _stop_requested = False
         try:
-            await get_redis_client().set(_LAST_ROUND_KEY, json.dumps(_round, default=str), ex=30 * 24 * 3600)
+            await get_redis_client().set(LAST_ROUND_KEY, json.dumps(_round, default=str), ex=30 * 24 * 3600)
         except Exception as exc:  # noqa: BLE001 - chỉ là thông tin hiển thị
             logger.warning("omar_last_round_save_failed", error=exc)
 
@@ -215,7 +215,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         return {**stats, "skipped": "no_keywords"}
 
     redis = get_redis_client()
-    raw_state = await redis.hgetall(_STATE_KEY) or {}
+    raw_state = await redis.hgetall(STATE_KEY) or {}
     state: dict[str, dict[str, Any]] = {}
     for key, value in raw_state.items():
         parsed = loads_or_none(value, source="omar_hashtag_state")
@@ -227,7 +227,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     async def save(kw_id: str, entry: dict[str, Any]) -> None:
         state[kw_id] = entry
         try:
-            await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
+            await redis.hset(STATE_KEY, kw_id, json.dumps(entry))
         except Exception as exc:  # noqa: BLE001 - mất con trỏ chỉ làm lần sau cào lại từ đầu
             logger.warning("omar_state_save_failed", error=exc)
 
@@ -251,9 +251,9 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         if budget <= 0:
             logger.info("omar_round_no_budget", remaining=day.get("remaining"))
             if reset_at is not None:
-                await set_pause("quota", reset_at + timedelta(seconds=_RESUME_SLACK_SECONDS))
+                await set_pause("quota", reset_at + timedelta(seconds=RESUME_SLACK_SECONDS))
             return {**stats, "skipped": "no_budget"}
-        pacer = _Pacer(per_minute)
+        pacer = Pacer(per_minute)
         spend = Budget(budget)
 
         def should_stop() -> bool:
@@ -276,7 +276,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 if not halted:
                     halted = True
                     stats["stopped"] = str(exc)[:100]
-                    _log_stop(exc)
+                    log_stop(exc)
             except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
                 logger.error("omar_comments_failed", error=exc)
 
@@ -335,7 +335,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             kw: dict[str, Any], cursor: str, hashtag_id: str | None = None
         ) -> tuple[list[dict[str, Any]], str | None, str | None] | None:
             try:
-                videos, next_cursor, hashtag_id = await _fetch_page(
+                videos, next_cursor, hashtag_id = await fetch_page(
                     client, pacer, api_key, str(kw["keyword"]).lstrip("#"), cursor, hashtag_id
                 )
             except OmarStop:
@@ -347,7 +347,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             stats["requests"] += 1
             mapped = [video for video in (map_video(raw) for raw in videos) if video is not None]
             stats["videos"] += len(mapped)
-            await _count_cooccur(str(kw["keyword"]), kw["id"], mapped)
+            await count_cooccur(str(kw["keyword"]), kw["id"], mapped)
             await publish_videos(mapped, kw["id"], stats)
             return videos, next_cursor, hashtag_id
 
@@ -361,13 +361,13 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             trang nên lượt sau đi tiếp."""
             nonlocal halted
             kw_id = kw["id"]
-            if kw_id in _manual_running:
+            if kw_id in manual_running:
                 return None  # đang được cào riêng (crawl_hashtag_now)
             entry = entries.get(kw_id)
             if entry is None:
                 entry = state.get(kw_id) or {}
                 if entry.get("done_at"):  # đến hạn cào lại từ đầu (giữ số liệu hashtag_info)
-                    entry = {k: entry[k] for k in _RESET_KEEP if k in entry}
+                    entry = {k: entry[k] for k in RESET_KEEP if k in entry}
                 entry.setdefault("started_at", now.isoformat())
                 entries[kw_id] = entry
             if should_stop() or not spend.take():
@@ -379,7 +379,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 if not halted:
                     halted = True
                     stats["stopped"] = str(exc)[:100]
-                    _log_stop(exc)
+                    log_stop(exc)
                 return None
             ever_done = bool((state.get(kw_id) or {}).get("done_at"))  # đã từng cào xong: có thật, chỉ lỗi tạm
             if result is None and cursor == "0" and not entry.get("pages") and not ever_done:
@@ -393,7 +393,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             if result is None:
                 # Trang lỗi (sau các lần thử lại trong omar_get): thử lại đúng trang đó sau một lúc, xen các hashtag khác.
                 failures[kw_id] = failures.get(kw_id, 0) + 1
-                return None if failures[kw_id] >= _MAX_PAGE_FAILURES else 30.0 * failures[kw_id]
+                return None if failures[kw_id] >= MAX_PAGE_FAILURES else 30.0 * failures[kw_id]
             failures[kw_id] = 0
             entry.pop("missing_at", None)
             videos, next_cursor, hashtag_id = result
@@ -450,7 +450,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                         if not halted:
                             halted = True
                             stats["stopped"] = str(exc)[:100]
-                            _log_stop(exc)
+                            log_stop(exc)
 
             await asyncio.gather(*(worker() for _ in range(max(1, min(settings.omar_concurrency, len(items))))))
             return still
@@ -460,7 +460,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         stats["keywords"] = len(deep)
         stats["concurrency"] = workers
         # 19/11/2026: hashtag và bình luận chạy SONG SONG (người vận hành muốn hashtag cào lại mỗi ngày mà không đợi bình luận
-        # xong). Số worker chia đôi để tổng request đồng thời vẫn bằng `workers`; nhịp mỗi phút do chung một _Pacer nên
+        # xong). Số worker chia đôi để tổng request đồng thời vẫn bằng `workers`; nhịp mỗi phút do chung một Pacer nên
         # không vượt giới hạn của gói, bình luận bị chặn ở omar_comments_budget_share nên không nuốt hết ngân sách hashtag.
         comment_workers = max(1, workers // 2)
         hashtag_workers = max(1, workers - comment_workers)
@@ -496,7 +496,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     stats["pending_keywords"] = pending
     if not _stop_requested:
         try:
-            await _pause_after_round(stats, api_key, reset_at, spend.exhausted)
+            await pause_after_round(stats, api_key, reset_at, spend.exhausted)
         except Exception as exc:  # noqa: BLE001 - không ghi được thì lượt sau tự kiểm tra hạn mức như trước
             logger.warning("omar_pause_save_failed", error=exc)
     if _stop_requested:

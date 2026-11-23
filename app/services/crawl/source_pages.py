@@ -76,7 +76,7 @@ _ENABLED_SOURCES = (
 )
 
 
-async def _set_source(source_id: str, *, quiet: bool = False, **values: Any) -> None:
+async def set_source(source_id: str, *, quiet: bool = False, **values: Any) -> None:
     await d1_exec(update(source_pages).where(source_pages.c.id == source_id).values(**values), quiet=quiet)
 
 
@@ -245,7 +245,7 @@ async def add_source(
 
 async def set_enabled(source_id: str, enabled: bool) -> None:
     await _ensure_table()
-    await _set_source(source_id, enabled=1 if enabled else 0)
+    await set_source(source_id, enabled=1 if enabled else 0)
 
 
 async def delete_source(source_id: str) -> None:
@@ -275,11 +275,11 @@ async def _update_quiet_runs(source: dict[str, Any]) -> None:
     last = json.loads(raw)
     if last.get("page_id") and not source.get("page_id"):
         # Spider đã dò ra id của trang - lưu lại để các lượt sau không tốn request dò lại.
-        await _set_source(source["id"], page_id=str(last["page_id"]), quiet=True)
+        await set_source(source["id"], page_id=str(last["page_id"]), quiet=True)
         source["page_id"] = str(last["page_id"])
     quiet = 0 if int(last.get("new") or 0) > 0 else int(source.get("quiet_runs") or 0) + 1
     if quiet != int(source.get("quiet_runs") or 0):
-        await _set_source(source["id"], quiet_runs=quiet, quiet=True)
+        await set_source(source["id"], quiet_runs=quiet, quiet=True)
         source["quiet_runs"] = quiet
 
 
@@ -374,7 +374,7 @@ async def fill_public_pages_queue(now: datetime | None = None) -> int:
             request["since_days"] = since_days
         await enqueue_published(request)  # hiện trên trang Hàng đợi
         await redis.lpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
-        await _set_source(source["id"], last_queued_at=now.isoformat(), quiet=True)
+        await set_source(source["id"], last_queued_at=now.isoformat(), quiet=True)
         queued += 1
     return queued
 
@@ -402,7 +402,7 @@ async def run_source(source_id: str) -> bool:
         request["keyword_id"] = keyword["id"] if keyword else None
     await enqueue_published(request)
     await get_redis_client().rpush(_PUBLIC_QUEUE_KEY, json.dumps(request, ensure_ascii=False))
-    await _set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat(), quiet=True)
+    await set_source(source["id"], last_queued_at=datetime.now(tz=UTC).isoformat(), quiet=True)
     return True
 
 

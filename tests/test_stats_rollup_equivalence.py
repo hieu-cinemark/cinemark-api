@@ -248,12 +248,12 @@ def test_subtract_deleted_matches_the_raw_update():
         db.execute(sql, params or [])
         return []
 
-    original = stats_reconcile._q
-    stats_reconcile._q = fake_q
+    original = stats_reconcile.run_stats_query
+    stats_reconcile.run_stats_query = fake_q
     try:
         asyncio.run(stats_reconcile.subtract_deleted(deleted_posts, deleted_comments))
     finally:
-        stats_reconcile._q = original
+        stats_reconcile.run_stats_query = original
     db.commit()
 
     # Bản cũ: 4 câu UPDATE (2 bảng x 2 kind) với cùng tham số.

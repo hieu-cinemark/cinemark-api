@@ -64,7 +64,7 @@ def _existing(**counts):
 async def _update(fake: _FakeD1, **counts) -> bool:
     with (
         patch.object(d1_sql, "d1_query", fake),
-        patch.object(posts_repo, "_ensure_post_indexes", AsyncMock()),
+        patch.object(posts_repo, "ensure_post_indexes", AsyncMock()),
         patch("app.services.stats.stats_summary.record_post", AsyncMock()),
     ):
         return await posts_repo.update_post_engagement("facebook", "e1", **counts)

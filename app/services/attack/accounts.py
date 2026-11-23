@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.services.attack.signals import Signal, mask_name
-from app.services.attack.similar import _vn_hour
+from app.services.attack.similar import vn_hour
 
 MANY_POSTS, MANY_POSTS_WINDOW = 5, timedelta(hours=24)
 PAIR_POSTS, PAIR_GAP, PAIR_JACCARD = 3, timedelta(minutes=10), 0.5
@@ -111,7 +111,7 @@ def account_groups(rows: list[dict[str, Any]], clusters: list[dict[str, Any]]) -
                 "posts": len({r["post_id"] for r in items}),
                 "comments": len(items),
                 "platforms": sorted({r.get("platform") or "" for r in items} - {""}),
-                "window": (_vn_hour(times[0].isoformat()), _vn_hour((times[-1] + timedelta(hours=1)).isoformat())),
+                "window": (vn_hour(times[0].isoformat()), vn_hour((times[-1] + timedelta(hours=1)).isoformat())),
                 "rules": {
                     name: sum(name in rules[a] for a in qualifying) for name in ("many_posts", "pair", "multi_cluster")
                 },

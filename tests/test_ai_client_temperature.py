@@ -32,7 +32,7 @@ def _client(*streams) -> MagicMock:
 
 def test_temperature_error_in_stream_retries_without_temperature() -> None:
     client = _client(_stream_error("[400]: `temperature` is deprecated for this model."), iter([_chunk("ok", "stop")]))
-    with patch("app.ai.providers.client._client_for", return_value=client):
+    with patch("app.ai.providers.client.client_for", return_value=client):
         result = _invoke(MagicMock(), model="m", system_prompt="s", user_prompt="u", temperature=0.3, max_tokens=10)
     assert result.choices[0].message.content == "ok"
     first, second = (call.kwargs for call in client.chat.completions.create.call_args_list)
@@ -42,7 +42,7 @@ def test_temperature_error_in_stream_retries_without_temperature() -> None:
 def test_other_errors_are_not_retried() -> None:
     client = _client(_stream_error("[500]: upstream down"))
     with (
-        patch("app.ai.providers.client._client_for", return_value=client),
+        patch("app.ai.providers.client.client_for", return_value=client),
         pytest.raises(RuntimeError, match="upstream"),
     ):
         _invoke(MagicMock(), model="m", system_prompt="s", user_prompt="u", temperature=0.3, max_tokens=10)

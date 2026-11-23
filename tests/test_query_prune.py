@@ -40,7 +40,7 @@ def _run(monkeypatch, rows, yields):
     monkeypatch.setattr(qd, "d1_exec", fake_select)
     monkeypatch.setattr(qd, "enable_keyword", fake_enable)
     monkeypatch.setattr(qd, "keyword_yields", fake_yields)
-    monkeypatch.setattr(qd, "_record", fake_record)
+    monkeypatch.setattr(qd, "record_decision", fake_record)
     pruned = asyncio.run(qd._prune(dry_run=False))
     return pruned, disabled, recorded
 
@@ -89,7 +89,7 @@ def test_threads_backfill_copies_facebook_template_queries(monkeypatch):
         pass
 
     monkeypatch.setattr(qd, "add_keyword", fake_add)
-    monkeypatch.setattr(qd, "_record", fake_record)
+    monkeypatch.setattr(qd, "record_decision", fake_record)
     now = datetime.now(tz=UTC)
     movies = [{"id": "m1", "title": "Huyết Thống", "released_at": now.date().isoformat()}]
     keywords = [

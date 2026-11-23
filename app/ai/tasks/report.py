@@ -148,7 +148,7 @@ def build_topics_payload(
     return posts_payload, comments_payload, aliases
 
 
-def _restore_ids(parsed: dict[str, Any], aliases: dict[str, tuple[str, str]]) -> dict[str, Any]:
+def restore_ids(parsed: dict[str, Any], aliases: dict[str, tuple[str, str]]) -> dict[str, Any]:
     """Đổi id ngắn AI trả về ("c12"/"p3") lại thành id thật và đặt "source" theo đúng loại của id đó."""
 
     def restore(item: Any) -> Any:
@@ -205,7 +205,7 @@ async def _topics_for_part(
         temperature=0.3,
         parse=_parse_topics,
     )
-    return _restore_ids(parsed, aliases)
+    return restore_ids(parsed, aliases)
 
 
 async def _merge_parts(movie_title: str, movie: dict[str, Any] | None, parts: list[dict[str, Any]]) -> dict[str, Any]:

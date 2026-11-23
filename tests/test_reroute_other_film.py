@@ -33,7 +33,7 @@ def world(monkeypatch):
         created.append((movie_id, platform, keyword, enabled))
         return "kw_b_tiktok_new"
 
-    monkeypatch.setattr(main, "_tracked_movies", tracked)
+    monkeypatch.setattr(main, "tracked_movies", tracked)
     monkeypatch.setattr(main, "d1_exec", fake_exec)
     monkeypatch.setattr(main, "add_keyword", fake_add)
     return created

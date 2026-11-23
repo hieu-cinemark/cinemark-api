@@ -95,11 +95,11 @@ def _valid_day(value: Any) -> str | None:
 # --- lưu trữ ---
 
 
-def _root(movie_id: str) -> str:
+def angles_dir(movie_id: str) -> str:
     return f"analysis/review-angles/v2/{movie_id}"
 
 
-async def _read_json(key: str) -> Any:
+async def read_json(key: str) -> Any:
     try:
         return json.loads(await lake.get_object(key))
     except ClientError as exc:
@@ -108,7 +108,7 @@ async def _read_json(key: str) -> Any:
         raise
 
 
-async def _write_json(key: str, value: Any) -> None:
+async def write_json(key: str, value: Any) -> None:
     await lake.put_object(key, json.dumps(value, ensure_ascii=False).encode(), "application/json")
 
 
@@ -239,7 +239,7 @@ def _words(text: str) -> set[str]:
     return {w for w in re.findall(r"\w+", text.lower()) if len(w) > 1}
 
 
-def _nearest_angle(angles: list[dict[str, Any]], aspect: str, name: str) -> dict[str, Any] | None:
+def nearest_angle(angles: list[dict[str, Any]], aspect: str, name: str) -> dict[str, Any] | None:
     """Góc cùng khía cạnh gần tên nhất (trùng nhiều từ nhất, hoà thì góc đã có nhiều bài nhất)."""
     same = [a for a in angles if a["aspect"] == aspect]
     if not same:
@@ -349,11 +349,11 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
     if not await redis.set(lock_key, "1", nx=True, ex=600):
         return {"movie_id": movie_id, "read": 0, "reason": "busy"}
     try:
-        prefix = _root(movie_id)
-        state = await _read_json(f"{prefix}/state.json") or empty_state()
+        prefix = angles_dir(movie_id)
+        state = await read_json(f"{prefix}/state.json") or empty_state()
         metas, kind = await _next_batch(movie_id, premiere_start(movie["premiereDate"]), state)
         if not metas:
-            await _write_json(f"{prefix}/state.json", state)
+            await write_json(f"{prefix}/state.json", state)
             return {"movie_id": movie_id, "read": 0}
         posts = await _load_posts(movie_id, [m["id"] for m in metas])
         readable = [p for p in posts if has_text(p["caption"])]
@@ -430,7 +430,7 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
                     count = (state.get("failures") or {}).get(fail_key, 0) + 1
                     state["failures"] = {fail_key: count}
                     if count < MAX_BATCH_FAILURES:
-                        await _write_json(f"{prefix}/state.json", state)
+                        await write_json(f"{prefix}/state.json", state)
                         return {
                             "movie_id": movie_id,
                             "read": 0,
@@ -441,14 +441,14 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
                     logger.warning("review_angles_batch_skipped", movie_id=movie_id, first_post=fail_key)
         page = state["pages"]
         if readable:
-            await _write_json(f"{prefix}/page-{page}.json", readable)
+            await write_json(f"{prefix}/page-{page}.json", readable)
             state["pages"] += 1
         by_id = {p["id"]: p for p in readable}
         for item in answer["angles"]:
             angle_id = item["id"] or angle_id_of(item["aspect"], item["name"])
             angle = next((a for a in state["angles"] if a["id"] == angle_id), None)
             if not angle and sum(1 for a in state["angles"] if a["aspect"] == item["aspect"]) >= MAX_ANGLES_PER_ASPECT:
-                angle = _nearest_angle(state["angles"], item["aspect"], item["name"])
+                angle = nearest_angle(state["angles"], item["aspect"], item["name"])
             if not angle:
                 angle = {
                     "id": angle_id,
@@ -483,7 +483,7 @@ async def analyze_next_batch(movie_id: str) -> dict[str, Any]:
                     sources.append(post["source"]["key"])
         state["updatedAt"] = datetime.now(tz=UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         state["failures"] = {}
-        await _write_json(f"{prefix}/state.json", state)
+        await write_json(f"{prefix}/state.json", state)
         return {
             "movie_id": movie_id,
             "read": len(metas),

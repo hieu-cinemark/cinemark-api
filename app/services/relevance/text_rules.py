@@ -212,18 +212,18 @@ def normalize_title(value: str | None) -> str:
     return re.sub(r"[^a-z0-9]+", " ", stripped.replace("đ", "d")).strip()
 
 
-def _contains_phrase(haystack: str, phrase: str) -> bool:
+def contains_phrase(haystack: str, phrase: str) -> bool:
     return bool(phrase) and f" {phrase} " in f" {haystack} "
 
 
-def _squash(value: str) -> str:
+def squash(value: str) -> str:
     return value.replace(" ", "")
 
 
-def _hashtags(content: str | None) -> set[str]:
+def extract_hashtags(content: str | None) -> set[str]:
     """Các hashtag của bài ở dạng bỏ dấu, viết liền ("#TrạiBuônNgười" -> "traibuonnguoi")."""
     raw = unicodedata.normalize("NFC", content or "")
-    return {_squash(normalize_title(tag)) for tag in re.findall(r"#(\w+)", raw)} - {""}
+    return {squash(normalize_title(tag)) for tag in re.findall(r"#(\w+)", raw)} - {""}
 
 
 def no_diacritics_reason(text: str | None) -> str | None:

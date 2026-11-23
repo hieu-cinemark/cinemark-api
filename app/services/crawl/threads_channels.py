@@ -31,7 +31,7 @@ from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
 from app.services.accounts.config_db.proxy_settings import crawl_setting
-from app.services.crawl.source_pages import _ensure_table, _movie_title, _set_source, source_pages
+from app.services.crawl.source_pages import _ensure_table, _movie_title, set_source, source_pages
 from app.services.crawl.task_queue import enqueue_published
 
 logger = get_logger(__name__)
@@ -89,10 +89,10 @@ async def _sync_quiet_runs(source: dict[str, Any]) -> None:
         return
     quiet = 0 if int(last.get("new") or 0) > 0 else int(source.get("quiet_runs") or 0) + 1
     if last.get("user_id") and not source.get("page_id"):
-        await _set_source(source["id"], page_id=str(last["user_id"]), quiet=True)
+        await set_source(source["id"], page_id=str(last["user_id"]), quiet=True)
         source["page_id"] = str(last["user_id"])
     if quiet != int(source.get("quiet_runs") or 0):
-        await _set_source(source["id"], quiet_runs=quiet, quiet=True)
+        await set_source(source["id"], quiet_runs=quiet, quiet=True)
         source["quiet_runs"] = quiet
 
 
@@ -124,7 +124,7 @@ async def queue_channel(source: dict[str, Any], now: datetime) -> bool:
     }
     await enqueue_published(request)  # hiện trên trang Hàng đợi
     await get_redis_client().lpush(QUEUE_KEY, json.dumps(request, ensure_ascii=False))
-    await _set_source(source["id"], last_queued_at=now.isoformat(), quiet=True)
+    await set_source(source["id"], last_queued_at=now.isoformat(), quiet=True)
     return True
 
 

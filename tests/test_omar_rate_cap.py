@@ -1,4 +1,4 @@
-"""Trần request/phút của Omar đặt ở tab Omar: _Pacer dùng số nhỏ hơn giữa gói và trần, đọc lại trần mỗi phút."""
+"""Trần request/phút của Omar đặt ở tab Omar: Pacer dùng số nhỏ hơn giữa gói và trần, đọc lại trần mỗi phút."""
 
 import asyncio
 
@@ -13,7 +13,7 @@ def _gap_after_two_waits(monkeypatch, plan: int, cap: int) -> float:
 
     monkeypatch.setattr(omar_budget, "omar_requests_cap", fake_cap)
     monkeypatch.setattr(omar_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
-    pacer = omar_budget._Pacer(plan)
+    pacer = omar_budget.Pacer(plan)
 
     async def run() -> float:
         await pacer.wait()
@@ -42,7 +42,7 @@ def test_cap_change_applies_within_a_running_round(monkeypatch):
     monkeypatch.setattr(omar_budget, "omar_requests_cap", fake_cap)
     monkeypatch.setattr(omar_budget, "_CAP_REFRESH_SECONDS", 0.0)
     monkeypatch.setattr(omar_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
-    pacer = omar_budget._Pacer(150)
+    pacer = omar_budget.Pacer(150)
 
     async def run() -> float:
         await pacer.wait()

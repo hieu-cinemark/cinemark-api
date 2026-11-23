@@ -77,7 +77,7 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-async def _ensure_tables() -> None:
+async def ensure_tables() -> None:
     global _tables_ready
     if _tables_ready:
         return
@@ -191,7 +191,7 @@ async def classify_movie_authors(movie_id: str) -> dict[str, Any]:
     """Một lượt tự gắn tầng cho tác giả chưa phân loại của một phim: bỏ tác giả đã được AI duyệt gần đây, hỏi AI theo
     lô (`BATCHES_PER_RUN` lô, mỗi lô `SUGGEST_BATCH` tác giả), tự áp nhãn đủ tự tin (`AUTO_APPLY_CONFIDENCE`) nhưng
     không đè nhãn gắn tay, ghi lại lịch sử duyệt. Trả số liệu lượt chạy."""
-    await _ensure_tables()
+    await ensure_tables()
     review_rows = await d1_exec(
         select(review.c.handle, review.c.applied, review.c.reviewed_at), database="app", timeout=60.0
     )
@@ -266,7 +266,7 @@ async def classify_movie_authors(movie_id: str) -> dict[str, Any]:
 
 async def process_author_queue() -> dict[str, Any] | None:
     """Một lượt: nhận phim đến hạn lâu nhất rồi phân loại."""
-    await _ensure_tables()
+    await ensure_tables()
     enabled = await d1_exec(select(movies.c.id).where(movies.c.enabled == 1))
     state_rows = await d1_exec(select(state.c.movie_id, state.c.next_at), database="app")
     if not enabled or state_rows is None:

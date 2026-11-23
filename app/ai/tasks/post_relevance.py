@@ -44,7 +44,7 @@ def movie_block(movie: dict[str, Any]) -> str:
 
 
 @dataclass
-class _Job:
+class PostRelevanceJob:
     content: str
     movie: dict[str, Any]
     keyword: str | None
@@ -53,7 +53,7 @@ class _Job:
     future: asyncio.Future[Verdict | None] = field(repr=False)
 
 
-def batch_prompt(jobs: list[_Job]) -> str:
+def batch_prompt(jobs: list[PostRelevanceJob]) -> str:
     targets = {job.movie.get("title") for job in jobs}
     others = sorted({title for job in jobs for title in job.other_titles if title not in targets})
     posts = "\n\n".join(
@@ -87,7 +87,7 @@ def _verdict(entry: Any) -> Verdict | None:
     }
 
 
-async def _classify_batch(jobs: list[_Job]) -> list[Verdict | None]:
+async def _classify_batch(jobs: list[PostRelevanceJob]) -> list[Verdict | None]:
     started = time.monotonic()
     try:
         response = await call_llm(
@@ -126,11 +126,11 @@ class _Batcher:
 
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._queue: asyncio.Queue[_Job] | None = None
+        self._queue: asyncio.Queue[PostRelevanceJob] | None = None
         self._collector: asyncio.Task[None] | None = None
         self._in_flight: asyncio.Semaphore | None = None
 
-    def _ensure(self) -> asyncio.Queue[_Job]:
+    def _ensure(self) -> asyncio.Queue[PostRelevanceJob]:
         loop = asyncio.get_running_loop()
         if self._loop is not loop or self._collector is None or self._collector.done():
             self._loop = loop
@@ -140,7 +140,7 @@ class _Batcher:
         assert self._queue is not None
         return self._queue
 
-    async def submit(self, job: _Job) -> Verdict | None:
+    async def submit(self, job: PostRelevanceJob) -> Verdict | None:
         self._ensure().put_nowait(job)
         return await job.future
 
@@ -159,7 +159,7 @@ class _Batcher:
             loop.create_task(self._run(batch)).add_done_callback(lambda _task: self._in_flight.release())  # type: ignore[union-attr]
 
     @staticmethod
-    async def _run(batch: list[_Job]) -> None:
+    async def _run(batch: list[PostRelevanceJob]) -> None:
         verdicts: list[Verdict | None] = [None] * len(batch)
         try:
             verdicts = await _classify_batch(batch)
@@ -212,7 +212,7 @@ async def classify_post_relevance(
     if not await _within_daily_cap():
         return None
     future: asyncio.Future[Verdict | None] = asyncio.get_running_loop().create_future()
-    job = _Job(
+    job = PostRelevanceJob(
         content=content, movie=movie, keyword=keyword, platform=platform, other_titles=other_titles, future=future
     )
     return await _batcher.submit(job)

@@ -17,7 +17,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.core.errors import ConflictError, NotFoundError, UpstreamError
 from app.core.logging import get_logger
-from app.services.accounts.config_db.d1_store import _EMPTY, _EMPTY_JSON, _metadata, _run, _when
+from app.services.accounts.config_db.d1_store import EMPTY_JSON_TEXT, EMPTY_TEXT, _run, config_metadata, to_datetime
 
 logger = get_logger(__name__)
 
@@ -27,16 +27,16 @@ _ACTIVE = text("'active'")
 
 platform_accounts = Table(
     "platform_accounts",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("platform", Text, nullable=False),
     Column("account_id", Text, nullable=False),
-    Column("password", Text, nullable=False, server_default=_EMPTY),
-    Column("totp_secret", Text, nullable=False, server_default=_EMPTY),
-    Column("cookie", Text, nullable=False, server_default=_EMPTY),
-    Column("token", Text, nullable=False, server_default=_EMPTY),
-    Column("email", Text, nullable=False, server_default=_EMPTY),
-    Column("email_password", Text, nullable=False, server_default=_EMPTY),
+    Column("password", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("totp_secret", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("cookie", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("token", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("email", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("email_password", Text, nullable=False, server_default=EMPTY_TEXT),
     Column("enabled", Integer, nullable=False, server_default=_ONE),
     Column("created_at", Text, nullable=False),
     Column("updated_at", Text, nullable=False),
@@ -53,12 +53,12 @@ platform_accounts = Table(
 
 platform_proxies = Table(
     "platform_proxies",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("platform", Text, nullable=False, server_default=text("'all'")),
     Column("proxy_url", Text, nullable=False),
-    Column("username", Text, nullable=False, server_default=_EMPTY),
-    Column("password", Text, nullable=False, server_default=_EMPTY),
+    Column("username", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("password", Text, nullable=False, server_default=EMPTY_TEXT),
     Column("login_use_proxy", Integer, nullable=False, server_default=_ZERO),
     Column("enabled", Integer, nullable=False, server_default=_ONE),
     Column("created_at", Text, nullable=False),
@@ -75,10 +75,10 @@ platform_proxies = Table(
 
 proxy_providers = Table(
     "proxy_providers",
-    _metadata,
+    config_metadata,
     Column("key", Text, primary_key=True),
-    Column("api_url", Text, nullable=False, server_default=_EMPTY),
-    Column("token", Text, nullable=False, server_default=_EMPTY),
+    Column("api_url", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("token", Text, nullable=False, server_default=EMPTY_TEXT),
     Column("updated_at", Text, nullable=False),
     Column("last_used_at", Text),
     Column("last_status", Text),
@@ -86,13 +86,13 @@ proxy_providers = Table(
 
 account_events = Table(
     "account_events",
-    _metadata,
+    config_metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("at", Text, nullable=False),
     Column("platform", Text, nullable=False),
     Column("account_key", Text, nullable=False),
     Column("event", Text, nullable=False),
-    Column("details", Text, nullable=False, server_default=_EMPTY_JSON),
+    Column("details", Text, nullable=False, server_default=EMPTY_JSON_TEXT),
     Index("account_events_account_at", "platform", "account_key", "at"),
 )
 
@@ -126,7 +126,7 @@ def reset_for_tests() -> None:
 
 def _times(row: dict[str, Any], *names: str) -> None:
     for name in names:
-        row[name] = _when(row.get(name))
+        row[name] = to_datetime(row.get(name))
 
 
 # --- tài khoản ---------------------------------------------------------------------------------------------------

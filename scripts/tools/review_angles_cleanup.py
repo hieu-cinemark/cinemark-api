@@ -103,7 +103,7 @@ async def run(args: argparse.Namespace) -> None:
         movie_id = key.split("/")[3]
         if args.movie and movie_id != args.movie:
             continue
-        state = await ra._read_json(key)
+        state = await ra.read_json(key)
         if not state or not state.get("angles"):
             continue
         movie = await ra.load_movie(movie_id) or {"title": movie_id}
@@ -116,12 +116,12 @@ async def run(args: argparse.Namespace) -> None:
             continue
         lock = await _lock(movie_id)
         try:
-            state = await ra._read_json(key)  # đọc lại trong khoá - job có thể vừa ghi
+            state = await ra.read_json(key)  # đọc lại trong khoá - job có thể vừa ghi
             for note in await _merge(state, movie["title"]) if not args.skip_merge else []:
                 print("   ", note)
             if not args.skip_stance:
                 print(f"    khen/chê: gắn {await _stances(state, movie['title'])}")
-            await ra._write_json(key, state)
+            await ra.write_json(key, state)
         finally:
             await get_redis_client().delete(lock)
     if not args.apply:

@@ -24,8 +24,8 @@ _MOVIE_FIELDS = ("released_at", "poster_url", "description", "director", "cast",
 # Thông tin phim đưa vào prompt AI (app/ai/domain/movie_context.py).
 MOVIE_CONTEXT_FIELDS = ("title", "director", "cast", "distributor", "released_at", "description")
 _MOVIE_COLUMNS = (movies.c.id, movies.c.title, movies.c.slug, *(movies.c[f] for f in _MOVIE_FIELDS))
-_KEYWORD_JOIN = keywords.join(movies, movies.c.id == keywords.c.movie_id)
-_KEYWORD_ROW = (keywords.c.id, keywords.c.movie_id, movies.c.title.label("movie_title"), keywords.c.keyword)
+KEYWORD_JOIN = keywords.join(movies, movies.c.id == keywords.c.movie_id)
+KEYWORD_ROW = (keywords.c.id, keywords.c.movie_id, movies.c.title.label("movie_title"), keywords.c.keyword)
 
 
 def movie_slug(title: str) -> str:

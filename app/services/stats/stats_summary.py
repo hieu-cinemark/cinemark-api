@@ -36,15 +36,15 @@ from app.core.logging import get_logger
 # Bảng nguồn của phần tổng hợp - import với tên khác để không trùng với tham số
 # `posts` / `comments` của subtract_deleted (biến trùng tên bảng làm dùng nhầm, lỗi bị
 # `except` nuốt im lặng - xem docs/review-angles-va-attack.md mục 3).
-from app.services.stats.stats_hourly import _bump_hourly
+from app.services.stats.stats_hourly import bump_hourly
 from app.services.stats.stats_tables import (
-    _TODAY,
-    _YESTERDAY,
+    SQL_TODAY,
+    SQL_YESTERDAY,
     _as_int,
-    _q,
     ensure_stats_tables,
     keyword_daily,
     platform_daily,
+    run_stats_query,
 )
 
 logger = get_logger(__name__)
@@ -61,7 +61,7 @@ async def record_post(
     module). keyword_id giữ trong chữ ký cho bên gọi, không dùng nữa."""
     if not scraped_at or not platform:
         return
-    await _bump_hourly(platform, scraped_at, "posts" if is_new else "updated")
+    await bump_hourly(platform, scraped_at, "posts" if is_new else "updated")
 
 
 async def record_comment(
@@ -74,7 +74,7 @@ async def record_comment(
     """Đếm comment MỚI vào bộ đếm theo giờ (Redis) - xem record_post."""
     if not scraped_at or not platform or not is_new:
         return
-    await _bump_hourly(platform, scraped_at, "comments")
+    await bump_hourly(platform, scraped_at, "comments")
 
 
 async def _counts_by_platform(metric: str) -> list[dict[str, Any]]:
@@ -82,13 +82,13 @@ async def _counts_by_platform(metric: str) -> list[dict[str, Any]]:
     await ensure_stats_tables()
     t = platform_daily.c
     value = t[metric]
-    rows = await _q(
+    rows = await run_stats_query(
         select(
             t.platform,
             func.sum(value).label("count"),
             func.max(t.last_scraped_at).label("last_scraped_at"),
-            func.sum(case((t.day == _TODAY, value), else_=0)).label("count_today"),
-            func.sum(case((t.day == _YESTERDAY, value), else_=0)).label("count_prev"),
+            func.sum(case((t.day == SQL_TODAY, value), else_=0)).label("count_today"),
+            func.sum(case((t.day == SQL_YESTERDAY, value), else_=0)).label("count_prev"),
         ).group_by(t.platform)
     )
     return [
@@ -113,7 +113,7 @@ async def get_comment_counts_by_platform() -> list[dict[str, Any]]:
 async def _timeseries(metric: str, days: int) -> list[dict[str, Any]]:
     await ensure_stats_tables()
     t = platform_daily.c
-    rows = await _q(
+    rows = await run_stats_query(
         select(t.day, t.platform, t[metric].label("count"))
         .where(t.day >= func.date("now", f"-{days} days"))
         .order_by(t.day)
@@ -166,12 +166,12 @@ async def get_keyword_volume(platform: str | None = None) -> list[dict[str, Any]
     ).select_from(
         k.outerjoin(m, m.c.id == k.c.movie_id)
         .outerjoin(totals, totals.c.keyword_id == k.c.id)
-        .outerjoin(today, and_(today.c.keyword_id == k.c.id, today.c.day == _TODAY))
-        .outerjoin(prev, and_(prev.c.keyword_id == k.c.id, prev.c.day == _YESTERDAY))
+        .outerjoin(today, and_(today.c.keyword_id == k.c.id, today.c.day == SQL_TODAY))
+        .outerjoin(prev, and_(prev.c.keyword_id == k.c.id, prev.c.day == SQL_YESTERDAY))
     )
     if platform:
         query = query.where(k.c.platform == platform)
-    rows = await _q(query)
+    rows = await run_stats_query(query)
     out: list[dict[str, Any]] = []
     for row in rows or []:
         posts_total = _as_int(row.get("posts_total"))

@@ -56,7 +56,7 @@ async def _load_movies(ids: list[str]) -> dict[str, dict[str, Any]]:
 async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, Any]], titles: list[str]):
     from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
     from app.ai.runtime import call_llm, parse_json_response
-    from app.ai.tasks.post_relevance import TASK, _Job, _verdict, batch_prompt, max_tokens_for
+    from app.ai.tasks.post_relevance import TASK, PostRelevanceJob, _verdict, batch_prompt, max_tokens_for
 
     loop = asyncio.get_running_loop()
     jobs = []
@@ -64,7 +64,7 @@ async def _label_batch(rows: list[dict[str, Any]], movies: dict[str, dict[str, A
         movie = movies.get(row["movie_id"]) or {"title": row["film"].split(" | ")[0]}
         keyword = row["film"].split(" | ")[1] if " | " in row["film"] else None
         others = [t for t in titles if t != movie.get("title")]
-        jobs.append(_Job(row["text"], movie, keyword, None, others, loop.create_future()))
+        jobs.append(PostRelevanceJob(row["text"], movie, keyword, None, others, loop.create_future()))
     response = await call_llm(
         task=TASK,
         system_prompt=POST_RELEVANCE_SYSTEM_PROMPT,

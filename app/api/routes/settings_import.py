@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.ai.tasks.import_parser import parse_import
-from app.api.routes.settings_cookies import _record_cookie_saved, _refuse_bad_cookie, _with_user_agent
+from app.api.routes.settings_cookies import record_cookie_saved, refuse_bad_cookie, with_user_agent
 from app.core.errors import ValidationError
 from app.core.logging import get_logger
 from app.schemas.settings import (
@@ -52,11 +52,11 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
         fields = {**row, "platform": payload.platform, "enabled": row.get("enabled", True)}
         try:
             if payload.target == "accounts":
-                account_fields = _with_user_agent(fields)
-                _refuse_bad_cookie(
+                account_fields = with_user_agent(fields)
+                refuse_bad_cookie(
                     payload.platform, str(account_fields.get("account_id") or ""), account_fields.get("cookie") or ""
                 )
-                await _record_cookie_saved(await create_account(account_fields))
+                await record_cookie_saved(await create_account(account_fields))
             else:
                 await create_proxy(fields)
             created += 1

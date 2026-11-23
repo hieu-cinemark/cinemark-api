@@ -38,7 +38,7 @@ from app.repositories.d1.tables import posts
 if TYPE_CHECKING:
     from redis.typing import EncodableT, FieldT
 
-    from app.services.omar.omar_budget import Budget, _Pacer
+    from app.services.omar.omar_budget import Budget, Pacer
 
 logger = get_logger(__name__)
 
@@ -383,7 +383,7 @@ async def _publish(video_id: str, comments: list[dict[str, Any]]) -> int:
 
 async def process_queue(
     client: httpx.AsyncClient,
-    pacer: _Pacer,
+    pacer: Pacer,
     api_key: str,
     budget: Budget,
     stats: dict[str, Any],

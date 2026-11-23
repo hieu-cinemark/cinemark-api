@@ -195,9 +195,9 @@ def test_tracked_movies_outage_raises_without_cache_and_uses_stale_cache(monkeyp
     monkeypatch.setattr(d1_sql, "d1_query", down)
     monkeypatch.setattr(main, "_tracked_movies_cache", None)
     with pytest.raises(D1Unavailable):
-        asyncio.run(main._tracked_movies())
+        asyncio.run(main.tracked_movies())
     monkeypatch.setattr(main, "_tracked_movies_cache", (-1e9, {"m": {"title": "Phim"}}))
-    assert asyncio.run(main._tracked_movies()) == {"m": {"title": "Phim"}}
+    assert asyncio.run(main.tracked_movies()) == {"m": {"title": "Phim"}}
 
 
 def test_strict_scope_is_per_context():

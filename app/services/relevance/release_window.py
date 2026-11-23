@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from app.services.relevance.film_phrases import _STRONG_FILM_PHRASES
-from app.services.relevance.text_rules import _contains_phrase, _squash, normalize_title
+from app.services.relevance.film_phrases import STRONG_FILM_PHRASES
+from app.services.relevance.text_rules import contains_phrase, normalize_title, squash
 
 # --- Quy tắc "quanh ngày công chiếu" (release_window, 17/10/2026) ---
 # Bài nhắc TÊN LOẠT PHIM (tên bỏ số phần / phần trước ":" / tên trong ngoặc: "Út Lan", "Shaun the Sheep", "Tee Yod", "Lên
@@ -19,7 +19,7 @@ RELEASE_WINDOW_BEFORE_DAYS = 7
 RELEASE_WINDOW_AFTER_DAYS = 60
 
 _RELEASE_CONTEXT_PHRASES = (
-    *_STRONG_FILM_PHRASES,
+    *STRONG_FILM_PHRASES,
     "cinetour",
     "tham do",
     "di xem",
@@ -44,12 +44,12 @@ def franchise_names(title: str | None) -> list[str]:
     for part in [raw, re.split(r"[:(（]", raw, maxsplit=1)[0], *re.findall(r"[(（]([^)）]+)[)）]", raw)]:
         words = [word for word in normalize_title(part).split() if not word.isdigit()]
         name = " ".join(words)
-        if len(words) >= 2 and len(_squash(name)) >= 5 and name not in names:
+        if len(words) >= 2 and len(squash(name)) >= 5 and name not in names:
             names.append(name)
     return names
 
 
-def _to_date(value: object) -> date | None:
+def to_date(value: object) -> date | None:
     try:
         return date.fromisoformat(str(value)[:10]) if value else None
     except ValueError:
@@ -60,7 +60,7 @@ def in_release_window(content: str | None, movie: dict | None, posted_at: object
     """Xem phần chú thích RELEASE_WINDOW_*: đăng trong [công chiếu - BEFORE, công chiếu + AFTER] ngày, nhắc tên loạt phim
     và có từ ngữ rạp chiếu."""
     movie = movie or {}
-    released, posted = _to_date(movie.get("released_at")), _to_date(posted_at)
+    released, posted = to_date(movie.get("released_at")), to_date(posted_at)
     if not released or not posted:
         return False
     if (
@@ -72,12 +72,10 @@ def in_release_window(content: str | None, movie: dict | None, posted_at: object
     text = normalize_title(content)
     if not text:
         return False
-    squashed = _squash(text)
-    if not any(
-        _contains_phrase(text, name) or _squash(name) in squashed for name in franchise_names(movie.get("title"))
-    ):
+    squashed = squash(text)
+    if not any(contains_phrase(text, name) or squash(name) in squashed for name in franchise_names(movie.get("title"))):
         return False
-    return any(_contains_phrase(text, phrase) for phrase in _RELEASE_CONTEXT_PHRASES)
+    return any(contains_phrase(text, phrase) for phrase in _RELEASE_CONTEXT_PHRASES)
 
 
 # --- Tên rút gọn quanh ngày công chiếu (short_title, 21/10/2026) ---
@@ -107,7 +105,7 @@ def short_title_names(title: str | None) -> list[str]:
             word for word in normalize_title(re.sub(r"[(（][^)）]*[)）]", "", piece)).split() if not word.isdigit()
         ]
         name = " ".join(words)
-        long_enough = (len(words) >= 2 and len(_squash(name)) >= 8) or (
+        long_enough = (len(words) >= 2 and len(squash(name)) >= 8) or (
             len(words) == 1 and len(name) >= SHORT_TITLE_MIN_SINGLE_WORD
         )
         if long_enough and name not in names and name != normalize_title(raw):

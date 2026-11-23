@@ -41,8 +41,8 @@ from app.services.discovery.decisions import (
     ENABLED_MOVIES,
     RECHECK_REJECTED_DAYS,
     _ensure_table,
-    _record,
     decisions_table,
+    record_decision,
 )
 from app.services.relevance.text_rules import normalize_title
 
@@ -263,7 +263,7 @@ async def _prune(dry_run: bool) -> int:
             if early
             else f"{PRUNE_AFTER_DAYS} ngày chỉ đem về {row['found']} bài mới"
         )
-        await _record(row["movie_id"], row, {"reason": reason}, "pruned", row["keyword_id"])
+        await record_decision(row["movie_id"], row, {"reason": reason}, "pruned", row["keyword_id"])
     return pruned
 
 
@@ -289,7 +289,7 @@ async def _revive_upcoming(dry_run: bool) -> int:
         if dry_run:
             continue
         await enable_keyword(row["keyword_id"], True)
-        await _record(row["movie_id"], row, {"reason": "bật lại: phim chưa chiếu"}, "added", row["keyword_id"])
+        await record_decision(row["movie_id"], row, {"reason": "bật lại: phim chưa chiếu"}, "added", row["keyword_id"])
     return revived
 
 
@@ -354,7 +354,7 @@ async def _backfill_threads_templates(
                 "confidence": decision.get("confidence"),
                 "reason": "thêm bù cho Threads (đã duyệt cho Facebook)",
             }
-            await _record(movie["id"], cand, verdict, "added", keyword_id)
+            await record_decision(movie["id"], cand, verdict, "added", keyword_id)
     return added
 
 
@@ -468,6 +468,6 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
                 keyword_id = None
                 if accept:
                     keyword_id = await add_keyword(movie["id"], platform, query)
-                await _record(movie["id"], cand, verdict, "added" if accept else "rejected", keyword_id)
+                await record_decision(movie["id"], cand, verdict, "added" if accept else "rejected", keyword_id)
     logger.info("query_ai_discovery_finished", dry_run=dry_run, telegram=bool(stats["added"]) and not dry_run, **stats)
     return stats

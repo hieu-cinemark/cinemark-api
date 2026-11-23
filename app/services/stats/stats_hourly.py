@@ -23,7 +23,7 @@ def _hour_bucket(when: datetime) -> str:
     return when.astimezone(UTC).strftime("%Y-%m-%dT%H")
 
 
-async def _bump_hourly(platform: str, scraped_at: str, metric: str) -> None:
+async def bump_hourly(platform: str, scraped_at: str, metric: str) -> None:
     try:
         when = datetime.fromisoformat(scraped_at)
         if when.tzinfo is None:

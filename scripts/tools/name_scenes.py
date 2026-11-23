@@ -20,7 +20,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert
 
-from app.ai.providers.client import _client_for, load_provider
+from app.ai.providers.client import client_for, load_provider
 from app.clients.d1 import d1_query
 from app.clients.lake import get_object
 from app.repositories.d1.sql import d1_exec
@@ -105,7 +105,7 @@ def build_text(movie: dict[str, Any], scene: dict[str, Any], comments: list[str]
 
 async def ask(text: str, image: bytes | None) -> dict[str, Any] | None:
     cfg = await load_provider()
-    client = _client_for(cfg)
+    client = client_for(cfg)
     content: Any = text
     if image:
         content = [

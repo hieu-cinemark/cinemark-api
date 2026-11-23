@@ -74,7 +74,7 @@ def test_reconcile_recent_days_overwrites_without_deleting(monkeypatch):
     async def no_tables():
         return None
 
-    monkeypatch.setattr(stats_reconcile, "_q", fake_q)
+    monkeypatch.setattr(stats_reconcile, "run_stats_query", fake_q)
     monkeypatch.setattr(stats_reconcile, "ensure_stats_tables", no_tables)
     assert asyncio.run(stats_reconcile.reconcile_recent_days(2))
     assert len(executed) == 4
@@ -93,7 +93,7 @@ def test_reconcile_stops_on_failed_step(monkeypatch):
     async def no_alert(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(stats_reconcile, "_q", failing_q)
+    monkeypatch.setattr(stats_reconcile, "run_stats_query", failing_q)
     monkeypatch.setattr(stats_reconcile, "ensure_stats_tables", no_tables)
-    monkeypatch.setattr(stats_reconcile, "_note_rollup_failure", no_alert)  # báo lỗi rollup ghi Redis - không chạm thật
+    monkeypatch.setattr(stats_reconcile, "note_rollup_failure", no_alert)  # báo lỗi rollup ghi Redis - không chạm thật
     assert asyncio.run(stats_reconcile.reconcile_recent_days(2)) is False

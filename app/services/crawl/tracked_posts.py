@@ -42,7 +42,7 @@ from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.sql import d1_exec, json_values, metadata
 from app.repositories.d1.tables import movies, posts
 from app.services.accounts.config_db.omar import get_omar_api_settings
-from app.services.omar.omar_budget import _Pacer
+from app.services.omar.omar_budget import Pacer
 
 logger = get_logger(__name__)
 
@@ -132,7 +132,7 @@ async def _refresh_tiktok(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
     if not api_key:
         stats["tiktok_skipped"] = "no_api_key"
         return
-    pacer = _Pacer(settings.omar_manual_requests_per_minute)
+    pacer = Pacer(settings.omar_manual_requests_per_minute)
     keywords: dict[str, str | None] = {}
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         for row in rows:

@@ -36,7 +36,7 @@ CHUNK = 90  # id mỗi câu UPDATE (D1 tối đa 100 tham số)
 
 
 async def load_movies() -> dict[str, dict]:
-    """Cùng dữ liệu phim mà ingest dùng (app/workers/ingest_consumer/main.py:_tracked_movies)."""
+    """Cùng dữ liệu phim mà ingest dùng (app/workers/ingest_consumer/main.py:tracked_movies)."""
     rows = (
         await d1_exec(
             select(

@@ -35,8 +35,8 @@ logger = get_logger(__name__)
 from app.repositories.d1.author_reputation import reputable_authors
 from app.repositories.d1.post_filters import ENGAGEMENT_FIELDS, MIN_CONTENT_LENGTH, engagement_score, relevant_post
 from app.repositories.d1.post_matching import contains_keyword, movie_hashtag_present
-from app.repositories.d1.post_raw import _hydrate_post_rows, trim_post_raw
-from app.repositories.d1.post_schema import _ensure_post_indexes, ensure_post_voice_columns
+from app.repositories.d1.post_raw import hydrate_post_rows, trim_post_raw
+from app.repositories.d1.post_schema import ensure_post_indexes, ensure_post_voice_columns
 
 _POST_REF = (posts.c.id, posts.c.platform, posts.c.external_id, posts.c.url)
 
@@ -118,7 +118,7 @@ class PostRepository:
         (_ENGAGEMENT_OVERFETCH bên dưới) vì bộ lọc thứ hai này chạy bằng Python, rồi cắt lại
         còn `limit` - bài chưa được AI gắn nhãn, hoặc không có hashtag/tên phim khớp nào, sẽ
         không chiếm chỗ dù tương tác cao."""
-        await _ensure_post_indexes()
+        await ensure_post_indexes()
         filters = _feed_filters(platform, keyword_id, movie_id, keyword_match)
         if sort == "engagement":
             filters.append(relevant_post(_P))
@@ -139,7 +139,7 @@ class PostRepository:
             .offset(offset),
             timeout=20.0 if keyword_match is not None else 10.0,
         )
-        hydrated = _hydrate_post_rows(rows)
+        hydrated = hydrate_post_rows(rows)
         if sort == "engagement":
             reputable = await reputable_authors()
             hydrated = [
@@ -193,7 +193,7 @@ class PostRepository:
         chạy, nên `cursor` trỏ sâu tới đâu cũng không sao."""
         if sort != "recent":
             raise ValueError("list_posts_cursor only supports sort='recent'")
-        await _ensure_post_indexes()
+        await ensure_post_indexes()
 
         filters = _feed_filters(platform, keyword_id, movie_id, keyword_match)
         if cursor:
@@ -212,7 +212,7 @@ class PostRepository:
             .limit(limit),
             timeout=20.0 if keyword_match is not None else 10.0,
         )
-        hydrated = _hydrate_post_rows(rows)
+        hydrated = hydrate_post_rows(rows)
         next_cursor = f"{hydrated[-1]['scraped_at']}|{hydrated[-1]['id']}" if len(hydrated) == limit else None
         return hydrated, next_cursor
 
@@ -236,7 +236,7 @@ class PostRepository:
         movie_hashtag_present để biết vì sao riêng relevance_label không phải bằng chứng
         củng cố độc lập; lưu ý về bài đã được AI gắn nhãn cũng áp dụng (bài chưa được lượt
         chạy theo lô của label_posts_relevance.py quét qua cũng không hiện ở đây)."""
-        await _ensure_post_indexes()
+        await ensure_post_indexes()
         overfetch = max(top_n * 4, top_n + 100)
         counts = select(comments.c.post_id, func.count().label("n")).group_by(comments.c.post_id).subquery("c")
         rows = await d1_exec(
@@ -292,7 +292,7 @@ class PostRepository:
         """Chỉ cập nhật số tương tác của một bài đã có (message kind="metrics" của job post_metrics bên spider-hub - đọc
         trang bài không đăng nhập). Số None = trang không có (reel không có share) -> giữ số cũ. Ghi snapshot khi số đổi,
         như persist_post. Bài chưa có thì không làm gì. False khi bài không có hoặc câu lệnh lỗi."""
-        await _ensure_post_indexes()
+        await ensure_post_indexes()
         rows = await d1_exec(
             select(posts.c.id, posts.c.keyword_id, *(posts.c[f] for f in ENGAGEMENT_FIELDS)).where(
                 posts.c.platform == platform, posts.c.external_id == external_id
@@ -333,7 +333,7 @@ class PostRepository:
         """Một bài theo (platform, external_id) - id mà payload comment của spider-hub mang theo
         (xem handle_comment trong app/workers/ingest_consumer/main.py), khác với id nội bộ D1
         của get_post."""
-        await _ensure_post_indexes()
+        await ensure_post_indexes()
         rows = await d1_exec(select(*_POST_REF).where(posts.c.platform == platform, posts.c.external_id == external_id))
         return rows[0] if rows else None
 
@@ -376,7 +376,7 @@ class PostRepository:
         theo độ liên quan mà không phải chờ lượt chạy theo lô nào."""
         if not _configured() or platform not in registered_platforms():
             return False
-        await _ensure_post_indexes()
+        await ensure_post_indexes()
         await ensure_post_voice_columns()
 
         external_id = draft.get("external_id")

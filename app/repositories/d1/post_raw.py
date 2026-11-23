@@ -87,7 +87,7 @@ def _is_preview_image_url(url: Any) -> bool:
     return any(hint in lower for hint in _IMAGE_URL_HINTS)
 
 
-def _hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def hydrate_post_rows(rows: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
     out = rows or []
     for row in out:
         media = json.loads(row.pop("media_json") or "{}")

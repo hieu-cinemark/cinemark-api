@@ -10,7 +10,7 @@ from app.services.accounts.config_db.omar import omar_requests_cap
 _CAP_REFRESH_SECONDS = 60.0
 
 
-class _Pacer:
+class Pacer:
     """Rải đều thời điểm BẮT ĐẦU các request theo giới hạn mỗi phút của gói - dùng chung cho mọi worker chạy song song
     (request chạy chồng lên nhau, chỉ lúc bắt đầu bị giãn cách), nên tận dụng hết giới hạn mà không bị 429.
 
