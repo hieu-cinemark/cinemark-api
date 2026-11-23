@@ -10,7 +10,7 @@ Cào TikTok qua Omar API (dev.omar-thing.site, thay ShortVid từ 18/11/2026). C
 Tìm kiếm từ khoá, cào theo kênh, "video đang nổi" và chia ngân sách theo hiệu quả nguồn đã bỏ cùng đợt đó.
 
 Gọi HTTP, ánh xạ dữ liệu và đọc hạn mức (`GET /usage`) ở `app/clients/omar.py`. Cấu hình ở dashboard (tab TikTok › Omar), lưu ở bảng
-Supabase `omar_api_settings`: API key, tổng request mỗi ngày (`daily_requests`, 0 = theo gói), số request đồng thời
+D1 `omar_api_settings`: API key, tổng request mỗi ngày (`daily_requests`, 0 = theo gói), số request đồng thời
 (`concurrency`, 0 = `OMAR_CONCURRENCY`) và trần request/phút. Lưu key mới thì server gọi `/usage` kiểm tra; key đúng thì lượt cào mở
 ngay và chạy liên tục (`omar_tiktok.run_omar_round` dùng hết hạn mức ngày còn lại của gói, hoặc của số tự đặt nếu thấp hơn - xem
 `plan_budget`).

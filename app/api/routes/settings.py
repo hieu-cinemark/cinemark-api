@@ -1,5 +1,5 @@
 """Trang Settings của dashboard: CRUD trên các bảng platform_accounts /
-platform_proxies ở Supabase (xem app/services/accounts/platform_config_db.py) - chính là các
+platform_proxies ở D1 (xem app/services/accounts/platform_config_db.py) - chính là các
 bảng mà spider-hub đọc để lấy thông tin đăng nhập và cấu hình proxy. Chỗ khác chỉ
 đọc; đây là nơi duy nhất ghi vào các bảng đó."""
 
@@ -504,7 +504,7 @@ def _ai_provider_out(row: dict, active: str = "") -> AiProviderOut:
 
 @router.put("/ai/active", response_model=AiSettingsOut)
 async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsOut:
-    """Chọn nhà cung cấp cho MỌI lời gọi AI - cinemark-api, spider-hub (đọc Supabase) và Worker cinemark
+    """Chọn nhà cung cấp cho MỌI lời gọi AI - cinemark-api, spider-hub (đọc D1) và Worker cinemark
     (qua ai_runtime của D1) đều theo trong vòng một phút."""
     from app.ai.providers.client import invalidate_provider_cache
     from app.ai.runtime import invalidate_ai_runtime_cache
@@ -733,7 +733,7 @@ async def set_discovery_settings(payload: DiscoverySettingsUpdate) -> DiscoveryS
 @router.get("/omar-api", response_model=OmarApiSettingsOut)
 async def get_omar_api_settings() -> OmarApiSettingsOut:
     """Cấu hình Omar API: api_key đã lưu (không bao giờ trả về giá trị thô), base URL đang có hiệu lực, tổng request mỗi
-    ngày và số request đồng thời. API key được đọc từ bảng omar_api_settings trên Supabase."""
+    ngày và số request đồng thời. API key được đọc từ bảng omar_api_settings trên D1."""
     from app.core.config import settings as app_settings
 
     row = await db.get_omar_api_settings()

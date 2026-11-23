@@ -141,7 +141,7 @@ _concurrency: dict[str, asyncio.Semaphore] = {}
 
 
 def invalidate_provider_cache(key: str | None = None) -> None:
-    """Xoá cấu hình provider đã cache để lần gọi sau đọc lại từ Supabase (và tạo lại
+    """Xoá cấu hình provider đã cache để lần gọi sau đọc lại từ D1 (và tạo lại
     OpenAI client nếu base_url/api_key đổi) - gọi ngay sau khi sửa ai_providers trên
     dashboard. key=None xoá cache của mọi provider."""
     global _active_cache
@@ -153,7 +153,7 @@ def invalidate_provider_cache(key: str | None = None) -> None:
 
 
 async def load_provider(key: str | None = None) -> ProviderConfig | None:
-    """Đọc {key, base_url, api_key, model} từ ai_providers (Supabase), cache vài giây. `key=None` = nhà cung cấp đang chọn.
+    """Đọc {key, base_url, api_key, model} từ ai_providers (D1), cache vài giây. `key=None` = nhà cung cấp đang chọn.
     Trả về None nếu chưa chọn / dòng chưa tồn tại / thiếu base_url hoặc api_key - bên gọi coi như "chưa cấu hình", cùng quy
     ước fail open như mọi chỗ khác trong app/ai."""
     key = key or await active_provider_key()

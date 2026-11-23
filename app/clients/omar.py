@@ -12,7 +12,7 @@ Xác thực bằng header `X-API-Key`. Thành công: {"status": "success", "data
 429 RATE_LIMIT_EXCEEDED kèm Retry-After). Phân trang bằng cursor: truyền `next_cursor` của response trước; còn trang sau khi
 `has_more` là true và có `next_cursor`.
 
-API key đọc từ bảng omar_api_settings trên Supabase (nhập ở Settings > Omar trên dashboard), không từ env."""
+API key đọc từ bảng omar_api_settings trên D1 (nhập ở Settings > Omar trên dashboard), không từ env."""
 
 from __future__ import annotations
 

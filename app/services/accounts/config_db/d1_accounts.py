@@ -207,7 +207,7 @@ async def record_account_event(account: dict[str, Any], event: str, **details: A
         logger.warning("account_event_write_failed", event_name=event, error_type=type(exc).__name__)
 
 
-async def list_accounts(platform: str | None, *, with_secrets: bool) -> list[dict[str, Any]]:
+async def list_accounts(platform: str | None = None, *, with_secrets: bool = True) -> list[dict[str, Any]]:
     await ensure_tables()
     stmt = select(*_ACCOUNT_COLUMNS)
     stmt = stmt.where(_A.platform == platform).order_by(_A.id) if platform else stmt.order_by(_A.platform, _A.id)
@@ -350,7 +350,7 @@ def _proxy_values(fields: dict[str, Any]) -> dict[str, Any]:
     return values
 
 
-async def list_proxies(platform: str | None) -> list[dict[str, Any]]:
+async def list_proxies(platform: str | None = None) -> list[dict[str, Any]]:
     await ensure_tables()
     source = platform_proxies.outerjoin(proxy_providers, _V.key == _P.provider_key)
     stmt = select(

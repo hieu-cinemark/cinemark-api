@@ -6,7 +6,6 @@ from datetime import datetime
 
 import pytest
 
-from app.core.config import settings
 from app.core.errors import ConflictError, NotFoundError
 from app.repositories.d1.sql import compile_sql
 from app.services.accounts.config_db import accounts, d1_accounts, d1_store
@@ -26,7 +25,6 @@ def d1(monkeypatch):
         return rows
 
     monkeypatch.setattr(d1_store, "d1_exec", fake_exec)
-    monkeypatch.setattr(settings, "config_db_backend", "d1")
     d1_store.reset_for_tests()
     d1_accounts.reset_for_tests()
     return db

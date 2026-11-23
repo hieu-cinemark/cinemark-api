@@ -1,6 +1,6 @@
 """Bản D1 của nhóm bảng vận hành: filter_keywords, crawl_schedules, comment_crawl_schedules, cleanup_settings, cleanup_run_history,
 discovery_settings, omar_api_settings. Cùng cách làm với d1_store.py (SQLAlchemy Core -> d1_exec database="config"), hàm trả đúng dạng
-dữ liệu của bản Postgres (bool, dict, date, datetime). Bật bằng CONFIG_DB_BACKEND=d1."""
+dữ liệu của bản Postgres (bool, dict, date, datetime)."""
 
 from __future__ import annotations
 

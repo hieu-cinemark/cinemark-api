@@ -13,7 +13,7 @@ spider-hub ([../../spider-hub/docs/FLOW.md](../../spider-hub/docs/FLOW.md)).
 | Lake writer | `app/workers/lake_writer/` | Lưu mọi message Kafka thô lên R2 (tầng bronze của data lake), theo ngày và topic |
 | Timer systemd | `deploy/systemd/*.timer` | Việc nặng (model ViSoBERT, embedding, ảnh, báo cáo) chạy theo giờ - xem `deploy/systemd/README.md` |
 
-Không có database riêng: dữ liệu ở **D1** (Cloudflare, gọi qua HTTP), cấu hình tài khoản/AI ở **Postgres (Supabase)**, trạng thái ngắn hạn
+Không có database riêng: dữ liệu ở **D1** (Cloudflare, gọi qua HTTP), cấu hình tài khoản/AI ở **Postgres (D1)**, trạng thái ngắn hạn
 ở **Redis**, dữ liệu thô và kết quả phân tích lớn ở **R2**. Worker `cinemark` đọc thẳng D1/R2 để hiển thị (cinemark-api không phục vụ trang
 người dùng cuối).
 
@@ -61,7 +61,7 @@ khía cạnh, giai đoạn khán giả KHÔNG gán lúc ingest mà bởi các l�
 | Attack Detection | `app/services/attack/` | nhịp `attack_detect` (mỗi giờ) |
 
 Mọi lời gọi LLM đi qua `app/ai/runtime.call_llm` / `call_llm_json` -> `app/ai/providers/client.call_ai`: nhà cung cấp, model và
-`reasoning_effort` đọc từ bảng Postgres `ai_providers` (sửa trên dashboard, cache 60 giây). Model suy luận (Meta Muse) tính phần "nghĩ"
+`reasoning_effort` đọc từ bảng D1 `ai_providers` (sửa trên dashboard, cache 60 giây). Model suy luận (Meta Muse) tính phần "nghĩ"
 vào `max_tokens`, nên client tự cộng thêm hạn mức khi provider có `reasoning_effort`.
 
 ## 4. Đọc code theo thứ tự nào
@@ -114,7 +114,7 @@ ruff check app tests scripts && ruff format app tests scripts
 - **Log mặc định tiếng Việt.** `event` là mã snake_case cố định (dashboard, Telegram, test dựa vào nó); câu tiếng Việt nằm ở `app/core/log_messages.py`
   và được logger thêm vào mọi dòng (`msg` ở JSON, ngay sau mã sự kiện ở console). Thêm sự kiện mới = thêm một dòng vào `MESSAGES`;
   `tests/test_log_messages.py` quét mã nguồn và fail nếu thiếu hoặc mã không phải snake_case. Dữ liệu thay đổi đặt ở key=value, không ghép vào câu.
-- **Cấu hình cào nằm ở Postgres (`proxy_settings`), cinemark-api là nguồn sự thật.** Khoá/mặc định/giới hạn khai ở `ProxySettings`
+- **Cấu hình cào nằm ở D1 (`proxy_settings`), cinemark-api là nguồn sự thật.** Khoá/mặc định/giới hạn khai ở `ProxySettings`
   (`app/schemas/settings.py`); khi web/scheduler khởi động `ensure_proxy_settings_complete` ghi đủ mọi khoá vào dòng này; spider-hub chỉ đọc.
   Sửa trên dashboard (Settings › Proxy), có hiệu lực sau ≤ 60 giây, không cần `.env` hay restart. Deploy cinemark-api TRƯỚC spider-hub.
 - **Deploy tự cài timer.** `deploy/vps/deploy-repo.sh` (CI gọi) tự cập nhật bản của chính nó, cài `requirements-ml.txt` khi cần, và đồng bộ/bật mọi

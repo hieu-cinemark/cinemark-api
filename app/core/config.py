@@ -84,12 +84,6 @@ class Settings(BaseSettings):
     db_mode: str = "remote"  # "remote" | "local" — remote là Cloudflare D1
     local_db_path: str = str(_REPO_ROOT / ".local-db" / "scraper.sqlite")
 
-    # Nơi lưu các bảng cấu hình đã chuyển khỏi Supabase (ai_settings, ai_providers, ai_accuracy_runs, proxy_settings):
-    # "postgres" (mặc định, như cũ) hoặc "d1" (database cinemark-config-db, cần CLOUDFLARE_D1_CONFIG_DATABASE_ID). Chỉ đổi sang
-    # "d1" sau khi đã chép dữ liệu (python -m scripts.tools.copy_config_to_d1) và đặt cùng giá trị cho spider-hub
-    # (CONFIG_DB_BACKEND) - hai bên đọc khác nơi thì cấu hình lệch nhau.
-    config_db_backend: str = "postgres"
-
     # Các file log mà route /logs của dashboard đọc phần cuối - cả hai tiến trình đều là
     # file text thường do ConsoleRenderer của structlog ghi ra (xem
     # spider-hub/social_crawler/logger.py và app/core/logging.py). Mặc định giả định bố
@@ -98,13 +92,7 @@ class Settings(BaseSettings):
     spider_hub_consumer_log_path: str = str(_REPO_ROOT.parent / "spider-hub" / "consumer.log")
     ingest_consumer_log_path: str = str(_REPO_ROOT / "ingest_consumer.log")
 
-    # Cùng instance Supabase Postgres mà social_crawler/db/ của spider-hub đọc cấu hình
-    # tài khoản/proxy (bảng platform_accounts / platform_proxies) - phía này có cả quyền
-    # đọc/ghi, cho trang Settings của dashboard. Thiếu thì là None (không phải lỗi) -
-    # GET/POST/PATCH/DELETE trên /settings/* chỉ trả 502 thay vì app không khởi động được.
-    database_url: str | None = None
-
-    # Nhà cung cấp AI (base_url, api_key, model) và nhà cung cấp đang chọn nằm ở bảng ai_providers / ai_settings trên Supabase,
+    # Nhà cung cấp AI (base_url, api_key, model) và nhà cung cấp đang chọn nằm ở bảng ai_providers / ai_settings trên D1,
     # sửa ở tab AI của dashboard spider-hub - xem app/ai/providers/client.py. Công tắc bật/tắt AI lúc chạy và prompt theo từng
     # task cũng ở tab đó (ai_settings).
     # Model nhà trồng (ViSoBERT fine-tune, app/ai/local/visobert.py) chạy trước Bee cho cảm xúc bình luận và nội dung bài: đủ
@@ -201,7 +189,7 @@ class Settings(BaseSettings):
     youtube_strict_movie_slugs: str = "con-mat-thu-ba,chuyen-di-nho-doi,me-min,nguoi-me-xau"
 
     # Omar TikTok API (dev.omar-thing.site) - nguồn TikTok của cinemark-api: video theo hashtag + bình luận / trả lời. Client:
-    # app/clients/omar.py. API key đọc từ bảng omar_api_settings trên Supabase (nhập ở dashboard > Settings > Omar), không để
+    # app/clients/omar.py. API key đọc từ bảng omar_api_settings trên D1 (nhập ở dashboard > Settings > Omar), không để
     # trong .env. Base URL ghi đè được trong .env khi cần.
     omar_api_base_url: str = "https://dev.omar-thing.site/api/v1"
     # Lượt cào hashtag TikTok mỗi giờ (app/services/omar/omar_tiktok.py), ở phút này của mỗi giờ (lệch lượt comment ở
@@ -296,7 +284,7 @@ class Settings(BaseSettings):
     ops_ai_wallet_window_hours: float = 1
     # Chi phí Jev hôm nay (giờ VN, ước từ token đầu vào) vượt mức này (USD).
 
-    # app/core/config.py  (trong class Settings, sau config_db_backend)
+    # app/core/config.py  (trong class Settings)
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
 

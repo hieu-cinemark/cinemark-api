@@ -19,7 +19,7 @@ _VOLUME_CHECK_UTC_HOUR = 18
 # hôm nay; lượt slot FULL mỗi giờ (phút :40-:49) tính cả hôm qua (bài về trễ sau nửa đêm).
 _STATS_RECONCILE_EVERY_MINUTES = 10
 _STATS_RECONCILE_FULL_SLOT = 4
-# Lưu ở dashboard thì đã chép ngay; vòng này bắt cả thay đổi sửa thẳng trên Supabase.
+# Lưu ở dashboard thì đã chép ngay; vòng này bắt cả thay đổi sửa thẳng trên D1.
 AI_RUNTIME_SYNC_SECONDS = 600
 REPORT_SCHEDULE_CHECK_SECONDS = 600
 _report_schedule_running = False

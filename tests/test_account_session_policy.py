@@ -7,8 +7,6 @@ import pytest
 
 from app.api.routes import settings as routes
 from app.core.errors import CookieRefusedError
-from app.services.accounts import platform_config_db as db
-from app.services.accounts.config_db import accounts as accounts_db
 from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.user_agent import merge_user_agent
 
@@ -64,66 +62,6 @@ def test_cookie_without_user_agent_can_be_saved_but_other_problems_still_refuse(
     with pytest.raises(CookieRefusedError, match="missing_xs") as err:
         routes._refuse_bad_cookie("facebook", "123", "c_user=123; datr=d")
     assert "missing_user_agent" not in str(err.value)
-
-
-class Cur:
-    def __init__(self, rows):
-        self.rows, self.sql = list(rows), []
-
-    async def execute(self, sql, params=None):
-        self.sql.append((str(sql), params))
-
-    async def fetchone(self):
-        return self.rows.pop(0)
-
-
-class Connection:
-    def __init__(self, cur):
-        self._cur = cur
-        self.commit = AsyncMock()
-
-    def cursor(self):
-        return self
-
-    async def __aenter__(self):
-        return self._cur
-
-    async def __aexit__(self, *args):
-        return False
-
-
-class Ctx:
-    def __init__(self, cur):
-        self.conn = Connection(cur)
-
-    async def __aenter__(self):
-        return self.conn
-
-    async def __aexit__(self, *args):
-        return False
-
-
-def use_db(monkeypatch, rows):
-    cur = Cur(rows)
-    monkeypatch.setattr(accounts_db, "_ensure_pool_columns", AsyncMock())
-    monkeypatch.setattr(accounts_db, "_connect", lambda: Ctx(cur))
-    return cur
-
-
-async def test_health_check_cannot_overwrite_dead(monkeypatch):
-    cur = use_db(monkeypatch, [None])
-    monkeypatch.setattr(accounts_db, "get_account", AsyncMock(return_value={"id": 1, "last_check_status": "dead"}))
-    row = await db.update_account_check_result(1, status="unknown")
-    assert row["last_check_status"] == "dead"
-    assert "NOT (last_check_status IS NOT DISTINCT FROM 'dead'" in cur.sql[0][0]
-
-
-async def test_only_cookie_changes_touch_updated_at(monkeypatch):
-    cur = use_db(monkeypatch, [{"id": 1}, {"id": 1}])
-    await db.update_account(1, {"password": "x"})
-    await db.update_account(1, {"cookie": "c_user=1"})
-    assert "updated_at = now()" not in cur.sql[0][0]
-    assert "updated_at = now()" in cur.sql[1][0]
 
 
 async def test_resaving_the_same_cookie_is_not_a_new_session(monkeypatch):

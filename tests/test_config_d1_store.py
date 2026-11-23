@@ -7,7 +7,6 @@ from datetime import datetime
 
 import pytest
 
-from app.core.config import settings
 from app.repositories.d1.sql import compile_sql
 from app.services.accounts.config_db import ai_config, d1_store
 from app.services.accounts.config_db import proxy_settings as proxy_config
@@ -29,7 +28,6 @@ def d1(monkeypatch):
         return rows
 
     monkeypatch.setattr(d1_store, "d1_exec", fake_exec)
-    monkeypatch.setattr(settings, "config_db_backend", "d1")
     d1_store.reset_for_tests()
     ai_config._forget_ai_settings()
     return calls
@@ -91,7 +89,3 @@ def test_tables_created_once(d1):
     run(ai_config.get_ai_settings())
     creates = [sql for sql in d1 if sql.lstrip().upper().startswith("CREATE TABLE")]
     assert len(creates) == 4 and all("IF NOT EXISTS" in sql for sql in creates)
-
-
-def test_default_backend_is_postgres():
-    assert type(settings).model_fields["config_db_backend"].default == "postgres"

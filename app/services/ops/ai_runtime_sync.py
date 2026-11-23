@@ -1,8 +1,8 @@
-"""Chép cấu hình AI (Supabase ai_providers + ai_settings.active_provider) sang bảng ai_runtime của D1 cho Worker cinemark,
-vốn không kết nối được Supabase. Worker đọc dòng active = 1 làm nhà cung cấp duy nhất của nó (Box Office AI, đọc
+"""Chép cấu hình AI (D1 ai_providers + ai_settings.active_provider) sang bảng ai_runtime của D1 cho Worker cinemark,
+vốn không đọc được D1 cinemark-config-db. Worker đọc dòng active = 1 làm nhà cung cấp duy nhất của nó (Box Office AI, đọc
 ảnh, hỏi AI, đọc sheet...) - xem cinemark api/lib/ai/providerConfig.ts.
 
-Chạy sau mỗi lần lưu ở tab AI của dashboard spider-hub và định kỳ trong scheduler (đổi thẳng trên Supabase vẫn tới Worker).
+Chạy sau mỗi lần lưu ở tab AI của dashboard spider-hub và định kỳ trong scheduler (đổi thẳng trên D1 vẫn tới Worker).
 API key nằm trong D1 (chỉ Worker và token Cloudflare của cinemark-api đọc được).
 """
 

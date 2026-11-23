@@ -13,7 +13,7 @@ from app.ai.tasks.report import generate_narrative, generate_topics_and_verbatim
 
 @pytest.fixture(autouse=True)
 def _active_provider(monkeypatch):
-    """Không đọc ai_settings trên Supabase: nhà cung cấp đang chọn giả định là "bee"."""
+    """Không đọc ai_settings trên D1: nhà cung cấp đang chọn giả định là "bee"."""
     monkeypatch.setattr("app.ai.tasks.report.active_provider_key", AsyncMock(return_value="bee"))
 
 

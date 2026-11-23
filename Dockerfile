@@ -7,8 +7,7 @@
 #   docker run <image> python -m app.workers.ingest_consumer.main  # ingest worker
 #
 # No compiled/system dependencies needed - every package in requirements.txt
-# (no more psycopg/asyncpg/SQLAlchemy; D1 access is plain HTTP via httpx,
-# see app/repositories/d1/store.py) ships prebuilt wheels for this base image.
+# (D1 access is plain HTTP via httpx, see app/clients/d1.py) ships prebuilt wheels for this base image.
 FROM python:3.14-slim
 
 WORKDIR /app

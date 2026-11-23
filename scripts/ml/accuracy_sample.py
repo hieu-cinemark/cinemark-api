@@ -15,7 +15,7 @@
      nguoi_giai_doan  hong (chưa xem) / da_xem / khac
    Dòng để trống nguoi_cam_xuc bị bỏ qua khi chấm.
 
-2. score - so nhãn người với nhãn máy, in kết quả; --save lưu vào Supabase (ai_accuracy_runs) để report Social
+2. score - so nhãn người với nhãn máy, in kết quả; --save lưu vào D1 (ai_accuracy_runs) để report Social
    Topic hiện "máy đúng bao nhiêu" cạnh các con số.
        python -m scripts.ml.accuracy_sample score --file accuracy_2026-10-07.csv
        python -m scripts.ml.accuracy_sample score --file accuracy_2026-10-07.csv --save --note "Lan chấm"

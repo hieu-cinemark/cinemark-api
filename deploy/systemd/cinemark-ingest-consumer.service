@@ -1,5 +1,5 @@
 [Unit]
-Description=cinemark-api ingest consumer (Kafka raw_posts/raw_comments -> Postgres)
+Description=cinemark-api ingest consumer (Kafka raw_posts/raw_comments -> D1)
 # Kafka itself isn't a systemd unit here (runs in Docker per docker-compose.yml) -
 # docker.service ordering keeps this from racing Kafka's container on boot.
 After=network-online.target docker.service
@@ -14,7 +14,7 @@ EnvironmentFile=/opt/cinemark-api/.env
 
 # Crashes (bad message, DB hiccup that somehow escapes the per-message
 # try/except, etc.) should come back on their own, not require a human -
-# RestartSec avoids a hot crash-loop hammering Postgres/Kafka if the root
+# RestartSec avoids a hot crash-loop hammering D1/Kafka if the root
 # cause is external and still broken.
 Restart=on-failure
 RestartSec=5

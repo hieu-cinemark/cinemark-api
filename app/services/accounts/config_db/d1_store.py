@@ -1,8 +1,8 @@
-"""Bản D1 (database cinemark-config-db) của các bảng cấu hình chuyển khỏi Supabase: ai_settings, ai_providers,
-ai_accuracy_runs, proxy_settings. Query dựng bằng SQLAlchemy Core (dialect SQLite) rồi gửi qua d1_exec; hàm ở đây trả đúng dạng
-dữ liệu mà bản Postgres trả (bool, dict, datetime) nên chỗ gọi không phải biết đang dùng nơi nào.
+"""Bản D1 (database cinemark-config-db) của các bảng cấu hình: ai_settings, ai_providers,
+ai_accuracy_runs, proxy_settings. Query dựng bằng SQLAlchemy Core (dialect SQLite) rồi gửi qua d1_exec; hàm ở đây trả dữ liệu dạng
+Python (bool, dict, datetime) nên chỗ gọi giữ nguyên kiểu dữ liệu.
 
-Bật bằng CONFIG_DB_BACKEND=d1 (xem app/core/config.py); mặc định vẫn là Postgres. Bảng tự tạo (IF NOT EXISTS) ở lần dùng đầu."""
+Bảng tự tạo (IF NOT EXISTS) ở lần dùng đầu."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from sqlalchemy import Column, Integer, MetaData, Table, Text, delete, select, t
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.schema import CreateTable
 
-from app.core.config import settings
 from app.core.errors import UpstreamError
 from app.repositories.d1.sql import d1_exec
 
@@ -67,10 +66,6 @@ _TABLES = (ai_settings, ai_providers, ai_accuracy_runs, proxy_settings)
 _ready = False
 
 
-def enabled() -> bool:
-    return settings.config_db_backend == "d1"
-
-
 async def _run(stmt: Any) -> list[dict[str, Any]]:
     rows = await d1_exec(stmt, database="config", timeout=15.0)
     if rows is None:
@@ -99,7 +94,7 @@ def _json(value: Any) -> Any:
 
 
 async def ensure_tables() -> None:
-    """Tạo bảng nếu chưa có và gieo dòng ai_settings (id=1), như _ensure_* của bản Postgres."""
+    """Tạo bảng nếu chưa có và gieo dòng ai_settings (id=1)."""
     global _ready
     if _ready:
         return

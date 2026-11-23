@@ -7,8 +7,8 @@ Service Python (FastAPI) chạy trên VPS, nối spider-hub (cào dữ liệu) v
 - **Chạy nền:** lịch cào, tổng hợp số liệu, job AI (nhãn tác giả, niche kênh, Review Angles), báo cáo, cảnh báo.
 - **API cho dashboard spider-hub:** tài khoản, proxy, từ khoá, phim, thống kê, log, hàng đợi.
 
-Service không có database riêng: dữ liệu nằm ở Cloudflare D1 (gọi qua HTTP API), cấu hình tài khoản/AI ở Postgres
-(Supabase; đang chuyển dần sang D1 `cinemark-config-db`, xem [docs/config-db-d1.md](docs/config-db-d1.md)), trạng thái ngắn hạn ở Redis, dữ liệu thô ở R2.
+Service không có database riêng: dữ liệu nằm ở Cloudflare D1 (gọi qua HTTP API), cấu hình tài khoản/AI ở D1 `cinemark-config-db`
+(xem [docs/config-db-d1.md](docs/config-db-d1.md)), trạng thái ngắn hạn ở Redis, dữ liệu thô ở R2.
 
 ## Luồng chính
 
@@ -25,7 +25,7 @@ D1 cinemark-scraper <--ghi bài, bình luận-- ingest_consumer <--Kafka raw_pos
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt            # thêm requirements-ml.txt nếu chạy model tại chỗ
-cp .env.example .env                       # điền Kafka, CLOUDFLARE_*, Redis, Supabase...
+cp .env.example .env                       # điền Kafka, CLOUDFLARE_*, Redis...
 
 uvicorn app.main:app --reload              # API
 python -m app.workers.ingest_consumer.main # nhận bài/bình luận từ Kafka

@@ -14,7 +14,7 @@ Omar / chi phí Jev thì khoá theo ngày (mỗi ngày một lần). Gửi thẳ
 trong service này chỉ là một field, không có gì đọc nó để gửi Telegram.
 
 Module này chỉ import nhẹ ở đầu (Redis, Telegram, config) vì app/ai/providers/client.py import nó; phần nặng
-(Omar, D1, Supabase) import trong hàm."""
+(Omar, D1) import trong hàm."""
 
 from __future__ import annotations
 

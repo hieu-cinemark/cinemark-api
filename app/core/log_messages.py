@@ -16,7 +16,6 @@ MESSAGES: dict[str, str] = {
     "api_auth_disabled": "Xác thực API đang tắt",
     "app_error": "Lỗi ứng dụng",
     "app_started": "API đã khởi động",
-    "db_connect_failed": "Không kết nối được Postgres",
     "json_decode_skipped": "Bỏ qua một bản ghi JSON hỏng",
     "request_failed": "Request thất bại",
     "request_handled": "Đã xử lý request",

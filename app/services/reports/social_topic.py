@@ -139,7 +139,7 @@ def hydrate_report_comments(topics_result: dict, sample: list[dict], posts: list
 
 
 async def _latest_accuracy() -> dict | None:
-    """Lần chấm độ chính xác gần nhất (ai_accuracy_runs), hoặc None - report vẫn tạo được khi Supabase lỗi."""
+    """Lần chấm độ chính xác gần nhất (ai_accuracy_runs), hoặc None - report vẫn tạo được khi D1 lỗi."""
     try:
         from app.services.accounts.platform_config_db import get_latest_accuracy_run
 

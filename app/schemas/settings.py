@@ -612,7 +612,7 @@ class CleanupRunHistoryEntry(BaseModel):
 
 # --- Cấu hình Omar API (dev.omar-thing.site) --------------------------------
 # Dùng cho crawl video/hashtag thay vì spider-hub khi toggle bật trên dashboard.
-# API key được đọc từ Supabase (bảng omar_api_settings), không từ env.
+# API key được đọc từ D1 (bảng omar_api_settings), không từ env.
 
 
 class DiscoverySettings(BaseModel):

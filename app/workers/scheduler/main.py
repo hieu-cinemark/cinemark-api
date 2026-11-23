@@ -56,7 +56,7 @@ async def main() -> None:
     logger.info("scheduler_service_stopping")
     scheduler.stop()
     ops_metrics.stop_sampler()
-    for step, coro in (("db_pool", platform_config_db.close_pool()), ("kafka_producer", stop_kafka_producer())):
+    for step, coro in (("kafka_producer", stop_kafka_producer()),):
         try:
             await asyncio.wait_for(coro, timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
         except TimeoutError:

@@ -76,9 +76,8 @@ app.include_router(cron_router)
 
 # ensure_default_crawl_schedules chỉ tạo sẵn một dòng mặc định cho tiện (xem docstring
 # của nó) - nó tuyệt đối không được làm treo phần còn lại của quá trình khởi động (mọi
-# route, scheduler, Kafka) chỉ vì Postgres không truy cập được/chậm. connect_timeout=5
-# của psycopg (platform_config_db._connect) không giới hạn bước phân giải DNS, bước
-# này có thể treo lâu hơn nhiều - đã gặp thực tế 2026-09-21 khi mạng chập chờn lúc
+# route, scheduler, Kafka) chỉ vì D1 không truy cập được/chậm. Bước phân giải DNS của một
+# request mạng có thể treo lâu hơn timeout của chính request đó - đã gặp thực tế 2026-09-21 khi mạng chập chờn lúc
 # khởi động làm treo cả app, kể cả /health, hơn 18 phút mà không có dòng log nào.
 _STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS = 10.0
 
@@ -137,10 +136,6 @@ async def on_shutdown() -> None:
     refresh_tracker.shutdown()
     scheduler.stop()
     ops_metrics.stop_sampler()
-    try:
-        await asyncio.wait_for(platform_config_db.close_pool(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
-    except TimeoutError:
-        logger.warning("shutdown_step_timeout", step="db_pool")
     try:
         await asyncio.wait_for(close_retriever(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
     except TimeoutError:

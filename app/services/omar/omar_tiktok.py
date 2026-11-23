@@ -4,7 +4,7 @@
 (clients/omar.map_video), nên ingest consumer lọc liên quan, chống trùng, cập nhật tương tác và chọn bài cào comment như mọi
 bài TikTok khác.
 
-API key + tổng request mỗi ngày + số request đồng thời đọc từ bảng omar_api_settings trên Supabase (nhập ở dashboard > Settings >
+API key + tổng request mỗi ngày + số request đồng thời đọc từ bảng omar_api_settings trên D1 (nhập ở dashboard > Settings >
 Omar). Không có key thì bỏ qua.
 
 Mỗi hashtag được cào TỚI HẾT kết quả (hashtag_videos), con trỏ + id hashtag lưu trong Redis (omar:hashtag_state) - hết ngân sách thì
@@ -442,7 +442,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     luận), hoặc sớm hơn khi lượt còn ngân sách dư (hashtag xong lâu nhất trước).
 
     Ngân sách: CHẠY LIÊN TỤC - toàn bộ hạn mức ngày tự đặt còn lại (omar_daily_requests, trừ settings.omar_daily_reserve) dùng
-    ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ Supabase mỗi lượt).
+    ngay trong lượt, hết thì chờ reset / key mới (key đọc lại từ D1 mỗi lượt).
     Nhịp gọi cũng theo giới hạn mỗi phút của gói - nâng gói Omar thì tự chạy nhanh/nhiều hơn."""
     row = await get_omar_api_settings()
     api_key = ((row or {}).get("api_key") or "").strip()

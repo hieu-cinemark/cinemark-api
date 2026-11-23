@@ -92,11 +92,19 @@ async def ensure_collection(client: AsyncQdrantClient) -> None:
         return
     await client.create_collection(
         COLLECTION,
-        vectors_config=models.VectorParams(size=DIM, distance=models.Distance.COSINE, datatype=models.Datatype.FLOAT16, on_disk=True),
-        quantization_config=models.ScalarQuantization(scalar=models.ScalarQuantizationConfig(type=models.ScalarType.INT8, always_ram=True)),
+        vectors_config=models.VectorParams(
+            size=DIM, distance=models.Distance.COSINE, datatype=models.Datatype.FLOAT16, on_disk=True
+        ),
+        quantization_config=models.ScalarQuantization(
+            scalar=models.ScalarQuantizationConfig(type=models.ScalarType.INT8, always_ram=True)
+        ),
     )
-    for field, schema in (("movie_id", models.PayloadSchemaType.KEYWORD), ("platform", models.PayloadSchemaType.KEYWORD),
-                          ("sentiment", models.PayloadSchemaType.KEYWORD), ("posted_at", models.PayloadSchemaType.DATETIME)):
+    for field, schema in (
+        ("movie_id", models.PayloadSchemaType.KEYWORD),
+        ("platform", models.PayloadSchemaType.KEYWORD),
+        ("sentiment", models.PayloadSchemaType.KEYWORD),
+        ("posted_at", models.PayloadSchemaType.DATETIME),
+    ):
         await client.create_payload_index(COLLECTION, field_name=field, field_schema=schema)
 
 
@@ -106,21 +114,35 @@ class QdrantVectorStore:
 
     async def upsert(self, documents: Sequence[Document], vectors: Sequence[Sequence[float]]) -> None:
         points = [
-            models.PointStruct(id=point_id(doc.id), vector=list(vec), payload={**doc.metadata, "comment_id": doc.id, "text": doc.text})
+            models.PointStruct(
+                id=point_id(doc.id), vector=list(vec), payload={**doc.metadata, "comment_id": doc.id, "text": doc.text}
+            )
             for doc, vec in zip(documents, vectors, strict=True)
         ]
         await self._client.upsert(COLLECTION, points=points)
 
-    async def search(self, vector: Sequence[float], *, limit: int, filters: dict[str, Any] | None = None) -> list[ScoredDocument]:
+    async def search(
+        self, vector: Sequence[float], *, limit: int, filters: dict[str, Any] | None = None
+    ) -> list[ScoredDocument]:
         query_filter = (
-            models.Filter(must=[models.FieldCondition(key=k, match=models.MatchValue(value=v)) for k, v in filters.items()]) if filters else None
+            models.Filter(
+                must=[models.FieldCondition(key=k, match=models.MatchValue(value=v)) for k, v in filters.items()]
+            )
+            if filters
+            else None
         )
-        result = await self._client.query_points(COLLECTION, query=list(vector), limit=limit, query_filter=query_filter, with_payload=True)
+        result = await self._client.query_points(
+            COLLECTION, query=list(vector), limit=limit, query_filter=query_filter, with_payload=True
+        )
         out: list[ScoredDocument] = []
         for hit in result.points:
             payload = dict(hit.payload or {})
             text = str(payload.pop("text", ""))
-            out.append(ScoredDocument(Document(id=str(payload.get("comment_id", hit.id)), text=text, metadata=payload), float(hit.score)))
+            out.append(
+                ScoredDocument(
+                    Document(id=str(payload.get("comment_id", hit.id)), text=text, metadata=payload), float(hit.score)
+                )
+            )
         return out
 ```
 
@@ -207,7 +229,7 @@ def build_graph(retriever):
 
     async def grade(state: State) -> State:
         data, _ = await call_llm_json(
-            system_prompt="Trả JSON {\"enough\": true|false}: ngữ cảnh có đủ để trả lời câu hỏi không.",
+            system_prompt='Trả JSON {"enough": true|false}: ngữ cảnh có đủ để trả lời câu hỏi không.',
             user_prompt=f"Câu hỏi: {state['question']}\n\n{build_context(state['docs'], max_chars=3000)}",
             max_tokens=50,
             task="rag_grade",

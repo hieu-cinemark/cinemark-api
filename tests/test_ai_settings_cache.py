@@ -1,40 +1,8 @@
 """get_ai_settings cache ngắn trong tiến trình: đọc lặp không chạm DB, ghi thì xoá cache, hết hạn thì đọc lại."""
 
 import asyncio
-from contextlib import asynccontextmanager
 
-from app.services.accounts.config_db import ai_config
-
-
-class _Cursor:
-    def __init__(self, db):
-        self.db = db
-
-    async def execute(self, sql, params=None):
-        if sql.lstrip().upper().startswith("SELECT"):
-            self.db.reads += 1
-        elif "UPDATE ai_settings" in sql:
-            self.db.row = {**self.db.row, "active_provider": params[0]}
-
-    async def fetchone(self):
-        return dict(self.db.row)
-
-
-class _Conn:
-    def __init__(self, db):
-        self.db = db
-
-    def cursor(self):
-        db = self.db
-
-        @asynccontextmanager
-        async def _cm():
-            yield _Cursor(db)
-
-        return _cm()
-
-    async def commit(self):
-        pass
+from app.services.accounts.config_db import ai_config, d1_store
 
 
 class _Db:
@@ -46,15 +14,15 @@ class _Db:
 def _setup(monkeypatch):
     db = _Db()
 
-    @asynccontextmanager
-    async def connect():
-        yield _Conn(db)
+    async def get_ai_settings():
+        db.reads += 1
+        return dict(db.row)
 
-    async def ready():
-        return None
+    async def set_active_ai_provider(key):
+        db.row = {**db.row, "active_provider": key}
 
-    monkeypatch.setattr(ai_config, "_connect", connect)
-    monkeypatch.setattr(ai_config, "_ensure_ai_settings_table", ready)
+    monkeypatch.setattr(d1_store, "get_ai_settings", get_ai_settings)
+    monkeypatch.setattr(d1_store, "set_active_ai_provider", set_active_ai_provider)
     monkeypatch.setattr(ai_config, "_ai_settings_cache", None)
     return db
 

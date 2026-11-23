@@ -71,7 +71,7 @@ async def clear_pause() -> None:
 
 
 async def pause_over(pause: dict[str, Any]) -> bool:
-    """Hết dừng chưa: tới giờ `until`, hoặc (dừng vì key) key trong Supabase đã đổi."""
+    """Hết dừng chưa: tới giờ `until`, hoặc (dừng vì key) key trong D1 đã đổi."""
     try:
         until = datetime.fromisoformat(pause["until"])
     except KeyError, TypeError, ValueError:

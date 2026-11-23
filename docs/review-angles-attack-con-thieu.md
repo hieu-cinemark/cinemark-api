@@ -60,11 +60,13 @@ Ref cũ hơn thì không.
 ```python
 # scripts/tools/review_angles_posted_at.py
 """Bù postedAt cho ref cũ trong state.json của Review Angles (đọc D1 theo id, lô 40). --dry-run chỉ đếm."""
+
 import argparse, asyncio
 from sqlalchemy import select
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import posts
 from app.services.ai_jobs.review_angles import _read_json, _write_json, _root, _active_movies
+
 
 async def fix(movie_id: str, dry_run: bool) -> tuple[int, int]:
     key = f"{_root(movie_id)}/state.json"
@@ -76,7 +78,7 @@ async def fix(movie_id: str, dry_run: bool) -> tuple[int, int]:
         return len(missing), 0
     found: dict[str, str] = {}
     for i in range(0, len(missing), 40):
-        rows = await d1_exec(select(posts.c.id, posts.c.posted_at).where(posts.c.id.in_(missing[i:i + 40]))) or []
+        rows = await d1_exec(select(posts.c.id, posts.c.posted_at).where(posts.c.id.in_(missing[i : i + 40]))) or []
         found.update({r["id"]: r["posted_at"] for r in rows if r.get("posted_at")})
         await asyncio.sleep(0.5)
     for angle in state["angles"]:
@@ -267,6 +269,7 @@ nên không suy luận theo những thứ đó.
 
 ```python
 """Dấu hiệu C: nhóm tài khoản có hành vi giống nhau (docs/review-angles-va-attack.md mục 2.4 C)."""
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 from itertools import combinations
@@ -278,16 +281,22 @@ PAIR_POSTS, PAIR_GAP, PAIR_JACCARD = 3, timedelta(minutes=10), 0.5
 MULTI_CLUSTER, STRONG_ACCOUNTS = 2, 5
 MAX_PER_POST = 400  # bài quá nhiều bình luận: chỉ xét chừng này bình luận gần nhất để cặp không bùng nổ
 
-def _at(row): return datetime.fromisoformat(row["posted_at"])
+
+def _at(row):
+    return datetime.fromisoformat(row["posted_at"])
+
 
 def _many_posts(times_by_post: dict[str, list[datetime]]) -> bool:
     """L1: có cửa sổ 24 giờ chứa >= MANY_POSTS bài khác nhau (lấy lần bình luận đầu ở mỗi bài)."""
     firsts = sorted(min(ts) for ts in times_by_post.values())
     j = 0
     for i, t in enumerate(firsts):
-        while t - firsts[j] > MANY_POSTS_WINDOW: j += 1
-        if i - j + 1 >= MANY_POSTS: return True
+        while t - firsts[j] > MANY_POSTS_WINDOW:
+            j += 1
+        if i - j + 1 >= MANY_POSTS:
+            return True
     return False
+
 
 def account_groups(rows, clusters):
     rows = [r for r in rows if r.get("author_id") and r.get("posted_at")]
@@ -296,31 +305,38 @@ def account_groups(rows, clusters):
     for r in rows:
         by_acc[r["author_id"]][r["post_id"]].append(_at(r))
         by_post[r["post_id"]].append((_at(r), r["author_id"]))
-    rule = defaultdict(set)                                  # acc -> {"many_posts","pair","multi_cluster"}
+    rule = defaultdict(set)  # acc -> {"many_posts","pair","multi_cluster"}
     for acc, posts in by_acc.items():
-        if _many_posts(posts): rule[acc].add("many_posts")
+        if _many_posts(posts):
+            rule[acc].add("many_posts")
     # L2: cặp gần nhau dưới cùng bài (cửa sổ trượt 10 phút trên bình luận đã sắp theo giờ)
     shared: dict[tuple[str, str], set[str]] = defaultdict(set)
     for post_id, items in by_post.items():
         items = sorted(items)[-MAX_PER_POST:]
         j = 0
         for i, (t, a) in enumerate(items):
-            while t - items[j][0] > PAIR_GAP: j += 1
+            while t - items[j][0] > PAIR_GAP:
+                j += 1
             for _, b in items[j:i]:
-                if a != b: shared[tuple(sorted((a, b)))].add(post_id)
+                if a != b:
+                    shared[tuple(sorted((a, b)))].add(post_id)
     pairs = []
     for (a, b), posts in shared.items():
         union = set(by_acc[a]) | set(by_acc[b])
         if len(posts) >= PAIR_POSTS and len(posts) / len(union) >= PAIR_JACCARD:
-            pairs.append((a, b)); rule[a].add("pair"); rule[b].add("pair")
+            pairs.append((a, b))
+            rule[a].add("pair")
+            rule[b].add("pair")
     # L3
     author_of = {r["id"]: r["author_id"] for r in rows}
     clusters_of = defaultdict(set)
     for ci, c in enumerate(clusters):
         for cid in c.get("member_ids", []):
-            if cid in author_of: clusters_of[author_of[cid]].add(ci)
+            if cid in author_of:
+                clusters_of[author_of[cid]].add(ci)
     for acc, cs in clusters_of.items():
-        if len(cs) >= MULTI_CLUSTER: rule[acc].add("multi_cluster")
+        if len(cs) >= MULTI_CLUSTER:
+            rule[acc].add("multi_cluster")
     # ghép nhóm: union-find trên pairs + cùng cụm (với tài khoản thoả L3) - xem similar.py để chép find/union
     ...
     # mỗi nhóm: accounts, qualifying (len(rule) >= 2), posts, comments, platforms, window, members (tên che bớt), rules_count
@@ -370,12 +386,18 @@ Cho 5 cụm B lớn nhất (`clusters[:5]`), dùng `member_ids` để lấy lạ
 
 ```python
 CLAIM_PATTERNS = {
-    "dao_nhai":   ("Đạo nhái / sao chép", r"\b(dao nhai|dao phim|copy|sao chep|nhai lai)\b"),
-    "seeding":    ("Seeding / review thuê / tài khoản ảo", r"\b(seeding|seed|review thue|thue review|acc clone|tai khoan ao|bot)\b"),
-    "doanh_thu":  ("Doanh thu / vé ảo, lỗ vốn", r"\b(doanh thu ao|ve ao|bom doanh thu|mua ve ao|lo von|lo nang)\b"),
-    "diem_ao":    ("Điểm / rating ảo", r"\b(diem ao|rating ao|buff diem|cay diem)\b"),
-    "kiem_duyet": ("Bị cấm / cắt cảnh / ngừng chiếu", r"\b(bi cam|cam chieu|cat canh|kiem duyet|rut khoi rap|ngung chieu)\b"),
-    "ep_suat":    ("Ép suất chiếu", r"\b(ep suat|gianh suat|khong cho chieu|doc quyen suat)\b"),
+    "dao_nhai": ("Đạo nhái / sao chép", r"\b(dao nhai|dao phim|copy|sao chep|nhai lai)\b"),
+    "seeding": (
+        "Seeding / review thuê / tài khoản ảo",
+        r"\b(seeding|seed|review thue|thue review|acc clone|tai khoan ao|bot)\b",
+    ),
+    "doanh_thu": ("Doanh thu / vé ảo, lỗ vốn", r"\b(doanh thu ao|ve ao|bom doanh thu|mua ve ao|lo von|lo nang)\b"),
+    "diem_ao": ("Điểm / rating ảo", r"\b(diem ao|rating ao|buff diem|cay diem)\b"),
+    "kiem_duyet": (
+        "Bị cấm / cắt cảnh / ngừng chiếu",
+        r"\b(bi cam|cam chieu|cat canh|kiem duyet|rut khoi rap|ngung chieu)\b",
+    ),
+    "ep_suat": ("Ép suất chiếu", r"\b(ep suat|gianh suat|khong cho chieu|doc quyen suat)\b"),
 }
 MIN_COMMENTS, MIN_ACCOUNTS = 5, 3
 ```
@@ -404,8 +426,9 @@ if signal.key == "accounts":
     return f"Nhóm {int(signal.score)} tài khoản có hành vi giống nhau (cùng bình luận dưới {g.get('posts', 0)} bài, cách nhau dưới 10 phút)"
 if signal.key == "spread":
     c = (signal.detail.get("clusters") or [{}])[0]
-    return ("Một luận điểm lan qua {} kênh / {} nền tảng".format(c.get("channels"), c.get("platforms"))
-            + (" - phần lớn từ một bài gốc" if c.get("common_source") else ""))
+    return "Một luận điểm lan qua {} kênh / {} nền tảng".format(c.get("channels"), c.get("platforms")) + (
+        " - phần lớn từ một bài gốc" if c.get("common_source") else ""
+    )
 if signal.key == "claims":
     return f"{int(signal.score)} bình luận nêu khẳng định cần kiểm tra (không phải kết luận là sai)"
 ```
