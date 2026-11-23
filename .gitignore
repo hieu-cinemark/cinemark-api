@@ -29,3 +29,6 @@ scripts/_*.csv
 /data/summaries/
 /data/stage/
 /data/author_tiers/
+
+# dữ liệu sinh cục bộ (embedding SQLite, con trỏ nạp Qdrant)
+/data/
