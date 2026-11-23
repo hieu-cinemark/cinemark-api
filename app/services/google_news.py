@@ -88,7 +88,7 @@ async def search_web(payload: GoogleNewsRequest) -> dict[str, Any]:
 async def _search(payload: GoogleNewsRequest, *, engine: str) -> dict[str, Any]:
     key = (settings.serpapi_api_key or "").strip()
     if not key:
-        raise SerpApiNotConfigured("Chưa cấu hình SERPAPI_API_KEY.")
+        raise SerpApiNotConfigured("SERPAPI_API_KEY is not configured")
     params = payload.model_dump(exclude_none=True)
     params.update(engine=engine, api_key=key)
     params["no_cache"] = "true" if payload.no_cache else "false"
@@ -99,13 +99,13 @@ async def _search(payload: GoogleNewsRequest, *, engine: str) -> dict[str, Any]:
             response = await client.get(SEARCH_URL, params=params)
             response.raise_for_status()
     except httpx.TimeoutException:
-        raise UpstreamError("SerpApi Google Search hết thời gian chờ.") from None
+        raise UpstreamError("SerpApi Google Search timed out") from None
     except httpx.HTTPError:
-        raise UpstreamError("Không gọi được SerpApi Google Search.") from None
+        raise UpstreamError("Could not call SerpApi Google Search") from None
     try:
         data = response.json()
     except ValueError:
-        raise UpstreamError("SerpApi trả về JSON không hợp lệ.") from None
+        raise UpstreamError("SerpApi returned invalid JSON") from None
     metadata = data.get("search_metadata") if isinstance(data, dict) else None
     if (
         not isinstance(data, dict)
@@ -113,7 +113,7 @@ async def _search(payload: GoogleNewsRequest, *, engine: str) -> dict[str, Any]:
         or not isinstance(metadata, dict)
         or metadata.get("status") != "Success"
     ):
-        raise UpstreamError("SerpApi chưa trả về kết quả Google News Light thành công.")
+        raise UpstreamError("SerpApi did not return a successful Google News Light result")
     # Giữ danh sách tin và metadata/pagination do SerpApi trả về.
     # Không trả lại credential nếu nhà cung cấp echo nó trong search_parameters.
     if isinstance(data.get("search_parameters"), dict):

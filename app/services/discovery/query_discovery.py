@@ -228,7 +228,7 @@ async def _prune(dry_run: bool) -> int:
         try:
             yields.update(await keyword_yields(platform))
         except Exception as exc:  # noqa: BLE001 - không đo được thì chỉ dọn theo số bài mới như trước
-            logger.warning("query_ai_yield_failed", platform=platform, error=str(exc)[:200])
+            logger.warning("query_ai_yield_failed", platform=platform, error=exc)
     pruned = 0
     # Phim chưa chiếu (hoặc mới chiếu chưa đủ PRUNE_AFTER_DAYS ngày) ít bài là bình thường - không dọn; câu 0 bài đã được
     # keyword_yield cho cào thưa (mỗi ZERO_EVERY_DAYS ngày) nên không tốn nhiều.
@@ -420,7 +420,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
             try:
                 generated = await _generate_queries(movie, [k["keyword"] for k in own])
             except Exception as exc:  # noqa: BLE001 - AI sinh câu lỗi: vẫn xét các câu theo mẫu
-                logger.warning("query_ai_generate_failed", movie_id=movie["id"], error=str(exc)[:300])
+                logger.warning("query_ai_generate_failed", movie_id=movie["id"], error=exc)
         stats["generated"] = stats.get("generated", 0) + len(generated)
         templated = {_key(q) for q in candidate_queries(movie)}
         queries = [
@@ -435,7 +435,7 @@ async def run_query_discovery(*, dry_run: bool = False, movie_id: str | None = N
             verdicts = await _ask_ai(movie, queries, titles)
         except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: phim này để lượt sau
             stats["failed"] += 1
-            logger.warning("query_ai_review_failed", movie_id=movie["id"], error=str(exc)[:300])
+            logger.warning("query_ai_review_failed", movie_id=movie["id"], error=exc)
             continue
         stats["asked"] += 1
         added_here = 0

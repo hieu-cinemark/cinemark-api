@@ -19,14 +19,6 @@ from app.services.attack.signals import Signal, overlaps
 
 MIN_COMMENTS_7D = 200
 
-STATUS_TEXT = {
-    "insufficient": "Không đủ dữ liệu",
-    "clear": "Không phát hiện bất thường",
-    "suspicious": "Có dấu hiệu nghi vấn",
-    "coordinated": "Có dấu hiệu phối hợp mạnh",
-}
-DISCLAIMER = "Kết quả mang tính khuyến cáo, dựa trên dữ liệu thu được, không đầy đủ 100%."
-
 
 def decide(signals: list[Signal], coverage: dict[str, Any]) -> tuple[str, str, list[str]]:
     """(status, confidence, reasons). coverage: {"comments_7d", "platforms"}."""

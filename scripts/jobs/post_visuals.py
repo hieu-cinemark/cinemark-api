@@ -209,7 +209,7 @@ async def process_chunk(
                 await put_object(key, jpeg, content_type="image/jpeg")
                 return key
             except Exception as exc:  # noqa: BLE001 - lần chạy sau thử lại (không ghi dòng)
-                logger.warning("post_visuals_upload_failed", post_id=row["post_id"], error=str(exc)[:200])
+                logger.warning("post_visuals_upload_failed", post_id=row["post_id"], error=exc)
                 return None
 
     keys = await asyncio.gather(*(upload(row, jpeg) for row, jpeg, _ in ready))

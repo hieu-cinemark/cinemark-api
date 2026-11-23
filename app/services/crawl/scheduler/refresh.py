@@ -25,7 +25,7 @@ async def _run_trend_posts() -> None:
     try:
         logger.info("trend_posts_marked", changed=await mark_showing_movies())
     except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để lượt sau chạy lại
-        logger.error("trend_posts_failed", error=str(exc)[:300])
+        logger.error("trend_posts_failed", error=exc)
 
 
 async def trend_posts_tick() -> None:
@@ -52,7 +52,7 @@ async def _run_tracked_posts() -> None:
     try:
         await tracked_posts.run_daily()
     except Exception as exc:  # noqa: BLE001 - lượt lỗi: hôm sau chạy lại (hoặc restart trong ngày chạy lại)
-        logger.error("tracked_posts_failed", error=str(exc)[:300])
+        logger.error("tracked_posts_failed", error=exc)
 
 
 async def tracked_posts_tick() -> None:
@@ -69,7 +69,7 @@ async def _collect_threads_profiles() -> None:
     try:
         await channel_profiles.collect_threads_results()
     except Exception as exc:  # noqa: BLE001 - kết quả còn trong Redis, vòng sau gom lại
-        logger.error("channel_profiles_threads_collect_failed", error=str(exc))
+        logger.error("channel_profiles_threads_collect_failed", error=exc)
     finally:
         _threads_collecting = False
 

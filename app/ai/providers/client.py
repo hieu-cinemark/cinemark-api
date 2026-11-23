@@ -85,7 +85,7 @@ async def active_provider_key() -> str:
 
         key = str((await get_ai_settings()).get("active_provider") or "").strip().lower()
     except Exception as exc:  # noqa: BLE001 - không đọc được thì giữ lựa chọn cũ
-        logger.warning("ai_active_provider_load_failed", error=str(exc))
+        logger.warning("ai_active_provider_load_failed", error=exc)
         if _active_cache is not None:
             return _active_cache[1]
     _active_cache = (now, key)
@@ -178,7 +178,7 @@ async def load_provider(key: str | None = None) -> ProviderConfig | None:
                 reasoning_effort=(row.get("reasoning_effort") or "").strip(),
             )
     except Exception as exc:  # noqa: BLE001 - đọc cấu hình provider lỗi thì dùng bản cache/None, không làm hỏng lời gọi AI
-        logger.warning("ai_provider_load_failed", provider=key, error=str(exc))
+        logger.warning("ai_provider_load_failed", provider=key, error=exc)
     _provider_cache[key] = (now, cfg)
     return cfg
 
@@ -366,7 +366,7 @@ async def call_ai(
                     task=task,
                     model=resolved_model,
                     platform=platform,
-                    error=str(exc),
+                    error=exc,
                 )
                 raise
     raise AssertionError("unreachable: retry loop always returns or raises")

@@ -70,12 +70,12 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
     """
     snapshot = await press_reviews.load(movie_id)
     if not snapshot:
-        raise NotFoundError("Chưa có bản tin để lấy thêm.")
+        raise NotFoundError("No press edition available to load more from")
     data = snapshot["data"]
     web_base = data.get("search_parameters") or {}
     news_base = data.get("news_search_parameters") or {}
     if not web_base.get("q") and not news_base.get("q"):
-        raise UpstreamError("Bản tin hiện có không lưu câu tìm nên không lấy thêm được trang.")
+        raise UpstreamError("The current press edition has no stored search query, so more pages cannot be loaded")
 
     organic = press_groups.flatten(data.get("organic_results", []))
     press = press_groups.flatten(data.get("news_results", []))

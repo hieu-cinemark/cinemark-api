@@ -10,6 +10,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.ai.retrieval.factory import close_retriever
 from app.api.routes.auth import router as auth_router
 from app.api.routes.cron import router as cron_router
 from app.api.routes.facebook import router as facebook_router
@@ -18,6 +19,7 @@ from app.api.routes.jobs import router as jobs_router
 from app.api.routes.logs import router as logs_router
 from app.api.routes.movies import router as movies_router
 from app.api.routes.omar import router as omar_router
+from app.api.routes.rag import router as rag_router
 from app.api.routes.research import router as research_router
 from app.api.routes.settings import router as settings_router
 from app.api.routes.stats import router as stats_router
@@ -38,6 +40,8 @@ from app.services.ops import ops_metrics
 logger = get_logger(__name__)
 
 app = FastAPI(title="spider-api")
+
+app.include_router(rag_router)
 
 # Thêm trước CORS => nằm bên trong CORS, nên cả phản hồi 401 cũng mang header CORS (nếu
 # không trình duyệt chỉ thấy "CORS error" thay vì 401).
@@ -88,20 +92,20 @@ async def on_startup() -> None:
             timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 - khởi tạo lịch mặc định lỗi không được chặn API khởi động
-        logger.warning("crawl_schedule_seed_failed", error=str(exc))
+        logger.warning("crawl_schedule_seed_failed", error=exc)
     try:
         await asyncio.wait_for(
             platform_config_db.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS),
             timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 - khởi tạo lịch mặc định lỗi không được chặn API khởi động
-        logger.warning("comment_crawl_schedule_seed_failed", error=str(exc))
+        logger.warning("comment_crawl_schedule_seed_failed", error=exc)
     try:
         await asyncio.wait_for(
             platform_config_db.ensure_proxy_settings_complete(), timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS
         )
     except Exception as exc:  # noqa: BLE001 - ghi đủ khoá cài đặt lỗi không được chặn API khởi động (thử lại ở lần khởi động sau)
-        logger.warning("proxy_settings_complete_failed", error=str(exc))
+        logger.warning("proxy_settings_complete_failed", error=exc)
     if settings.scheduler_in_web:
         scheduler.start()
         ops_metrics.start_sampler()
@@ -119,7 +123,7 @@ async def _build_tab_filter_indexes() -> None:
         await posts_repo.ensure_tab_filter_indexes()
         await comments_repo.ensure_tab_filter_indexes()
     except Exception as exc:  # noqa: BLE001 - tạo index lỗi không được chặn API (tạo lại ở lần khởi động sau)
-        logger.warning("tab_filter_indexes_failed", error=str(exc) or repr(exc))
+        logger.warning("tab_filter_indexes_failed", error=exc)
 
 
 _SHUTDOWN_STEP_TIMEOUT_SECONDS = 5
@@ -137,6 +141,10 @@ async def on_shutdown() -> None:
         await asyncio.wait_for(platform_config_db.close_pool(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
     except TimeoutError:
         logger.warning("shutdown_step_timeout", step="db_pool")
+    try:
+        await asyncio.wait_for(close_retriever(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
+    except TimeoutError:
+        logger.warning("shutdown_step_timeout", step="vector_store")
     try:
         await asyncio.wait_for(stop_kafka_producer(), timeout=_SHUTDOWN_STEP_TIMEOUT_SECONDS)
     except TimeoutError:

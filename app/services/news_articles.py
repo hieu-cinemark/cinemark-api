@@ -8,7 +8,10 @@ from urllib.parse import urljoin
 import httpx
 import trafilatura
 
+from app.core.logging import get_logger
 from app.services.news_images import HeadImages, allowed_article, image_url
+
+logger = get_logger(__name__)
 
 MAX_ARTICLES = 10
 MAX_HTML_BYTES = 2 * 1024 * 1024
@@ -106,8 +109,8 @@ async def enrich(articles: list[dict]) -> None:
                     result = await asyncio.wait_for(extract_article(client, str(article.get("link") or "")), timeout=12)
                     if result:
                         article.update(result)
-                except httpx.HTTPError, TimeoutError, ValueError:
-                    pass
+                except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+                    logger.debug("news_article_enrich_failed", url=article.get("link"), error=exc)
 
         await asyncio.gather(*(one(article) for article in articles[:MAX_ARTICLES]))
 

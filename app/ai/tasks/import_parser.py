@@ -201,8 +201,8 @@ def parse_delimited(target: ImportTarget, format_hint: str, content: str) -> lis
         extra = [cell for cell in cells[width:] if cell.strip()]
         if extra:
             raise ValueError(
-                f"Dòng {line_no} có {len(cells)} trường nhưng FORMAT chỉ có {width} cột ({format_hint.strip()}). "
-                f"Thêm tên cho các cột còn lại vào FORMAT (cột không cần thì đặt tên bất kỳ, vd. BO_QUA)."
+                f"Line {line_no} has {len(cells)} fields but FORMAT only has {width} columns ({format_hint.strip()}); "
+                f"add names for the remaining columns to FORMAT (any name works for unused columns, e.g. BO_QUA)"
             )
         row: dict[str, Any] = {f: "" for f in fields}
         if target == "proxies":

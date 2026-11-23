@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy import case, func, select
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import enable_keyword
 from app.repositories.d1.posts import relevant_post
@@ -122,10 +123,9 @@ async def paused_keywords() -> dict[str, dict[str, Any]]:
     raw = await get_redis_client().hgetall(PAUSED_KEY) or {}
     out = {}
     for key, value in raw.items():
-        try:
-            out[key.decode() if isinstance(key, bytes) else key] = json.loads(value)
-        except TypeError, ValueError:
-            continue
+        parsed = loads_or_none(value, source="keyword_paused")
+        if parsed is not None:
+            out[key.decode() if isinstance(key, bytes) else key] = parsed
     return out
 
 
@@ -148,7 +148,7 @@ async def plan_crawl(
             or []
         }
     except Exception as exc:  # noqa: BLE001 - không đo được thì cào như cũ, không chặn lịch
-        logger.warning("keyword_yield_failed", platform=platform, error=str(exc)[:200])
+        logger.warning("keyword_yield_failed", platform=platform, error=exc)
         return keywords, {}
 
     now = datetime.now(tz=UTC)

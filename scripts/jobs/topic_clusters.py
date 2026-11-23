@@ -81,7 +81,7 @@ async def main(args: argparse.Namespace) -> int:
             await run_movie(movie, args.k)
         except Exception as exc:  # noqa: BLE001 - một phim lỗi (thiếu embedding, AI hết hạn mức...) không được chặn phim sau
             failed += 1
-            logger.warning("topic_clusters_failed", movie_id=movie["id"], error=str(exc))
+            logger.warning("topic_clusters_failed", movie_id=movie["id"], error=exc)
     return 1 if failed and failed == len(chosen) else 0
 
 

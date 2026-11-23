@@ -212,7 +212,7 @@ async def d1_query(
             return await asyncio.to_thread(_run_local_query, sql, params)
         except (sqlite3.Error, IndexError) as exc:
             if not quiet:
-                logger.warning("local_db_query_failed", error=str(exc), sql=sql[:200])
+                logger.warning("local_db_query_failed", error=exc, sql=sql[:200])
             if isinstance(exc, sqlite3.OperationalError) and ("locked" in str(exc) or "busy" in str(exc)):
                 return _unavailable(str(exc))
             return None
@@ -244,8 +244,7 @@ async def d1_query(
             if not quiet:
                 logger.warning(
                     "d1_request_failed",
-                    error=str(exc) or repr(exc),
-                    error_type=type(exc).__name__,
+                    error=exc,
                     attempt=attempt,
                 )
             return _unavailable(f"{type(exc).__name__}: {exc}")

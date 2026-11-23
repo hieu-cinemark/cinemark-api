@@ -40,7 +40,7 @@ async def _paged(sql: str, key: str, *, database: str = "scraper", pause: float 
     while True:
         rows = await d1_query(sql, [last, PAGE], database=database, timeout=60.0, quiet=True)
         if rows is None:
-            raise RuntimeError(f"D1 {database}: lỗi khi đọc trang sau {last!r}")
+            raise RuntimeError(f"D1 {database}: failed to read the page after {last!r}")
         out.extend(rows)
         if len(rows) < PAGE:
             return out

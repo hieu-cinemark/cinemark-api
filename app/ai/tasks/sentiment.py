@@ -205,8 +205,3 @@ def _with_cinema_visits(
         if not any(tag.startswith("di_rap:") for tag in label["aspects"]) and (tag := cinema_visit_aspect(message)):
             label["aspects"] = [*label["aspects"], tag]
     return labels
-
-
-async def classify_sentiments(messages: list[str | None]) -> list[str | None]:
-    """Chỉ nhãn cảm xúc của classify_comments()."""
-    return [label["sentiment"] if label else None for label in await classify_comments(messages)]

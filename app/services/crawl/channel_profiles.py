@@ -223,7 +223,7 @@ async def refresh_followers(limit: int = MAX_PER_RUN) -> dict[str, int]:
                     profile = await _fetch_profile(client, api_key, handle)
                 except httpx.HTTPError as exc:
                     failed += 1
-                    logger.warning("channel_profile_failed", handle=handle, error=str(exc)[:200])
+                    logger.warning("channel_profile_failed", handle=handle, error=exc)
                     return
                 # Không tìm thấy: vẫn ghi followers_at để không hỏi lại tới lượt REFRESH_DAYS sau.
                 rows.append(
@@ -267,7 +267,7 @@ async def enqueue_threads_profiles(fill: bool, limit: int = THREADS_MAX_PER_RUN)
         logger.info("threads_profiles_enqueued", pending=pending, added=added, published=published)
         return {"pending": pending, "added": added, "published": int(published)}
     except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; chu kỳ sau thử lại
-        logger.error("threads_profiles_enqueue_failed", error=str(exc)[:300])
+        logger.error("threads_profiles_enqueue_failed", error=exc)
         return {"failed": 1}
     finally:
         _threads_running = False
@@ -314,7 +314,7 @@ async def refresh_tiktok_handles(handles: list[str]) -> int:
             try:
                 profile = await _fetch_profile(client, api_key, handle)
             except httpx.HTTPError as exc:
-                logger.warning("channel_profile_failed", handle=handle, error=str(exc)[:200])
+                logger.warning("channel_profile_failed", handle=handle, error=exc)
                 continue
             rows.append(
                 {"handle": handle, "followers": (profile or {}).get("followers"), "name": (profile or {}).get("name")}

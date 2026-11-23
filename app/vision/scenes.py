@@ -39,7 +39,7 @@ def cluster_scenes(embeddings: np.ndarray, authors: list[str]) -> list[SceneClus
     if n < 2:
         return []
     if n > MAX_IMAGES:
-        raise ValueError(f"quá nhiều ảnh để gom ({n} > {MAX_IMAGES})")
+        raise ValueError(f"Too many images to group ({n} > {MAX_IMAGES})")
     sim = (embeddings @ embeddings.T).astype(np.float64)
     dist = 1.0 - sim
     np.fill_diagonal(dist, np.inf)

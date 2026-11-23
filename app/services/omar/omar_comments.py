@@ -28,6 +28,7 @@ from app.clients.kafka import publish_raw_comment
 from app.clients.omar import OmarStop, map_comment, next_cursor, omar_get
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
+from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords
 from app.repositories.d1.posts import relevant_post
@@ -328,10 +329,9 @@ async def pending_jobs() -> list[dict[str, Any]]:
     raw = await get_redis_client().hgetall(JOBS_KEY) or {}
     jobs = []
     for value in raw.values():
-        try:
-            jobs.append(json.loads(value))
-        except TypeError, ValueError:
-            continue
+        job = loads_or_none(value, source="omar_comment_jobs")
+        if job is not None:
+            jobs.append(job)
     return sorted(jobs, key=lambda job: (job.get("rank", 0), -int(job.get("reply_count") or 0)))
 
 
@@ -492,7 +492,7 @@ async def process_queue(
                 stopped.append(exc)
             except Exception as exc:  # noqa: BLE001 - một video lỗi: giữ trong hàng đợi, lượt sau thử lại
                 stats["failed"] += 1
-                logger.warning("omar_comments_video_failed", video_id=job["video_id"], error=str(exc)[:200])
+                logger.warning("omar_comments_video_failed", video_id=job["video_id"], error=exc)
 
     await asyncio.gather(*(worker() for _ in range(max(1, min(workers or settings.omar_concurrency, len(jobs))))))
     logger.info(

@@ -103,7 +103,7 @@ def test_missing_key_is_503_without_http(monkeypatch, upstream):
     monkeypatch.setattr(settings, "serpapi_api_key", " ")
     response = client().post("/research/google-news", json={"q": "Phim"})
     assert response.status_code == 503
-    assert response.json()["error"]["code"] == "serpapi_not_configured"
+    assert response.json()["code"] == "serpapi_not_configured"
     assert not upstream[1]
 
 

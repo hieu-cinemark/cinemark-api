@@ -40,9 +40,9 @@ def _log_stop(exc: OmarStop) -> None:
     quota = str(exc).startswith("daily_limit")
     # Hết hạn mức ngày là chuyện bình thường của chế độ chạy liên tục - chỉ báo Telegram khi key có vấn đề.
     if quota:
-        logger.info("omar_round_stopped", error=str(exc))
+        logger.info("omar_round_stopped", error=exc)
     else:
-        logger.error("omar_round_stopped", error=str(exc), telegram=True)
+        logger.error("omar_round_stopped", error=exc, telegram=True)
 
 
 async def get_pause() -> dict[str, Any] | None:
@@ -50,7 +50,7 @@ async def get_pause() -> dict[str, Any] | None:
         raw = await get_redis_client().get(_PAUSE_KEY)
         return json.loads(raw) if raw else None
     except Exception as exc:  # noqa: BLE001 - không đọc được thì coi như không dừng (lượt tự kiểm tra hạn mức)
-        logger.warning("omar_pause_read_failed", error=str(exc)[:200])
+        logger.warning("omar_pause_read_failed", error=exc)
         return None
 
 

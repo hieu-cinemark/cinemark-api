@@ -35,4 +35,4 @@ async def send_telegram_message(text: str) -> None:
         if resp.status_code != 200:
             logger.warning("telegram_send_failed", status_code=resp.status_code, body=resp.text[:300])
     except httpx.HTTPError as exc:
-        logger.warning("telegram_send_failed", error=str(exc))
+        logger.warning("telegram_send_failed", error=exc)

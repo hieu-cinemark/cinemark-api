@@ -124,7 +124,7 @@ def split_by_film(rows: list[dict[str, str]], args: argparse.Namespace, rng: ran
             rng.shuffle(related)
             eval_rows = [r for r in eval_rows if r["label"] != "related"] + related[: args.eval_related]
             return eval_rows, [r for r in rows if r["movie_id"] not in held_set], held_set
-    raise RuntimeError("không tách được bộ kiểm tra đủ bài not_related")
+    raise RuntimeError("Could not split a validation set with enough not_related posts")
 
 
 def train(rows: list[dict[str, str]], args: argparse.Namespace) -> None:

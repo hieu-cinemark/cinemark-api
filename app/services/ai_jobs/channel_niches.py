@@ -15,6 +15,7 @@ from sqlalchemy.dialects.sqlite import insert
 
 from app.ai.prompts.channel_niches import CHANNEL_NICHES_SYSTEM, DEFAULT_NICHES
 from app.ai.runtime import call_llm_json
+from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
 from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, json_rows
@@ -43,10 +44,9 @@ async def _niches() -> list[dict[str, Any]]:
         select(config_settings.c.value).where(config_settings.c.key == "audience_niches").limit(1), database="config"
     )
     if rows:
-        try:
-            niches = json.loads(rows[0]["value"])
-        except ValueError, TypeError:
-            pass
+        parsed = loads_or_none(rows[0]["value"], source="audience_niches")
+        if isinstance(parsed, list):
+            niches = parsed
     return [n for n in niches if isinstance(n, dict) and n.get("key") and n.get("active") is not False]
 
 

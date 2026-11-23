@@ -48,3 +48,4 @@ trafilatura==2.3.1
 # Mô hình phân loại tầng tác giả (app/ml/author_tier.py). Ghim đúng bản: model lưu bằng joblib chỉ nạp được trên cùng bản
 # scikit-learn đã train (scripts/ml/author_tier_train.py).
 scikit-learn==1.9.1
+qdrant-client==1.20.0

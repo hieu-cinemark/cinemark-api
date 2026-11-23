@@ -121,7 +121,7 @@ async def crawl_setting(name: str) -> Any:
         try:
             values = merge_proxy_settings((await get_proxy_settings()).get("settings"))
         except Exception as exc:  # noqa: BLE001 - DB lỗi: giữ bản tốt gần nhất
-            logger.warning("crawl_settings_read_failed", error=str(exc)[:200])
+            logger.warning("crawl_settings_read_failed", error=exc)
             values = _crawl_settings_cache[1] if _crawl_settings_cache is not None else merge_proxy_settings(None)
         _crawl_settings_cache = (now, values)
     return _crawl_settings_cache[1][name]

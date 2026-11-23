@@ -145,7 +145,7 @@ async def _latest_accuracy() -> dict | None:
 
         run = await get_latest_accuracy_run()
     except Exception as exc:  # noqa: BLE001 - thiếu ghi chú độ chính xác không được chặn cả report
-        logger.warning("report_accuracy_unavailable", error=str(exc))
+        logger.warning("report_accuracy_unavailable", error=exc)
         return None
     if not run:
         return None

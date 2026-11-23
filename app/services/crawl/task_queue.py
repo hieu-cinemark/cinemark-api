@@ -11,9 +11,9 @@ import time
 from typing import Any
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.jsonutil import loads_or_none
 
 PLATFORMS = ("facebook", "threads", "tiktok", "youtube")
-HISTORY_LIMIT = 200
 
 
 def _pending_key(platform: str) -> str:
@@ -84,9 +84,8 @@ async def remove_pending(platform: str, run_id: str) -> bool:
     client = get_redis_client()
     raw_items = await client.lrange(_pending_key(platform), 0, -1)
     for raw in raw_items or []:
-        try:
-            item = json.loads(raw)
-        except json.JSONDecodeError:
+        item = loads_or_none(raw, source="task_queue_pending")
+        if item is None:
             continue
         if item.get("id") == run_id:
             removed = await client.lrem(_pending_key(platform), 1, str(raw))
@@ -99,10 +98,9 @@ async def list_pending(platform: str) -> list[dict[str, Any]]:
     raw_items = await client.lrange(_pending_key(platform), 0, -1)
     out: list[dict[str, Any]] = []
     for raw in raw_items or []:
-        try:
-            out.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
+        item = loads_or_none(raw, source="task_queue_pending")
+        if item is not None:
+            out.append(item)
     return out
 
 
@@ -111,10 +109,9 @@ async def list_history(limit: int = 100) -> list[dict[str, Any]]:
     raw_items = await client.lrange(history_key(), 0, limit - 1)
     out: list[dict[str, Any]] = []
     for raw in raw_items or []:
-        try:
-            out.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
+        item = loads_or_none(raw, source="task_queue_history")
+        if item is not None:
+            out.append(item)
     return out
 
 

@@ -211,7 +211,6 @@ class CommentRepository:
             .limit(MAX_COMMENTS_PER_POST)
         )
         rows = rows or []
-        print(f"list_comments({post_id}): {len(rows)} rows")
         return rows
 
     async def list_all_comments(

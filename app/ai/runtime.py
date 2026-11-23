@@ -55,7 +55,7 @@ async def load_ai_runtime() -> dict[str, Any]:
             "updated_at": row.get("updated_at"),
         }
     except Exception as exc:  # noqa: BLE001 - đọc cài đặt AI lỗi thì dùng bản cache, không làm hỏng lời gọi AI
-        logger.warning("ai_settings_load_failed", error=str(exc))
+        logger.warning("ai_settings_load_failed", error=exc)
     _ai_cfg_cache = (now, cfg)
     return cfg
 
@@ -126,7 +126,7 @@ async def call_llm_json(
             task=task,
         )
     except Exception as exc:  # noqa: BLE001 - provider lỗi: coi là lượt hỏng
-        logger.warning("llm_json_call_failed", task=task, error=str(exc)[:300])
+        logger.warning("llm_json_call_failed", task=task, error=exc)
         return None, ""
     try:
         return parse_json_response(content), content

@@ -43,10 +43,10 @@ async def movie_for_news(movie_id: str) -> dict:
             .limit(1)
         )
     if not rows:
-        raise NotFoundError("Không tìm thấy phim.")
+        raise NotFoundError("Movie not found")
     movie = rows[0]
     if not movie.get("enabled") or not released(movie.get("released_at")):
-        raise ValidationError("Chỉ xem tin với phim đã khởi chiếu và đang được theo dõi.")
+        raise ValidationError("News is only available for released movies that are being tracked")
     return movie
 
 
@@ -74,7 +74,7 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         old = await cached(movie_id)
         if old:
             return old
-        raise ConflictError("Đang tải tin cho phim. Vui lòng thử lại sau.")
+        raise ConflictError("News for this movie is already loading; try again later")
     old = None
     try:
         old = await cached(movie_id)
@@ -101,7 +101,7 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         if not force and await cache.get(PREFIX + movie_id + ":retry"):
             if old:
                 return old
-            raise UpstreamError("Lượt tìm tin trước chưa thành công, vui lòng thử lại sau.")
+            raise UpstreamError("The previous news fetch did not succeed; try again later")
         # Giãn retry khi quota/mạng lỗi, không gọi lại ở mỗi nhịp scheduler.
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
         query = f"phim {movie['title']} đánh giá"

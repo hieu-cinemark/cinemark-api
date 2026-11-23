@@ -59,7 +59,7 @@ class ApiKeyMiddleware:
             return
         response = JSONResponse(
             status_code=401,
-            content={"error": {"code": "unauthorized", "message": "Missing or invalid API key."}},
+            content={"error": "Missing or invalid API key.", "code": "unauthorized"},
             headers={"WWW-Authenticate": "Bearer"},
         )
         await response(scope, receive, send)

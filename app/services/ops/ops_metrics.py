@@ -20,6 +20,7 @@ import time
 from typing import Any
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
 from app.services.crawl.task_queue import PLATFORMS, list_history, list_pending
 
@@ -98,14 +99,11 @@ async def collect_sample() -> dict[str, Any]:
 
 async def _append_if_due(client: Any, sample: dict[str, Any]) -> None:
     raw_latest = await client.lindex(SAMPLES_KEY, 0)
-    if raw_latest:
-        try:
-            latest = json.loads(raw_latest)
-            # Chừa 5s để vòng lặp nền (đúng 60s) không bị lệch nhịp mà bỏ mẫu.
-            if sample["ts"] - int(latest.get("ts") or 0) < SAMPLE_MIN_INTERVAL_SECONDS - 5:
-                return
-        except json.JSONDecodeError, TypeError, ValueError:
-            pass
+    latest = loads_or_none(raw_latest, source="ops_samples")
+    last_ts = latest.get("ts") if isinstance(latest, dict) else None
+    # Chừa 5s để vòng lặp nền (đúng 60s) không bị lệch nhịp mà bỏ mẫu.
+    if isinstance(last_ts, int | float) and sample["ts"] - int(last_ts) < SAMPLE_MIN_INTERVAL_SECONDS - 5:
+        return
     await client.lpush(SAMPLES_KEY, json.dumps(sample, ensure_ascii=False))
     await client.ltrim(SAMPLES_KEY, 0, SAMPLES_LIMIT - 1)
 
@@ -120,10 +118,9 @@ async def record_and_list_samples() -> dict[str, Any]:
     raw_items = await client.lrange(SAMPLES_KEY, 0, SAMPLES_LIMIT - 1)
     series: list[dict[str, Any]] = []
     for raw in reversed(raw_items or []):
-        try:
-            series.append(json.loads(raw))
-        except json.JSONDecodeError:
-            continue
+        point = loads_or_none(raw, source="ops_samples")
+        if point is not None:
+            series.append(point)
 
     return {"current": sample, "series": series}
 
@@ -137,7 +134,7 @@ async def _sampler_loop() -> None:
             await _append_if_due(get_redis_client(), await collect_sample())
         except Exception as exc:  # noqa: BLE001 - Redis trục trặc không được giết vòng lấy mẫu
             # Redis trục trặc không được giết vòng lặp - lượt sau thử lại.
-            logger.warning("ops_metrics_sample_failed", error=str(exc) or repr(exc))
+            logger.warning("ops_metrics_sample_failed", error=exc)
         await asyncio.sleep(SAMPLE_MIN_INTERVAL_SECONDS)
 
 

@@ -145,7 +145,7 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     này như mọi từ khoá khác."""
     tag = payload.hashtag.strip().lstrip("#").replace(" ", "")
     if len(tag) < 2:
-        raise ValidationError("Hashtag không hợp lệ")
+        raise ValidationError("Invalid hashtag")
     # Kiểm tra trên TikTok qua Omar có lúc >12 giây (đi chung bộ giãn nhịp với lượt Omar đang chạy) - dashboard chỉ chờ
     # 15 giây. Quá EXISTS_CHECK_SECONDS thì coi như chưa biết: vẫn tạo từ khoá và cào; hashtag rỗng thì lượt cào dừng ở trang 1.
     try:
@@ -153,10 +153,10 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     except TimeoutError:
         exists = None
     if exists is False:
-        raise ValidationError(f"#{tag} không có video nào trên TikTok")
+        raise ValidationError(f"#{tag} has no videos on TikTok")
     row = await get_or_create_keyword(payload.movie_id, "tiktok", f"#{tag}")
     if row is None:
-        raise UpstreamError("Không tạo được từ khoá (phim không tồn tại / đang tắt, hoặc D1 lỗi)")
+        raise UpstreamError("Could not create the keyword (movie does not exist or is disabled, or D1 failed)")
     await set_keyword_enabled("tiktok", row["id"], True)
     started = omar_tiktok.crawl_hashtag_now(row)
     logger.info("omar_hashtag_added", hashtag=row["keyword"], movie_id=payload.movie_id, started=started)
@@ -170,7 +170,7 @@ async def omar_recrawl_hashtag(keyword_id: str) -> dict[str, Any]:
     keywords = await get_enabled_keywords(platform="tiktok")
     keyword = next((k for k in keywords if k["id"] == keyword_id and str(k["keyword"]).startswith("#")), None)
     if keyword is None:
-        raise NotFoundError("Không tìm thấy hashtag TikTok đang bật này")
+        raise NotFoundError("Enabled TikTok hashtag not found")
     started = await omar_tiktok.recrawl_hashtag_now(keyword)
     logger.info("omar_hashtag_recrawl", hashtag=keyword["keyword"], started=started)
     return {"keyword_id": keyword_id, "hashtag": keyword["keyword"], "started": started}

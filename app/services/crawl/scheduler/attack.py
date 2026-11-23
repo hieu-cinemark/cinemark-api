@@ -42,6 +42,6 @@ async def attack_detect_tick() -> None:
         try:
             logger.info("attack_detect_finished", statuses=await run_tick())
         except Exception as exc:  # noqa: BLE001 - giờ sau chạy lại
-            logger.warning("attack_detect_tick_failed", error=str(exc)[:300])
+            logger.warning("attack_detect_tick_failed", error=exc)
 
     spawn(job())

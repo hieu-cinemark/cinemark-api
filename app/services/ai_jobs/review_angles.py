@@ -596,7 +596,7 @@ async def _one_rotation_step(redis: Any) -> dict[str, Any] | None:
         try:
             result = await analyze_next_batch(movie_ids[index])
         except Exception as exc:  # noqa: BLE001 - một phim lỗi không chặn phim khác
-            logger.warning("review_angles_batch_failed", movie_id=movie_ids[index], error=str(exc)[:300])
+            logger.warning("review_angles_batch_failed", movie_id=movie_ids[index], error=exc)
             result = {"movie_id": movie_ids[index], "read": 0}
         await _add_tokens(movie_ids[index], result.get("tokens", 0))
         if result.get("ai_called"):

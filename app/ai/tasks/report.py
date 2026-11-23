@@ -49,7 +49,7 @@ async def _generate[T](
             return parse(response), await active_provider_key()
         except Exception as exc:  # noqa: BLE001 - mỗi lần thử gọi AI có thể lỗi theo nhiều cách (mạng, JSON); lỗi cuối được ném lại sau vòng thử
             last_error = exc
-            logger.warning("report_provider_failed", task=task, attempt=attempt + 1, error=str(exc))
+            logger.warning("report_provider_failed", task=task, attempt=attempt + 1, error=exc)
     assert last_error is not None
     raise last_error
 
@@ -330,7 +330,7 @@ async def generate_topics_and_verbatims(
                         movie_title, movie, comments[index::parts_count], posts[index::parts_count], note
                     )
                 except Exception as exc:  # noqa: BLE001 - một phần chủ đề lỗi không chặn các phần khác
-                    logger.warning("report_topics_part_failed", movie_title=movie_title, part=index + 1, error=str(exc))
+                    logger.warning("report_topics_part_failed", movie_title=movie_title, part=index + 1, error=exc)
                     return None
 
         parts = [p for p in await asyncio.gather(*(run_part(i) for i in range(parts_count))) if p]
@@ -341,7 +341,7 @@ async def generate_topics_and_verbatims(
             return {**parts[0], "provider": "bee"}
         return {**await _merge_parts(movie_title, movie, parts), "provider": "bee"}
     except Exception as exc:  # noqa: BLE001 - không dựng được chủ đề thì báo cáo bỏ qua phim này, không làm sập lượt
-        logger.warning("report_topics_failed", movie_title=movie_title, error=str(exc))
+        logger.warning("report_topics_failed", movie_title=movie_title, error=exc)
         return None
 
 
@@ -404,5 +404,5 @@ async def generate_narrative(
         )
         return analysis
     except Exception as exc:  # noqa: BLE001 - phần phân tích viết lỗi thì báo cáo vẫn lưu phần còn lại
-        logger.warning("report_narrative_failed", movie_title=movie_title, error=str(exc))
+        logger.warning("report_narrative_failed", movie_title=movie_title, error=exc)
         return None

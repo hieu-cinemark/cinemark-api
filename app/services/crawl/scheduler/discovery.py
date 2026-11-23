@@ -28,7 +28,7 @@ async def discovery_enabled() -> bool:
     try:
         return bool((await db.get_discovery_settings()).get("enabled", True))
     except Exception as exc:  # noqa: BLE001
-        logger.warning("discovery_settings_read_failed", error=str(exc)[:200])
+        logger.warning("discovery_settings_read_failed", error=exc)
         return True
 
 
@@ -41,7 +41,7 @@ async def _run_discovery(*, everything: bool) -> None:
         try:
             await job()
         except Exception as exc:  # noqa: BLE001 - một lượt lỗi chỉ để mai chạy lại
-            logger.error(f"{name}_failed", error=str(exc)[:300])
+            logger.error("discovery_job_failed", job=name, error=exc)
 
 
 async def hashtag_tick() -> None:

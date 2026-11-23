@@ -193,7 +193,7 @@ async def _record_wallet_error(provider: str, detail: str) -> None:
             timeout=_REDIS_TIMEOUT_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 - mất mốc chỉ làm thiếu một cảnh báo
-        logger.warning("ops_wallet_error_record_failed", provider=provider, error=str(exc)[:200])
+        logger.warning("ops_wallet_error_record_failed", provider=provider, error=exc)
 
 
 async def note_ai_wallet_error(provider: str, exc: BaseException) -> None:
@@ -272,7 +272,7 @@ async def _ai_alerts(now: datetime) -> list[Alert]:
         try:
             alert = wallet_alert(provider, float(ts), now.timestamp(), detail)
         except ValueError:
-            continue
+            continue  # mục cảnh báo hỏng: bỏ qua
         if alert:
             alerts.append(alert)
     return alerts
@@ -287,5 +287,5 @@ async def run_checks() -> int:
             for alert in await check(now):
                 sent += int(await _fire(alert))
         except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
-            logger.error("ops_alert_check_failed", check=name, error=str(exc)[:300])
+            logger.error("ops_alert_check_failed", check=name, error=exc)
     return sent

@@ -76,7 +76,7 @@ async def _note_rollup_failure(table: str, **context: Any) -> None:
         if count == 1:
             await client.expire(key, _ROLLUP_FAILURE_WINDOW_SECONDS)
     except Exception as exc:  # noqa: BLE001 - chỉ là bộ đếm cảnh báo, không được làm hỏng lượt đối soát
-        logger.warning("stats_rollup_failure_count_failed", error=str(exc) or repr(exc))
+        logger.warning("stats_rollup_failure_count_failed", error=exc)
         return
     if count == _ROLLUP_FAILURE_ALERT_THRESHOLD:
         details = " | ".join(f"{k}={v}" for k, v in context.items())
@@ -162,7 +162,7 @@ async def _bump_hourly(platform: str, scraped_at: str, metric: str) -> None:
         await client.expire(key, HOURLY_RETENTION_HOURS * 3600)
     except Exception as exc:  # noqa: BLE001 - chỉ là số liệu biểu đồ, không được làm hỏng việc ingest
         # Chỉ là số liệu biểu đồ - không bao giờ được làm hỏng việc ingest.
-        logger.warning("stats_hourly_bump_failed", platform=platform, error=str(exc) or repr(exc))
+        logger.warning("stats_hourly_bump_failed", platform=platform, error=exc)
 
 
 async def bump_ingest_decision(platform: str | None, decision: str, reason: str) -> None:
@@ -181,7 +181,7 @@ async def bump_ingest_decision(platform: str | None, decision: str, reason: str)
         pipe.expire(key, HOURLY_RETENTION_HOURS * 3600)
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - chỉ là số liệu phễu, không được làm hỏng việc ingest
-        logger.warning("stats_funnel_bump_failed", platform=platform, error=str(exc) or repr(exc))
+        logger.warning("stats_funnel_bump_failed", platform=platform, error=exc)
 
 
 async def get_ingest_funnel(hours: int) -> list[dict[str, Any]]:

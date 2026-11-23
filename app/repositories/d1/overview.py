@@ -38,7 +38,7 @@ async def related_hashtags_for_keywords(keyword_ids: list[str]) -> dict[str, lis
             pipe.hgetall(OMAR_COOCCUR_KEY_TMPL.format(keyword_id=kid))
         omar_values = await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - Redis lỗi thì coi như chưa có hashtag liên quan
-        logger.warning("related_hashtags_redis_failed", error=str(exc))
+        logger.warning("related_hashtags_redis_failed", error=exc)
         return {}
     out: dict[str, list[dict[str, Any]]] = {}
     for kid, raw, omar_raw in zip(keyword_ids, values or [], omar_values or [], strict=False):

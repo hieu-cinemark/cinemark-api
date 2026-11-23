@@ -362,7 +362,7 @@ async def apply_comment_completions() -> int:
         try:
             ok = await _apply_completion(json.loads(raw))
         except (ValueError, KeyError, TypeError) as exc:
-            logger.warning("comment_completion_malformed", error=str(exc)[:200])
+            logger.warning("comment_completion_malformed", error=exc)
             ok = True
         else:
             if not ok:
@@ -386,7 +386,7 @@ async def run_comment_round(platform: str, *, hot_per_movie: int, with_sample: b
         scores = await load_scores([row["id"] for row in week_rows if _num(row.get("reply_count")) > 0])
         scores.update(await judge_new_posts(week_rows, scores))
     except Exception as exc:  # noqa: BLE001 - không có điểm AI thì chạy như trước
-        logger.warning("comment_value_unavailable", platform=platform, error=str(exc)[:300])
+        logger.warning("comment_value_unavailable", platform=platform, error=exc)
     # Bài AI chấm là rác comment (minigame tag bạn, quảng cáo) bị bỏ khỏi mọi lớp.
     usable = [row for row in week_rows if scores.get(row["id"], 100) >= VALUE_SKIP_SCORE]
     hot_rows = [row for row in usable if (_parse_time(row.get("posted_at")) or now) >= now - HOT_WINDOW]

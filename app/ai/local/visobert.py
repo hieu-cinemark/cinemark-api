@@ -75,7 +75,7 @@ def _get() -> _Classifier | None:
                 logger.info("visobert_loaded", model_dir=str(model_dir), device=_model.device)
             except Exception as exc:  # noqa: BLE001 - thiếu torch/model: bỏ qua bước này, đi thẳng sang Bee
                 _failed = True
-                logger.warning("visobert_unavailable", model_dir=str(model_dir), error=str(exc)[:200])
+                logger.warning("visobert_unavailable", model_dir=str(model_dir), error=exc)
     return _model
 
 

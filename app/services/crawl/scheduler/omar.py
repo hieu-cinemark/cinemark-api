@@ -25,7 +25,7 @@ async def _run_omar_round(trigger: str) -> None:
     try:
         await run_omar_round_tracked(trigger)
     except Exception as exc:  # noqa: BLE001 - lượt lỗi chỉ để giờ sau chạy lại
-        logger.error("omar_round_failed", error=str(exc)[:300])
+        logger.error("omar_round_failed", error=exc)
 
 
 async def _enqueue_weekly_comments(week: str) -> None:
@@ -34,7 +34,7 @@ async def _enqueue_weekly_comments(week: str) -> None:
     try:
         await omar_comments.enqueue_weekly_job(week=week)
     except Exception as exc:  # noqa: BLE001 - khoá hết hạn sau 15 phút, tick sau thử lại
-        logger.error("omar_comments_enqueue_failed", error=str(exc)[:300])
+        logger.error("omar_comments_enqueue_failed", error=exc)
 
 
 def trigger_omar_now() -> bool:
@@ -54,7 +54,7 @@ async def omar_tick() -> None:
         if await omar_comments.weekly_enqueue_due(now):
             spawn(_enqueue_weekly_comments(omar_comments.iso_week(now)))
     except Exception as exc:  # noqa: BLE001 - tick sau thử lại
-        logger.error("omar_comments_enqueue_failed", error=str(exc)[:300])
+        logger.error("omar_comments_enqueue_failed", error=exc)
     if omar_is_running():
         return
     # Đang dừng vì hết hạn mức / key sai: không gọi Omar tới lúc hết dừng, rồi mở lượt NGAY (không đợi phút

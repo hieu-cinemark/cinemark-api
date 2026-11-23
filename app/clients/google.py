@@ -53,9 +53,9 @@ def _client() -> httpx.AsyncClient:
 
 def _check(resp: httpx.Response, label: str) -> None:
     if resp.status_code in (403, 429):
-        raise GoogleBlocked(f"Google chặn ({resp.status_code}) ở {label}.")
+        raise GoogleBlocked(f"Google blocked the request ({resp.status_code}) at {label}")
     if resp.status_code != 200:
-        raise UpstreamError(f"Google trả HTTP {resp.status_code} ở {label}.")
+        raise UpstreamError(f"Google returned HTTP {resp.status_code} at {label}")
 
 
 def _strip_xssi(text: str) -> str:
@@ -87,7 +87,7 @@ def parse_news_rss(xml: bytes | str) -> list[dict[str, Any]]:
     try:
         root = ElementTree.fromstring(xml.encode() if isinstance(xml, str) else xml)
     except ElementTree.ParseError:
-        raise UpstreamError("Google News trả RSS không hợp lệ.") from None
+        raise UpstreamError("Google News returned invalid RSS") from None
     channel = root.find("channel")
     items = []
     for item in channel.findall("item") if channel is not None else []:
@@ -153,13 +153,13 @@ def parse_batchexecute_link(text: str) -> str | None:
         try:
             chunk = json.loads(line)
         except ValueError:
-            continue
+            continue  # dòng độ dài/rác của luồng batchexecute, không phải JSON
         for row in chunk:
             if isinstance(row, list) and len(row) > 2 and row[0] == "wrb.fr" and isinstance(row[2], str):
                 try:
                     inner = json.loads(row[2])
                 except ValueError:
-                    continue
+                    continue  # gói con không phải JSON: bỏ qua
                 if isinstance(inner, list) and len(inner) > 1 and inner[0] == "garturlres":
                     return inner[1]
     return None
@@ -211,7 +211,7 @@ async def autocomplete(q: str, *, hl: str = "vi", gl: str = "vn") -> list[str]:
     try:
         data = resp.json()
     except ValueError:
-        raise UpstreamError("Google autocomplete trả JSON không hợp lệ.") from None
+        raise UpstreamError("Google autocomplete returned invalid JSON") from None
     texts = data[1] if isinstance(data, list) and len(data) > 1 and isinstance(data[1], list) else []
     return [str(t) for t in texts if isinstance(t, str) and t]
 
@@ -223,7 +223,7 @@ async def trending(geo: str = "VN", hl: str = "vi") -> list[dict[str, Any]]:
     try:
         root = ElementTree.fromstring(resp.content)
     except ElementTree.ParseError:
-        raise UpstreamError("Google Trends trả RSS không hợp lệ.") from None
+        raise UpstreamError("Google Trends returned invalid RSS") from None
     out = []
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()
@@ -259,7 +259,7 @@ async def _trends_api(c: httpx.AsyncClient, path: str, params: dict[str, Any], l
     try:
         return json.loads(_strip_xssi(resp.text))
     except ValueError:
-        raise UpstreamError(f"{label} trả JSON không hợp lệ.") from None
+        raise UpstreamError(f"{label} returned invalid JSON") from None
 
 
 async def _explore(c: httpx.AsyncClient, keywords: list[str], geo: str, timeframe: str, hl: str) -> list[dict]:
@@ -273,7 +273,7 @@ async def _explore(c: httpx.AsyncClient, keywords: list[str], geo: str, timefram
     )
     widgets = data.get("widgets") if isinstance(data, dict) else None
     if not widgets:
-        raise UpstreamError("Google Trends không trả widget nào.")
+        raise UpstreamError("Google Trends returned no widgets")
     return widgets
 
 

@@ -41,7 +41,7 @@ def build_keyword_routes(router: APIRouter, platform: str) -> None:
             raise ValidationError("keyword must not be empty")
         if platform == "threads" and keyword.startswith("#"):
             # Tìm hashtag trên Threads trả bài ngẫu nhiên toàn cầu (đo 01-15/10/2026: ~1% liên quan) - chỉ cào dạng chữ.
-            raise ValidationError("Threads không cào theo hashtag - nhập từ khoá dạng chữ (vd. tên phim)")
+            raise ValidationError("Threads does not crawl by hashtag - enter a plain-text keyword (e.g. a movie title)")
         row = await get_or_create_keyword(payload.movie_id, platform, keyword)
         if row is None:
             raise UpstreamError("Could not create keyword (D1 write failed or movie not found)")

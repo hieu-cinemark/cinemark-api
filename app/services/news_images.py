@@ -6,6 +6,10 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 PUBLISHERS = {
     "thanhnien.vn",
     "vnexpress.net",
@@ -53,7 +57,7 @@ def image_url(value: str, base: str) -> str | None:
         if parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password:
             return url
     except ValueError:
-        pass
+        pass  # URL sai định dạng: coi như không có ảnh
     return None
 
 
@@ -109,7 +113,9 @@ async def enrich(articles: list[dict]) -> None:
                     image = await asyncio.wait_for(publisher_image(client, str(article.get("link") or "")), timeout=10)
                     if image:
                         article["image_url"] = image
-                except httpx.HTTPError, TimeoutError, ValueError:
-                    pass  # ảnh lỗi không làm hỏng lượt lấy tin
+                except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+                    logger.debug(
+                        "news_image_fetch_failed", url=article.get("link"), error=exc
+                    )  # ảnh lỗi không làm hỏng lượt lấy tin
 
         await asyncio.gather(*(one(article) for article in articles[:20]))

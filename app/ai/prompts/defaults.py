@@ -6,6 +6,7 @@ system message trống.
 
 from __future__ import annotations
 
+from app.ai.prompts.ask_comments import ASK_COMMENTS_SYSTEM_PROMPT
 from app.ai.prompts.post_relevance import POST_RELEVANCE_SYSTEM_PROMPT
 from app.ai.prompts.relevance import SYSTEM_PROMPT as RELEVANCE_SYSTEM_PROMPT
 from app.ai.prompts.report import NARRATIVE_SYSTEM_PROMPT, TOPICS_SYSTEM_PROMPT
@@ -73,4 +74,5 @@ def default_system_prompts() -> dict[str, str]:
         "import_proxies": imports["proxies"].strip(),
         "diagnosis": _DIAGNOSIS_PROMPT,
         "selector": _SELECTOR_PROMPT,
+        "ask_comments": ASK_COMMENTS_SYSTEM_PROMPT,
     }

@@ -89,7 +89,7 @@ async def omar_requests_cap() -> int:
         row = await get_omar_api_settings()
         _omar_cap = int((row or {}).get("requests_per_minute") or 0)
     except Exception as exc:  # noqa: BLE001 - lỗi đọc cấu hình không được chặn lượt cào
-        logger.warning("omar_requests_cap_read_failed", error=str(exc)[:200])
+        logger.warning("omar_requests_cap_read_failed", error=exc)
     return _omar_cap
 
 
@@ -104,7 +104,7 @@ async def omar_limits() -> dict[str, int]:
         _omar_limits["daily_requests"] = int((row or {}).get("daily_requests") or 0)
         _omar_limits["concurrency"] = int((row or {}).get("concurrency") or 0)
     except Exception as exc:  # noqa: BLE001 - lỗi đọc cấu hình không được chặn lượt cào
-        logger.warning("omar_limits_read_failed", error=str(exc)[:200])
+        logger.warning("omar_limits_read_failed", error=exc)
     return dict(_omar_limits)
 
 

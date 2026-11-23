@@ -29,7 +29,7 @@ async def _guarded(name: str, job) -> None:
     try:
         await job()
     except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
-        logger.error(f"{name}_failed", error=str(exc)[:300])
+        logger.error("ops_job_failed", job=name, error=exc)
 
 
 async def ops_alerts_tick() -> None:
@@ -71,7 +71,7 @@ async def _run_report_schedule() -> None:
     try:
         await run_due_reports()
     except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
-        logger.error("scheduler_report_schedule_failed", error=str(exc)[:300])
+        logger.error("scheduler_report_schedule_failed", error=exc)
     finally:
         _report_schedule_running = False
 

@@ -37,7 +37,7 @@ async def _claim_unseen(video_ids: list[str], brand_new: set[str] | None = None)
                 pipe.set(f"{_SEEN_PREFIX}{video_id}", "1", nx=True, ex=ttl)
         results = await pipe.execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_seen_check_failed", error=str(exc)[:200])
+        logger.warning("omar_seen_check_failed", error=exc)
         return set(video_ids)
     step = 2 if ttl > 0 else 1
     out = set()
@@ -59,7 +59,7 @@ async def _forget_seen(video_id: str) -> None:
         pipe.delete(f"{_SEEN_PREFIX}{video_id}")
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001
-        logger.warning("omar_seen_forget_failed", error=str(exc)[:200])
+        logger.warning("omar_seen_forget_failed", error=exc)
 
 
 # BFS: hashtag đi kèm trong video Omar lấy về, đếm theo từ khoá (hash tag -> số video), giữ 14 ngày. d1.related_hashtags_for_keywords
@@ -86,4 +86,4 @@ async def _count_cooccur(keyword: str, keyword_id: str, videos: list[dict[str, A
         pipe.expire(key, _COOCCUR_TTL_SECONDS)
         await pipe.execute()
     except Exception as exc:  # noqa: BLE001 - thiếu số đếm chỉ làm BFS chậm hơn
-        logger.warning("omar_cooccur_failed", error=str(exc)[:200])
+        logger.warning("omar_cooccur_failed", error=exc)

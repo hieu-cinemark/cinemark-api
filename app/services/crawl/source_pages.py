@@ -162,7 +162,7 @@ def normalize_threads_url(url: str) -> str:
     """https://www.threads.com/@<handle> (chữ thường, bỏ /post/... và query)."""
     match = _THREADS_HANDLE.search(url or "")
     if not match:
-        raise ValidationError("Đường dẫn kênh Threads phải có dạng threads.com/@ten_kenh")
+        raise ValidationError("Threads channel URL must look like threads.com/@channel_name")
     return f"https://www.threads.com/@{match.group(1).lower()}"
 
 
@@ -170,20 +170,20 @@ def normalize_page_url(url: str) -> str:
     """https://www.facebook.com/<trang> (bỏ query/đường dẫn con, giữ profile.php?id=...)."""
     raw = url.strip()
     if not raw:
-        raise ValidationError("Thiếu đường dẫn trang")
+        raise ValidationError("Page URL is required")
     if not raw.startswith("http"):
         raw = f"https://www.facebook.com/{raw.lstrip('@/')}"
     parsed = urlparse(raw)
     if "facebook.com" not in parsed.netloc:
-        raise ValidationError("Chỉ nhận trang Facebook (facebook.com/...)")
+        raise ValidationError("Only Facebook pages are accepted (facebook.com/...)")
     if parsed.path.rstrip("/") == "/profile.php":
         match = re.search(r"(?:^|&)id=(\d+)", parsed.query)
         if not match:
-            raise ValidationError("Đường dẫn profile.php thiếu id")
+            raise ValidationError("profile.php URL is missing the id")
         return f"https://www.facebook.com/profile.php?id={match.group(1)}"
     slug = parsed.path.strip("/").split("/")[0]
     if not slug or slug in _NOT_A_PAGE:
-        raise ValidationError("Đường dẫn không phải một trang/Profile")
+        raise ValidationError("URL is not a page or profile")
     return f"https://www.facebook.com/{slug}"
 
 
@@ -212,7 +212,7 @@ async def add_source(
     page_url = normalize_threads_url(url) if platform == "threads" else normalize_page_url(url)
     movie_id = (movie_id or "").strip() or None
     if movie_id and await _movie_title(movie_id) is None:
-        raise NotFoundError("Không tìm thấy phim")
+        raise NotFoundError("Movie not found")
     existing = await d1_exec(
         select(source_pages.c.id).where(
             source_pages.c.platform == platform,
@@ -221,7 +221,7 @@ async def add_source(
         )
     )
     if existing:
-        raise ValidationError("Trang này đã có trong danh sách")
+        raise ValidationError("This page is already in the list")
     source_id = f"src_{uuid.uuid4()}"
     await d1_exec(
         insert(source_pages).values(
@@ -383,7 +383,7 @@ async def run_source(source_id: str) -> bool:
     await _ensure_table()
     source = await _get_source(source_id)
     if not source:
-        raise NotFoundError("Không tìm thấy trang nguồn")
+        raise NotFoundError("Source page not found")
     if source.get("platform") == "threads":
         from app.services.crawl.threads_channels import queue_channel
 
@@ -581,7 +581,7 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
             )
         except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: lượt sau xét lại
             stats["failed"] += 1
-            logger.warning("source_page_review_failed", error=str(exc)[:300])
+            logger.warning("source_page_review_failed", error=exc)
             continue
         stats["asked"] += 1
         parsed = parse_json_response(raw)
@@ -639,6 +639,6 @@ async def review_suggestions(*, dry_run: bool = False, limit: int | None = None)
                 await add_source(url=cand["url"], movie_id=movie_id, name=cand["name"], added_by="ai", reason=reason)
                 stats["added"] += 1
             except (ValidationError, NotFoundError) as exc:
-                logger.info("source_page_ai_add_skipped", url=cand["url"], error=str(exc))
+                logger.info("source_page_ai_add_skipped", url=cand["url"], error=exc)
     logger.info("source_page_review_finished", telegram=bool(stats["added"]) and not dry_run, dry_run=dry_run, **stats)
     return stats

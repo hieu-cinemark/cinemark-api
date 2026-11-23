@@ -215,7 +215,7 @@ async def purge_irrelevant_posts(
         try:
             await subtract_deleted(backup["posts"], backup["comments"])
         except Exception as exc:  # noqa: BLE001 - dữ liệu đã xoá; số thống kê lệch chỉ được báo
-            logger.error("irrelevant_purge_stats_subtract_failed", error=str(exc))
+            logger.error("irrelevant_purge_stats_subtract_failed", error=exc)
     if ids:
         totals["backup"] = run_key
 
@@ -249,7 +249,7 @@ async def run_purge(*, triggered_by: str) -> dict[str, Any] | None:
                 await db.record_cleanup_run_finish(run_id, summary={}, error=str(exc))
             except Exception as history_exc:  # noqa: BLE001 - không được che mất lỗi gốc
                 # Không được che mất lỗi gốc.
-                logger.error("irrelevant_purge_history_write_failed", error=str(history_exc))
+                logger.error("irrelevant_purge_history_write_failed", error=history_exc)
         raise
     finally:
         if await redis.get(_LOCK_KEY) == token:

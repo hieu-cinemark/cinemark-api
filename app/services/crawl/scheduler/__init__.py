@@ -94,9 +94,9 @@ async def run_tick(name: str, tick: Callable[[], Awaitable[None]], alert: bool) 
     try:
         await asyncio.wait_for(tick(), timeout=TICK_TIMEOUT_SECONDS)
     except TimeoutError:
-        logger.error(f"scheduler_{name}_tick_timeout", timeout_seconds=TICK_TIMEOUT_SECONDS, telegram=alert)
+        logger.error("scheduler_tick_timeout", tick=name, timeout_seconds=TICK_TIMEOUT_SECONDS, telegram=alert)
     except Exception as exc:  # noqa: BLE001
-        logger.error(f"scheduler_{name}_tick_failed", error=str(exc)[:300])
+        logger.error("scheduler_tick_failed", tick=name, error=exc)
 
 
 async def _loop() -> None:

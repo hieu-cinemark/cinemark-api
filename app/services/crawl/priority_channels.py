@@ -91,7 +91,7 @@ async def process_pending() -> dict[str, int]:
         )
         return {"processed": len(results)}
     except Exception as exc:  # noqa: BLE001 - chạy nền từ scheduler; vòng sau thử lại
-        logger.error("priority_channels_failed", error=str(exc)[:300])
+        logger.error("priority_channels_failed", error=exc)
         return {"failed": 1}
     finally:
         _running = False

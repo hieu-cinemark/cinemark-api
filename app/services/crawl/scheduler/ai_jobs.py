@@ -29,7 +29,7 @@ def _run(name: str, coro_factory) -> None:
             if result := await coro_factory():
                 logger.info("ai_job_finished", job=name, result=result)
         except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
-            logger.warning("ai_job_failed", job=name, error=str(exc)[:300])
+            logger.warning("ai_job_failed", job=name, error=exc)
         finally:
             _running.discard(name)
 

@@ -512,7 +512,7 @@ async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsO
 
     row = await db.get_ai_provider(payload.provider)
     if not row or not row.get("base_url") or not row.get("api_key") or not row.get("model"):
-        raise ValidationError(f"Nhà cung cấp {payload.provider} chưa đủ base URL / API key / model")
+        raise ValidationError(f"Provider {payload.provider} is missing base URL / API key / model")
     await db.set_active_ai_provider(payload.provider)
     invalidate_provider_cache()
     invalidate_ai_runtime_cache()
@@ -539,7 +539,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     if not re.fullmatch(r"[a-z0-9_-]{1,40}", key):
-        raise ValidationError("Tên nhà cung cấp chỉ gồm chữ thường, số, gạch ngang, gạch dưới (tối đa 40 ký tự)")
+        raise ValidationError("Provider name may only contain lowercase letters, digits, hyphens and underscores (max 40 characters)")
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
     row = await db.upsert_ai_provider(
         key,
@@ -566,9 +566,9 @@ async def delete_ai_provider(key: str) -> None:
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
     if key == await active_provider_key():
-        raise ValidationError("Đang dùng nhà cung cấp này - hãy chọn nhà cung cấp khác trước khi xoá")
+        raise ValidationError("This provider is currently in use - select another provider before deleting it")
     if not await db.delete_ai_provider(key):
-        raise NotFoundError(f"Không có nhà cung cấp {key}")
+        raise NotFoundError(f"Provider {key} not found")
     invalidate_provider_cache()
     await sync_ai_runtime()
     logger.info("ai_provider_deleted", key=key)
@@ -583,7 +583,7 @@ async def list_ai_models(payload: AiModelsRequest) -> AiModelsOut:
     if not api_key and payload.key:
         api_key = str((await db.get_ai_provider(payload.key) or {}).get("api_key") or "")
     if not api_key:
-        raise ValidationError("Cần nhập API key (hoặc chọn nhà cung cấp đã lưu key) để lấy danh sách model")
+        raise ValidationError("An API key is required (or choose a provider with a saved key) to list models")
     url = payload.base_url.strip().rstrip("/")
     url = url.removesuffix("/chat/completions")
     try:
@@ -592,7 +592,7 @@ async def list_ai_models(payload: AiModelsRequest) -> AiModelsOut:
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
-        raise UpstreamError(f"Không lấy được danh sách model từ {url}/models ({type(exc).__name__})") from exc
+        raise UpstreamError(f"Could not fetch the model list from {url}/models ({type(exc).__name__})") from exc
     items = data.get("data") if isinstance(data, dict) else data
     ids = sorted({str(item.get("id")) for item in items or [] if isinstance(item, dict) and item.get("id")})
     return AiModelsOut(models=ids)
@@ -639,7 +639,7 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
                 await db.create_proxy(fields)
             created += 1
         except Exception as exc:  # noqa: BLE001 - một dòng nhập lỗi chỉ tính vào số dòng thất bại, các dòng khác vẫn lưu
-            logger.warning("import_commit_row_failed", target=payload.target, error=str(exc))
+            logger.warning("import_commit_row_failed", target=payload.target, error=exc)
             failed += 1
     return ImportCommitResponse(created=created, failed=failed)
 

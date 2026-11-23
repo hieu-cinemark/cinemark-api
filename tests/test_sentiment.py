@@ -12,7 +12,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.ai.tasks import sentiment
-from app.ai.tasks.sentiment import classify_comments, classify_sentiments
+from app.ai.tasks.sentiment import classify_comments
+
+
+async def classify_sentiments(messages):
+    """Chỉ nhãn cảm xúc của classify_comments() - hàm cùng tên trong app/ đã xoá vì chỉ test dùng."""
+    return [label["sentiment"] if label else None for label in await classify_comments(messages)]
 
 
 @pytest.fixture(autouse=True)

@@ -207,7 +207,7 @@ async def _threads_busy() -> bool:
         running = await get_running_jobs("threads")
         pending = await list_pending("threads")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("deep_threads_busy_check_failed", error=str(exc)[:200])
+        logger.warning("deep_threads_busy_check_failed", error=exc)
         return False
     busy = bool(running or pending)
     hour = datetime.now(tz=UTC).strftime("%Y-%m-%dT%H")
@@ -222,7 +222,7 @@ async def deep_jobs_this_hour() -> int:
     try:
         accounts = await platform_config_db.count_crawl_ready_accounts("facebook")
     except Exception as exc:  # noqa: BLE001 - không đếm được (DB chập chờn) thì vẫn xếp mức tối thiểu
-        logger.warning("deep_account_count_failed", error=str(exc)[:200])
+        logger.warning("deep_account_count_failed", error=exc)
         accounts = 1
     jobs = math.ceil(max(accounts, 1) * settings.facebook_deep_jobs_per_account_hour)
     return max(1, min(jobs, settings.facebook_deep_jobs_max_per_hour))

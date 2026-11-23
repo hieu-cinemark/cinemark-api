@@ -31,7 +31,7 @@ def extract_handle(platform: str, author: str | None, url: str | None) -> str:
             if segments and segments[0].lower() not in _FB_SKIP_FIRST:
                 return segments[0].lower()
         except ValueError:
-            pass
+            pass  # URL hỏng: dùng tên tác giả gốc
     return safe_author
 
 

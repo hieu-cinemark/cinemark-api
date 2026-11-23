@@ -53,7 +53,7 @@ class SlotProgress:
         try:
             self._done |= set(await get_redis_client().smembers(f"{CRAWL_PROGRESS_PREFIX}{self.key}"))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("scheduler_slot_progress_load_failed", error=str(exc))
+            logger.warning("scheduler_slot_progress_load_failed", error=exc)
 
     def __contains__(self, item: str) -> bool:
         return item in self._done
@@ -70,7 +70,7 @@ class SlotProgress:
             # Còn đang giao được thì gia hạn lease: lượt dài (D1 chậm) không bị tick khác chạy chồng.
             await client.expire(f"{CRAWL_LEASE_PREFIX}{self.key}", _LEASE_SECONDS)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("scheduler_slot_progress_save_failed", error=str(exc))
+            logger.warning("scheduler_slot_progress_save_failed", error=exc)
 
     def run_id(self, keyword_id: str) -> str:
         """Cùng slot + từ khoá thì cùng run_id: crash giữa lúc publish và lúc ghi tiến độ làm job gửi hai lần, spider-hub
@@ -214,7 +214,7 @@ async def claim_crawl_slot(platform: str, today: str, slot: str) -> bool:
         if not await client.set(f"{CRAWL_LEASE_PREFIX}{key}", "1", nx=True, ex=_LEASE_SECONDS):
             return False
     except Exception as exc:  # noqa: BLE001 - không có Redis thì các tập trong bộ nhớ vẫn chặn lặp trong tiến trình này
-        logger.warning("scheduler_crawl_slot_redis_failed", error=str(exc))
+        logger.warning("scheduler_crawl_slot_redis_failed", error=exc)
     crawl_running.add(key)
     return True
 
@@ -233,7 +233,7 @@ async def _finish_crawl_slot(key: str, *, complete: bool) -> None:
         else:
             await client.set(f"{CRAWL_LEASE_PREFIX}{key}", "1", ex=RETRY_BACKOFF_SECONDS)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("scheduler_crawl_slot_redis_failed", error=str(exc))
+        logger.warning("scheduler_crawl_slot_redis_failed", error=exc)
 
 
 async def run_crawl_slot(platform: str, today: str, slot: str, **kwargs) -> None:
@@ -247,13 +247,13 @@ async def run_crawl_slot(platform: str, today: str, slot: str, **kwargs) -> None
         with d1_strict():
             complete = await trigger_platform(platform, progress=progress, **kwargs)
     except Exception as exc:  # noqa: BLE001 - slot còn hạn thì lần sau thử lại phần còn thiếu
-        logger.warning("scheduled_crawl_attempt_failed", platform=platform, slot=slot, error=str(exc)[:300])
+        logger.warning("scheduled_crawl_attempt_failed", platform=platform, slot=slot, error=exc)
     await _finish_crawl_slot(key, complete=complete)
     if complete:
         try:
             await db.mark_crawl_schedule_triggered(platform, today)
         except Exception as exc:  # noqa: BLE001 - chỉ để hiển thị, cờ fired mới là thứ chống chạy lặp
-            logger.warning("scheduled_crawl_mark_failed", platform=platform, error=str(exc)[:200])
+            logger.warning("scheduled_crawl_mark_failed", platform=platform, error=exc)
     elif not is_due(slot, datetime.now(TIMEZONE) + timedelta(seconds=RETRY_BACKOFF_SECONDS)):
         logger.error("scheduled_crawl_incomplete", platform=platform, slot=slot, delivered=len(progress), telegram=True)
 

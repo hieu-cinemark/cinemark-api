@@ -29,7 +29,7 @@ def test_line_with_more_fields_than_format_is_rejected_not_merged_into_last_colu
 
     hint = "UID|PASS|2FA|COOKIE|MAIL"
     content = "6159|pw|C2KX|c_user=1; xs=2|EAAD123|a@gmail.com|mailpw|||Tên\n"
-    with pytest.raises(ValueError, match="Dòng 1 có 10 trường nhưng FORMAT chỉ có 5 cột"):
+    with pytest.raises(ValueError, match="Line 1 has 10 fields but FORMAT only has 5 columns"):
         parse_delimited("accounts", hint, content)
 
 

@@ -8,11 +8,11 @@ trong lúc crawl."""
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.jsonutil import loads_or_none
 from app.services.crawl.task_queue import clear_pending, remove_pending
 
 # Cờ dừng còn hiệu lực trong bao lâu - phủ trường hợp consumer của spider-hub tạm sập/
@@ -59,11 +59,9 @@ async def get_running_jobs(platform: str) -> list[dict[str, Any]]:
     keys = await _running_keys(client, platform)
     jobs = []
     for raw in await client.mget(keys):
-        if raw:
-            try:
-                jobs.append(json.loads(raw))
-            except json.JSONDecodeError:
-                continue
+        job = loads_or_none(raw, source="crawl_job")
+        if job is not None:
+            jobs.append(job)
     return jobs
 
 
@@ -146,11 +144,7 @@ async def _remove_running_entry(platform: str, run_id: str) -> bool:
     client = get_redis_client()
     found = False
     for key in await _running_keys(client, platform):
-        raw = await client.get(key)
-        try:
-            job = json.loads(raw) if raw else None
-        except json.JSONDecodeError:
-            continue
+        job = loads_or_none(await client.get(key), source="crawl_job")
         if job and job.get("run_id") == run_id:
             await client.delete(key)
             found = True

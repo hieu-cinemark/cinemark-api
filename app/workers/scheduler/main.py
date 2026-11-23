@@ -37,7 +37,7 @@ async def _seed_schedules() -> None:
         try:
             await asyncio.wait_for(coro, timeout=_SEED_TIMEOUT_SECONDS)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("schedule_seed_failed", schedule=name, error=str(exc))
+            logger.warning("schedule_seed_failed", schedule=name, error=exc)
 
 
 async def main() -> None:

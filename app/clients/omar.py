@@ -94,7 +94,7 @@ async def fetch_usage(api_key: str, client: httpx.AsyncClient | None = None) -> 
             **(data.get("usage") or {}),
         }
     except Exception as exc:  # noqa: BLE001 - không đọc được thì dùng ngân sách mặc định
-        logger.warning("omar_usage_failed", error=str(exc)[:200])
+        logger.warning("omar_usage_failed", error=exc)
         return None
 
 
@@ -203,7 +203,7 @@ def hashtag_info(data: dict[str, Any] | None) -> dict[str, Any]:
                     if int(source.get(name) or 0) > 0:
                         return int(source[name])
                 except TypeError, ValueError:
-                    continue
+                    continue  # trường không phải số: thử khoá kế tiếp
         return 0
 
     return {

@@ -144,7 +144,7 @@ def _clean_proxy_credential(value: str | None, field: str) -> str | None:
         return None
     value = value.strip()
     if field == "username" and ":" in value:
-        raise ValueError("Username proxy không được chứa dấu ':' - kiểm tra lại cách tách host:port:user:pass")
+        raise ValueError("Proxy username must not contain ':' - check how host:port:user:pass is split")
     return value
 
 
@@ -244,15 +244,15 @@ class CrawlScheduleUpdate(BaseModel):
     def _merge_run_times(self) -> CrawlScheduleUpdate:
         times = sorted(set(self.run_times or ([self.run_time] if self.run_time else [])))
         if not times:
-            raise ValueError("Cần ít nhất một giờ chạy")
+            raise ValueError("At least one run time is required")
         if len(times) > MAX_CRAWL_RUNS_PER_DAY:
-            raise ValueError(f"Tối đa {MAX_CRAWL_RUNS_PER_DAY} giờ chạy mỗi ngày")
+            raise ValueError(f"At most {MAX_CRAWL_RUNS_PER_DAY} run times per day")
         if any(not re.match(_HHMM, t) for t in times):
-            raise ValueError("Giờ chạy phải có dạng HH:MM")
+            raise ValueError("Run times must use the HH:MM format")
         minutes = [int(t[:2]) * 60 + int(t[3:]) for t in times]
         gaps = [b - a for a, b in pairwise(minutes)] + [minutes[0] + 1440 - minutes[-1]]
         if len(times) > 1 and min(gaps) < MIN_CRAWL_RUN_GAP_MINUTES:
-            raise ValueError(f"Các giờ chạy phải cách nhau ít nhất {MIN_CRAWL_RUN_GAP_MINUTES} phút")
+            raise ValueError(f"Run times must be at least {MIN_CRAWL_RUN_GAP_MINUTES} minutes apart")
         self.run_times = times
         self.run_time = times[0]
         return self

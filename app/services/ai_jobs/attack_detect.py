@@ -100,7 +100,7 @@ async def run_tick() -> dict[str, Any]:
                     "attack_coordinated", movie_id=movie["id"], title=movie.get("title"), reasons=result["reasons"]
                 )
         except Exception as exc:  # noqa: BLE001 - lượt sau thử lại
-            logger.warning("attack_detect_failed", movie_id=movie["id"], error=str(exc)[:300])
+            logger.warning("attack_detect_failed", movie_id=movie["id"], error=exc)
     await store.prune(now)
     return counts
 
@@ -153,7 +153,7 @@ async def backfill(
                     counts[result["status"]] = counts.get(result["status"], 0) + 1
             except Exception as exc:  # noqa: BLE001 - một mốc lỗi không dừng cả lượt
                 counts["failed"] = counts.get("failed", 0) + 1
-                logger.warning("attack_backfill_failed", movie_id=movie["id"], at=at.isoformat(), error=str(exc)[:300])
+                logger.warning("attack_backfill_failed", movie_id=movie["id"], at=at.isoformat(), error=exc)
             await asyncio.sleep(pause)  # D1 báo 7429 (quá tải) khi tính liền nhiều phim - nhường chỗ cho ingest
         print(at.isoformat(timespec="minutes"), counts, flush=True)
         at += step

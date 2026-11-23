@@ -21,7 +21,7 @@ async def _run_purge(triggered_by: str) -> None:
     try:
         await run_purge(triggered_by=triggered_by)
     except Exception as exc:  # noqa: BLE001 - lượt dọn bài lỗi chỉ báo lỗi (Telegram), không làm sập scheduler
-        logger.error("irrelevant_purge_failed", error=str(exc), telegram=True)
+        logger.error("irrelevant_purge_failed", error=exc, telegram=True)
     finally:
         _purge_running = False
 

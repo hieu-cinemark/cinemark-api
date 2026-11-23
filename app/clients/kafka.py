@@ -73,7 +73,7 @@ async def start_kafka_producer() -> None:
     try:
         await asyncio.wait_for(producer.start(), timeout=_START_TIMEOUT_SECONDS)
     except KafkaError as exc:
-        logger.warning("kafka_unavailable", error=str(exc))
+        logger.warning("kafka_unavailable", error=exc)
         await producer.stop()
         return
     except TimeoutError:
@@ -178,7 +178,7 @@ async def publish_crawl_request(
     try:
         await _producer.send_and_wait(CRAWL_REQUESTS_TOPIC, key=f"{platform}:{keyword_id}", value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc), keyword_id=keyword_id)
+        logger.warning("kafka_publish_failed", error=exc, keyword_id=keyword_id)
         return False
     await enqueue_published(value)
     return True
@@ -191,7 +191,7 @@ async def _match_terms_for_keyword(keyword_id: str) -> list[str]:
     try:
         movie = await movie_of_keyword(keyword_id)
     except Exception as exc:  # noqa: BLE001 - thiếu tên phim thì spider chỉ lọc theo từ khoá
-        logger.warning("match_terms_lookup_failed", keyword_id=keyword_id, error=str(exc))
+        logger.warning("match_terms_lookup_failed", keyword_id=keyword_id, error=exc)
         return []
     title = str((movie or {}).get("title") or "").strip()
     if not title:
@@ -212,7 +212,7 @@ async def _movie_context_for_keyword(keyword_id: str) -> str | None:
     try:
         movie = await movie_of_keyword(keyword_id)
     except Exception as exc:  # noqa: BLE001 - không chặn việc publish vì thiếu thông tin phim
-        logger.warning("movie_context_lookup_failed", keyword_id=keyword_id, error=str(exc))
+        logger.warning("movie_context_lookup_failed", keyword_id=keyword_id, error=exc)
         return None
     return movie_context_block(movie, logline_chars=250) if movie else None
 
@@ -312,7 +312,7 @@ async def publish_action_request(
     try:
         await _producer.send_and_wait(topic, key=f"{action}:{platform}:{key}", value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc), platform=platform)
+        logger.warning("kafka_publish_failed", error=exc, platform=platform)
         return False
     await enqueue_published(value)
     return True
@@ -413,7 +413,7 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
     try:
         await admin.start()
     except Exception as exc:  # noqa: BLE001 - broker không kết nối được thì trả dòng 'broker_unreachable' thay vì làm lỗi trang
-        logger.warning("kafka_lag_admin_connect_failed", error=str(exc))
+        logger.warning("kafka_lag_admin_connect_failed", error=exc)
         return [
             {"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "broker_unreachable"}
             for label, topic, group_id in CONSUMER_GROUPS
@@ -421,7 +421,7 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
     try:
         await consumer.start()
     except Exception as exc:  # noqa: BLE001 - broker không kết nối được thì trả dòng 'broker_unreachable' thay vì làm lỗi trang
-        logger.warning("kafka_lag_consumer_connect_failed", error=str(exc))
+        logger.warning("kafka_lag_consumer_connect_failed", error=exc)
         await admin.close()
         return [
             {"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": "broker_unreachable"}
@@ -457,7 +457,7 @@ async def get_consumer_lag() -> list[dict[str, Any]]:
                     lag += max(0, end - committed_offset)
                 results.append({"label": label, "topic": topic, "group_id": group_id, "lag": lag, "error": None})
             except Exception as exc:  # noqa: BLE001 - một nhóm consumer đo lỗi không chặn các nhóm khác
-                logger.warning("kafka_lag_query_failed", label=label, topic=topic, group_id=group_id, error=str(exc))
+                logger.warning("kafka_lag_query_failed", label=label, topic=topic, group_id=group_id, error=exc)
                 results.append({"label": label, "topic": topic, "group_id": group_id, "lag": None, "error": str(exc)})
     finally:
         await consumer.stop()
@@ -477,7 +477,7 @@ async def publish_raw_post(*, key: str, value: dict[str, Any]) -> bool:
     try:
         await _producer.send_and_wait(RAW_POSTS_TOPIC, key=key, value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc), key=key)
+        logger.warning("kafka_publish_failed", error=exc, key=key)
         return False
     return True
 
@@ -494,7 +494,7 @@ async def publish_raw_comment(*, key: str, value: dict[str, Any]) -> bool:
     try:
         await _producer.send_and_wait(RAW_COMMENTS_TOPIC, key=key, value=value)
     except KafkaError as exc:
-        logger.warning("kafka_publish_failed", error=str(exc), key=key)
+        logger.warning("kafka_publish_failed", error=exc, key=key)
         return False
     return True
 
@@ -524,7 +524,7 @@ async def publish_dead_letter(key: str, value: dict[str, Any]) -> bool:
                 INGEST_DEAD_LETTER_TOPIC, key=key, value={**value, "payload": None, "payload_dropped": True}
             )
     except KafkaError as exc:
-        logger.warning("dead_letter_publish_failed", key=key, error=str(exc))
+        logger.warning("dead_letter_publish_failed", key=key, error=exc)
         return False
     return True
 

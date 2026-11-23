@@ -72,5 +72,5 @@ async def sync_ai_runtime() -> int:
         logger.info("ai_runtime_synced", active=active, providers=keys)
         return len(rows)
     except Exception as exc:  # noqa: BLE001 - lần sau (lưu / scheduler) chép lại
-        logger.error("ai_runtime_sync_failed", error=str(exc)[:300])
+        logger.error("ai_runtime_sync_failed", error=exc)
         return -1

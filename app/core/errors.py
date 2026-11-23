@@ -1,5 +1,5 @@
 """Cây lỗi tuỳ chỉnh dùng cho cả app + các handler FastAPI biến chúng thành một dạng
-JSON thống nhất: {"error": {"code": "...", "message": "..."}}.
+JSON phẳng thống nhất với Worker cinemark: {"error": "<message tiếng Anh>", "code": "...", "request_id": "..."}.
 
 Raise các lỗi này từ bất cứ đâu trong app/services, app/api/routes, v.v. thay cho
 HTTPException của FastAPI - một hàm service raise NotFoundError không cần biết nó
@@ -8,6 +8,7 @@ có status_code nào để trả, nhưng vẫn bắt được AppError và log e
 
 from __future__ import annotations
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -77,7 +78,11 @@ def _error_response(status_code: int, code: str, message: str) -> JSONResponse:
     # Bắt buộc theo đặc tả OAuth2 (và Swagger UI / mọi OAuth2 client đúng chuẩn đều chờ
     # nó) khi trả 401 - thiếu nó thì client không biết phải thử lại với kiểu xác thực nào.
     headers = {"WWW-Authenticate": "Bearer"} if status_code == 401 else None
-    return JSONResponse(status_code=status_code, content={"error": {"code": code, "message": message}}, headers=headers)
+    content: dict[str, str] = {"error": message, "code": code}
+    request_id = structlog.contextvars.get_contextvars().get("request_id")
+    if isinstance(request_id, str):
+        content["request_id"] = request_id
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
 
 
 def register_exception_handlers(app: FastAPI) -> None:

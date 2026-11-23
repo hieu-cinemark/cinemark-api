@@ -673,7 +673,7 @@ async def _dead_letter(message: Any, exc: Exception, attempts: int) -> None:
     while not await publish_dead_letter(key, record):
         logger.error("ingest_dead_letter_blocked", key=key, retry_seconds=_DEAD_LETTER_RETRY_SECONDS)
         await asyncio.sleep(_DEAD_LETTER_RETRY_SECONDS)
-    logger.error("ingest_message_dead_lettered", key=key, reason=reason, attempts=attempts, error=str(exc)[:300])
+    logger.error("ingest_message_dead_lettered", key=key, reason=reason, attempts=attempts, error=exc)
     if isinstance(exc, CommentParentNotReady):
         if len(_missing_parents) > 5000:
             _missing_parents.clear()
@@ -684,7 +684,7 @@ async def _dead_letter(message: Any, exc: Exception, attempts: int) -> None:
         if message.topic == RAW_POSTS_TOPIC:
             await _drop(platform=platform, post_id=post_id, reason=reason, keyword_id=payload.get("keyword_id"))
     except Exception as report_exc:  # noqa: BLE001
-        logger.warning("ingest_dead_letter_report_failed", key=key, error=str(report_exc)[:200])
+        logger.warning("ingest_dead_letter_report_failed", key=key, error=report_exc)
 
 
 async def _handle_with_retries(message: Any, semaphore: asyncio.Semaphore) -> None:
@@ -712,7 +712,7 @@ async def _handle_with_retries(message: Any, semaphore: asyncio.Semaphore) -> No
                 attempt=attempt + 1,
                 delay_seconds=delays[attempt],
                 error_type=type(exc).__name__,
-                error=str(exc)[:300],
+                error=exc,
             )
             await asyncio.sleep(delays[attempt])
             attempt += 1
@@ -730,7 +730,7 @@ async def _process_message(
         try:
             await consumer.commit(to_commit)
         except KafkaError as exc:
-            logger.error("kafka_commit_failed", error=str(exc))
+            logger.error("kafka_commit_failed", error=exc)
 
 
 async def _seed_offsets_from_legacy_group(consumer: AIOKafkaConsumer, topic: str, group_id: str) -> None:
@@ -798,12 +798,12 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
     try:
         await consumer.start()
     except KafkaError as exc:
-        logger.error("kafka_connection_error", topic=topic, error=str(exc))
+        logger.error("kafka_connection_error", topic=topic, error=exc)
         return
     try:
         await _seed_offsets_from_legacy_group(consumer, topic, group_id)
     except KafkaError as exc:
-        logger.error("kafka_connection_error", topic=topic, error=str(exc))
+        logger.error("kafka_connection_error", topic=topic, error=exc)
         await consumer.stop()
         return
 
@@ -823,7 +823,7 @@ async def _run_topic_consumer(topic: str, group_id: str, concurrency: int) -> No
             if len(pending) >= concurrency * 4:
                 await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
     except KafkaError as exc:
-        logger.error("kafka_connection_error", topic=topic, error=str(exc))
+        logger.error("kafka_connection_error", topic=topic, error=exc)
     finally:
         # Không chờ các message đang trong khoảng nghỉ thử lại (có thể vài phút): chưa commit nên được giao lại lần chạy sau.
         for task in pending:
@@ -878,7 +878,7 @@ async def _run_loops() -> None:
     finished = next(iter(done))
     exc = finished.exception()
     if exc is not None:
-        logger.error("ingest_consumer_loop_crashed", loop=finished.get_name(), error=str(exc))
+        logger.error("ingest_consumer_loop_crashed", loop=finished.get_name(), error=exc)
         raise exc
     logger.error("ingest_consumer_loop_exited_unexpectedly", loop=finished.get_name())
 

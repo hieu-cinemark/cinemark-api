@@ -80,7 +80,7 @@ async def run_due_reports() -> int:
             if movie is not None:
                 result = await generate_report_for_movie(movie)
         except Exception as exc:  # noqa: BLE001 - phim lỗi không chặn phim khác; ghi lỗi để trang hiện ra
-            logger.error("scheduled_report_failed", movie_id=movie_id, error=str(exc)[:300])
+            logger.error("scheduled_report_failed", movie_id=movie_id, error=exc)
             result = f"error: {str(exc)[:150]}"
         await d1_exec(
             update(schedules)

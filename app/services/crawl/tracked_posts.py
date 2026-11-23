@@ -103,7 +103,7 @@ async def _active_rows() -> list[dict[str, Any]]:
             if released and date.fromisoformat(released) + timedelta(days=TRACK_DAYS_AFTER_RELEASE) < today:
                 continue
         except ValueError:
-            pass
+            pass  # ngày phát hành sai định dạng: vẫn theo dõi bài
         out.append(row)
     return out
 
@@ -148,7 +148,7 @@ async def _refresh_tiktok(rows: list[dict[str, Any]], stats: dict[str, Any]) -> 
                 stats["tiktok_stopped"] = str(exc)[:120]
                 return
             except Exception as exc:  # noqa: BLE001 - một video lỗi: hôm sau thử lại
-                logger.warning("tracked_tiktok_failed", video_id=video_id, error=str(exc)[:200])
+                logger.warning("tracked_tiktok_failed", video_id=video_id, error=exc)
                 continue
             mapped = map_video(data) if isinstance(data, dict) else None
             if not mapped:

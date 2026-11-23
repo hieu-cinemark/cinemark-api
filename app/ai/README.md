@@ -10,7 +10,7 @@ Mọi thứ liên quan tới LLM và model AI.
 | `tasks/` | Logic từng tác vụ: phân loại, sinh report, kiểm tra câu trả lời AI |
 | `domain/` | Tri thức nghiệp vụ dùng trong prompt và hậu xử lý |
 | `local/` | Model chạy tại chỗ: ViSoBERT, embedding e5 |
-| `retrieval/` | Interface RAG (chưa có cài đặt) |
+| `retrieval/` | Interface RAG; kho vector đã chọn là Qdrant (chưa cài đặt) |
 
 ## Thêm một task AI mới
 

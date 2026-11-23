@@ -33,6 +33,7 @@ from app.clients.kafka import publish_raw_post
 from app.clients.omar import OmarStop, fetch_usage, hashtag_info, map_video, next_cursor, omar_get, videos_of
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
+from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords
 from app.repositories.d1.sql import d1_exec
@@ -301,7 +302,7 @@ async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
         try:
             await get_redis_client().set(_LAST_ROUND_KEY, json.dumps(_round, default=str), ex=30 * 24 * 3600)
         except Exception as exc:  # noqa: BLE001 - chỉ là thông tin hiển thị
-            logger.warning("omar_last_round_save_failed", error=str(exc)[:200])
+            logger.warning("omar_last_round_save_failed", error=exc)
 
 
 # Hashtag đang được cào riêng (crawl_hashtag_now) - lượt Omar bỏ qua để không cào trùng con trỏ.
@@ -333,12 +334,12 @@ async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
                     client, pacer, api_key, str(keyword["keyword"]).lstrip("#"), cursor, entry.get("hashtag_id")
                 )
             except OmarStop as exc:
-                logger.error("omar_manual_stopped", hashtag=keyword["keyword"], error=str(exc)[:200])
+                logger.error("omar_manual_stopped", hashtag=keyword["keyword"], error=exc)
                 break
             except Exception as exc:  # noqa: BLE001 - thử lại đúng trang, lỗi liền thì để lượt Omar đi tiếp
                 failed += 1
                 logger.warning(
-                    "omar_manual_page_failed", hashtag=keyword["keyword"], cursor=cursor, error=str(exc)[:200]
+                    "omar_manual_page_failed", hashtag=keyword["keyword"], cursor=cursor, error=exc
                 )
                 if failed >= _MAX_PAGE_FAILURES:
                     if cursor == "0" and not entry.get("pages"):
@@ -394,7 +395,7 @@ def crawl_hashtag_now(keyword: dict[str, Any]) -> bool:
         try:
             await _crawl_hashtag_now(keyword)
         except Exception as exc:  # noqa: BLE001
-            logger.error("omar_manual_failed", hashtag=keyword.get("keyword"), error=str(exc)[:300])
+            logger.error("omar_manual_failed", hashtag=keyword.get("keyword"), error=exc)
         finally:
             _manual_running.discard(kw_id)
 
@@ -411,10 +412,9 @@ async def hashtag_progress() -> list[dict[str, Any]]:
     raw = await get_redis_client().hgetall(_STATE_KEY) or {}
     state = {}
     for key, value in raw.items():
-        try:
-            state[key.decode() if isinstance(key, bytes) else key] = json.loads(value)
-        except TypeError, ValueError:
-            continue
+        parsed = loads_or_none(value, source="omar_hashtag_state")
+        if parsed is not None:
+            state[key.decode() if isinstance(key, bytes) else key] = parsed
     out = []
     for kw in keywords:
         entry = state.get(kw["id"]) or {}
@@ -461,10 +461,9 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
     raw_state = await redis.hgetall(_STATE_KEY) or {}
     state: dict[str, dict[str, Any]] = {}
     for key, value in raw_state.items():
-        try:
-            state[key.decode() if isinstance(key, bytes) else key] = json.loads(value)
-        except TypeError, ValueError:
-            continue
+        parsed = loads_or_none(value, source="omar_hashtag_state")
+        if parsed is not None:
+            state[key.decode() if isinstance(key, bytes) else key] = parsed
     now = datetime.now(tz=UTC)
     recrawl_before = (now - timedelta(days=settings.omar_recrawl_days)).isoformat()
 
@@ -473,7 +472,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
         except Exception as exc:  # noqa: BLE001 - mất con trỏ chỉ làm lần sau cào lại từ đầu
-            logger.warning("omar_state_save_failed", error=str(exc)[:200])
+            logger.warning("omar_state_save_failed", error=exc)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
         usage = await fetch_usage(api_key, client)
@@ -522,7 +521,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                     stats["stopped"] = str(exc)[:100]
                     _log_stop(exc)
             except Exception as exc:  # noqa: BLE001 - phần bình luận lỗi không chặn phần hashtag
-                logger.error("omar_comments_failed", error=str(exc)[:300])
+                logger.error("omar_comments_failed", error=exc)
 
         # 2. Tổng video / lượt xem của từng hashtag (hashtag_info), làm mới mỗi settings.omar_hashtag_info_days ngày.
         info_before = (now - timedelta(days=settings.omar_hashtag_info_days)).isoformat()
@@ -537,7 +536,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
             except OmarStop:
                 raise
             except Exception as exc:  # noqa: BLE001 - thử lại sau một ngày (lùi info_at), không phải mỗi lượt
-                logger.warning("omar_hashtag_info_failed", hashtag=kw["keyword"], error=str(exc)[:200])
+                logger.warning("omar_hashtag_info_failed", hashtag=kw["keyword"], error=exc)
                 retry_at = datetime.now(tz=UTC) - timedelta(days=settings.omar_hashtag_info_days - 1)
                 await save(kw["id"], {**(state.get(kw["id"]) or {}), "info_at": retry_at.isoformat()})
                 return
@@ -586,7 +585,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
                 raise
             except Exception as exc:  # noqa: BLE001 - một trang lỗi: để lượt sau thử lại đúng trang đó
                 stats["failed"] += 1
-                logger.warning("omar_page_failed", hashtag=kw["keyword"], cursor=cursor, error=str(exc)[:200])
+                logger.warning("omar_page_failed", hashtag=kw["keyword"], cursor=cursor, error=exc)
                 return None
             stats["requests"] += 1
             mapped = [video for video in (map_video(raw) for raw in videos) if video is not None]
@@ -742,7 +741,7 @@ async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             await _pause_after_round(stats, api_key, reset_at, spend.exhausted)
         except Exception as exc:  # noqa: BLE001 - không ghi được thì lượt sau tự kiểm tra hạn mức như trước
-            logger.warning("omar_pause_save_failed", error=str(exc)[:200])
+            logger.warning("omar_pause_save_failed", error=exc)
     if _stop_requested:
         stats["stopped"] = "manual_stop"
     logger.info("omar_round_finished", total_keywords=len(keywords), **stats)

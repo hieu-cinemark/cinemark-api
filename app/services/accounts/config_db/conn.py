@@ -98,7 +98,7 @@ async def _connect() -> AsyncIterator[psycopg.AsyncConnection[Any]]:
     try:
         conn = await borrowed.__aenter__()
     except (PoolTimeout, psycopg.OperationalError) as exc:
-        logger.error("db_connect_failed", error=str(exc))
+        logger.error("db_connect_failed", error=exc)
         raise UpstreamError("Could not connect to the settings database") from exc
     try:
         yield conn

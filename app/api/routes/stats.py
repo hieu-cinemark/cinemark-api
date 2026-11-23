@@ -59,19 +59,19 @@ async def _cached_rows(name: str, compute: Callable[[], Awaitable[list[dict[str,
         raw = await redis.get(key)
         cached = json.loads(raw) if raw else None
     except Exception as exc:  # noqa: BLE001 - Redis trục trặc: vẫn đọc D1 như cũ
-        logger.warning("stats_cache_read_failed", name=name, error=str(exc)[:200])
+        logger.warning("stats_cache_read_failed", name=name, error=exc)
     if cached and time.time() - float(cached.get("at") or 0) < _FRESH_SECONDS:
         return cached["rows"]
     try:
         rows = await asyncio.wait_for(compute(), timeout=_QUERY_TIMEOUT_SECONDS)
     except Exception as exc:  # noqa: BLE001 - timeout / D1 lỗi: rơi về số gần nhất
-        logger.warning("stats_query_failed", name=name, error=str(exc)[:200] or type(exc).__name__)
+        logger.warning("stats_query_failed", name=name, error=exc)
         rows = None
     if rows:
         try:
             await redis.set(key, json.dumps({"at": time.time(), "rows": rows}, default=str), ex=_STALE_SECONDS)
         except Exception as exc:  # noqa: BLE001 - không lưu được cache thì vẫn trả kết quả vừa đọc
-            logger.warning("stats_cache_write_failed", name=name, error=str(exc)[:200])
+            logger.warning("stats_cache_write_failed", name=name, error=exc)
         return rows
     if cached:
         logger.info("stats_served_stale", name=name, age_seconds=round(time.time() - float(cached.get("at") or 0)))

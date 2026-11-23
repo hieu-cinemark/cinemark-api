@@ -86,7 +86,7 @@ async def _judge_movie(title: str, rows: list[dict[str, Any]]) -> dict[str, dict
             index = int(entry.get("i")) - 1
             score = max(0, min(100, int(float(entry.get("score")))))
         except AttributeError, TypeError, ValueError:
-            continue
+            continue  # mục AI trả sai định dạng: bỏ qua mục đó
         if 0 <= index < len(rows):
             out[rows[index]["id"]] = {
                 "score": score,
@@ -117,7 +117,7 @@ async def judge_new_posts(rows: list[dict[str, Any]], scores: dict[str, int]) ->
             try:
                 judged = await _judge_movie(batch[0].get("movie_title") or "", batch)
             except Exception as exc:  # noqa: BLE001 - AI tắt/lỗi: các bài này chấm ở lượt sau
-                logger.warning("comment_value_ai_failed", movie_id=batch[0]["movie_id"], error=str(exc)[:300])
+                logger.warning("comment_value_ai_failed", movie_id=batch[0]["movie_id"], error=exc)
                 break
             now = datetime.now(tz=UTC).isoformat()
             for post_id, verdict in judged.items():

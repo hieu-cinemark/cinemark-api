@@ -275,7 +275,7 @@ async def _tail_until_done(platform: str, run_id: str, path: Path, start_offset:
     except asyncio.CancelledError:
         return
     except Exception as exc:  # noqa: BLE001 - theo dõi log lỗi thì đánh dấu lượt làm mới thất bại, không làm sập tiến trình
-        logger.error("refresh_tracker_tail_failed", platform=platform, error=str(exc))
+        logger.error("refresh_tracker_tail_failed", platform=platform, error=exc)
         state.status = "failed"
         state.finished_at = _now_iso()
         _broadcast(platform, {"type": "status", "status": "failed", "finished_at": state.finished_at})
