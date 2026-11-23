@@ -31,6 +31,9 @@ Từ 23/11/2026 toàn bộ bảng cấu hình nằm ở D1 `cinemark-config-db`;
 - Worker cinemark vẫn đọc cấu hình AI qua bảng `ai_runtime` (đồng bộ từ `app/services/ops/ai_runtime_sync.py`).
 - D1 không có transaction nhiều câu: các hàm chỉ ghi một dòng mỗi câu nên không cần; `delete_proxy_provider` kiểm tra rồi mới xoá (có khoảng
   hở rất nhỏ giữa hai bước, chấp nhận được với thao tác thủ công trên dashboard).
+- Độ bền của spider-hub khi D1 chập chờn (`db/d1.py`): câu đọc thử lại tối đa 3 lần với backoff; câu ghi chỉ thử lại khi chắc chắn chưa thực thi
+  (không kết nối được hoặc bị từ chối 429), tránh nhận một tài khoản/proxy hai lần; 5 lần lỗi hạ tầng liên tiếp mở ngắt mạch 20 giây để các lời gọi
+  sau báo lỗi ngay thay vì chờ timeout 15 giây. cinemark-api có cơ chế riêng trong `app/clients/d1.py` (retry 429/7429 và timeout đọc).
 - Mỗi lượt cào gọi D1 qua mạng (vài chục đến vài trăm ms mỗi câu). Cài đặt vẫn cache 60 giây ở spider-hub.
 - Schema D1 khai ở `d1_store.py`/`d1_ops.py`/`d1_accounts.py` (cinemark-api); `tests/test_d1_pool.py` của spider-hub có bản DDL chép tay để chạy SQL
   thật trên SQLite - đổi cột ở cinemark-api thì sửa cả hai.
