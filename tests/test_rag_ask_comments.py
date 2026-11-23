@@ -128,6 +128,15 @@ def test_iso_utc_normalises_or_drops():
     assert load_qdrant.iso_utc(None) is None and load_qdrant.iso_utc("hỏng") is None
 
 
+def test_is_meaningful_ignores_platform_tags_and_needs_words():
+    ok = load_qdrant.is_meaningful
+    assert ok("kịch bản này quen quen, đoán được hết nội dung rồi", 25)
+    assert not ok("[Ấm lòng][Ấm lòng][Ấm lòng]", 25)  # chỉ có nhãn
+    assert not ok("[Sticker] để minh cản khánh", 25)  # bỏ nhãn còn quá ngắn
+    assert not ok("khôngkhôngkhôngkhôngkhôngkhông", 25)  # một từ dài, không phải câu
+    assert not ok("tất nhiên là không rồi", 25)  # 22 ký tự
+
+
 def test_load_movie_filters_pages_and_is_idempotent(embeddings, qstore):
     conn, texts = embeddings
     store, client = qstore

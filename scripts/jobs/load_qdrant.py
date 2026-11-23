@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
@@ -24,6 +25,8 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 DB_PATH = DATA_DIR / "comment_embeddings.sqlite"
 CURSOR_PATH = DATA_DIR / "qdrant_cursor.json"
 PAGE_SIZE = 2000
+MIN_WORDS = 4
+TAG_RE = re.compile(r"\[[^\]]{1,30}\]")  # [Sticker], [Ấm lòng]...: nhãn của nền tảng, không phải ý kiến
 OVERLOAD_PAUSE_SECONDS = 60.0
 Fetch = Callable[[list[str]], Awaitable[dict[str, dict[str, Any]]]]
 
@@ -56,13 +59,19 @@ def iso_utc(value: Any) -> str | None:
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).astimezone(UTC).isoformat()
 
 
+def is_meaningful(text: str, min_chars: int) -> bool:
+    """Đủ nội dung để làm nguồn trả lời: bỏ nhãn sticker/emoji rồi còn ít nhất min_chars ký tự và MIN_WORDS từ."""
+    body = TAG_RE.sub(" ", text).strip()
+    return len(body) >= min_chars and len(body.split()) >= MIN_WORDS
+
+
 def build_documents(movie_id, vector_rows, comments, *, min_chars: int) -> tuple[list[Document], list[list[float]]]:
     """Ghép vector (SQLite) với nội dung/thuộc tính (D1). Bỏ comment không còn trong D1, quá ngắn, hoặc vector sai số chiều."""
     docs, vectors = [], []
     for comment_id, vector in vector_rows:
         row = comments.get(comment_id)
         text = ((row or {}).get("message") or "").strip()
-        if row is None or len(text) < min_chars or vector.shape[0] != DIM:
+        if row is None or not is_meaningful(text, min_chars) or vector.shape[0] != DIM:
             continue
         metadata = {
             "movie_id": movie_id,
@@ -109,7 +118,7 @@ async def load_movie(
     *,
     after: str = "",
     limit: int | None = None,
-    min_chars: int = 20,
+    min_chars: int = 25,
     page_size: int = PAGE_SIZE,
     dry_run: bool = False,
     fetch: Fetch = fetch_comments,
@@ -176,7 +185,7 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--movie-id")
     p.add_argument("--limit", type=int, help="Số vector tối đa đọc mỗi phim trong lần chạy này")
-    p.add_argument("--min-chars", type=int, default=20)
+    p.add_argument("--min-chars", type=int, default=25)
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--reset-cursor", action="store_true")
     asyncio.run(main(p.parse_args()))
