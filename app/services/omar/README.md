@@ -20,3 +20,13 @@ ngay và chạy liên tục (`omar_tiktok.run_omar_round` dùng hết hạn mứ
 
 Còn hai nơi khác gọi Omar: `app/services/crawl/channel_profiles.py` (follower kênh qua `/profile`) và
 `app/services/crawl/tracked_posts.py` (số liệu video booking qua `/video_info`).
+
+## Quy mô hashtag (omar_hashtag_stats.py)
+
+`search_hashtags` trả cả họ hashtag có tên chứa từ khoá, kèm tổng video / lượt xem. Dùng ở hai nơi:
+
+- **Tìm hashtag liên quan** (`GET /omar/hashtags/search?q=`): tab Omar của spider-hub-dashboard, tách mục khớp chính xác và biến thể, đánh dấu `tracked`.
+- **Bản chụp hằng ngày** (`snapshot_all`, tick `omar_hashtag_stats` từ 06:00 giờ Việt Nam): mỗi hashtag TikTok đang theo dõi một dòng `tiktok_hashtag_stats(day, keyword_id, ...)`
+  trong D1 chính. Cinemark Worker đọc bảng này cho thẻ "Quy mô TikTok" ở Social Topic (cần ít nhất hai ngày chụp để vẽ mức tăng). Chụp ngay: `python -m scripts.jobs.snapshot_hashtag_stats`.
+
+Mỗi lần chụp tốn một request cho mỗi hashtag, tính vào hạn mức ngày chung của Omar; đang tạm dừng vì hạn mức/key thì bỏ qua.
