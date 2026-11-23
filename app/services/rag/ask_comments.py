@@ -14,6 +14,8 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 MIN_SCORE = 0.0  # chỉnh sau khi đo trên dữ liệu thật
 CONTEXT_CHARS = 6000
+# Câu trả lời tối đa 8 câu (~300 token), phần còn lại là chỗ cho model suy nghĩ: 700 từng làm câu trả lời bị cắt/rỗng.
+ANSWER_MAX_TOKENS = 2000
 
 
 async def ask_comments(
@@ -29,7 +31,7 @@ async def ask_comments(
         task="ask_comments",
         system_prompt=ASK_COMMENTS_SYSTEM_PROMPT,
         user_prompt=build_user_prompt(question, build_context(sources, max_chars=CONTEXT_CHARS)),
-        max_tokens=700,
+        max_tokens=ANSWER_MAX_TOKENS,
         temperature=0.2,
         force=True,  # người dùng bấm hỏi: chạy cả khi công tắc AI chung đang tắt
     )

@@ -220,6 +220,7 @@ def test_service_answers_with_valid_citations_and_filters(filled, monkeypatch):
     assert [s["index"] for s in result["sources"]] == [1, 2]
     kwargs = llm.call_args.kwargs
     assert kwargs["task"] == "ask_comments" and kwargs["force"] is True
+    assert kwargs["max_tokens"] >= 2000  # 700 từng bị model dùng hết cho phần suy nghĩ -> câu trả lời rỗng
     assert "[1] nhạc phim rất cuốn" in kwargs["user_prompt"]
 
     only_neg = run(service.ask_comments("phim", movie_id="m1", sentiment="negative"))
