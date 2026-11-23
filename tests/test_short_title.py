@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from app.services.relevance.relevance_rules import mentions_short_title, resolve_relevance, short_title_names
+from app.services.relevance.release_window import short_title_names
+from app.services.relevance.relevance_rules import mentions_short_title, resolve_relevance
 
 SCOTTY = {"title": "SCOTTY: GIẢI CỨU HOÀNG THƯỢNG", "released_at": "2026-10-02"}
 

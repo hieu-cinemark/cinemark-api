@@ -44,7 +44,7 @@ from app.services.discovery.decisions import (
     _record,
     decisions_table,
 )
-from app.services.relevance.relevance_rules import normalize_title
+from app.services.relevance.text_rules import normalize_title
 
 logger = get_logger(__name__)
 

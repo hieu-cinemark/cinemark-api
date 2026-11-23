@@ -41,15 +41,14 @@ from app.services.crawl.platforms import get_comment_mapper, get_post_mapper
 from app.services.crawl.tracked_posts import tracked_keyword_for
 from app.services.relevance.relevance_rules import (
     find_film,
-    foreign_language_reason,
     has_film_context,
     mentions_film_manual,
     mentions_keyword_or_title,
     mentions_other_film,
     mentions_short_title,
-    no_diacritics_reason,
     resolve_relevance,
 )
+from app.services.relevance.text_rules import foreign_language_reason, no_diacritics_reason
 from app.services.stats.stats_summary import bump_ingest_decision
 from app.workers.ingest_consumer.sentiment_sweep import sweep_forever
 

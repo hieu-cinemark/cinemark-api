@@ -34,12 +34,8 @@ from app.repositories.d1.posts import MIN_CONTENT_LENGTH
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import posts as posts_table
-from app.services.relevance.relevance_rules import (
-    foreign_language_reason,
-    mentions_film_manual,
-    no_diacritics_reason,
-    resolve_relevance,
-)
+from app.services.relevance.relevance_rules import mentions_film_manual, resolve_relevance
+from app.services.relevance.text_rules import foreign_language_reason, no_diacritics_reason
 from app.workers.ingest_consumer.main import _tracked_movies, _tracked_titles
 from app.workers.ingest_consumer.sentiment_sweep import MAX_ATTEMPTS, classify_pending_posts
 

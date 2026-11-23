@@ -15,212 +15,17 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
-from datetime import date, timedelta
+from datetime import timedelta
 
-_STRIP_RE = re.compile(r"(?:#|@)\S+|https?://\S+|www\.\S+")
-_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
-
-# Các chữ cái chỉ có trong tiếng Việt trong số các ngôn ngữ chữ Latinh mà pipeline này
-# gặp (sau NFC). Có bất kỳ chữ nào là đủ kết luận.
-_VI_CHARS = frozenset("ăâđêôơưàáảãạằắẳẵặầấẩẫậèéẻẽẹềếểễệìíỉĩịòóỏõọồốổỗộờớởỡợùúủũụừứửữựỳýỷỹỵ")
-# Các từ tiếng Việt không dấu đồng thời không phải từ thông dụng trong tiếng Anh, Tây
-# Ban Nha, Indonesia hay Tagalog - bằng chứng cho tiếng Việt không dấu.
-_VI_WORDS = frozenset(
-    [
-        "khong",
-        "ko",
-        "hok",
-        "cua",
-        "nhung",
-        "nguoi",
-        "duoc",
-        "voi",
-        "nhieu",
-        "rat",
-        "minh",
-        "roi",
-        "nha",
-        "nhe",
-        "oi",
-        "qua",
-        "xem",
-        "phim",
-        "hay",
-        "dep",
-        "vui",
-        "buon",
-        "lam",
-        "gi",
-        "sao",
-        "nay",
-        "thi",
-        "cung",
-        "dang",
-        "chua",
-        "luon",
-        "tui",
-        "toi",
-        "mng",
-        "moi",
-        "ve",
-        "rap",
-        "coi",
-        "thay",
-        "biet",
-    ]
+from app.services.relevance.film_phrases import _STRONG_FILM_PHRASES
+from app.services.relevance.release_window import (
+    SHORT_TITLE_AFTER_DAYS,
+    SHORT_TITLE_BEFORE_DAYS,
+    _to_date,
+    in_release_window,
+    short_title_names,
 )
-# Các hư từ thường gặp của những ngôn ngữ nước ngoài thực sự xuất hiện dưới các hashtag
-# bị trùng (tiếng Anh, Tây Ban Nha/Bồ Đào Nha, Indonesia/Mã Lai, Tagalog). Có từ hai từ
-# trở lên, không có tín hiệu tiếng Việt nào, nghĩa là text nước ngoài.
-_FOREIGN_WORDS = frozenset(
-    [
-        "the",
-        "and",
-        "is",
-        "are",
-        "you",
-        "your",
-        "to",
-        "of",
-        "in",
-        "for",
-        "this",
-        "that",
-        "with",
-        "my",
-        "it",
-        "on",
-        "was",
-        "not",
-        "have",
-        "what",
-        "just",
-        "we",
-        "me",
-        "el",
-        "los",
-        "las",
-        "que",
-        "con",
-        "por",
-        "para",
-        "una",
-        "del",
-        "es",
-        "lo",
-        "mi",
-        "se",
-        "como",
-        "pero",
-        "muy",
-        "mas",
-        "eso",
-        "esta",
-        "nos",
-        "le",
-        "yang",
-        "dan",
-        "ini",
-        "itu",
-        "aku",
-        "kamu",
-        "tidak",
-        "ada",
-        "untuk",
-        "dengan",
-        "ang",
-        "ng",
-        "mga",
-        "sa",
-        "ko",
-        "ako",
-        "hindi",
-        "naman",
-    ]
-)
-_MIN_LETTERS = 12
-# Từ vựng phim/điện ảnh: một caption tiếng nước ngoài dùng các từ này thường là fan
-# hoặc nhà phát hành Việt viết bằng tiếng Anh về phim (đã thấy thực tế: "One more time
-# for cinetourrr ... #nghihesonghihuu"), nên quy tắc hư từ nhường lại. Phán quyết theo
-# bảng chữ viết và theo ngôn ngữ của nền tảng vẫn áp dụng.
-_FILM_CONTEXT_WORDS = frozenset(
-    [
-        "cinema",
-        "cinemas",
-        "movie",
-        "movies",
-        "film",
-        "films",
-        "trailer",
-        "teaser",
-        "premiere",
-        "cinetour",
-        "theater",
-        "theatre",
-        "boxoffice",
-        "showtime",
-        "showtimes",
-        "ticket",
-        "tickets",
-        "screening",
-        "review",
-    ]
-)
-
-
-def _body(text: str | None) -> str:
-    # NFKC đưa Unicode trang trí ("𝐞𝐛𝐞́", chữ full-width) về chữ thường + dấu kết hợp, rồi
-    # NFC ghép lại dấu tiếng Việt để _VI_CHARS khớp được.
-    folded = unicodedata.normalize("NFC", unicodedata.normalize("NFKC", text or ""))
-    return _STRIP_RE.sub(" ", folded)
-
-
-def _is_latin(ch: str) -> bool:
-    return "LATIN" in unicodedata.name(ch, "")
-
-
-def foreign_language_reason(text: str | None, text_language: str | None = None) -> str | None:
-    """Một chuỗi lý do ngắn khi bài rõ ràng không phải tiếng Việt, ngược lại là None (tiếng
-    Việt, hoặc không đủ chữ để kết luận)."""
-    body = _body(text)
-    lowered = body.lower()
-    has_vi_chars = any(ch in _VI_CHARS for ch in lowered)
-    if has_vi_chars:
-        return None
-
-    lang = (text_language or "").strip().lower()
-    if lang and lang not in ("vi", "un", "und"):
-        return f"platform_language={lang}"
-
-    letters = [ch for ch in body if ch.isalpha()]
-    if len(letters) < _MIN_LETTERS:
-        return None
-    non_latin = sum(1 for ch in letters if not _is_latin(ch))
-    if non_latin / len(letters) >= 0.5:
-        return "non_latin_script"
-
-    words = [unicodedata.normalize("NFD", w).encode("ascii", "ignore").decode() for w in _WORD_RE.findall(lowered)]
-    if sum(1 for w in words if w in _VI_WORDS):
-        return None
-    foreign_hits = sum(1 for w in words if w in _FOREIGN_WORDS)
-    # "cinetourrr" -> "cinetour": gộp các chữ bị kéo dài trước khi tra.
-    film_context = any(re.sub(r"(.)\1{2,}", r"\1", w) in _FILM_CONTEXT_WORDS for w in words)
-    if len(words) >= 3 and foreign_hits >= 2 and not film_context:
-        return "foreign_function_words"
-    return None
-
-
-def normalize_title(value: str | None) -> str:
-    """Dạng không phân biệt dấu/hoa thường/dấu câu ("Án Mạng Karaoke" -> "an mang
-    karaoke"), với đ chuyển thành d."""
-    stripped = "".join(
-        ch for ch in unicodedata.normalize("NFD", (value or "").lower()) if unicodedata.category(ch) != "Mn"
-    )
-    return re.sub(r"[^a-z0-9]+", " ", stripped.replace("đ", "d")).strip()
-
-
-def _contains_phrase(haystack: str, phrase: str) -> bool:
-    return bool(phrase) and f" {phrase} " in f" {haystack} "
+from app.services.relevance.text_rules import _contains_phrase, _hashtags, _squash, normalize_title
 
 
 def mentions_other_film(
@@ -247,73 +52,11 @@ def mentions_other_film(
     return None
 
 
-# Từ vựng điện ảnh *mạnh* (đã bỏ dấu, chữ thường): đi cùng tên phim đích thì gần như chắc chắn
-# là bài về phim chiếu rạp. Cố ý KHÔNG có "phim" đứng một mình - bài review phim khác ("PHIM:
-# LAN HƯƠNG NHƯ CỐ") hay tóm tắt phim truyền hình cũng có chữ đó, và đã lọt như vậy ngày
-# 2026-10-05. Cũng không có "rap": bỏ dấu thì "rạp" trùng "rap" (nhạc).
-_STRONG_FILM_PHRASES: tuple[str, ...] = (
-    "dien anh",
-    "man anh",
-    "ra rap",
-    "tai rap",
-    "rap chieu",
-    "phong chieu",
-    "khoi chieu",
-    "cong chieu",
-    "suat chieu",
-    "lich chieu",
-    "chieu rap",
-    "phong ve",
-    "dat ve",
-    "mua ve",
-    "trailer",
-    "teaser",
-    "poster",
-    "hau truong",
-    "ban dung",
-    "cung may",
-    "khai may",
-    "bam may",
-    "dong may",
-    "ngay quay",
-    "doan phim",
-    "ekip",
-    "e kip",
-    "du an",
-    "lien hoan phim",
-    "lhp",
-    "dien vien",
-    "vai dien",
-    "dao dien",
-    "nha san xuat",
-    "nha phat hanh",
-    "box office",
-    "cgv",
-    "lotte cinema",
-    "galaxy cinema",
-    "beta cinemas",
-    "cinestar",
-    "premiere",
-    "showtime",
-    # 19/11/2026: sự kiện/báo chí quanh phim. Bài "Casting Call Cộng Trừ Nhân Chia", "Showcase Mẹ Mìn" bị ẩn
-    # vì phim có tên mơ hồ (ambiguous/strict) không có tín hiệu nào qua được; các từ này chỉ tính khi sát tên phim (<= 4 từ). Không thêm "cinetour": #cinetour là hashtag chung, đứng cạnh hashtag tên phim sẽ làm yếu luật phim chặt.
-    "casting call",
-    "casting",
-    "showcase",
-    "hop bao",
-    "ra mat phim",
-    "buoi ra mat",
-    "tham do",
-)
 # Từ điện ảnh mạnh phải cách tên phim đích không quá chừng này từ: "Người Được Chọn dự kiến
 # khởi chiếu" là về phim này, còn "...chưa phải người được chọn. Phim Madam T | Khởi chiếu
 # 25.09" là bài của phim khác chỉ dùng cụm từ đó (gặp thật 2026-10-05).
 _STRONG_PHRASE_WINDOW = 4
 _QUOTE_PAIRS = (('"', '"'), ("“", "”"), ("'", "'"), ("‘", "’"), ("«", "»"))
-
-
-def _squash(value: str) -> str:
-    return value.replace(" ", "")
 
 
 # Từ vựng âm nhạc (đã bỏ dấu): tên phim trùng tên bài hát rất hay gặp ("Người Được Chọn" của Ali
@@ -342,12 +85,6 @@ _MUSIC_PHRASES = (
     "trinh bay",
     "san khau",
 )
-
-
-def _hashtags(content: str | None) -> set[str]:
-    """Các hashtag của bài ở dạng bỏ dấu, viết liền ("#TrạiBuônNgười" -> "traibuonnguoi")."""
-    raw = unicodedata.normalize("NFC", content or "")
-    return {_squash(normalize_title(tag)) for tag in re.findall(r"#(\w+)", raw)} - {""}
 
 
 def _distinctive_title(title: str) -> bool:
@@ -601,109 +338,6 @@ def mentions_full_title_with_intent(content: str | None, title: str | None) -> b
     return any(_contains_phrase(text, phrase) for phrase in _CINEMA_INTENT_PHRASES)
 
 
-# --- Quy tắc "quanh ngày công chiếu" (release_window, 17/10/2026) ---
-# Bài nhắc TÊN LOẠT PHIM (tên bỏ số phần / phần trước ":" / tên trong ngoặc: "Út Lan", "Shaun the Sheep", "Tee Yod", "Lên
-# Hương") kèm từ ngữ rạp chiếu, đăng trong khoảng quanh ngày công chiếu, là về phim đang chiếu - kể cả khi tên là cụm từ
-# thường ngày hay trùng tên phần trước. Bài phần cũ trong danh sách hashtag phần lớn là video đăng từ năm trước nên ngày đăng
-# tách được chúng. Đo trên bài ẩn chỉ dùng ngày đăng thì nâng 1.695 bài lẫn nhiều rác; ngày + tên loạt + từ rạp
-# còn khoảng 190 bài, phần lớn đúng ("SHAUN THE SHEEP hôm nay ra mắt... suất sớm", "#lenhuong đi coi về").
-RELEASE_WINDOW_BEFORE_DAYS = 7
-RELEASE_WINDOW_AFTER_DAYS = 60
-_RELEASE_CONTEXT_PHRASES = (
-    *_STRONG_FILM_PHRASES,
-    "cinetour",
-    "tham do",
-    "di xem",
-    "di coi",
-    "xem phim",
-    "coi phim",
-    "phim hay",
-    "dang chieu",
-    "ra mat",
-    "suat som",
-    "showcase",
-    "review phim",
-    "gala",
-)
-
-
-def franchise_names(title: str | None) -> list[str]:
-    """Tên loạt phim từ tên phim (đã bỏ dấu, bỏ số phần): cả tên, phần trước ":" / "(", và tên trong ngoặc - mỗi tên từ
-    hai chữ và năm ký tự viết liền trở lên."""
-    raw = str(title or "")
-    names: list[str] = []
-    for part in [raw, re.split(r"[:(（]", raw, maxsplit=1)[0], *re.findall(r"[(（]([^)）]+)[)）]", raw)]:
-        words = [word for word in normalize_title(part).split() if not word.isdigit()]
-        name = " ".join(words)
-        if len(words) >= 2 and len(_squash(name)) >= 5 and name not in names:
-            names.append(name)
-    return names
-
-
-def _to_date(value: object) -> date | None:
-    try:
-        return date.fromisoformat(str(value)[:10]) if value else None
-    except ValueError:
-        return None
-
-
-def in_release_window(content: str | None, movie: dict | None, posted_at: object) -> bool:
-    """Xem phần chú thích RELEASE_WINDOW_*: đăng trong [công chiếu - BEFORE, công chiếu + AFTER] ngày, nhắc tên loạt phim
-    và có từ ngữ rạp chiếu."""
-    movie = movie or {}
-    released, posted = _to_date(movie.get("released_at")), _to_date(posted_at)
-    if not released or not posted:
-        return False
-    if (
-        not released - timedelta(days=RELEASE_WINDOW_BEFORE_DAYS)
-        <= posted
-        <= released + timedelta(days=RELEASE_WINDOW_AFTER_DAYS)
-    ):
-        return False
-    text = normalize_title(content)
-    if not text:
-        return False
-    squashed = _squash(text)
-    if not any(
-        _contains_phrase(text, name) or _squash(name) in squashed for name in franchise_names(movie.get("title"))
-    ):
-        return False
-    return any(_contains_phrase(text, phrase) for phrase in _RELEASE_CONTEXT_PHRASES)
-
-
-# --- Tên rút gọn quanh ngày công chiếu (short_title, 21/10/2026) ---
-# Bài booking / page chung hay chỉ viết tên ngắn: "Phim Scotty đang chiếu", "#scotty" cho "SCOTTY: GIẢI CỨU HOÀNG THƯỢNG" -
-# cổng mentions_keyword_or_title cần đủ tên nên loại (đo 21/10: 4 bài booking Scotty của Fan Xi Nê Ma bị loại như vậy).
-# Nhận tên rút gọn (phần trước / sau ":" hoặc " - ", tên trong ngoặc) khi bài đăng trong khoảng quanh ngày công chiếu -
-# quảng bá thường bắt đầu cả tháng trước ngày chiếu nên cửa sổ trước rộng hơn RELEASE_WINDOW_BEFORE_DAYS.
-SHORT_TITLE_BEFORE_DAYS = 30
-SHORT_TITLE_AFTER_DAYS = 60
-# Tên một chữ phải dài từ chừng này ký tự ("scotty") - chữ ngắn ("mai", "nha") là từ thường ngày.
-SHORT_TITLE_MIN_SINGLE_WORD = 6
-
-
-def short_title_names(title: str | None) -> list[str]:
-    """Các tên rút gọn (đã bỏ dấu) của phim có tên dạng "A: B" / "A - B" / "A (B)": A, B và tên trong ngoặc - hai chữ trở
-    lên (từ 8 ký tự viết liền), hoặc một chữ từ SHORT_TITLE_MIN_SINGLE_WORD ký tự. Tên không có phần tách thì rỗng (đã có
-    cổng tên đầy đủ)."""
-    raw = str(title or "")
-    pieces = [*re.split(r"\s*[:：]\s*|\s+[-–]\s+", raw), *re.findall(r"[(（]([^)）]+)[)）]", raw)]
-    if len(pieces) < 2:
-        return []
-    names: list[str] = []
-    for piece in pieces:
-        words = [
-            word for word in normalize_title(re.sub(r"[(（][^)）]*[)）]", "", piece)).split() if not word.isdigit()
-        ]
-        name = " ".join(words)
-        long_enough = (len(words) >= 2 and len(_squash(name)) >= 8) or (
-            len(words) == 1 and len(name) >= SHORT_TITLE_MIN_SINGLE_WORD
-        )
-        if long_enough and name not in names and name != normalize_title(raw):
-            names.append(name)
-    return names
-
-
 def mentions_short_title(content: str | None, movie: dict | None, posted_at: object) -> bool:
     """Bài nhắc tên rút gọn của phim (chữ hoặc hashtag) và đăng trong [công chiếu - SHORT_TITLE_BEFORE_DAYS, công chiếu
     + SHORT_TITLE_AFTER_DAYS]. Không có ngày công chiếu / ngày đăng thì không nhận."""
@@ -834,12 +468,3 @@ def mentions_film_manual(content: str | None, keywords: Iterable[str | None], ti
         return True
     acronym = title_acronym(title)
     return bool(acronym) and _contains_phrase(normalize_title(content), acronym)
-
-
-def no_diacritics_reason(text: str | None) -> str | None:
-    """ "no_diacritics" khi phần chữ của bài đủ dài (_MIN_LETTERS) mà không có một chữ có dấu tiếng Việt nào."""
-    body = _body(text).lower()
-    if any(ch in _VI_CHARS for ch in body):
-        return None
-    letters = sum(1 for ch in body if ch.isalpha())
-    return "no_diacritics" if letters >= _MIN_LETTERS else None

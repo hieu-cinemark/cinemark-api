@@ -14,9 +14,9 @@ HUB = Path(__file__).resolve().parents[2] / "spider-hub" / "social_crawler"
 
 # khoá cinemark-api -> (file spider-hub, chuỗi phải có trong file)
 EXPECTED = {
-    q.PRIORITY_FACEBOOK: ("consumer/loop.py", 'PRIORITY_QUEUE_KEY_TMPL = "crawl_priority:{platform}"'),
-    q.IDLE_FACEBOOK: ("consumer/loop.py", 'IDLE_QUEUE_KEY_TMPL = "crawl_idle:{platform}"'),
-    q.PUBLIC_PAGES_FACEBOOK: ("consumer/loop.py", 'PUBLIC_PAGES_QUEUE_KEY = "crawl_public_pages:facebook"'),
+    q.PRIORITY_FACEBOOK: ("consumer/queues.py", 'PRIORITY_QUEUE_KEY_TMPL = "crawl_priority:{platform}"'),
+    q.IDLE_FACEBOOK: ("consumer/queues.py", 'IDLE_QUEUE_KEY_TMPL = "crawl_idle:{platform}"'),
+    q.PUBLIC_PAGES_FACEBOOK: ("consumer/queues.py", 'PUBLIC_PAGES_QUEUE_KEY = "crawl_public_pages:facebook"'),
     q.PUBLIC_PAGES_THREADS: ("consumer/jobs/threads_channel.py", 'QUEUE_KEY = "crawl_public_pages:threads"'),
     q.THREADS_PROFILES: ("constants/threads.py", 'PROFILE_QUEUE_REDIS_KEY = "threads:profile_queue"'),
 }

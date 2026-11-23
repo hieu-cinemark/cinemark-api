@@ -6,13 +6,13 @@ import pytest
 
 from app.services.relevance.relevance_rules import (
     film_context_reason,
-    foreign_language_reason,
     has_film_context,
     mentions_full_title,
     mentions_keyword_or_title,
     mentions_other_film,
     resolve_relevance,
 )
+from app.services.relevance.text_rules import foreign_language_reason
 
 TRACKED = ["Án Mạng Karaoke", "Án Mạng Xém Hoàn Hảo", "Trại Buôn Người", "Trại Giam Hạnh Phúc", "Út Lan", "Út Lan 2"]
 
@@ -323,7 +323,7 @@ def test_director_split_on_va():
 
 
 def test_release_window_lifts_series_name_with_cinema_words_near_release():
-    from app.services.relevance.relevance_rules import franchise_names, in_release_window
+    from app.services.relevance.release_window import franchise_names, in_release_window
 
     shaun = {"title": "Shaun the Sheep: “Quái Lạ” Ghé Nhà", "released_at": "2026-10-16"}
     text = "SHAUN THE SHEEP hôm nay có buổi ra mắt cực vui tại Vạn Hạnh Mall. Phim có suất sớm cuối tuần này"
