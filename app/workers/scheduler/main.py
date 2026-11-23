@@ -15,7 +15,8 @@ import signal
 
 from app.clients.kafka import start_kafka_producer, stop_kafka_producer
 from app.core.logging import get_logger
-from app.services.accounts import platform_config_db
+from app.services.accounts.config_db import proxy_settings as proxy_settings_cfg
+from app.services.accounts.config_db import schedules as schedules_cfg
 from app.services.crawl import scheduler
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
 from app.services.ops import ops_metrics
@@ -29,10 +30,10 @@ _SHUTDOWN_STEP_TIMEOUT_SECONDS = 5
 async def _seed_schedules() -> None:
     """Dòng lịch mặc định cho nền tảng mới và đủ khoá proxy_settings (giống lúc web khởi động) - không bao giờ được làm treo service."""
     for coro, name in (
-        (platform_config_db.ensure_default_crawl_schedules(registered_platforms()), "crawl"),
-        (platform_config_db.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS), "comment"),
+        (schedules_cfg.ensure_default_crawl_schedules(registered_platforms()), "crawl"),
+        (schedules_cfg.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS), "comment"),
         # spider-hub chỉ đọc dòng proxy_settings, không có mặc định riêng: ghi đủ khoá trước khi nó cần.
-        (platform_config_db.ensure_proxy_settings_complete(), "proxy_settings"),
+        (proxy_settings_cfg.ensure_proxy_settings_complete(), "proxy_settings"),
     ):
         try:
             await asyncio.wait_for(coro, timeout=_SEED_TIMEOUT_SECONDS)

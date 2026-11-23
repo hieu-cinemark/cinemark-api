@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
-from app.services.accounts import platform_config_db as db
+from app.services.accounts.config_db import schedules as schedules_cfg
 
 TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")
 POLL_INTERVAL_SECONDS = 30
@@ -55,4 +55,6 @@ async def facebook_crawl_enabled() -> bool:
     """
     if not settings.facebook_background_crawl_enabled:
         return False
-    return any(sched["platform"] == "facebook" and sched["enabled"] for sched in await db.list_crawl_schedules())
+    return any(
+        sched["platform"] == "facebook" and sched["enabled"] for sched in await schedules_cfg.list_crawl_schedules()
+    )

@@ -36,10 +36,10 @@ class AccountOut(BaseModel):
     # thành công kế tiếp.
     last_check_note: str | None = None
     # Pool / circuit-breaker + ghim proxy cố định - do spider-hub ghi (services/pool.py,
-    # db/accounts.py), ở đây chỉ đọc (xem platform_config_db.ACCOUNT_CREATE_COLUMNS, vốn
+    # db/accounts.py), ở đây chỉ đọc (xem config_db/d1_accounts.py, vốn
     # loại các cột này ra). pool_status là "active" | "checkpoint" (xem
     # db.record_account_outcome) - khác với last_check_status ở trên. Không bắt buộc dù cột
-    # có NOT NULL DEFAULT (xem platform_config_db._ensure_pool_columns): một dòng có từ
+    # có NOT NULL DEFAULT (xem config_db/d1_accounts.py ensure_tables): một dòng có từ
     # trước khi có default đó, hoặc được ghi qua đường không áp default, không được làm cả
     # danh sách tài khoản lỗi 500.
     pool_status: str | None = "active"
@@ -126,7 +126,7 @@ class ProxyOut(BaseModel):
     consecutive_failures: int | None = 0
     last_used_at: datetime | None = None
     # Nguồn proxy sở hữu dòng này (NULL = nhập tay/tĩnh) - xem
-    # platform_config_db.list_proxies. Trước đó không có quan hệ này, code đoán chủ
+    # config_db.accounts.list_proxies. Trước đó không có quan hệ này, code đoán chủ
     # quan bằng cách so proxy_url với token của từng gói.
     provider_key: str | None = None
     # Mã riêng của cổng này trong hệ thống nhà cung cấp - điền vào placeholder {ref} của
@@ -390,8 +390,8 @@ class CronJob(BaseModel):
 # --- Hành vi proxy -------------------------------------------------------
 # NGUỒN SỰ THẬT DUY NHẤT của cấu hình cào: spider-hub không có giá trị mặc định riêng mà
 # chỉ đọc dòng proxy_settings; cinemark-api ghi đủ mọi khoá (mặc định bên dưới) khi khởi
-# động (platform_config_db.ensure_proxy_settings_complete). Lưu thành một object jsonb trong dòng
-# singleton proxy_settings (xem platform_config_db.get_proxy_settings).
+# động (config_db.proxy_settings.ensure_proxy_settings_complete). Lưu thành một object jsonb trong dòng
+# singleton proxy_settings (xem config_db.proxy_settings.get_proxy_settings).
 
 
 class ProxySettings(BaseModel):
@@ -431,7 +431,7 @@ class ProxySettings(BaseModel):
     tiktok_probe_requests: int = Field(default=30, ge=0, le=500)
     tiktok_comments_max_attempts: int = Field(default=8, ge=1, le=50)
     # Hiệu năng cào (13/11/2026) - spider-hub đọc trong vòng một phút, không cần restart. Đây là nguồn sự thật duy nhất: spider-hub chỉ đọc dòng
-    # proxy_settings mà cinemark-api ghi đủ khi khởi động (platform_config_db.ensure_proxy_settings_complete).
+    # proxy_settings mà cinemark-api ghi đủ khi khởi động (config_db.proxy_settings.ensure_proxy_settings_complete).
     # Chia làn (spider-hub runtime/lane_budget.py): lanes_total chia đều cho YouTube / page Facebook công khai / kênh Threads /
     # TikTok (mặc định 16 -> mỗi nhóm 4). Ba số dưới đặt > 0 thì nhóm đó dùng số riêng; 0 = tự chia.
     lanes_total: int = Field(default=16, ge=4, le=128)
@@ -561,7 +561,7 @@ class ProxyProviderUpdate(BaseModel):
 # --- Dọn bài không liên quan (app/services/relevance/cleanup.py) ---
 # Các tham số sửa được trên dashboard cho lượt dọn hằng ngày các bài gắn nhãn
 # not_related cùng comment/snapshot của chúng. Cùng kiểu dòng singleton với
-# ProxySettings (xem platform_config_db.get_cleanup_settings). Giá trị mặc định khớp
+# ProxySettings (xem config_db.cleanup.get_cleanup_settings). Giá trị mặc định khớp
 # với giá trị dự phòng từ env trong app/core/config.py để khi DB chưa có dòng thì hành
 # vi vẫn giống cấu hình trước khi có dashboard.
 #

@@ -32,7 +32,7 @@ from app.core.logging import get_logger
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import keywords as keywords_table
 from app.repositories.d1.tables import movies
-from app.services.accounts import platform_config_db
+from app.services.accounts.config_db import accounts as accounts_cfg
 
 logger = get_logger(__name__)
 
@@ -220,7 +220,7 @@ async def _threads_busy() -> bool:
 async def deep_jobs_this_hour() -> int:
     """Số job đào của giờ này theo số tài khoản FB dùng được - thêm tài khoản là đào nhanh hơn, không cần sửa cấu hình."""
     try:
-        accounts = await platform_config_db.count_crawl_ready_accounts("facebook")
+        accounts = await accounts_cfg.count_crawl_ready_accounts("facebook")
     except Exception as exc:  # noqa: BLE001 - không đếm được (DB chập chờn) thì vẫn xếp mức tối thiểu
         logger.warning("deep_account_count_failed", error=exc)
         accounts = 1

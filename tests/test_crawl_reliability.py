@@ -86,7 +86,7 @@ def slots(monkeypatch):
     monkeypatch.setattr(scheduler, "publish_crawl_request", publish)
     monkeypatch.setattr(scheduler, "get_enabled_keywords", keywords)
     monkeypatch.setattr(scheduler, "plan_keyword_crawl", plan)
-    monkeypatch.setattr(scheduler.db, "mark_crawl_schedule_triggered", mark)
+    monkeypatch.setattr(scheduler.schedules_cfg, "mark_crawl_schedule_triggered", mark)
     return redis, published, results
 
 

@@ -32,7 +32,8 @@ from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import get_logger
 from app.core.middleware import RequestContextMiddleware
-from app.services.accounts import platform_config_db
+from app.services.accounts.config_db import proxy_settings as proxy_settings_cfg
+from app.services.accounts.config_db import schedules as schedules_cfg
 from app.services.crawl import refresh_tracker, scheduler
 from app.services.crawl.platforms import COMMENT_CRAWL_PLATFORMS, registered_platforms
 from app.services.ops import ops_metrics
@@ -87,21 +88,21 @@ async def on_startup() -> None:
     await start_kafka_producer()
     try:
         await asyncio.wait_for(
-            platform_config_db.ensure_default_crawl_schedules(registered_platforms()),
+            schedules_cfg.ensure_default_crawl_schedules(registered_platforms()),
             timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 - khởi tạo lịch mặc định lỗi không được chặn API khởi động
         logger.warning("crawl_schedule_seed_failed", error=exc)
     try:
         await asyncio.wait_for(
-            platform_config_db.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS),
+            schedules_cfg.ensure_default_comment_crawl_schedules(COMMENT_CRAWL_PLATFORMS),
             timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS,
         )
     except Exception as exc:  # noqa: BLE001 - khởi tạo lịch mặc định lỗi không được chặn API khởi động
         logger.warning("comment_crawl_schedule_seed_failed", error=exc)
     try:
         await asyncio.wait_for(
-            platform_config_db.ensure_proxy_settings_complete(), timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS
+            proxy_settings_cfg.ensure_proxy_settings_complete(), timeout=_STARTUP_SCHEDULE_SEED_TIMEOUT_SECONDS
         )
     except Exception as exc:  # noqa: BLE001 - ghi đủ khoá cài đặt lỗi không được chặn API khởi động (thử lại ở lần khởi động sau)
         logger.warning("proxy_settings_complete_failed", error=exc)

@@ -119,7 +119,7 @@ def _needs_crawl():
 
 async def _min_comments() -> int:
     """Video có ít hơn chừng này bình luận thì không xếp hàng (proxy_settings comments_min_count, tối thiểu 1)."""
-    from app.services.accounts.platform_config_db import crawl_setting
+    from app.services.accounts.config_db.proxy_settings import crawl_setting
 
     return max(1, int(await crawl_setting("comments_min_count")))
 

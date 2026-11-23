@@ -30,7 +30,7 @@ from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
-from app.services.accounts.platform_config_db import crawl_setting
+from app.services.accounts.config_db.proxy_settings import crawl_setting
 from app.services.crawl.source_pages import _ensure_table, _movie_title, _set_source, source_pages
 from app.services.crawl.task_queue import enqueue_published
 

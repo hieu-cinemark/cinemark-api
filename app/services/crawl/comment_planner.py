@@ -31,7 +31,7 @@ from app.repositories.d1.author_reputation import reputable_authors
 from app.repositories.d1.posts import ensure_post_voice_columns, relevant_post
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies, posts
-from app.services.accounts.platform_config_db import crawl_setting
+from app.services.accounts.config_db.proxy_settings import crawl_setting
 from app.services.crawl.comment_value import judge_new_posts, load_scores
 
 logger = get_logger(__name__)

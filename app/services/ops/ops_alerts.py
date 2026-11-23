@@ -215,7 +215,7 @@ async def _fire(alert: Alert) -> bool:
 
 
 async def _omar_alerts(now: datetime) -> list[Alert]:
-    from app.services.accounts.platform_config_db import get_omar_api_settings
+    from app.services.accounts.config_db.omar import get_omar_api_settings
     from app.services.omar import omar_tiktok
 
     alerts: list[Alert] = []

@@ -1,5 +1,5 @@
 """Trang Settings của dashboard: CRUD trên các bảng platform_accounts /
-platform_proxies ở D1 (xem app/services/accounts/platform_config_db.py) - chính là các
+platform_proxies ở D1 (xem app/services/accounts/config_db/) - chính là các
 bảng mà spider-hub đọc để lấy thông tin đăng nhập và cấu hình proxy. Chỗ khác chỉ
 đọc; đây là nơi duy nhất ghi vào các bảng đó."""
 
@@ -64,8 +64,13 @@ from app.schemas.settings import (
     TotpCodeResponse,
     parse_run_times,
 )
-from app.services.accounts import platform_config_db as db
 from app.services.accounts.account_health import evaluate_account_health
+from app.services.accounts.config_db import accounts as accounts_cfg
+from app.services.accounts.config_db import ai_config as ai_config_cfg
+from app.services.accounts.config_db import cleanup as cleanup_cfg
+from app.services.accounts.config_db import omar as omar_cfg
+from app.services.accounts.config_db import proxy_settings as proxy_settings_cfg
+from app.services.accounts.config_db import schedules as schedules_cfg
 from app.services.accounts.cookie_quality import assess_cookie
 from app.services.accounts.platform_token import account_key as _account_key
 from app.services.accounts.user_agent import merge_user_agent, split_user_agent
@@ -77,7 +82,7 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 @router.get("/accounts", response_model=list[AccountOut])
 async def list_accounts(platform: str | None = Query(default=None)) -> list[AccountOut]:
-    rows = await db.list_accounts(platform, with_secrets=False)
+    rows = await accounts_cfg.list_accounts(platform, with_secrets=False)
     return [AccountOut.masked(row) for row in rows]
 
 
@@ -85,7 +90,7 @@ async def list_accounts(platform: str | None = Query(default=None)) -> list[Acco
 async def create_account(payload: AccountCreate) -> AccountOut:
     fields = _with_user_agent(payload.model_dump())
     _refuse_bad_cookie(fields["platform"], fields["account_id"], fields.get("cookie") or "")
-    row = await db.create_account(fields)
+    row = await accounts_cfg.create_account(fields)
     await _record_cookie_saved(row)
     return AccountOut.masked(row)
 
@@ -104,7 +109,9 @@ def _refuse_bad_cookie(platform: str, account_id: str, cookie: str) -> None:
 
 async def _record_cookie_saved(row: dict) -> None:
     if row.get("platform") == "facebook" and row.get("cookie"):
-        await db.record_account_event(row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts)
+        await accounts_cfg.record_account_event(
+            row, "cookie_saved", **assess_cookie(row["cookie"], row["account_id"]).facts
+        )
 
 
 def _with_user_agent(fields: dict) -> dict:
@@ -129,7 +136,7 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
     # giữ UA đang lưu.
     user_agent = (changes.pop("user_agent", None) or "").strip()
     if user_agent or "cookie" in changes:
-        current = await db.get_account(account_id)
+        current = await accounts_cfg.get_account(account_id)
         if current is None:
             raise NotFoundError(f"Account {account_id} not found.")
         stored_cookie = current.get("cookie") or ""
@@ -143,11 +150,11 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
         elif "cookie" in changes:
             _refuse_bad_cookie(current["platform"], current["account_id"], changes["cookie"])
     if not changes:
-        row = await db.get_account(account_id)
+        row = await accounts_cfg.get_account(account_id)
         if row is None:
             raise NotFoundError(f"Account {account_id} not found.")
         return AccountOut.masked(row)
-    row = await db.update_account(account_id, changes)
+    row = await accounts_cfg.update_account(account_id, changes)
     if "cookie" in changes:
         await _record_cookie_saved(row)
     return AccountOut.masked(row)
@@ -155,7 +162,7 @@ async def update_account(account_id: int, payload: AccountUpdate) -> AccountOut:
 
 @router.get("/accounts/{account_id}/credentials", response_model=AccountCredentialsOut)
 async def get_account_credentials(account_id: int) -> AccountCredentialsOut:
-    row = await db.get_account(account_id)
+    row = await accounts_cfg.get_account(account_id)
     if row is None:
         raise NotFoundError(f"Account {account_id} not found.")
     logger.info("account_credentials_viewed", account_id=account_id)
@@ -170,8 +177,8 @@ _ACCOUNT_REDIS_KEYS = ("session_cache", "storage_state", "comments_query", "repl
 
 @router.delete("/accounts/{account_id}")
 async def delete_account(account_id: int) -> dict[str, bool]:
-    account = await db.get_account(account_id)
-    await db.delete_account(account_id)
+    account = await accounts_cfg.get_account(account_id)
+    await accounts_cfg.delete_account(account_id)
     if account is not None and account.get("platform") in ("facebook", "threads"):
         # Không dọn thì session cache + con trỏ active_account của tài khoản đã xoá vẫn còn: token-status vẫn báo tài
         # khoản đó và crawler vẫn dùng tiếp session của nó.
@@ -194,7 +201,7 @@ async def nurture_accounts(payload: NurtureRequest) -> NurtureResponse:
     Facebook không còn luồng nuôi; chỉ cần bật account và lịch crawl."""
     targets: list[tuple[str, str | None]] = []
     if payload.account_id is not None:
-        account = await db.get_account(payload.account_id)
+        account = await accounts_cfg.get_account(payload.account_id)
         if account is None:
             raise NotFoundError(f"Account {payload.account_id} not found")
         platform = account["platform"]
@@ -225,11 +232,11 @@ async def check_account(account_id: int) -> AccountOut:
     """Kiểm tra sức khoẻ thụ động - đọc các tín hiệu spider-hub vốn đã duy trì (bộ đếm bị
     chặn trong Redis, cache session) thay vì gửi request mới tới nền tảng. Xem
     app/services/accounts/account_health.py."""
-    account = await db.get_account(account_id)
+    account = await accounts_cfg.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
     status = await evaluate_account_health(account)
-    row = await db.update_account_check_result(account_id, status=status)
+    row = await accounts_cfg.update_account_check_result(account_id, status=status)
     return AccountOut.masked(row)
 
 
@@ -239,7 +246,7 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
     đúng phép tính mà một app authenticator làm. Dành cho người đang tự đăng nhập *bằng
     tay* khi việc đăng nhập tự động không qua được - họ vẫn đọc mã rồi tự gõ, endpoint
     này chỉ đỡ cho họ phải chạy `pyotp.TOTP(secret).now()` trong terminal."""
-    account = await db.get_account(account_id)
+    account = await accounts_cfg.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
     # App/người bán thường cho secret dạng "ABCD EFGH ...", pyotp từ chối khoảng trắng.
@@ -259,8 +266,8 @@ async def get_totp_code(account_id: int) -> TotpCodeResponse:
 async def set_account_enabled(account_id: int, payload: AccountSetEnabled) -> AccountOut:
     """Nút bật/tắt tài khoản trên dashboard - bật lại cũng gỡ checkpoint/cooldown (xem
     app/services/platform_config_db.set_account_enabled)."""
-    row = await db.set_account_enabled(account_id, payload.enabled)
-    await db.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
+    row = await accounts_cfg.set_account_enabled(account_id, payload.enabled)
+    await accounts_cfg.record_account_event(row, "account_enabled" if payload.enabled else "account_switched_off")
     return AccountOut.masked(row)
 
 
@@ -271,7 +278,7 @@ async def reset_tiktok_cookies(account_id: int) -> dict[str, bool]:
     trong app/clients/kafka.py. Chỉ dành cho TikTok: Facebook/Threads dùng các route
     token_refresh cho cả nền tảng (xem app/api/routes/token_refresh.py), chạy lại luồng
     bootstrap trình duyệt bằng mật khẩu/2FA của riêng chúng thay vì nhắm một dòng."""
-    account = await db.get_account(account_id)
+    account = await accounts_cfg.get_account(account_id)
     if account is None:
         raise NotFoundError(f"Account {account_id} not found")
     if account["platform"] != "tiktok":
@@ -282,31 +289,31 @@ async def reset_tiktok_cookies(account_id: int) -> dict[str, bool]:
 
 @router.get("/proxies", response_model=list[ProxyOut])
 async def list_proxies(platform: str | None = Query(default=None)) -> list[ProxyOut]:
-    rows = await db.list_proxies(platform)
+    rows = await accounts_cfg.list_proxies(platform)
     return [ProxyOut(**row) for row in rows]
 
 
 @router.post("/proxies", response_model=ProxyOut)
 async def create_proxy(payload: ProxyCreate) -> ProxyOut:
-    row = await db.create_proxy(payload.model_dump())
+    row = await accounts_cfg.create_proxy(payload.model_dump())
     return ProxyOut(**row)
 
 
 @router.patch("/proxies/{proxy_id}", response_model=ProxyOut)
 async def update_proxy(proxy_id: int, payload: ProxyUpdate) -> ProxyOut:
-    row = await db.update_proxy(proxy_id, payload.model_dump(exclude_unset=True))
+    row = await accounts_cfg.update_proxy(proxy_id, payload.model_dump(exclude_unset=True))
     return ProxyOut(**row)
 
 
 @router.delete("/proxies/{proxy_id}")
 async def delete_proxy(proxy_id: int) -> dict[str, bool]:
-    await db.delete_proxy(proxy_id)
+    await accounts_cfg.delete_proxy(proxy_id)
     return {"ok": True}
 
 
 def _proxy_settings_out(row: dict) -> ProxySettingsOut:
     settings = row.get("settings") if isinstance(row.get("settings"), dict) else {}
-    merged = db.merge_proxy_settings(settings)
+    merged = proxy_settings_cfg.merge_proxy_settings(settings)
     return ProxySettingsOut(values=ProxySettings(**merged), defaults=ProxySettings(), updated_at=row.get("updated_at"))
 
 
@@ -315,7 +322,7 @@ async def get_proxy_settings() -> ProxySettingsOut:
     """Các tham số tinh chỉnh hành vi proxy mà spider-hub đọc (ghim proxy, cooldown, health
     check, nhịp gọi API của nhà cung cấp, backoff khi xếp hàng lại, số lần thử danh tính
     synthetic của TikTok)."""
-    return _proxy_settings_out(await db.get_proxy_settings())
+    return _proxy_settings_out(await proxy_settings_cfg.get_proxy_settings())
 
 
 @router.put("/proxy", response_model=ProxySettingsOut)
@@ -324,7 +331,7 @@ async def set_proxy_settings(payload: ProxySettings) -> ProxySettingsOut:
         raise ValidationError("cooldown_base_minutes must not exceed cooldown_max_minutes")
     if payload.exhausted_backoff_base_seconds > payload.exhausted_backoff_max_seconds:
         raise ValidationError("exhausted_backoff_base_seconds must not exceed exhausted_backoff_max_seconds")
-    row = await db.upsert_proxy_settings(payload.model_dump())
+    row = await proxy_settings_cfg.upsert_proxy_settings(payload.model_dump())
     logger.info("proxy_settings_updated", **payload.model_dump())
     return _proxy_settings_out(row)
 
@@ -346,7 +353,7 @@ async def list_proxy_providers() -> list[ProxyProviderOut]:
     """Các nguồn proxy của nhà cung cấp (dòng proxy_providers) - nơi duy nhất
     spider-hub đọc key của nhà cung cấp. Không bao giờ trả về key, chỉ cho biết đã
     lưu key hay chưa."""
-    return [_proxy_provider_out(row) for row in await db.list_proxy_providers()]
+    return [_proxy_provider_out(row) for row in await proxy_settings_cfg.list_proxy_providers()]
 
 
 @router.put("/proxy/providers/{key}", response_model=ProxyProviderOut)
@@ -359,7 +366,7 @@ async def set_proxy_provider(key: str, payload: ProxyProviderUpdate) -> ProxyPro
     if not re.fullmatch(r"[a-z0-9_]{1,64}", key):
         raise ValidationError("provider key must be 1-64 chars of a-z, 0-9, _")
     token = payload.token.strip() if payload.token and payload.token.strip() else None
-    row = await db.upsert_proxy_provider(key, api_url=payload.api_url.strip(), token=token)
+    row = await proxy_settings_cfg.upsert_proxy_provider(key, api_url=payload.api_url.strip(), token=token)
     logger.info("proxy_provider_updated", key=key, api_url=payload.api_url.strip(), token_changed=token is not None)
     return _proxy_provider_out(row)
 
@@ -369,38 +376,38 @@ async def delete_proxy_provider(key: str) -> dict[str, bool]:
     """Xoá nguồn proxy. Nguồn đang được dùng (có dòng platform_proxies trỏ tới, hoặc là
     nguồn của tiktok_synthetic_provider) thì bị từ chối - xoá nó sẽ để những proxy đó mồ
     côi mà không ai hỏi."""
-    await db.delete_proxy_provider(key)
+    await proxy_settings_cfg.delete_proxy_provider(key)
     logger.info("proxy_provider_deleted", key=key)
     return {"ok": True}
 
 
 @router.get("/filter-keywords", response_model=list[FilterKeywordOut])
 async def list_filter_keywords(category: str | None = Query(default=None)) -> list[FilterKeywordOut]:
-    rows = await db.list_filter_keywords(category)
+    rows = await schedules_cfg.list_filter_keywords(category)
     return [FilterKeywordOut(**row) for row in rows]
 
 
 @router.post("/filter-keywords", response_model=FilterKeywordOut)
 async def create_filter_keyword(payload: FilterKeywordCreate) -> FilterKeywordOut:
-    row = await db.create_filter_keyword(payload.model_dump())
+    row = await schedules_cfg.create_filter_keyword(payload.model_dump())
     return FilterKeywordOut(**row)
 
 
 @router.patch("/filter-keywords/{keyword_id}", response_model=FilterKeywordOut)
 async def update_filter_keyword(keyword_id: int, payload: FilterKeywordUpdate) -> FilterKeywordOut:
-    row = await db.update_filter_keyword(keyword_id, payload.model_dump(exclude_unset=True))
+    row = await schedules_cfg.update_filter_keyword(keyword_id, payload.model_dump(exclude_unset=True))
     return FilterKeywordOut(**row)
 
 
 @router.delete("/filter-keywords/{keyword_id}")
 async def delete_filter_keyword(keyword_id: int) -> dict[str, bool]:
-    await db.delete_filter_keyword(keyword_id)
+    await schedules_cfg.delete_filter_keyword(keyword_id)
     return {"ok": True}
 
 
 @router.get("/crawl-schedule", response_model=list[CrawlScheduleOut])
 async def list_crawl_schedule() -> list[CrawlScheduleOut]:
-    rows = await db.list_crawl_schedules()
+    rows = await schedules_cfg.list_crawl_schedules()
     return [_crawl_schedule_out(row) for row in rows]
 
 
@@ -414,7 +421,7 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
     """Upsert - một nền tảng chưa có dòng nào cho tới khi lịch của nó được lưu lần đầu (xem
     app/services/crawl/scheduler/, chỗ đó chỉ bỏ qua nền tảng chưa có dòng chứ không coi đó
     là "mỗi nửa đêm" hay một mặc định ngầm nào khác)."""
-    row = await db.upsert_crawl_schedule(
+    row = await schedules_cfg.upsert_crawl_schedule(
         platform,
         run_time=",".join(payload.run_times or []),
         enabled=payload.enabled,
@@ -426,7 +433,7 @@ async def set_crawl_schedule(platform: str, payload: CrawlScheduleUpdate) -> Cra
 
 @router.get("/comment-schedule", response_model=list[CommentScheduleOut])
 async def list_comment_schedule() -> list[CommentScheduleOut]:
-    rows = await db.list_comment_crawl_schedules()
+    rows = await schedules_cfg.list_comment_crawl_schedules()
     return [CommentScheduleOut(**row) for row in rows]
 
 
@@ -434,7 +441,7 @@ async def list_comment_schedule() -> list[CommentScheduleOut]:
 async def set_comment_schedule(platform: str, payload: CommentScheduleUpdate) -> CommentScheduleOut:
     """Upsert - một nền tảng chưa có dòng ở đây cho tới khi lượt quét comment của nó được
     lưu lần đầu, giống /crawl-schedule/{platform} phía trên."""
-    row = await db.upsert_comment_crawl_schedule(
+    row = await schedules_cfg.upsert_comment_crawl_schedule(
         platform, run_time=payload.run_time, enabled=payload.enabled, top_n=payload.top_n
     )
     return CommentScheduleOut(**row)
@@ -445,7 +452,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
     from app.ai.providers.client import active_provider_key
 
     active = await active_provider_key()
-    provider = await db.get_ai_provider(active) if active else None
+    provider = await ai_config_cfg.get_ai_provider(active) if active else None
     defaults = default_system_prompts()
     stored = value if isinstance(value := row.get("prompts"), dict) else {}
     prompts = []
@@ -472,7 +479,7 @@ async def _ai_settings_out(row: dict) -> AiSettingsOut:
 
 @router.get("/ai", response_model=AiSettingsOut)
 async def get_ai_settings() -> AiSettingsOut:
-    row = await db.get_ai_settings()
+    row = await ai_config_cfg.get_ai_settings()
     return await _ai_settings_out(row)
 
 
@@ -484,7 +491,7 @@ async def set_ai_settings(payload: AiSettingsUpdate) -> AiSettingsOut:
 
     allowed = set(AI_PROMPT_TASKS)
     prompts = {key: value for key, value in payload.prompts.items() if key in allowed and isinstance(value, str)}
-    row = await db.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
+    row = await ai_config_cfg.upsert_ai_settings(enabled=payload.enabled, prompts=prompts)
     invalidate_ai_runtime_cache()
     logger.info("ai_settings_updated", enabled=payload.enabled, prompt_tasks=sorted(prompts))
     return await _ai_settings_out(row)
@@ -510,15 +517,15 @@ async def set_active_ai_provider(payload: AiActiveProviderUpdate) -> AiSettingsO
     from app.ai.runtime import invalidate_ai_runtime_cache
     from app.services.ops.ai_runtime_sync import sync_ai_runtime
 
-    row = await db.get_ai_provider(payload.provider)
+    row = await ai_config_cfg.get_ai_provider(payload.provider)
     if not row or not row.get("base_url") or not row.get("api_key") or not row.get("model"):
         raise ValidationError(f"Provider {payload.provider} is missing base URL / API key / model")
-    await db.set_active_ai_provider(payload.provider)
+    await ai_config_cfg.set_active_ai_provider(payload.provider)
     invalidate_provider_cache()
     invalidate_ai_runtime_cache()
     await sync_ai_runtime()
     logger.info("ai_active_provider_set", provider=payload.provider)
-    return await _ai_settings_out(await db.get_ai_settings())
+    return await _ai_settings_out(await ai_config_cfg.get_ai_settings())
 
 
 @router.get("/ai/providers", response_model=list[AiProviderOut])
@@ -527,7 +534,7 @@ async def list_ai_providers() -> list[AiProviderOut]:
     from app.ai.providers.client import active_provider_key
 
     active = await active_provider_key()
-    return [_ai_provider_out(row, active) for row in await db.list_ai_providers()]
+    return [_ai_provider_out(row, active) for row in await ai_config_cfg.list_ai_providers()]
 
 
 @router.put("/ai/providers/{key}", response_model=AiProviderOut)
@@ -543,7 +550,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
             "Provider name may only contain lowercase letters, digits, hyphens and underscores (max 40 characters)"
         )
     api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
-    row = await db.upsert_ai_provider(
+    row = await ai_config_cfg.upsert_ai_provider(
         key,
         base_url=payload.base_url.strip(),
         api_key=api_key,
@@ -552,7 +559,7 @@ async def set_ai_provider(key: str, payload: AiProviderUpdate) -> AiProviderOut:
     )
     active = await active_provider_key()
     if not active and row.get("base_url") and row.get("api_key") and row.get("model"):
-        await db.set_active_ai_provider(key)
+        await ai_config_cfg.set_active_ai_provider(key)
         active = key
     invalidate_provider_cache()
     invalidate_ai_runtime_cache()
@@ -569,7 +576,7 @@ async def delete_ai_provider(key: str) -> None:
 
     if key == await active_provider_key():
         raise ValidationError("This provider is currently in use - select another provider before deleting it")
-    if not await db.delete_ai_provider(key):
+    if not await ai_config_cfg.delete_ai_provider(key):
         raise NotFoundError(f"Provider {key} not found")
     invalidate_provider_cache()
     await sync_ai_runtime()
@@ -583,7 +590,7 @@ async def list_ai_models(payload: AiModelsRequest) -> AiModelsOut:
 
     api_key = (payload.api_key or "").strip()
     if not api_key and payload.key:
-        api_key = str((await db.get_ai_provider(payload.key) or {}).get("api_key") or "")
+        api_key = str((await ai_config_cfg.get_ai_provider(payload.key) or {}).get("api_key") or "")
     if not api_key:
         raise ValidationError("An API key is required (or choose a provider with a saved key) to list models")
     url = payload.base_url.strip().rstrip("/")
@@ -622,7 +629,7 @@ async def import_parse(payload: ImportParseRequest) -> ImportParseResponse:
 async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
     """Bước 2 - người vận hành đã xem/sửa bản xem trước của /import/parse và đang xác
     nhận. Ghi từng dòng bằng create_account/create_proxy (cùng đường cột được cho phép
-    mà form thêm tài khoản/proxy thông thường dùng, xem platform_config_db.py) - dòng nào
+    mà form thêm tài khoản/proxy thông thường dùng, xem config_db/accounts.py) - dòng nào
     lỗi (ví dụ account_id trùng) thì bỏ qua, không làm hỏng phần còn lại của lô."""
     created = 0
     failed = 0
@@ -636,9 +643,9 @@ async def import_commit(payload: ImportCommitRequest) -> ImportCommitResponse:
                 _refuse_bad_cookie(
                     payload.platform, str(account_fields.get("account_id") or ""), account_fields.get("cookie") or ""
                 )
-                await _record_cookie_saved(await db.create_account(account_fields))
+                await _record_cookie_saved(await accounts_cfg.create_account(account_fields))
             else:
-                await db.create_proxy(fields)
+                await accounts_cfg.create_proxy(fields)
             created += 1
         except Exception as exc:  # noqa: BLE001 - một dòng nhập lỗi chỉ tính vào số dòng thất bại, các dòng khác vẫn lưu
             logger.warning("import_commit_row_failed", target=payload.target, error=exc)
@@ -678,8 +685,8 @@ async def get_cleanup_route() -> CleanupSettingsOut:
     """Các tham số đang có hiệu lực (giá trị lưu trên dashboard đè lên mặc định từ env),
     dòng của lần chạy gần nhất trong cleanup_run_history, và có lượt chạy nào đang diễn
     ra không (dashboard dùng thông tin này để khoá nút Run-now và hiện "Running…")."""
-    row = await db.get_cleanup_settings()
-    history = await db.list_cleanup_run_history(limit=1)
+    row = await cleanup_cfg.get_cleanup_settings()
+    history = await cleanup_cfg.list_cleanup_run_history(limit=1)
     return _cleanup_settings_out(row, last_run=history[0] if history else None)
 
 
@@ -690,9 +697,9 @@ async def set_cleanup_route(payload: CleanupSettingsUpdate) -> CleanupSettingsOu
     allowed = {"run_time", "enabled", "grace_hours"}
     set_fields = set(payload.model_fields_set) & allowed
     values_to_write = {key: getattr(payload, key) for key in set_fields}
-    row = await db.upsert_cleanup_settings(values_to_write)
+    row = await cleanup_cfg.upsert_cleanup_settings(values_to_write)
     logger.info("cleanup_settings_updated", **values_to_write)
-    history = await db.list_cleanup_run_history(limit=1)
+    history = await cleanup_cfg.list_cleanup_run_history(limit=1)
     return _cleanup_settings_out(row, last_run=history[0] if history else None)
 
 
@@ -711,7 +718,7 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
     """Danh sách các dòng cleanup_run_history, mới nhất trước, giới hạn bởi `limit` (mặc
     định 20). Số liệu của mỗi mục là số id thật từ DELETE RETURNING trong cleanup.py -
     cùng con số được log trong `irrelevant_purge_done telegram=True`."""
-    rows = await db.list_cleanup_run_history(limit=limit)
+    rows = await cleanup_cfg.list_cleanup_run_history(limit=limit)
     return [CleanupRunHistoryEntry(**row) for row in rows]
 
 
@@ -722,12 +729,12 @@ async def cleanup_history_route(limit: int = 20) -> list[CleanupRunHistoryEntry]
 @router.get("/discovery", response_model=DiscoverySettings)
 async def get_discovery_settings() -> DiscoverySettings:
     """AI có đang tự thêm hashtag / câu tìm kiếm / trang nguồn mới không (scheduler/discovery.discovery_enabled)."""
-    return DiscoverySettings(**await db.get_discovery_settings())
+    return DiscoverySettings(**await omar_cfg.get_discovery_settings())
 
 
 @router.put("/discovery", response_model=DiscoverySettings)
 async def set_discovery_settings(payload: DiscoverySettingsUpdate) -> DiscoverySettings:
-    return DiscoverySettings(**await db.set_discovery_enabled(payload.enabled))
+    return DiscoverySettings(**await omar_cfg.set_discovery_enabled(payload.enabled))
 
 
 @router.get("/omar-api", response_model=OmarApiSettingsOut)
@@ -736,7 +743,7 @@ async def get_omar_api_settings() -> OmarApiSettingsOut:
     ngày và số request đồng thời. API key được đọc từ bảng omar_api_settings trên D1."""
     from app.core.config import settings as app_settings
 
-    row = await db.get_omar_api_settings()
+    row = await omar_cfg.get_omar_api_settings()
     return OmarApiSettingsOut(
         api_key_set=bool(row and row.get("api_key")),
         base_url=app_settings.omar_api_base_url,
@@ -759,8 +766,8 @@ async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettin
     from app.services.omar import omar_pause
 
     if payload.api_key is not None:
-        await db.upsert_omar_api_key(payload.api_key.strip())
-    await db.set_omar_limits(
+        await omar_cfg.upsert_omar_api_key(payload.api_key.strip())
+    await omar_cfg.set_omar_limits(
         requests_per_minute=payload.requests_per_minute,
         daily_requests=payload.daily_requests,
         concurrency=payload.concurrency,
@@ -770,7 +777,7 @@ async def set_omar_api_settings(payload: OmarApiSettingsUpdate) -> OmarApiSettin
         app_settings.omar_api_base_url = payload.base_url.strip()
 
     result = await get_omar_api_settings()
-    key = ((await db.get_omar_api_settings()) or {}).get("api_key") or ""
+    key = ((await omar_cfg.get_omar_api_settings()) or {}).get("api_key") or ""
     if payload.api_key is not None and key:
         usage = await fetch_usage(key)
         # /usage trả status "active" khi key dùng được; không đọc được (key sai / Omar lỗi) thì usage là None.

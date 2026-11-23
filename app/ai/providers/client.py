@@ -81,7 +81,7 @@ async def active_provider_key() -> str:
         return _active_cache[1]
     key = ""
     try:
-        from app.services.accounts.platform_config_db import get_ai_settings
+        from app.services.accounts.config_db.ai_config import get_ai_settings
 
         key = str((await get_ai_settings()).get("active_provider") or "").strip().lower()
     except Exception as exc:  # noqa: BLE001 - không đọc được thì giữ lựa chọn cũ
@@ -166,7 +166,7 @@ async def load_provider(key: str | None = None) -> ProviderConfig | None:
 
     cfg: ProviderConfig | None = None
     try:
-        from app.services.accounts.platform_config_db import get_ai_provider
+        from app.services.accounts.config_db.ai_config import get_ai_provider
 
         row = await get_ai_provider(key)
         if row and row.get("base_url") and row.get("api_key"):

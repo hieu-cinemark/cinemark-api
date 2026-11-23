@@ -141,7 +141,7 @@ def hydrate_report_comments(topics_result: dict, sample: list[dict], posts: list
 async def _latest_accuracy() -> dict | None:
     """Lần chấm độ chính xác gần nhất (ai_accuracy_runs), hoặc None - report vẫn tạo được khi D1 lỗi."""
     try:
-        from app.services.accounts.platform_config_db import get_latest_accuracy_run
+        from app.services.accounts.config_db.ai_config import get_latest_accuracy_run
 
         run = await get_latest_accuracy_run()
     except Exception as exc:  # noqa: BLE001 - thiếu ghi chú độ chính xác không được chặn cả report

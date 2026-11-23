@@ -67,12 +67,12 @@ def test_cookie_without_user_agent_can_be_saved_but_other_problems_still_refuse(
 async def test_resaving_the_same_cookie_is_not_a_new_session(monkeypatch):
     stored = cookie()
     monkeypatch.setattr(
-        routes.db,
+        routes.accounts_cfg,
         "get_account",
         AsyncMock(return_value={"id": 1, "platform": "facebook", "account_id": "123", "cookie": stored}),
     )
     update = AsyncMock()
-    monkeypatch.setattr(routes.db, "update_account", update)
+    monkeypatch.setattr(routes.accounts_cfg, "update_account", update)
     monkeypatch.setattr(routes.AccountOut, "masked", staticmethod(lambda row: row))
     payload = SimpleNamespace(model_dump=lambda exclude_unset: {"cookie": stored})
     await routes.update_account(1, payload)

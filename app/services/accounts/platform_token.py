@@ -31,7 +31,7 @@ async def _tiktok_session_status() -> tuple[str | None, int | None]:
     Do bootstrap auth tiktok / import cookie của spider-hub ghi (update_tiktok_identity +
     reactivate_account) — không có key Redis tiktok:session_cache như Facebook/Threads.
     """
-    from app.services.accounts.platform_config_db import list_accounts
+    from app.services.accounts.config_db.accounts import list_accounts
 
     rows = await list_accounts("tiktok")
     usable = [

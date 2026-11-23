@@ -21,7 +21,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.errors import NoSavedSessionError, NotFoundError
 from app.core.logging import get_logger
 from app.schemas.scraper import ImportCookiesRequest, RestoreSessionRequest, TokenStatus, TriggerTokenRefreshResponse
-from app.services.accounts.platform_config_db import get_account
+from app.services.accounts.config_db.accounts import get_account
 from app.services.accounts.platform_token import account_key as _account_key
 from app.services.accounts.platform_token import get_token_status
 from app.services.crawl import refresh_tracker

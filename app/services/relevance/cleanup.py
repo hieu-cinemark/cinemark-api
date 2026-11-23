@@ -36,7 +36,7 @@ from app.repositories.d1.sql import compile_sql, json_values
 from app.repositories.d1.tables import comments as comments_table
 from app.repositories.d1.tables import movies, post_comment_value, post_engagement_snapshots, post_visuals
 from app.repositories.d1.tables import posts as posts_table
-from app.services.accounts import platform_config_db as db
+from app.services.accounts.config_db import cleanup as cleanup_cfg
 from app.services.relevance.relevance_rules import film_context_reason
 from app.services.stats.stats_summary import subtract_deleted
 
@@ -114,7 +114,7 @@ async def resolve_cleanup_settings() -> dict[str, Any]:
     """Các tham số dọn dẹp đang có hiệu lực: dòng cleanup_settings lưu trên dashboard cho
     những key nó có, còn lại lấy giá trị dự phòng từ env trong app/core/config.py. Luôn
     cùng một dạng, nên chỗ gọi không cần rẽ nhánh."""
-    row = await db.get_cleanup_settings()
+    row = await cleanup_cfg.get_cleanup_settings()
     stored = value if isinstance(value := row.get("settings"), dict) else {}
     grace = stored.get("grace_hours")
     return {
@@ -239,14 +239,14 @@ async def run_purge(*, triggered_by: str) -> dict[str, Any] | None:
     run_id: int | None = None
     try:
         cfg = await resolve_cleanup_settings()
-        run_id = await db.record_cleanup_run_start(dry_run=False, triggered_by=triggered_by)
+        run_id = await cleanup_cfg.record_cleanup_run_start(dry_run=False, triggered_by=triggered_by)
         summary = await purge_irrelevant_posts(grace_hours=cfg["grace_hours"])
-        await db.record_cleanup_run_finish(run_id, summary=summary)
+        await cleanup_cfg.record_cleanup_run_finish(run_id, summary=summary)
         return summary
     except Exception as exc:
         if run_id is not None:
             try:
-                await db.record_cleanup_run_finish(run_id, summary={}, error=str(exc))
+                await cleanup_cfg.record_cleanup_run_finish(run_id, summary={}, error=str(exc))
             except Exception as history_exc:  # noqa: BLE001 - không được che mất lỗi gốc
                 # Không được che mất lỗi gốc.
                 logger.error("irrelevant_purge_history_write_failed", error=history_exc)

@@ -20,7 +20,7 @@ from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords
-from app.services.accounts.platform_config_db import crawl_setting
+from app.services.accounts.config_db.proxy_settings import crawl_setting
 
 logger = get_logger(__name__)
 

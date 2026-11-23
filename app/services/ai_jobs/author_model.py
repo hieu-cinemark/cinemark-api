@@ -126,7 +126,7 @@ def pick_unlabeled(authors: dict[tuple[str, str], dict], labels: dict[tuple[str,
 async def label_with_model(*, threshold: float | None = None, dry_run: bool = False) -> dict[str, Any]:
     """Một lượt gắn nhãn bằng mô hình. Không có file model thì bỏ qua (job AI vẫn chạy như trước)."""
     from app.ml.author_tier import MODEL_SOURCE, confident, load_bundle, predict
-    from app.services.accounts.platform_config_db import crawl_setting
+    from app.services.accounts.config_db.proxy_settings import crawl_setting
 
     if not MODEL_PATH.exists():
         logger.warning("author_model_missing", path=str(MODEL_PATH))

@@ -38,7 +38,7 @@ from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
-from app.services.accounts.platform_config_db import get_omar_api_settings, omar_limits, omar_requests_cap
+from app.services.accounts.config_db.omar import get_omar_api_settings, omar_limits, omar_requests_cap
 from app.services.omar import omar_comments
 
 logger = get_logger(__name__)

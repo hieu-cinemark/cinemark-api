@@ -46,7 +46,7 @@ async def load_ai_runtime() -> dict[str, Any]:
         return _ai_cfg_cache[1]
     cfg: dict[str, Any] = {"enabled": False, "prompts": {}, "updated_at": None}
     try:
-        from app.services.accounts.platform_config_db import get_ai_settings
+        from app.services.accounts.config_db.ai_config import get_ai_settings
 
         row = await get_ai_settings()
         cfg = {

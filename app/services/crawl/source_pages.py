@@ -41,7 +41,7 @@ from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, metadata
 from app.repositories.d1.tables import movies
 from app.repositories.d1.tables import posts as posts_table
-from app.services.accounts.platform_config_db import crawl_setting
+from app.services.accounts.config_db.proxy_settings import crawl_setting
 from app.services.crawl.task_queue import enqueue_published
 from app.services.relevance.relevance_rules import normalize_title
 

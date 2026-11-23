@@ -156,7 +156,7 @@ def test_since_days_only_shrinks_after_a_complete_read(monkeypatch, last, expect
 def test_facebook_comment_round_ignores_crawl_schedule_switch(monkeypatch):
     monkeypatch.setattr(scheduler, "comment_round_done", {})
     monkeypatch.setattr(
-        scheduler.db,
+        scheduler.schedules_cfg,
         "list_comment_crawl_schedules",
         AsyncMock(return_value=[{"platform": "facebook", "enabled": True, "top_n": 15, "run_time": "08:00"}]),
     )

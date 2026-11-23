@@ -69,7 +69,7 @@ def _accounts(monkeypatch, n):
     async def fake_count(platform):
         return n
 
-    monkeypatch.setattr(crawl_lanes.platform_config_db, "count_crawl_ready_accounts", fake_count)
+    monkeypatch.setattr(crawl_lanes.accounts_cfg, "count_crawl_ready_accounts", fake_count)
 
 
 def test_stage_of():

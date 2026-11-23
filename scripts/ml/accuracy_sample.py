@@ -131,7 +131,7 @@ async def score(path: Path, save: bool, note: str | None, labeled_at: str) -> No
     metrics = compute_metrics(pairs)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
     if save:
-        from app.services.accounts.platform_config_db import insert_accuracy_run
+        from app.services.accounts.config_db.ai_config import insert_accuracy_run
 
         await insert_accuracy_run(labeled_at=labeled_at, sample_size=metrics["n"], metrics=metrics, note=note)
         print("Đã lưu vào ai_accuracy_runs")

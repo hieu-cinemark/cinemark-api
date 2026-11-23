@@ -36,7 +36,7 @@ from app.repositories.d1.posts import relevant_post
 from app.repositories.d1.sql import d1_exec, json_rows
 from app.repositories.d1.tables import channel_profiles
 from app.repositories.d1.tables import posts as posts_table
-from app.services.accounts.platform_config_db import get_omar_api_settings
+from app.services.accounts.config_db.omar import get_omar_api_settings
 
 logger = get_logger(__name__)
 

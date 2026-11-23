@@ -8,7 +8,7 @@ from datetime import datetime
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.accounts import platform_config_db as db
+from app.services.accounts.config_db import omar as omar_cfg
 from app.services.crawl import threads_channels
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, is_due, spawn
 from app.services.crawl.source_pages import review_suggestions as review_source_pages
@@ -26,7 +26,7 @@ async def discovery_enabled() -> bool:
     query_discovery và duyệt trang nguồn gợi ý: chỉ cào từ khoá / trang đang có. Đọc lỗi thì
     coi như bật (hành vi trước khi có công tắc)."""
     try:
-        return bool((await db.get_discovery_settings()).get("enabled", True))
+        return bool((await omar_cfg.get_discovery_settings()).get("enabled", True))
     except Exception as exc:  # noqa: BLE001
         logger.warning("discovery_settings_read_failed", error=exc)
         return True

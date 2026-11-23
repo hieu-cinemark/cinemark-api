@@ -14,7 +14,7 @@ from app.core.config import settings
 from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords, get_or_create_keyword, set_keyword_enabled
-from app.services.accounts.platform_config_db import get_omar_api_settings, omar_limits
+from app.services.accounts.config_db.omar import get_omar_api_settings, omar_limits
 from app.services.omar import omar_comments, omar_pause, omar_tiktok
 
 logger = get_logger(__name__)

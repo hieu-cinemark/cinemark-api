@@ -16,7 +16,7 @@ from app.clients.omar import (
 from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.accounts.platform_config_db import get_omar_api_settings
+from app.services.accounts.config_db.omar import get_omar_api_settings
 
 logger = get_logger(__name__)
 

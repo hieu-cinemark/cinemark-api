@@ -1,6 +1,6 @@
 # app/services/accounts/config_db
 
-Các bảng cấu hình trên D1 `cinemark-config-db` (xem [docs/config-db-d1.md](../../../../docs/config-db-d1.md)). Mỗi file ở đây là lớp mỏng giữ tên hàm, việc truy vấn nằm ở `d1_store.py`, `d1_ops.py`, `d1_accounts.py`. `platform_config_db.py` còn là cửa ngõ re-export nên code cũ chạy như cũ; code mới import thẳng module con. Test monkeypatch phải patch module con (nơi hàm thật sự tra tên).
+Các bảng cấu hình trên D1 `cinemark-config-db` (xem [docs/config-db-d1.md](../../../../docs/config-db-d1.md)). Mỗi file ở đây là lớp mỏng giữ tên hàm, việc truy vấn nằm ở `d1_store.py`, `d1_ops.py`, `d1_accounts.py`. Code import thẳng module con; test monkeypatch phải patch module con (nơi hàm thật sự tra tên).
 
 ## Các file
 

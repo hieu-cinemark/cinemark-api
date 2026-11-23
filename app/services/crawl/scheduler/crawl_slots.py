@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords
 from app.schemas.settings import parse_run_times
-from app.services.accounts import platform_config_db as db
+from app.services.accounts.config_db import schedules as schedules_cfg
 from app.services.crawl import crawl_lanes
 from app.services.crawl.keyword_yield import plan_crawl as plan_keyword_crawl
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, is_due, spawn
@@ -251,7 +251,7 @@ async def run_crawl_slot(platform: str, today: str, slot: str, **kwargs) -> None
     await _finish_crawl_slot(key, complete=complete)
     if complete:
         try:
-            await db.mark_crawl_schedule_triggered(platform, today)
+            await schedules_cfg.mark_crawl_schedule_triggered(platform, today)
         except Exception as exc:  # noqa: BLE001 - chỉ để hiển thị, cờ fired mới là thứ chống chạy lặp
             logger.warning("scheduled_crawl_mark_failed", platform=platform, error=exc)
     elif not is_due(slot, datetime.now(TIMEZONE) + timedelta(seconds=RETRY_BACKOFF_SECONDS)):
@@ -261,7 +261,7 @@ async def run_crawl_slot(platform: str, today: str, slot: str, **kwargs) -> None
 async def crawl_tick() -> None:
     now = datetime.now(TIMEZONE)
     today = now.date().isoformat()
-    for sched in await db.list_crawl_schedules():
+    for sched in await schedules_cfg.list_crawl_schedules():
         if not sched["enabled"]:
             continue
         slots = parse_run_times(sched["run_time"])
