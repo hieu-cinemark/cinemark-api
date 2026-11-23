@@ -15,7 +15,7 @@ from app.core.errors import NotFoundError, UpstreamError, ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1.keywords import get_enabled_keywords, get_or_create_keyword, set_keyword_enabled
 from app.services.accounts.config_db.omar import get_omar_api_settings, omar_limits
-from app.services.omar import omar_comments, omar_pause, omar_tiktok
+from app.services.omar import omar_comments, omar_fetch, omar_hashtag, omar_pause, omar_tiktok
 
 logger = get_logger(__name__)
 
@@ -36,7 +36,7 @@ async def omar_status() -> dict[str, Any]:
         return await omar_tiktok.fetch_usage(api_key) if api_key else None
 
     progress, usage, round_status, paused, comments, limits = await asyncio.gather(
-        omar_tiktok.hashtag_progress(),
+        omar_hashtag.hashtag_progress(),
         _usage(),
         omar_tiktok.round_status_full(),
         omar_pause.get_pause(),
@@ -141,7 +141,7 @@ class OmarHashtagRequest(BaseModel):
 @router.post("/hashtags")
 async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     """Ô "Thêm hashtag" ở tab Omar: người dùng gõ hashtag cho một phim -> kiểm tra có video trên TikTok, tạo (hoặc bật lại)
-    từ khoá TikTok, rồi cào ngay tới hết (omar_tiktok.crawl_hashtag_now). Spider TikTok và các lượt Omar sau dùng từ khoá
+    từ khoá TikTok, rồi cào ngay tới hết (omar_hashtag.crawl_hashtag_now). Spider TikTok và các lượt Omar sau dùng từ khoá
     này như mọi từ khoá khác."""
     tag = payload.hashtag.strip().lstrip("#").replace(" ", "")
     if len(tag) < 2:
@@ -149,7 +149,7 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     # Kiểm tra trên TikTok qua Omar có lúc >12 giây (đi chung bộ giãn nhịp với lượt Omar đang chạy) - dashboard chỉ chờ
     # 15 giây. Quá EXISTS_CHECK_SECONDS thì coi như chưa biết: vẫn tạo từ khoá và cào; hashtag rỗng thì lượt cào dừng ở trang 1.
     try:
-        exists = await asyncio.wait_for(omar_tiktok.hashtag_exists(tag), timeout=EXISTS_CHECK_SECONDS)
+        exists = await asyncio.wait_for(omar_fetch.hashtag_exists(tag), timeout=EXISTS_CHECK_SECONDS)
     except TimeoutError:
         exists = None
     if exists is False:
@@ -158,7 +158,7 @@ async def omar_add_hashtag(payload: OmarHashtagRequest) -> dict[str, Any]:
     if row is None:
         raise UpstreamError("Could not create the keyword (movie does not exist or is disabled, or D1 failed)")
     await set_keyword_enabled("tiktok", row["id"], True)
-    started = omar_tiktok.crawl_hashtag_now(row)
+    started = omar_hashtag.crawl_hashtag_now(row)
     logger.info("omar_hashtag_added", hashtag=row["keyword"], movie_id=payload.movie_id, started=started)
     return {"keyword": row, "started": started, "verified": exists is True}
 
@@ -171,6 +171,6 @@ async def omar_recrawl_hashtag(keyword_id: str) -> dict[str, Any]:
     keyword = next((k for k in keywords if k["id"] == keyword_id and str(k["keyword"]).startswith("#")), None)
     if keyword is None:
         raise NotFoundError("Enabled TikTok hashtag not found")
-    started = await omar_tiktok.recrawl_hashtag_now(keyword)
+    started = await omar_hashtag.recrawl_hashtag_now(keyword)
     logger.info("omar_hashtag_recrawl", hashtag=keyword["keyword"], started=started)
     return {"keyword_id": keyword_id, "hashtag": keyword["keyword"], "started": started}

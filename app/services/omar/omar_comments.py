@@ -38,7 +38,7 @@ from app.repositories.d1.tables import posts
 if TYPE_CHECKING:
     from redis.typing import EncodableT, FieldT
 
-    from app.services.omar.omar_tiktok import Budget, _Pacer
+    from app.services.omar.omar_budget import Budget, _Pacer
 
 logger = get_logger(__name__)
 

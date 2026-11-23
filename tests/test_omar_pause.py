@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from app.core.config import settings
+from app.services.omar import omar_hashtag as oh
 from app.services.omar import omar_pause as pause_mod
 from app.services.omar import omar_tiktok as ot
 
@@ -105,20 +106,20 @@ def test_recrawl_clears_cursor_but_keeps_hashtag_info(monkeypatch):
             "info_at": "x",
         }
     )
-    monkeypatch.setattr(ot, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(oh, "get_redis_client", lambda: redis)
     started = []
-    monkeypatch.setattr(ot, "crawl_hashtag_now", lambda keyword: started.append(keyword["id"]) or True)
-    assert asyncio.run(ot.recrawl_hashtag_now({"id": "kw1", "keyword": "#x"})) is True
+    monkeypatch.setattr(oh, "crawl_hashtag_now", lambda keyword: started.append(keyword["id"]) or True)
+    assert asyncio.run(oh.recrawl_hashtag_now({"id": "kw1", "keyword": "#x"})) is True
     assert json.loads(redis.state["kw1"]) == {"video_count": 5100, "info_at": "x", "hashtag_id": "h1"}
     assert started == ["kw1"]
 
 
 def test_recrawl_refuses_while_hashtag_is_being_crawled(monkeypatch):
     redis = _StateRedis({"cursor": "abc", "pages": 3})
-    monkeypatch.setattr(ot, "get_redis_client", lambda: redis)
-    monkeypatch.setattr(ot, "_manual_running", {"kw1"})
+    monkeypatch.setattr(oh, "get_redis_client", lambda: redis)
+    monkeypatch.setattr(oh, "_manual_running", {"kw1"})
     monkeypatch.setattr(
-        ot, "crawl_hashtag_now", lambda keyword: (_ for _ in ()).throw(AssertionError("must not start"))
+        oh, "crawl_hashtag_now", lambda keyword: (_ for _ in ()).throw(AssertionError("must not start"))
     )
-    assert asyncio.run(ot.recrawl_hashtag_now({"id": "kw1", "keyword": "#x"})) is False
+    assert asyncio.run(oh.recrawl_hashtag_now({"id": "kw1", "keyword": "#x"})) is False
     assert json.loads(redis.state["kw1"])["cursor"] == "abc"

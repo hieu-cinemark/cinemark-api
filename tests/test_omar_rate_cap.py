@@ -2,7 +2,7 @@
 
 import asyncio
 
-from app.services.omar import omar_tiktok
+from app.services.omar import omar_budget, omar_tiktok
 
 _real_sleep = asyncio.sleep
 
@@ -11,9 +11,9 @@ def _gap_after_two_waits(monkeypatch, plan: int, cap: int) -> float:
     async def fake_cap() -> int:
         return cap
 
-    monkeypatch.setattr(omar_tiktok, "omar_requests_cap", fake_cap)
+    monkeypatch.setattr(omar_budget, "omar_requests_cap", fake_cap)
     monkeypatch.setattr(omar_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
-    pacer = omar_tiktok._Pacer(plan)
+    pacer = omar_budget._Pacer(plan)
 
     async def run() -> float:
         await pacer.wait()
@@ -39,10 +39,10 @@ def test_cap_change_applies_within_a_running_round(monkeypatch):
     async def fake_cap() -> int:
         return next(caps)
 
-    monkeypatch.setattr(omar_tiktok, "omar_requests_cap", fake_cap)
-    monkeypatch.setattr(omar_tiktok, "_CAP_REFRESH_SECONDS", 0.0)
+    monkeypatch.setattr(omar_budget, "omar_requests_cap", fake_cap)
+    monkeypatch.setattr(omar_budget, "_CAP_REFRESH_SECONDS", 0.0)
     monkeypatch.setattr(omar_tiktok.asyncio, "sleep", lambda _s: _real_sleep(0))
-    pacer = omar_tiktok._Pacer(150)
+    pacer = omar_budget._Pacer(150)
 
     async def run() -> float:
         await pacer.wait()

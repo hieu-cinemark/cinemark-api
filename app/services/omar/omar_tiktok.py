@@ -29,9 +29,8 @@ from typing import Any
 import httpx
 from sqlalchemy import select
 
-from app.clients.kafka import publish_raw_post
-from app.clients.omar import OmarStop, fetch_usage, hashtag_info, map_video, next_cursor, omar_get, videos_of
-from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.clients.omar import OmarStop, fetch_usage, map_video
+from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.jsonutil import loads_or_none
 from app.core.logging import get_logger
@@ -43,6 +42,9 @@ from app.services.omar import omar_comments
 
 logger = get_logger(__name__)
 
+from app.services.omar.omar_budget import Budget, _Pacer
+from app.services.omar.omar_fetch import _fetch_page, fetch_hashtag_info, publish_videos
+from app.services.omar.omar_hashtag import _MAX_PAGE_FAILURES, _RESET_KEEP, _STATE_KEY, _manual_running
 from app.services.omar.omar_pause import (
     _LAST_ROUND_KEY,
     _RESUME_SLACK_SECONDS,
@@ -52,124 +54,10 @@ from app.services.omar.omar_pause import (
     last_round,
     set_pause,
 )
-from app.services.omar.omar_seen import _claim_unseen, _count_cooccur, _forget_seen
+from app.services.omar.omar_seen import _count_cooccur
 
-
-async def publish_videos(mapped: list[dict[str, Any]], keyword_id: str, stats: dict[str, Any]) -> None:
-    """Gửi video đã map lên raw_posts như spider (chống trùng qua tập seen dùng chung với spider, _claim_unseen)."""
-    brand_new: set[str] = set()
-    fresh_ids = await _claim_unseen([video["video_id"] for video in mapped], brand_new)
-    for video in mapped:
-        if video["video_id"] not in fresh_ids:
-            stats["skipped_seen"] = int(stats.get("skipped_seen") or 0) + 1
-            continue
-        ok = await publish_raw_post(
-            key=f"tiktok:{video['video_id']}", value={"platform": "tiktok", "keyword_id": keyword_id, **video}
-        )
-        stats["published"] = int(stats.get("published") or 0) + int(ok)
-        if not ok:
-            brand_new.discard(video["video_id"])
-            await _forget_seen(video["video_id"])  # chưa tới Kafka: lần sau gửi lại
-
-
-_CAP_REFRESH_SECONDS = 60.0
-
-
-class _Pacer:
-    """Rải đều thời điểm BẮT ĐẦU các request theo giới hạn mỗi phút của gói - dùng chung cho mọi worker chạy song song
-    (request chạy chồng lên nhau, chỉ lúc bắt đầu bị giãn cách), nên tận dụng hết giới hạn mà không bị 429.
-
-    Trần đặt ở tab Omar (omar_api_settings.requests_per_minute, 0 = theo gói) đọc lại mỗi phút: hạ trần là lượt đang
-    chạy chậm lại ngay, không phải chờ lượt sau."""
-
-    def __init__(self, per_minute: int) -> None:
-        self.per_minute = per_minute
-        self.cap = 0
-        self.cap_checked_at: float | None = None
-        self.next_at = 0.0
-        self.lock = asyncio.Lock()
-
-    async def wait(self) -> None:
-        async with self.lock:
-            now = time.monotonic()
-            if self.cap_checked_at is None or now - self.cap_checked_at >= _CAP_REFRESH_SECONDS:
-                self.cap_checked_at = now
-                self.cap = await omar_requests_cap()
-            per_minute = min(self.per_minute, self.cap) if self.cap > 0 else self.per_minute
-            start = max(now, self.next_at)
-            self.next_at = start + 60.0 / max(per_minute, 1) + 0.05
-        if start > now:
-            await asyncio.sleep(start - now)
-
-
-class Budget:
-    """Ngân sách request của một lượt, dùng chung cho mọi việc trong lượt (bình luận tuần, hashtag, làm mới trang 1) và
-    mọi worker song song - giữ chỗ TRƯỚC khi gọi nên chạy song song không vượt."""
-
-    def __init__(self, limit: int, parent: Budget | None = None) -> None:
-        self.limit = limit
-        self.used = 0
-        # Ngân sách con (vd. phần bình luận tuần): mỗi request trừ cả vào ngân sách cha của lượt.
-        self.parent = parent
-
-    def take(self) -> bool:
-        if self.used >= self.limit or (self.parent is not None and not self.parent.take()):
-            return False
-        self.used += 1
-        return True
-
-    @property
-    def exhausted(self) -> bool:
-        return self.used >= self.limit or (self.parent is not None and self.parent.exhausted)
-
-
-async def _fetch_page(
-    client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str, cursor: str, hashtag_id: str | None = None
-) -> tuple[list[dict[str, Any]], str | None, str | None]:
-    """Một trang hashtag_videos -> (video gốc, cursor kế tiếp hoặc None khi hết, hashtag_id). Có `hashtag_id` (lưu từ trang
-    trước) thì gọi bằng `id` - Omar bỏ qua bước tra tên hashtag, nhanh hơn và tránh lỗi tra tên."""
-    params = {"id": hashtag_id, "cursor": cursor} if hashtag_id else {"name": hashtag, "cursor": cursor}
-    data = await omar_get(client, pacer.wait, api_key, "hashtag_videos", params)
-    if data is None:
-        return [], None, hashtag_id  # hashtag không tồn tại
-    return videos_of(data), next_cursor(data), str(data.get("hashtag_id") or "") or hashtag_id
-
-
-async def hashtag_exists(hashtag: str) -> bool | None:
-    """Hashtag có video trên TikTok không (trang 1 của hashtag_videos). None khi không biết (chưa có key, Omar lỗi khác).
-    Omar trả 424 cho hashtag không tồn tại (đo biến thể kiểu #ChiChiEmEm32026 luôn 424, #chichiemem3 có video)."""
-    row = await get_omar_api_settings()
-    api_key = ((row or {}).get("api_key") or "").strip()
-    if not api_key:
-        return None
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        try:
-            data = await omar_get(
-                client,
-                _Pacer(settings.omar_requests_per_minute).wait,
-                api_key,
-                "hashtag_videos",
-                {"name": hashtag.lstrip("#"), "cursor": "0"},
-                retries=1,
-            )
-        except httpx.HTTPStatusError as exc:
-            return False if exc.response.status_code == 424 else None
-        except Exception:  # noqa: BLE001 - không kiểm tra được thì coi như chưa biết
-            return None
-    return bool(data and data.get("videos"))
-
-
-async def fetch_hashtag_info(client: httpx.AsyncClient, pacer: _Pacer, api_key: str, hashtag: str) -> dict[str, Any]:
-    """Tổng số video / lượt xem TikTok báo cho hashtag (hashtag_info, format=clean) - để biết đã cào được bao nhiêu phần."""
-    # 424 ở endpoint này thường là "Hashtag not found or lookup failed" - chỉ thử lại một lần.
-    data = await omar_get(client, pacer.wait, api_key, "hashtag_info", {"name": hashtag, "format": "clean"}, retries=1)
-    return hashtag_info(data)
-
-
-_STATE_KEY = f"{REDIS_KEY_PREFIX}omar:hashtag_state"
 # Trang rỗng liên tiếp mà vẫn has_more: coi như đã hết (tránh lặp vô hạn nếu Omar trả cursor lỗi).
 _MAX_EMPTY_PAGES = 3
-_MAX_PAGE_FAILURES = 3
 # Trang rỗng GIỮA CHỪNG (cursor khác "0") thường là Omar/TikTok giới hạn tạm thời - gọi lại sau vài phút lại có data (đo
 # 16/10/2026). Để từ khoá đó chờ rồi gọi lại đúng cursor, lần chờ thứ n = n x _EMPTY_RETRY_SECONDS (3, 6, 9 phút), tối
 # đa _EMPTY_RETRIES lần; vẫn rỗng thì để đó (giữ cursor, lượt sau đi tiếp) và làm từ khoá khác. Hashtag "để đó" _MAX_STALL_ROUNDS lượt liền thì coi là đã hết.
@@ -303,135 +191,6 @@ async def run_omar_round_tracked(trigger: str) -> dict[str, Any]:
             await get_redis_client().set(_LAST_ROUND_KEY, json.dumps(_round, default=str), ex=30 * 24 * 3600)
         except Exception as exc:  # noqa: BLE001 - chỉ là thông tin hiển thị
             logger.warning("omar_last_round_save_failed", error=exc)
-
-
-# Hashtag đang được cào riêng (crawl_hashtag_now) - lượt Omar bỏ qua để không cào trùng con trỏ.
-_manual_running: set[str] = set()
-_manual_tasks: set[asyncio.Task] = set()
-_RESET_KEEP = ("video_count", "view_count", "info_at", "hashtag_id")
-
-
-async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
-    kw_id = keyword["id"]
-    api_key = ((await get_omar_api_settings() or {}).get("api_key") or "").strip()
-    if not api_key:
-        return
-    redis = get_redis_client()
-    raw = await redis.hget(_STATE_KEY, kw_id)
-    entry = json.loads(raw) if raw else {}
-    if entry.get("done_at"):
-        entry = {k: entry[k] for k in _RESET_KEEP if k in entry}
-    entry.pop("missing_at", None)
-    entry.setdefault("started_at", datetime.now(tz=UTC).isoformat())
-    cursor = entry.get("cursor") or "0"
-    stats: dict[str, Any] = {"pages": 0, "videos": 0, "published": 0, "skipped_seen": 0}
-    pacer = _Pacer(settings.omar_manual_requests_per_minute)
-    failed = 0
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        while True:
-            try:
-                videos, following, hashtag_id = await _fetch_page(
-                    client, pacer, api_key, str(keyword["keyword"]).lstrip("#"), cursor, entry.get("hashtag_id")
-                )
-            except OmarStop as exc:
-                logger.error("omar_manual_stopped", hashtag=keyword["keyword"], error=exc)
-                break
-            except Exception as exc:  # noqa: BLE001 - thử lại đúng trang, lỗi liền thì để lượt Omar đi tiếp
-                failed += 1
-                logger.warning("omar_manual_page_failed", hashtag=keyword["keyword"], cursor=cursor, error=exc)
-                if failed >= _MAX_PAGE_FAILURES:
-                    if cursor == "0" and not entry.get("pages"):
-                        entry["missing_at"] = datetime.now(tz=UTC).isoformat()
-                    break
-                await asyncio.sleep(30 * failed)
-                continue
-            failed = 0
-            if hashtag_id:
-                entry["hashtag_id"] = hashtag_id
-            mapped = [video for video in (map_video(item) for item in videos) if video is not None]
-            stats["pages"] += 1
-            stats["videos"] += len(mapped)
-            await _count_cooccur(str(keyword["keyword"]), kw_id, mapped)
-            await publish_videos(mapped, kw_id, stats)
-            entry["pages"] = int(entry.get("pages") or 0) + 1
-            if following is None:
-                entry.update(cursor=None, done_at=datetime.now(tz=UTC).isoformat())
-                break
-            cursor = following
-            entry["cursor"] = cursor
-            await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
-    await redis.hset(_STATE_KEY, kw_id, json.dumps(entry))
-    logger.info("omar_manual_finished", hashtag=keyword["keyword"], done=bool(entry.get("done_at")), **stats)
-
-
-async def recrawl_hashtag_now(keyword: dict[str, Any]) -> bool:
-    """Nút "Cào lại" của một hashtag ở tab Omar: xoá con trỏ / mốc xong của hashtag (giữ số liệu hashtag_info) rồi cào lại từ trang
-    đầu ngay (crawl_hashtag_now). False khi hashtag đang được cào riêng - không đụng con trỏ đang chạy. Lượt Omar đang chạy sẽ
-    bỏ qua hashtag này (xem _manual_running); lượt sau thấy nó đã xong lại thì cào lại theo omar_recrawl_days như mọi hashtag."""
-    kw_id = keyword["id"]
-    if kw_id in _manual_running:
-        return False
-    redis = get_redis_client()
-    raw = await redis.hget(_STATE_KEY, kw_id)
-    try:
-        entry = json.loads(raw) if raw else {}
-    except TypeError, ValueError:
-        entry = {}
-    await redis.hset(_STATE_KEY, kw_id, json.dumps({k: entry[k] for k in _RESET_KEEP if k in entry}))
-    return crawl_hashtag_now(keyword)
-
-
-def crawl_hashtag_now(keyword: dict[str, Any]) -> bool:
-    """Cào NGAY một hashtag tới hết (ô "Thêm hashtag" ở tab Omar), độc lập với lượt đang chạy - lượt chế độ liên tục có
-    thể kéo dài nhiều giờ và chỉ nạp danh sách hashtag lúc bắt đầu. False khi hashtag đang được cào riêng."""
-    kw_id = keyword["id"]
-    if kw_id in _manual_running:
-        return False
-    _manual_running.add(kw_id)
-
-    async def run() -> None:
-        try:
-            await _crawl_hashtag_now(keyword)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("omar_manual_failed", hashtag=keyword.get("keyword"), error=exc)
-        finally:
-            _manual_running.discard(kw_id)
-
-    task = asyncio.create_task(run())
-    _manual_tasks.add(task)
-    task.add_done_callback(_manual_tasks.discard)
-    return True
-
-
-async def hashtag_progress() -> list[dict[str, Any]]:
-    """Mỗi hashtag TikTok đang bật: tên, phim, số trang đã lấy, cursor, đã cào xong lúc nào (từ Redis omar:hashtag_state)."""
-    keywords = [k for k in await get_enabled_keywords(platform="tiktok") if str(k["keyword"]).startswith("#")]
-    titles = {row["id"]: row["title"] for row in await d1_exec(select(movies.c.id, movies.c.title), quiet=True) or []}
-    raw = await get_redis_client().hgetall(_STATE_KEY) or {}
-    state = {}
-    for key, value in raw.items():
-        parsed = loads_or_none(value, source="omar_hashtag_state")
-        if parsed is not None:
-            state[key.decode() if isinstance(key, bytes) else key] = parsed
-    out = []
-    for kw in keywords:
-        entry = state.get(kw["id"]) or {}
-        out.append(
-            {
-                "keyword_id": kw["id"],
-                "hashtag": kw["keyword"],
-                "movie": titles.get(kw["movie_id"]),
-                "pages": int(entry.get("pages") or 0),
-                "cursor": entry.get("cursor"),
-                "done_at": entry.get("done_at"),
-                "fresh_at": entry.get("fresh_at"),
-                "video_count": entry.get("video_count"),
-                "view_count": entry.get("view_count"),
-                "info_at": entry.get("info_at"),
-                "missing_at": entry.get("missing_at"),
-            }
-        )
-    return sorted(out, key=lambda row: (row["done_at"] is not None, -row["pages"]))
 
 
 async def run_omar_round(live: dict[str, Any] | None = None) -> dict[str, Any]:

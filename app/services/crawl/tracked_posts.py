@@ -42,7 +42,7 @@ from app.repositories.d1.keywords import get_or_create_keyword
 from app.repositories.d1.sql import d1_exec, json_values, metadata
 from app.repositories.d1.tables import movies, posts
 from app.services.accounts.config_db.omar import get_omar_api_settings
-from app.services.omar.omar_tiktok import _Pacer
+from app.services.omar.omar_budget import _Pacer
 
 logger = get_logger(__name__)
 

@@ -4,8 +4,8 @@ from zoneinfo import ZoneInfo
 
 from app.clients.omar import next_cursor
 from app.core.config import settings
+from app.services.omar.omar_budget import Budget
 from app.services.omar.omar_comments import iso_week, weekly_due
-from app.services.omar.omar_tiktok import Budget
 
 VN = ZoneInfo("Asia/Ho_Chi_Minh")
 
