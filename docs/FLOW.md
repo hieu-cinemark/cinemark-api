@@ -13,7 +13,7 @@ spider-hub ([../../spider-hub/docs/FLOW.md](../../spider-hub/docs/FLOW.md)).
 | Lake writer | `app/workers/lake_writer/` | Lưu mọi message Kafka thô lên R2 (tầng bronze của data lake), theo ngày và topic |
 | Timer systemd | `deploy/systemd/*.timer` | Việc nặng (model ViSoBERT, embedding, ảnh, báo cáo) chạy theo giờ - xem `deploy/systemd/README.md` |
 
-Không có database riêng: dữ liệu ở **D1** (Cloudflare, gọi qua HTTP), cấu hình tài khoản/AI ở **Postgres (D1)**, trạng thái ngắn hạn
+Không có database riêng: dữ liệu ở **D1** (Cloudflare, gọi qua HTTP), cấu hình tài khoản/proxy/AI ở **D1 `cinemark-config-db`** (database riêng cho cấu hình), trạng thái ngắn hạn
 ở **Redis**, dữ liệu thô và kết quả phân tích lớn ở **R2**. Worker `cinemark` đọc thẳng D1/R2 để hiển thị (cinemark-api không phục vụ trang
 người dùng cuối).
 
