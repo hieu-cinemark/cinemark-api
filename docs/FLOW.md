@@ -1,6 +1,6 @@
 # Luồng của cinemark-api: cách đọc và cách sửa
 
-Đọc file này TRƯỚC khi sửa code. Mỗi thư mục trong `app/` có README riêng; file này nối chúng thành một luồng. Phía cào dữ liệu nằm ở
+Đọc file này TRƯỚC khi sửa code. Muốn thấy cả đường từ lịch cào tới màn hình (bốn repo) thì đọc [DATA_PATH.md](DATA_PATH.md) trước. Mỗi thư mục trong `app/` có README riêng; file này nối chúng thành một luồng. Phía cào dữ liệu nằm ở
 spider-hub ([../../spider-hub/docs/FLOW.md](../../spider-hub/docs/FLOW.md)).
 
 ## 1. Bốn tiến trình + các timer
