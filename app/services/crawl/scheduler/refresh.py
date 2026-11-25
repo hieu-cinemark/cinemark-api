@@ -7,6 +7,7 @@ from datetime import datetime
 from app.clients.redis import get_redis_client
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services import youtube_hashtag_stats
 from app.services.crawl import channel_profiles, priority_channels, tracked_posts, watch_pages
 from app.services.crawl.scheduler.core import KEY_PREFIX, TIMEZONE, claim, cycle_ttl, spawn
 from app.services.omar.omar_pause import get_pause as get_omar_pause
@@ -93,3 +94,17 @@ async def channel_profiles_tick() -> None:
     ttl = cycle_ttl(settings.channel_profiles_interval_hours)
     if await claim("channel_profiles", ttl, datetime.now(TIMEZONE).isoformat()):
         spawn(channel_profiles.refresh_followers())
+
+
+async def _run_youtube_hashtag_stats() -> None:
+    try:
+        await youtube_hashtag_stats.snapshot_all()
+    except Exception as exc:  # noqa: BLE001 - bản chụp hôm nay hỏng thì ngày mai chụp lại
+        logger.error("youtube_hashtag_stats_job_failed", error=exc)
+
+
+async def youtube_hashtag_stats_tick() -> None:
+    """Mỗi ngày một lần (từ 06:00 giờ Việt Nam): chụp tổng video / kênh YouTube của các hashtag phim cho thẻ "Quy mô trên nền
+    tảng" ở Social Topic. Chạy nền để không chiếm nhịp."""
+    if await youtube_hashtag_stats.snapshot_due(datetime.now(TIMEZONE)):
+        spawn(_run_youtube_hashtag_stats())

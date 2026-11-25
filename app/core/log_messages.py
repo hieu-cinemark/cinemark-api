@@ -232,6 +232,9 @@ MESSAGES: dict[str, str] = {
     "watch_pages_skipped_backlog": "Bỏ qua đọc page phim vì hàng đợi còn tồn",
     "youtube_comment_round_finished": "YouTube: xong vòng bình luận",
     "youtube_continuous_queued": "YouTube: đã xếp hàng chạy liên tục",
+    "youtube_hashtag_stats_failed": "YouTube: chụp quy mô một hashtag thất bại",
+    "youtube_hashtag_stats_finished": "YouTube: đã chụp quy mô hashtag",
+    "youtube_hashtag_stats_job_failed": "YouTube: lượt chụp quy mô hashtag thất bại",
     "youtube_keywords_created": "YouTube: đã tạo từ khoá",
     # --- khám phá câu truy vấn / nguồn ---
     "discovery_firing": "Đến giờ AI khám phá nguồn cào",

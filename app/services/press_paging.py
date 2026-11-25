@@ -64,7 +64,7 @@ async def _web_page(movie_id: str, params: GoogleNewsRequest) -> dict | None:
     try:
         return await google_news.search_web(params)
     except AppError as exc:
-        logger.warning("press_web_page_failed", movie_id=movie_id, start=params.start, error=str(exc))
+        logger.warning("press_web_page_failed", movie_id=movie_id, start=params.start, error=exc)
         return None
 
 
