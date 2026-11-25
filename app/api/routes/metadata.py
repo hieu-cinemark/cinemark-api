@@ -49,10 +49,11 @@ async def wikidata_movie(qid: str, lang: str = Query(default="vi,en", pattern=r"
     return {"source": "wikidata", "license": "CC0", "item": items[0]}
 
 
-@router.get("/trailerix/movie/{imdb_id}")
-async def trailerix_movie(imdb_id: str) -> dict[str, Any]:
-    """Metadata + trailer chính của một phim theo IMDb ID từ Trailerix (key ở cinemark-config-db). Không có phim thì data = null."""
-    data = await trailerix.movie_by_imdb(imdb_id)
+@router.get("/trailerix/movie/{kind}/{movie_id}")
+async def trailerix_movie(kind: str, movie_id: str) -> dict[str, Any]:
+    """Metadata + trailer của một phim từ Trailerix theo IMDb ID (kind=imdb) hoặc TMDB ID (kind=tmdb). Không có phim thì data = null.
+    Độ phủ còn mỏng (25/11/2026: có Avengers: Endgame, chưa có Avatar / Inception / Oppenheimer / phim Việt)."""
+    data = await trailerix.movie(kind, movie_id)
     return {"source": "trailerix", "attribution": trailerix.ATTRIBUTION, "data": data}
 
 

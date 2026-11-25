@@ -57,15 +57,21 @@ async def configured() -> bool:
     return bool(await api_key())
 
 
-async def movie_by_imdb(imdb_id: str) -> dict[str, Any] | None:
-    if not _IMDB_ID.match(imdb_id):
+async def movie(kind: str, movie_id: str) -> dict[str, Any] | None:
+    """Phim theo IMDb ID (kind="imdb", tt...) hoặc TMDB ID (kind="tmdb", số). Key gửi qua query `api_key` (Trailerix không
+    nhận header Authorization dù trang đăng ký ghi Bearer - đã thử 25/11/2026). Không có phim thì None."""
+    if kind == "imdb" and not _IMDB_ID.match(movie_id):
         raise NotFoundError("IMDb id must look like tt1234567")
+    if kind == "tmdb" and not movie_id.isdigit():
+        raise NotFoundError("TMDB id must be a number")
+    if kind not in ("imdb", "tmdb"):
+        raise NotFoundError("Lookup must be by imdb or tmdb id")
     key = await api_key()
     if not key:
         raise TrailerixNotConfigured("Trailerix API key is not configured (external_api_keys in cinemark-config-db)")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(TIMEOUT_SECONDS)) as client:
-            response = await client.get(f"{BASE_URL}/movie/imdb/{imdb_id}", headers={"Authorization": f"Bearer {key}"})
+            response = await client.get(f"{BASE_URL}/movie/{kind}/{movie_id}", params={"api_key": key})
     except httpx.TimeoutException:
         raise UpstreamError("Trailerix timed out") from None
     except httpx.HTTPError:
@@ -73,7 +79,7 @@ async def movie_by_imdb(imdb_id: str) -> dict[str, Any] | None:
     if response.status_code == 404:
         return None
     if response.status_code in (401, 403):
-        raise UpstreamError("Trailerix rejected the API key")
+        raise UpstreamError("Trailerix rejected the API key (not activated, or the backlink is missing)")
     if response.status_code == 429:
         raise UpstreamError("Trailerix is rate limiting requests, try again shortly")
     if response.status_code >= 400:

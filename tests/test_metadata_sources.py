@@ -10,9 +10,11 @@ async def test_trailerix_requires_a_key(monkeypatch):
 
     monkeypatch.setattr(trailerix, "api_key", no_key)
     with pytest.raises(trailerix.TrailerixNotConfigured):
-        await trailerix.movie_by_imdb("tt0499549")
+        await trailerix.movie("imdb", "tt0499549")
     with pytest.raises(NotFoundError):
-        await trailerix.movie_by_imdb("not-an-id")
+        await trailerix.movie("imdb", "not-an-id")
+    with pytest.raises(NotFoundError):
+        await trailerix.movie("tmdb", "abc")
 
 
 async def test_wikidata_details_are_mapped_and_split(monkeypatch):
