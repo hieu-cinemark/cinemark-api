@@ -37,6 +37,7 @@ MESSAGES: dict[str, str] = {
     "news_article_enrich_failed": "Không lấy thêm được nội dung bài báo",
     "news_image_fetch_failed": "Không lấy được ảnh bài báo",
     "ops_job_failed": "Vận hành: một lượt chạy thất bại",
+    "press_web_page_failed": "Không lấy được trang Google Search kế tiếp, chỉ lật tiếp tin báo",
     "proxy_provider_deleted": "Đã xoá nguồn proxy",
     "proxy_provider_updated": "Đã cập nhật nguồn proxy",
     "proxy_setting_invalid_stored_value": "Cài đặt proxy lưu sai, dùng mặc định",

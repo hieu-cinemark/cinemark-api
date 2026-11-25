@@ -140,3 +140,22 @@ async def test_a_source_without_next_page_is_not_called_again(setup):
     await press_paging.more_pages("film", page=2)
     assert ("news", 20) not in setup["calls"]
     assert ("web", 20) in setup["calls"]
+
+
+async def test_web_search_failure_still_pages_the_news(setup, monkeypatch):
+    """SerpApi hết quota/thiếu key: không làm hỏng cả lượt, phần tin báo vẫn lật tiếp, Google Search thôi gọi."""
+    setup["snapshot"] = _snapshot([], [])
+    more = {"serpapi_pagination": {"next_link": "x"}}
+    setup["pages"][("news", 10)] = {"news_results": [{"link": "https://n.vn/1"}], **more}
+    setup["pages"][("news", 20)] = {"news_results": [{"link": "https://n.vn/2"}]}
+
+    async def broken_web(payload):
+        setup["calls"].append(("web", payload.start))
+        raise UpstreamError("SerpApi did not return a successful result")
+
+    monkeypatch.setattr(press_paging.google_news, "search_web", broken_web)
+    result = await press_paging.more_pages("film", page=2)
+    assert [item["link"] for item in result["news_results"]] == ["https://n.vn/1", "https://n.vn/2"]
+    assert result["organic_results"] == []
+    assert result["hasMore"] is False
+    assert [c for c in setup["calls"] if c[0] == "web"] == [("web", 10)]

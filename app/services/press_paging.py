@@ -7,10 +7,13 @@ bản đang lưu để số [1], [2] của Cinemark AI không bị lệch.
 
 import asyncio
 
-from app.core.errors import NotFoundError, UpstreamError
+from app.core.errors import AppError, NotFoundError, UpstreamError
+from app.core.logging import get_logger
 from app.repositories.d1 import press_reviews
 from app.schemas.research import GoogleNewsRequest
 from app.services import google_news, press_groups
+
+logger = get_logger(__name__)
 
 PAGE_SIZE = 10
 MAX_PAGES = 6
@@ -55,6 +58,16 @@ async def _empty() -> dict:
     return {}
 
 
+async def _web_page(movie_id: str, params: GoogleNewsRequest) -> dict | None:
+    """Một trang Google Search (SerpApi). None khi lỗi (hết quota, thiếu key, quá giờ): khi đó chỉ ngừng lật phần
+    Google Search, phần tin báo (Google News RSS, miễn phí) vẫn lật tiếp - trước đây một lỗi SerpApi làm hỏng cả lượt."""
+    try:
+        return await google_news.search_web(params)
+    except AppError as exc:
+        logger.warning("press_web_page_failed", movie_id=movie_id, start=params.start, error=str(exc))
+        return None
+
+
 def _has_next(data: dict) -> bool:
     """Còn trang kế tiếp (SerpApi, hoặc RSS còn bài - google_news.search_rss) thì mới đáng gọi tiếp."""
     pagination = data.get("serpapi_pagination") or {}
@@ -95,9 +108,11 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
     for offset in range(max(1, page) - 1, max(1, page) - 1 + pages):
         start = offset * PAGE_SIZE
         web_data, news_data = await asyncio.gather(
-            google_news.search_web(_params(web_base, start)) if web_more else _empty(),
+            _web_page(movie_id, _params(web_base, start)) if web_more else _empty(),
             google_news.search(_params(news_base, start)) if news_more else _empty(),
         )
+        web_failed = web_data is None
+        web_data = web_data or {}
         organic, new_organic, next_index = _merge(
             organic, press_groups.flatten(web_data.get("organic_results", [])), next_index
         )
@@ -107,7 +122,7 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
         added_organic.extend(new_organic)
         added_press.extend(new_press)
         pages_read += 1
-        web_more = web_more and _has_next(web_data)
+        web_more = web_more and not web_failed and _has_next(web_data)
         news_more = news_more and _has_next(news_data)
         if not (web_more or news_more):
             break
