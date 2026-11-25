@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import time
 
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 _CACHE_SECONDS = 60
 _cache: dict[str, tuple[float, str]] = {}
 
@@ -19,8 +23,10 @@ async def get_key(name: str) -> str:
 
     try:
         key = (await get_external_api_key(name) or "").strip()
-    except Exception:  # noqa: BLE001 - DB lỗi: coi như chưa cấu hình, không chặn route khác
-        key = ""
+    except Exception as exc:  # noqa: BLE001 - DB lỗi tạm thời: KHÔNG cache, lần gọi sau đọc lại
+        logger.warning("external_api_key_read_failed", source=name, error=exc)
+        # Còn key đọc được trước đó thì dùng tiếp.
+        return hit[1] if hit else ""
     _cache[name] = (now, key)
     return key
 

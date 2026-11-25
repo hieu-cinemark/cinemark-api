@@ -130,8 +130,12 @@ async def trakt_calendar(start: date | None = None, days: int = Query(default=7,
 
 
 @router.get("/trakt/search")
-async def trakt_search(q: str = Query(min_length=2, max_length=120)) -> dict[str, Any]:
-    return _trakt(await trakt.search(q))
+async def trakt_search(
+    q: str = Query(min_length=2, max_length=120),
+    page: int = Query(default=1, ge=1, le=100),
+    limit: int = Query(default=24, ge=1, le=50),
+) -> dict[str, Any]:
+    return _trakt(await trakt.search(q, page, limit))
 
 
 @router.get("/trakt/movie/{movie_id}")

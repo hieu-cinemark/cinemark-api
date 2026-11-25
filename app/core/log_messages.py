@@ -16,6 +16,7 @@ MESSAGES: dict[str, str] = {
     "api_auth_disabled": "Xác thực API đang tắt",
     "app_error": "Lỗi ứng dụng",
     "app_started": "API đã khởi động",
+    "external_api_key_read_failed": "Không đọc được key API nguồn ngoài, sẽ thử lại lần sau",
     "json_decode_skipped": "Bỏ qua một bản ghi JSON hỏng",
     "request_failed": "Request thất bại",
     "request_handled": "Đã xử lý request",
