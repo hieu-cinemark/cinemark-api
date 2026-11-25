@@ -1,7 +1,8 @@
 """Lưu key API của nguồn ngoài vào D1 config (bảng external_api_keys) - cinemark-api đọc key từ đây, .env chỉ là dự phòng.
 
-    python -m scripts.tools.set_external_api_key trailerix <key>
-    python -m scripts.tools.set_external_api_key trailerix ""      # xoá, quay về .env
+    python -m scripts.tools.set_external_api_key tmdb <API Read Access Token>
+    python -m scripts.tools.set_external_api_key trakt <client id>
+    python -m scripts.tools.set_external_api_key trakt ""      # để trống = chưa cấu hình
 
 Chỉ in 4 ký tự cuối của key."""
 
@@ -14,7 +15,7 @@ from app.services.accounts.config_db.d1_ops import get_external_api_key, set_ext
 async def main(name: str, key: str) -> None:
     await set_external_api_key(name, key.strip())
     saved = await get_external_api_key(name) or ""
-    print(f"{name}: {'đã lưu ...' + saved[-4:] if saved else 'đã xoá (dùng .env)'}")
+    print(f"{name}: {'đã lưu ...' + saved[-4:] if saved else 'đã để trống (chưa cấu hình)'}")
 
 
 if __name__ == "__main__":

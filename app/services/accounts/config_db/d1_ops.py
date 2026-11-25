@@ -105,7 +105,7 @@ omar_api_settings = Table(
     Column("updated_at", Text, nullable=False),
 )
 
-# Key API của nguồn ngoài (Trailerix, sau này TMDB...): mỗi nguồn một dòng; client đọc DB trước, env chỉ là dự phòng.
+# Key API của nguồn ngoài (TMDB, Trakt...): mỗi nguồn một dòng; chỉ lưu ở đây (app/clients/external_keys.py đọc).
 external_api_keys = Table(
     "external_api_keys",
     config_metadata,

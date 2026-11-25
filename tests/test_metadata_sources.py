@@ -1,20 +1,38 @@
 import pytest
 
-from app.clients import trailerix, wikidata
+from app.clients import external_keys, tmdb, trakt, wikidata
 from app.core.errors import NotFoundError
 
 
-async def test_trailerix_requires_a_key(monkeypatch):
-    async def no_key():
+async def test_tmdb_and_trakt_require_keys(monkeypatch):
+    async def no_key(name):
         return ""
 
-    monkeypatch.setattr(trailerix, "api_key", no_key)
-    with pytest.raises(trailerix.TrailerixNotConfigured):
-        await trailerix.movie("imdb", "tt0499549")
+    monkeypatch.setattr(external_keys, "get_key", no_key)
+    with pytest.raises(tmdb.TmdbNotConfigured):
+        await tmdb.movie_list("now_playing")
+    with pytest.raises(trakt.TraktNotConfigured):
+        await trakt.box_office()
+
+
+async def test_tmdb_validates_inputs():
     with pytest.raises(NotFoundError):
-        await trailerix.movie("imdb", "not-an-id")
-    with pytest.raises(NotFoundError):
-        await trailerix.movie("tmdb", "abc")
+        await tmdb.movie_list("not_a_list")
+
+
+async def test_tmdb_resolves_imdb_ids_through_find(monkeypatch):
+    calls = []
+
+    async def fake_get(path, params=None):
+        calls.append(path)
+        if path.startswith("/find/"):
+            return {"movie_results": [{"id": 1591972}]}
+        return {"id": 1591972, "title": "Đại Tiệc Trăng Máu 8"}
+
+    monkeypatch.setattr(tmdb, "_get", fake_get)
+    movie = await tmdb.movie("tt38934461")
+    assert movie["title"] == "Đại Tiệc Trăng Máu 8"
+    assert calls == ["/find/tt38934461", "/movie/1591972"]
 
 
 async def test_wikidata_details_are_mapped_and_split(monkeypatch):

@@ -1,15 +1,20 @@
 """Metadata phim / show từ nguồn mở, gọi thẳng nguồn và trả về - không lưu DB (25/11/2026).
 
 - Wikidata: phim theo quốc gia + năm (CC0). Phim Việt đang chiếu gần như chưa có trên Wikidata; phim Mỹ / Hàn / Nhật đầy đủ hơn.
-- Trailerix: metadata + trailer theo IMDb ID (key ở cinemark-config-db, bảng external_api_keys; phải ghi nguồn).
+- TMDB: phim đang chiếu / sắp chiếu tại VN, phim theo quốc gia, tìm kiếm, chi tiết + trailer (token ở cinemark-config-db).
+- Trakt: phim trending, phòng vé Mỹ cuối tuần, lịch phát hành (key ở cinemark-config-db).
 """
 
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
-from app.clients import trailerix, wikidata
+from app.clients import tmdb, trakt, wikidata
 from app.core.errors import NotFoundError
+
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 router = APIRouter(prefix="/metadata", tags=["metadata"])
 
@@ -49,30 +54,92 @@ async def wikidata_movie(qid: str, lang: str = Query(default="vi,en", pattern=r"
     return {"source": "wikidata", "license": "CC0", "item": items[0]}
 
 
-@router.get("/trailerix/latest")
-async def trailerix_latest(
-    page: int = Query(default=1, ge=1, le=500), per_page: int = Query(default=24, ge=1, le=50)
+# --- TMDB ------------------------------------------------------------------------------------------------------------
+
+
+def _tmdb(data: Any) -> dict[str, Any]:
+    return {"source": "tmdb", "attribution": tmdb.ATTRIBUTION, "image_base": tmdb.IMAGE_BASE, "data": data}
+
+
+@router.get("/tmdb/list/{kind}")
+async def tmdb_list(
+    kind: str,
+    region: str = Query(default="VN", pattern=r"^[A-Z]{2}$"),
+    language: str = Query(default="vi-VN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$"),
+    page: int = Query(default=1, ge=1, le=500),
 ) -> dict[str, Any]:
-    """Trailer mới nhất của Trailerix, phân trang (hết trang thì data rỗng)."""
-    data = await trailerix.latest(page, per_page)
-    return {"source": "trailerix", "attribution": trailerix.ATTRIBUTION, "data": data}
+    """Phim đang chiếu (now_playing) / sắp chiếu (upcoming) / phổ biến (popular) / điểm cao (top_rated) theo vùng."""
+    return _tmdb(await tmdb.movie_list(kind, region=region, language=language, page=page))
 
 
-@router.get("/trailerix/search")
-async def trailerix_search(q: str = Query(min_length=2, max_length=120)) -> dict[str, Any]:
-    """Tìm phim trên Trailerix theo tên (kết quả chỉ có tên, tóm tắt, slug)."""
-    return {"source": "trailerix", "attribution": trailerix.ATTRIBUTION, "data": await trailerix.search(q)}
+@router.get("/tmdb/discover")
+async def tmdb_discover(
+    country: str = Query(pattern=r"^[A-Z]{2}$"),
+    year_from: int | None = Query(default=None, ge=1880, le=2100),
+    year_to: int | None = Query(default=None, ge=1880, le=2100),
+    language: str = Query(default="vi-VN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$"),
+    page: int = Query(default=1, ge=1, le=500),
+) -> dict[str, Any]:
+    """Phim theo quốc gia gốc, mới phát hành trước."""
+    return _tmdb(
+        await tmdb.discover(country=country, year_from=year_from, year_to=year_to, language=language, page=page)
+    )
 
 
-@router.get("/trailerix/movie/{kind}/{movie_id}")
-async def trailerix_movie(kind: str, movie_id: str) -> dict[str, Any]:
-    """Metadata + trailer của một phim từ Trailerix theo IMDb ID (kind=imdb) hoặc TMDB ID (kind=tmdb). Không có phim thì data = null.
-    Độ phủ còn mỏng (25/11/2026: có Avengers: Endgame, chưa có Avatar / Inception / Oppenheimer / phim Việt)."""
-    data = await trailerix.movie(kind, movie_id)
-    return {"source": "trailerix", "attribution": trailerix.ATTRIBUTION, "data": data}
+@router.get("/tmdb/search")
+async def tmdb_search(
+    q: str = Query(min_length=1, max_length=120),
+    language: str = Query(default="vi-VN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$"),
+    page: int = Query(default=1, ge=1, le=500),
+) -> dict[str, Any]:
+    return _tmdb(await tmdb.search(q, language=language, page=page))
+
+
+@router.get("/tmdb/movie/{movie_id}")
+async def tmdb_movie(
+    movie_id: str, language: str = Query(default="vi-VN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$")
+) -> dict[str, Any]:
+    """Chi tiết phim theo TMDB ID hoặc IMDb ID (tt...); không có thì data = null."""
+    return _tmdb(await tmdb.movie(movie_id, language=language))
+
+
+# --- Trakt -----------------------------------------------------------------------------------------------------------
+
+
+def _trakt(data: Any) -> dict[str, Any]:
+    return {"source": "trakt", "attribution": trakt.ATTRIBUTION, "data": data}
+
+
+@router.get("/trakt/trending")
+async def trakt_trending(
+    page: int = Query(default=1, ge=1, le=100), limit: int = Query(default=24, ge=1, le=50)
+) -> dict[str, Any]:
+    return _trakt(await trakt.trending(page, limit))
+
+
+@router.get("/trakt/boxoffice")
+async def trakt_box_office() -> dict[str, Any]:
+    """Top 10 phòng vé Mỹ cuối tuần gần nhất (doanh thu USD)."""
+    return _trakt(await trakt.box_office())
+
+
+@router.get("/trakt/calendar")
+async def trakt_calendar(start: date | None = None, days: int = Query(default=7, ge=1, le=31)) -> dict[str, Any]:
+    """Phim phát hành trong `days` ngày từ `start` (mặc định hôm nay)."""
+    return _trakt(await trakt.calendar(start or datetime.now(VN_TZ).date(), days))
+
+
+@router.get("/trakt/search")
+async def trakt_search(q: str = Query(min_length=2, max_length=120)) -> dict[str, Any]:
+    return _trakt(await trakt.search(q))
+
+
+@router.get("/trakt/movie/{movie_id}")
+async def trakt_movie(movie_id: str) -> dict[str, Any]:
+    return _trakt(await trakt.movie(movie_id))
 
 
 @router.get("/sources")
 async def sources() -> dict[str, Any]:
-    """Nguồn nào đang dùng được (giao diện ẩn / báo nguồn chưa cấu hình)."""
-    return {"wikidata": True, "trailerix": await trailerix.configured()}
+    """Nguồn nào đang dùng được (giao diện báo nguồn chưa cấu hình)."""
+    return {"wikidata": True, "tmdb": await tmdb.configured(), "trakt": await trakt.configured()}
