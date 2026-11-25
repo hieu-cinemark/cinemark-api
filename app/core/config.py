@@ -51,6 +51,9 @@ class Settings(BaseSettings):
 
     # Google News Light (SerpApi), tin sau công chiếu cập nhật mỗi 72 giờ.
     serpapi_api_key: str | None = None
+    # Trailerix (trailerix.com, metadata + trailer theo IMDb ID): key miễn phí, đăng ký bằng email + URL website. Trống thì
+    # /metadata/trailerix báo chưa cấu hình.
+    trailerix_api_key: str | None = None
     # Google News cho "Góc nhìn sau công chiếu": "rss" = Google News RSS miễn phí (app/clients/google.py), "serpapi" = như cũ.
     google_news_provider: str = "rss"
     serpapi_timeout_seconds: float = 120.0

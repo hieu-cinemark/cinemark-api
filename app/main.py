@@ -17,6 +17,7 @@ from app.api.routes.facebook import router as facebook_router
 from app.api.routes.health import router as health_router
 from app.api.routes.jobs import router as jobs_router
 from app.api.routes.logs import router as logs_router
+from app.api.routes.metadata import router as metadata_router
 from app.api.routes.movies import router as movies_router
 from app.api.routes.omar import router as omar_router
 from app.api.routes.rag import router as rag_router
@@ -81,6 +82,7 @@ app.include_router(settings_ops_router)
 app.include_router(settings_import_router)
 app.include_router(omar_router)
 app.include_router(research_router)
+app.include_router(metadata_router)
 app.include_router(cron_router)
 
 
