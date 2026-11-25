@@ -85,18 +85,70 @@ async def tmdb_list(
 
 @router.get("/tmdb/discover")
 async def tmdb_discover(
-    country: str = Query(pattern=r"^[A-Z]{2}$"),
+    country: str | None = Query(default=None, pattern=r"^[A-Z]{2}$"),
+    genres: str | None = Query(
+        default=None, pattern=r"^\d{1,6}(,\d{1,6}){0,5}$", description="ID thể loại, cách nhau dấu phẩy"
+    ),
+    person: int | None = Query(default=None, ge=1),
+    company: int | None = Query(default=None, ge=1),
     year_from: int | None = Query(default=None, ge=1880, le=2100),
     year_to: int | None = Query(default=None, ge=1880, le=2100),
-    sort: str = Query(default="popular", pattern=r"^(popular|newest)$"),
+    sort: str = Query(default="popular", pattern=r"^(popular|newest|rating)$"),
     language: str = Query(default="vi-VN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$"),
     page: int = Query(default=1, ge=1, le=500),
 ) -> dict[str, Any]:
-    """Phim theo quốc gia gốc, xếp theo độ phổ biến hoặc ngày phát hành."""
+    """Lọc phim theo quốc gia gốc, thể loại, người tham gia, hãng sản xuất, năm."""
     data = await tmdb.discover(
-        country=country, year_from=year_from, year_to=year_to, sort=sort, language=language, page=page
+        country=country,
+        genres_filter=genres,
+        person=person,
+        company=company,
+        year_from=year_from,
+        year_to=year_to,
+        sort=sort,
+        language=language,
+        page=page,
     )
     return _tmdb(data)
+
+
+@router.get("/tmdb/trending")
+async def tmdb_trending(
+    window: str = Query(default="week", pattern=r"^(day|week)$"), page: int = Query(default=1, ge=1, le=500)
+) -> dict[str, Any]:
+    """Phim đang được quan tâm nhất trong ngày / tuần."""
+    return _tmdb(await tmdb.trending(window, page=page))
+
+
+@router.get("/tmdb/genres")
+async def tmdb_genres() -> dict[str, Any]:
+    return _tmdb(await tmdb.genres())
+
+
+@router.get("/tmdb/people")
+async def tmdb_people(
+    q: str = Query(min_length=1, max_length=120), page: int = Query(default=1, ge=1, le=500)
+) -> dict[str, Any]:
+    """Tìm diễn viên / đoàn làm phim theo tên."""
+    return _tmdb(await tmdb.search_people(q, page=page))
+
+
+@router.get("/tmdb/companies")
+async def tmdb_companies(q: str = Query(min_length=1, max_length=120)) -> dict[str, Any]:
+    """Tìm hãng sản xuất theo tên."""
+    return _tmdb(await tmdb.search_companies(q))
+
+
+@router.get("/tmdb/person/{person_id}")
+async def tmdb_person(person_id: int) -> dict[str, Any]:
+    """Tiểu sử và phim đã tham gia của một người; không có thì data = null."""
+    return _tmdb(await tmdb.person(person_id))
+
+
+@router.get("/tmdb/collection/{collection_id}")
+async def tmdb_collection(collection_id: int) -> dict[str, Any]:
+    """Các phim cùng một loạt."""
+    return _tmdb(await tmdb.collection(collection_id))
 
 
 @router.get("/tmdb/search")

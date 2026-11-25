@@ -32,7 +32,7 @@ async def test_tmdb_resolves_imdb_ids_through_find(monkeypatch):
     monkeypatch.setattr(tmdb, "_get", fake_get)
     movie = await tmdb.movie("tt38934461")
     assert movie["title"] == "Đại Tiệc Trăng Máu 8"
-    assert calls == ["/find/tt38934461", "/movie/1591972"]
+    assert calls == ["/find/tt38934461", "/movie/1591972", "/movie/1591972/reviews"]
 
 
 async def test_wikidata_details_are_mapped_and_split(monkeypatch):
@@ -105,3 +105,28 @@ async def test_wikidata_search_builds_a_film_only_query(monkeypatch, query, expe
     monkeypatch.setattr(wikidata.httpx, "AsyncClient", FakeClient)
     assert await wikidata.search_ids(query, 5) == ["Q1"]
     assert seen["srsearch"] == expected
+
+
+async def test_tmdb_discover_sends_only_chosen_filters(monkeypatch):
+    seen = []
+
+    async def fake_get(path, params=None):
+        seen.append(params)
+        return {"results": []}
+
+    monkeypatch.setattr(tmdb, "_get", fake_get)
+    await tmdb.discover()
+    await tmdb.discover(country="VN", genres_filter="28,35", person=7, sort="rating", year_from=2025)
+    await tmdb.discover(sort="rating")
+    assert not any(key.startswith("with_") for key in seen[0]) and "vote_count.gte" not in seen[0]
+    assert seen[1]["with_genres"] == "28,35" and seen[1]["with_people"] == 7 and "with_companies" not in seen[1]
+    assert seen[1]["vote_count.gte"] < seen[2]["vote_count.gte"], "lọc theo nước / người thì ngưỡng lượt chấm thấp hơn"
+
+
+async def test_tmdb_person_falls_back_to_english_biography(monkeypatch):
+    async def fake_get(path, params=None):
+        return {"id": 1, "biography": "" if params["language"] == "vi-VN" else "English bio"}
+
+    monkeypatch.setattr(tmdb, "_get", fake_get)
+    person = await tmdb.person(1)
+    assert person["biography"] == "English bio" and person["biography_language"] == "en"
