@@ -43,6 +43,17 @@ async def wikidata_movies(
     }
 
 
+@router.get("/wikidata/search")
+async def wikidata_search(
+    q: str = Query(min_length=2, max_length=120),
+    limit: int = Query(default=12, ge=1, le=20),
+    lang: str = Query(default="vi,en", pattern=r"^[a-z,\-]+$"),
+) -> dict[str, Any]:
+    """Tìm phim trên Wikidata theo tên hoặc IMDb ID (tt...)."""
+    items = await wikidata.search_movies(q, limit=limit, lang=lang)
+    return {"source": "wikidata", "license": "CC0", "count": len(items), "items": items}
+
+
 @router.get("/wikidata/movies/{qid}")
 async def wikidata_movie(qid: str, lang: str = Query(default="vi,en", pattern=r"^[a-z,\-]+$")) -> dict[str, Any]:
     """Chi tiết một phim theo QID Wikidata (vd Q123456)."""
@@ -77,13 +88,15 @@ async def tmdb_discover(
     country: str = Query(pattern=r"^[A-Z]{2}$"),
     year_from: int | None = Query(default=None, ge=1880, le=2100),
     year_to: int | None = Query(default=None, ge=1880, le=2100),
+    sort: str = Query(default="popular", pattern=r"^(popular|newest)$"),
     language: str = Query(default="vi-VN", pattern=r"^[a-z]{2}(-[A-Z]{2})?$"),
     page: int = Query(default=1, ge=1, le=500),
 ) -> dict[str, Any]:
-    """Phim theo quốc gia gốc, mới phát hành trước."""
-    return _tmdb(
-        await tmdb.discover(country=country, year_from=year_from, year_to=year_to, language=language, page=page)
+    """Phim theo quốc gia gốc, xếp theo độ phổ biến hoặc ngày phát hành."""
+    data = await tmdb.discover(
+        country=country, year_from=year_from, year_to=year_to, sort=sort, language=language, page=page
     )
+    return _tmdb(data)
 
 
 @router.get("/tmdb/search")

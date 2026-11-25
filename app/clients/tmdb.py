@@ -8,6 +8,7 @@ certified by TMDB"; dùng thương mại cần thoả thuận riêng với TMDB.
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.clients import external_keys
@@ -56,12 +57,19 @@ async def movie_list(kind: str, *, region: str = "VN", language: str = "vi-VN", 
 
 
 async def discover(
-    *, country: str, year_from: int | None = None, year_to: int | None = None, language: str = "vi-VN", page: int = 1
+    *,
+    country: str,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    sort: str = "popular",
+    language: str = "vi-VN",
+    page: int = 1,
 ) -> dict[str, Any]:
-    """Phim theo quốc gia gốc (with_origin_country), mới phát hành trước."""
+    """Phim theo quốc gia gốc (with_origin_country), xếp theo độ phổ biến (mặc định) hoặc ngày phát hành mới nhất. Xếp "mới
+    nhất" mà không chọn năm thì chỉ lấy tới một năm tới, để phim mới lên danh sách (chưa có gì ngoài tên) không đứng đầu."""
     params: dict[str, Any] = {
         "with_origin_country": country,
-        "sort_by": "primary_release_date.desc",
+        "sort_by": "primary_release_date.desc" if sort == "newest" else "popularity.desc",
         "language": language,
         "page": page,
         "include_adult": "false",
@@ -70,6 +78,8 @@ async def discover(
         params["primary_release_date.gte"] = f"{year_from}-01-01"
     if year_to:
         params["primary_release_date.lte"] = f"{year_to}-12-31"
+    elif sort == "newest":
+        params["primary_release_date.lte"] = (datetime.now(UTC) + timedelta(days=365)).date().isoformat()
     return _page(await _get("/discover/movie", params))
 
 

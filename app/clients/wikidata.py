@@ -9,6 +9,7 @@ bằng VALUES - nhanh hơn nhiều so với gom mọi trường trong một truy
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 import httpx
@@ -16,9 +17,14 @@ import httpx
 from app.core.errors import UpstreamError
 
 SPARQL_URL = "https://query.wikidata.org/sparql"
+# Tìm theo chữ (CirrusSearch) - nhanh hơn nhiều so với lọc nhãn bằng SPARQL.
+SEARCH_URL = "https://www.wikidata.org/w/api.php"
 # Wikimedia yêu cầu User-Agent mô tả được client; không gửi thông tin cá nhân.
 USER_AGENT = "CinemarkMetadata/1.0 (movie metadata lookup; httpx)"
 TIMEOUT_SECONDS = 65.0
+SEARCH_TIMEOUT_SECONDS = 15.0
+_IMDB_ID = re.compile(r"^tt\d{5,10}$")
+_QID = re.compile(r"^Q\d+$")
 FILM = "wd:Q11424"
 # Wikidata cho tối đa 5 truy vấn song song mỗi IP; giữ dưới mức đó trong một tiến trình.
 _slots = asyncio.Semaphore(3)
@@ -49,6 +55,39 @@ async def sparql(query: str) -> list[dict[str, Any]]:
     except ValueError, KeyError:
         raise UpstreamError("Wikidata returned an invalid response") from None
     return [{key: value.get("value") for key, value in row.items()} for row in bindings]
+
+
+async def search_ids(query: str, limit: int) -> list[str]:
+    """QID các phim khớp `query` (tên ở mọi ngôn ngữ, hoặc IMDb ID tt...), xếp theo độ khớp."""
+    text = query.strip()
+    # Bỏ ":" để chữ người dùng gõ không thành toán tử tìm kiếm.
+    term = f"haswbstatement:P345={text}" if _IMDB_ID.match(text) else text.replace(":", " ")
+    params = {
+        "action": "query",
+        "list": "search",
+        "format": "json",
+        "srlimit": limit,
+        "srsearch": f"{term} haswbstatement:P31=Q11424",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(SEARCH_TIMEOUT_SECONDS)) as client:
+            response = await client.get(SEARCH_URL, params=params, headers={"User-Agent": USER_AGENT})
+        response.raise_for_status()
+        hits = response.json()["query"]["search"]
+    except httpx.TimeoutException:
+        raise UpstreamError("Wikidata search timed out") from None
+    except httpx.HTTPError, ValueError, KeyError:
+        raise UpstreamError("Wikidata search failed") from None
+    return [hit["title"] for hit in hits if _QID.match(str(hit.get("title", "")))]
+
+
+async def search_movies(query: str, *, limit: int, lang: str) -> list[dict[str, Any]]:
+    """Tìm phim theo tên hoặc IMDb ID, kèm chi tiết, giữ thứ tự độ khớp."""
+    ids = await search_ids(query, limit)
+    if not ids:
+        return []
+    by_id = {item["wikidata_id"]: item for item in await movie_details(ids, lang=lang)}
+    return [by_id[i] for i in ids if i in by_id]
 
 
 def _qid(uri: str | None) -> str | None:

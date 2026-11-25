@@ -69,3 +69,39 @@ async def test_wikidata_list_keeps_page_order(monkeypatch):
     monkeypatch.setattr(wikidata, "movie_details", fake_details)
     items = await wikidata.movies_by_country("VN", year_from=2025, year_to=None, limit=2, offset=0, lang="vi")
     assert [i["wikidata_id"] for i in items] == ["Q2", "Q1"]
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("tt4154796", "haswbstatement:P345=tt4154796 haswbstatement:P31=Q11424"),
+        ("Mission: Impossible", "Mission  Impossible haswbstatement:P31=Q11424"),
+    ],
+)
+async def test_wikidata_search_builds_a_film_only_query(monkeypatch, query, expected):
+    seen = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"query": {"search": [{"title": "Q1"}, {"title": "Property:P31"}]}}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            seen.update(params)
+            return FakeResponse()
+
+    monkeypatch.setattr(wikidata.httpx, "AsyncClient", FakeClient)
+    assert await wikidata.search_ids(query, 5) == ["Q1"]
+    assert seen["srsearch"] == expected
