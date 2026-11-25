@@ -49,6 +49,21 @@ async def wikidata_movie(qid: str, lang: str = Query(default="vi,en", pattern=r"
     return {"source": "wikidata", "license": "CC0", "item": items[0]}
 
 
+@router.get("/trailerix/latest")
+async def trailerix_latest(
+    page: int = Query(default=1, ge=1, le=500), per_page: int = Query(default=24, ge=1, le=50)
+) -> dict[str, Any]:
+    """Trailer mới nhất của Trailerix, phân trang (hết trang thì data rỗng)."""
+    data = await trailerix.latest(page, per_page)
+    return {"source": "trailerix", "attribution": trailerix.ATTRIBUTION, "data": data}
+
+
+@router.get("/trailerix/search")
+async def trailerix_search(q: str = Query(min_length=2, max_length=120)) -> dict[str, Any]:
+    """Tìm phim trên Trailerix theo tên (kết quả chỉ có tên, tóm tắt, slug)."""
+    return {"source": "trailerix", "attribution": trailerix.ATTRIBUTION, "data": await trailerix.search(q)}
+
+
 @router.get("/trailerix/movie/{kind}/{movie_id}")
 async def trailerix_movie(kind: str, movie_id: str) -> dict[str, Any]:
     """Metadata + trailer của một phim từ Trailerix theo IMDb ID (kind=imdb) hoặc TMDB ID (kind=tmdb). Không có phim thì data = null.

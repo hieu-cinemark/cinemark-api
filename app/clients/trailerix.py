@@ -57,21 +57,13 @@ async def configured() -> bool:
     return bool(await api_key())
 
 
-async def movie(kind: str, movie_id: str) -> dict[str, Any] | None:
-    """Phim theo IMDb ID (kind="imdb", tt...) hoặc TMDB ID (kind="tmdb", số). Key gửi qua query `api_key` (Trailerix không
-    nhận header Authorization dù trang đăng ký ghi Bearer - đã thử 25/11/2026). Không có phim thì None."""
-    if kind == "imdb" and not _IMDB_ID.match(movie_id):
-        raise NotFoundError("IMDb id must look like tt1234567")
-    if kind == "tmdb" and not movie_id.isdigit():
-        raise NotFoundError("TMDB id must be a number")
-    if kind not in ("imdb", "tmdb"):
-        raise NotFoundError("Lookup must be by imdb or tmdb id")
+async def _get(path: str, params: dict[str, Any]) -> Any:
     key = await api_key()
     if not key:
         raise TrailerixNotConfigured("Trailerix API key is not configured (external_api_keys in cinemark-config-db)")
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(TIMEOUT_SECONDS)) as client:
-            response = await client.get(f"{BASE_URL}/movie/{kind}/{movie_id}", params={"api_key": key})
+            response = await client.get(f"{BASE_URL}/{path}", params={**params, "api_key": key})
     except httpx.TimeoutException:
         raise UpstreamError("Trailerix timed out") from None
     except httpx.HTTPError:
@@ -88,3 +80,28 @@ async def movie(kind: str, movie_id: str) -> dict[str, Any] | None:
         return response.json()
     except ValueError:
         raise UpstreamError("Trailerix returned an invalid response") from None
+
+
+async def latest(page: int = 1, per_page: int = 24) -> dict[str, Any]:
+    """Trailer mới nhất (mỗi mục đủ dữ liệu như trang chi tiết, trừ poster / backdrop): {page, per_page, data: [...]}; hết trang
+    thì data rỗng."""
+    data = await _get("trailers/latest", {"page": max(1, page), "per_page": min(max(1, per_page), 50)})
+    return data or {"page": page, "per_page": per_page, "data": []}
+
+
+async def search(q: str) -> list[dict[str, Any]]:
+    """Tìm theo tên: [{entity, entity_id, slug, title, body}] - không có IMDb / TMDB ID nên không tra chi tiết tiếp được."""
+    data = await _get("search", {"q": q})
+    return (data or {}).get("data") or []
+
+
+async def movie(kind: str, movie_id: str) -> dict[str, Any] | None:
+    """Phim theo IMDb ID (kind="imdb", tt...) hoặc TMDB ID (kind="tmdb", số). Key gửi qua query `api_key` (Trailerix không
+    nhận header Authorization dù trang đăng ký ghi Bearer - đã thử 25/11/2026). Không có phim thì None."""
+    if kind == "imdb" and not _IMDB_ID.match(movie_id):
+        raise NotFoundError("IMDb id must look like tt1234567")
+    if kind == "tmdb" and not movie_id.isdigit():
+        raise NotFoundError("TMDB id must be a number")
+    if kind not in ("imdb", "tmdb"):
+        raise NotFoundError("Lookup must be by imdb or tmdb id")
+    return await _get(f"movie/{kind}/{movie_id}", {})
