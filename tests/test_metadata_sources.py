@@ -1,27 +1,14 @@
 import pytest
 
-from app.clients import kinocheck, trailerix, wikidata
+from app.clients import trailerix, wikidata
 from app.core.errors import NotFoundError
 
 
-@pytest.mark.parametrize("path", ["movies", "shows", "trailers", "trailers/latest", "trailers/trending"])
-def test_kinocheck_allows_documented_paths(path):
-    assert kinocheck.ALLOWED_PATHS.match(path)
-
-
-@pytest.mark.parametrize("path", ["", "movies/../x", "http://evil", "trailers/other", "users"])
-async def test_kinocheck_rejects_other_paths(path):
-    with pytest.raises(NotFoundError):
-        await kinocheck.get(path, {})
-
-
-def test_kinocheck_list_shape_orders_numeric_keys():
-    data = {"1": {"id": "b"}, "0": {"id": "a"}, "10": {"id": "k"}, "_metadata": {"page": 1}}
-    assert kinocheck._list_shape(data) == {"items": [{"id": "a"}, {"id": "b"}, {"id": "k"}], "metadata": {"page": 1}}
-
-
 async def test_trailerix_requires_a_key(monkeypatch):
-    monkeypatch.setattr(trailerix.settings, "trailerix_api_key", "")
+    async def no_key():
+        return ""
+
+    monkeypatch.setattr(trailerix, "api_key", no_key)
     with pytest.raises(trailerix.TrailerixNotConfigured):
         await trailerix.movie_by_imdb("tt0499549")
     with pytest.raises(NotFoundError):

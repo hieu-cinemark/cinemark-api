@@ -105,6 +105,15 @@ omar_api_settings = Table(
     Column("updated_at", Text, nullable=False),
 )
 
+# Key API của nguồn ngoài (Trailerix, sau này TMDB...): mỗi nguồn một dòng; client đọc DB trước, env chỉ là dự phòng.
+external_api_keys = Table(
+    "external_api_keys",
+    config_metadata,
+    Column("name", Text, primary_key=True),
+    Column("api_key", Text, nullable=False, server_default=EMPTY_TEXT),
+    Column("updated_at", Text, nullable=False),
+)
+
 _TABLES = (
     filter_keywords,
     crawl_schedules,
@@ -113,6 +122,7 @@ _TABLES = (
     cleanup_run_history,
     discovery_settings,
     omar_api_settings,
+    external_api_keys,
 )
 _ready = False
 
@@ -450,3 +460,19 @@ async def upsert_omar_api_key(api_key: str) -> dict[str, Any]:
     ).returning(omar_api_settings.c.api_key, omar_api_settings.c.updated_at)
     row = (await _run(stmt))[0]
     return {**row, "updated_at": to_datetime(row["updated_at"])}
+
+
+async def get_external_api_key(name: str) -> str | None:
+    await ensure_tables()
+    rows = await _run(select(external_api_keys.c.api_key).where(external_api_keys.c.name == name))
+    return (rows[0]["api_key"] or None) if rows else None
+
+
+async def set_external_api_key(name: str, api_key: str) -> None:
+    await ensure_tables()
+    stmt = insert(external_api_keys).values(name=name, api_key=api_key, updated_at=_now())
+    await _run(
+        stmt.on_conflict_do_update(
+            index_elements=["name"], set_={"api_key": stmt.excluded.api_key, "updated_at": stmt.excluded.updated_at}
+        )
+    )

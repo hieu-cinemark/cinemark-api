@@ -136,4 +136,4 @@ def test_tables_created_once(d1, monkeypatch):
     run(schedules.list_crawl_schedules())
     run(schedules.list_crawl_schedules())
     creates = [s for s in seen if s.lstrip().upper().startswith("CREATE")]
-    assert len(creates) == 8 and all("IF NOT EXISTS" in s for s in creates)  # 7 bảng + 1 index
+    assert len(creates) == 9 and all("IF NOT EXISTS" in s for s in creates)  # 8 bảng + 1 index
