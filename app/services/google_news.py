@@ -3,7 +3,8 @@ serpapi_pagination) để press_groups / press_paging không phải đổi.
 
 - search (Google News): mặc định Google News RSS miễn phí (app/clients/google.py, settings.google_news_provider="rss"),
   10 bài mỗi trang, link đã giải về bài gốc; "serpapi" = Google News Light qua SerpApi như cũ.
-- search_web (Google Search): vẫn SerpApi - trang kết quả Google cần trình duyệt + giải captcha.
+- search_web (kết quả web): mặc định SearXNG tự host (settings.web_search_provider="searxng", settings.searxng_url) - gom
+  Google/Bing/Brave..., trả về cùng dạng organic_results của SerpApi; "serpapi" = Google Search qua SerpApi như cũ.
 """
 
 import logging
@@ -48,6 +49,8 @@ async def search(payload: GoogleNewsRequest) -> dict[str, Any]:
 
 
 def web_search_available() -> bool:
+    if settings.web_search_provider == "searxng":
+        return bool((settings.searxng_url or "").strip())
     return bool((settings.serpapi_api_key or "").strip())
 
 
@@ -82,7 +85,67 @@ async def search_rss(payload: GoogleNewsRequest) -> dict[str, Any]:
 
 
 async def search_web(payload: GoogleNewsRequest) -> dict[str, Any]:
+    if settings.web_search_provider == "searxng":
+        return await search_searxng(payload)
     return await _search(payload, engine="google")
+
+
+SEARXNG_PAGE_SIZE = 10
+# SearXNG lật được tới khoảng trang này; xa hơn các công cụ nguồn gần như không trả thêm.
+SEARXNG_MAX_PAGE = 10
+
+
+async def search_searxng(payload: GoogleNewsRequest) -> dict[str, Any]:
+    """Một trang kết quả web từ SearXNG tự host (GET /search?format=json), đổi sang dạng organic_results của SerpApi.
+    payload.start (bội số của 10, như SerpApi) -> pageno. SearXNG gộp nhiều công cụ nên một trang có thể hơn 10 kết quả;
+    các trang chồng nhau thì press_paging bỏ trùng theo link."""
+    base = (settings.searxng_url or "").strip().rstrip("/")
+    if not base:
+        raise UpstreamError("SEARXNG_URL is not configured")
+    pageno = payload.start // SEARXNG_PAGE_SIZE + 1
+    params = {"q": payload.q, "format": "json", "language": payload.hl, "categories": "general", "pageno": pageno}
+    try:
+        async with httpx.AsyncClient(timeout=settings.searxng_timeout_seconds) as client:
+            response = await client.get(f"{base}/search", params=params)
+            response.raise_for_status()
+            data = response.json()
+    except httpx.TimeoutException:
+        raise UpstreamError("SearXNG search timed out") from None
+    except httpx.HTTPError, ValueError:
+        raise UpstreamError("Could not call SearXNG search") from None
+    rows = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        raise UpstreamError("SearXNG returned an unexpected result")
+    results = []
+    for row in rows:
+        link = row.get("url") if isinstance(row, dict) else None
+        if not link:
+            continue
+        host = httpx.URL(link).host.removeprefix("www.") if link.startswith("http") else ""
+        results.append(
+            {
+                "position": payload.start + len(results) + 1,
+                "title": row.get("title") or "",
+                "link": link,
+                "snippet": row.get("content") or "",
+                "displayed_link": host,
+                "source": host,
+                "thumbnail": row.get("thumbnail") or row.get("img_src") or None,
+                "date": row.get("publishedDate") or None,
+                "engines": row.get("engines") or [],
+            }
+        )
+    out: dict[str, Any] = {
+        "search_metadata": {"status": "Success", "provider": "searxng"},
+        "search_parameters": {"engine": "searxng", "q": payload.q, "gl": payload.gl, "hl": payload.hl},
+        "organic_results": results,
+    }
+    if results and pageno < SEARXNG_MAX_PAGE:
+        out["serpapi_pagination"] = {"next_link": f"searxng:pageno={pageno + 1}"}
+    unresponsive = data.get("unresponsive_engines") or []
+    if unresponsive:
+        out["search_metadata"]["unresponsive_engines"] = [item[0] for item in unresponsive if item][:10]
+    return out
 
 
 async def _search(payload: GoogleNewsRequest, *, engine: str) -> dict[str, Any]:

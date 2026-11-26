@@ -59,8 +59,8 @@ async def _empty() -> dict:
 
 
 async def _web_page(movie_id: str, params: GoogleNewsRequest) -> dict | None:
-    """Một trang Google Search (SerpApi). None khi lỗi (hết quota, thiếu key, quá giờ): khi đó chỉ ngừng lật phần
-    Google Search, phần tin báo (Google News RSS, miễn phí) vẫn lật tiếp - trước đây một lỗi SerpApi làm hỏng cả lượt."""
+    """Một trang kết quả web (SearXNG tự host, hoặc SerpApi). None khi lỗi (SearXNG không chạy, hết quota, quá giờ): khi đó
+    chỉ ngừng lật phần kết quả web, phần tin báo (Google News RSS, miễn phí) vẫn lật tiếp."""
     try:
         return await google_news.search_web(params)
     except AppError as exc:

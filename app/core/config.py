@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # Google News cho "Góc nhìn sau công chiếu": "rss" = Google News RSS miễn phí (app/clients/google.py), "serpapi" = như cũ.
     google_news_provider: str = "rss"
     serpapi_timeout_seconds: float = 120.0
+    # Kết quả web (Google Search) cho "Góc nhìn sau công chiếu": "searxng" = SearXNG tự host (miễn phí, 26/11/2026 thay SerpApi),
+    # "serpapi" = như cũ (cần SERPAPI_API_KEY). SearXNG phải bật format json trong settings.yml của nó.
+    web_search_provider: str = "searxng"
+    searxng_url: str = "http://127.0.0.1:8888"
+    searxng_timeout_seconds: float = 30.0
 
     # Cloudflare D1 - cho ingest consumer đọc/ghi database D1 của cinemark-scraper qua
     # HTTP query API của Cloudflare (binding D1 chỉ có bên trong Worker; đây là cách duy

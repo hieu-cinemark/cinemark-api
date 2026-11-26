@@ -106,7 +106,7 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
         query = f"phim {movie['title']} đánh giá"
         news_query = f"phim {movie['title']} review"
-        # Không có key SerpApi thì chỉ có phần tin báo (Google News RSS), bỏ phần kết quả Google Search.
+        # Chưa cấu hình nguồn kết quả web (SearXNG / key SerpApi) thì chỉ có phần tin báo (Google News RSS).
         data, press = await asyncio.gather(
             google_news.search_web(GoogleNewsRequest(q=query, no_cache=force))
             if google_news.web_search_available()

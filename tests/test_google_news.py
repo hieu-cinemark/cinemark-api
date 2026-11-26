@@ -16,6 +16,7 @@ from app.services import google_news
 def _serpapi_mode(monkeypatch):
     """Các test này kiểm tra đường SerpApi (Google News RSS mặc định có test riêng: tests/test_google_free.py)."""
     monkeypatch.setattr(settings, "google_news_provider", "serpapi")
+    monkeypatch.setattr(settings, "web_search_provider", "serpapi")
     monkeypatch.setattr(settings, "serpapi_api_key", settings.serpapi_api_key or "test")
 
 
