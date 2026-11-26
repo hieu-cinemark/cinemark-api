@@ -175,7 +175,12 @@ class Settings(BaseSettings):
     # Không bật cho mọi phim: với tên phim riêng biệt, 20-50% bài thật không có tín hiệu đó.
     # thêm cong-tru-nhan-chia - ViSoBERT gán "related" (độ tự tin ~1.0) cho mọi bài có cụm "cộng trừ nhân chia"
     # (bảng cửu chương, sách toán, nhạc chế); 1.245 bài như vậy đã được ẩn tay (danh sách ở ~/cinemark-ml/relabel_ctnc).
-    strict_relevance_movie_slugs: str = "nguoi-duoc-chon,cong-tru-nhan-chia"
+    # 26/11/2026 thêm 8 phim tên thông dụng (đo trên 3.000 bài luật nâng thành "related": tiết mục văn nghệ "Nhất quỷ nhì ma",
+    # bài 2/9 "Tuyên ngôn độc lập", clip bida, phim bộ Trung Quốc "Nữ Binh Phong Hỏa", gameshow có Trấn Thành cho phim EM...).
+    strict_relevance_movie_slugs: str = (
+        "nguoi-duoc-chon,cong-tru-nhan-chia,nhat-quy-nhi-ma,em,tuyen-ngon-oc-lap,cao-thu-bi-a,nu-binh,vien-dan-cuoi-cung,"
+        "huyet-thong,lai-chi-vao-tim-em"
+    )
     # Phim có tên là cụm từ thông dụng ("cộng, trừ, nhân, chia", "người mẹ xấu xa"): bài "uncertain" KHÔNG được nâng thành
     # liên quan chỉ vì có đủ tên phim (resolve_relevance, quy tắc full_title - 2026-10-16). Khác strict: không đụng bài
     # bộ phân loại đã gán "related".

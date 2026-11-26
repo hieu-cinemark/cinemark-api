@@ -300,7 +300,10 @@ class CommentRepository:
         `sentiment` là nhãn do AI phân loại ("positive"/"negative"/"neutral") từ
         app.ai.tasks.sentiment.classify_comments() (AI), đã được chỗ gọi xác định trước
         khi gọi hàm này - None nghĩa là hoặc chưa phân loại (message quá ngắn) hoặc lời gọi
-        AI thất bại, và chỉ để cột là NULL thay vì chặn việc upsert."""
+        AI thất bại, và chỉ để cột là NULL thay vì chặn việc upsert.
+
+        Không lưu link ảnh đại diện người bình luận (26/11/2026): cột author_profile_picture tốn ~0,6 GB trên D1 và
+        báo cáo không dùng; cột giữ lại (luôn NULL) để API đọc không đổi."""
         if not _configured():
             return False
 
@@ -322,7 +325,6 @@ class CommentRepository:
             "author_name": draft.get("author_name"),
             "author_id": draft.get("author_id"),
             "author_url": draft.get("author_url"),
-            "author_profile_picture": draft.get("author_profile_picture"),
             "reactions_count": draft.get("reactions_count") or 0,
             "replies_count": draft.get("replies_count") or 0,
             "posted_at": draft.get("posted_at"),

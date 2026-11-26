@@ -74,7 +74,8 @@ async def _relabel(
     if movie is None:
         return None
     has_keyword = contains_keyword(row["content"], row["keyword"])
-    strict = movie.get("slug") in settings.strict_relevance_movies
+    # Cùng định nghĩa "chặt" với ingest (kể cả phim chỉ chặt trên YouTube) - trước 26/11/2026 job này bỏ qua danh sách YouTube.
+    strict = settings.is_strict_movie(movie.get("slug"), row["platform"])
     full_title_rule = movie.get("slug") not in settings.ambiguous_title_movies
     # Luật trước: tín hiệu phim rõ thì kết luận luôn (confidence 1.0 = luật), không gọi AI - chỉ ca khó tới Bee.
     rule_relevant, _, context = resolve_relevance(
@@ -85,6 +86,7 @@ async def _relabel(
         strict=strict,
         full_title_rule=full_title_rule,
         posted_at=row.get("posted_at"),
+        platform=row["platform"],
     )
     if rule_relevant is True:
         if not dry_run:
@@ -116,6 +118,7 @@ async def _relabel(
             strict=strict,
             full_title_rule=full_title_rule,
             posted_at=row.get("posted_at"),
+            platform=row["platform"],
         )
     keyword_match = int(ai_relevant if ai_relevant is not None else has_keyword)
     if not dry_run:

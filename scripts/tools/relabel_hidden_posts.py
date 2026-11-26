@@ -65,16 +65,17 @@ async def load_movies() -> dict[str, dict]:
     return movies
 
 
-def lift_reason(content: str | None, movie: dict, posted_at: object = None) -> str | None:
+def lift_reason(content: str | None, movie: dict, posted_at: object = None, platform: str | None = None) -> str | None:
     slug = movie.get("slug")
     relevant, _, context = resolve_relevance(
         "uncertain",
         content,
         movie,
         has_keyword=False,
-        strict=slug in settings.strict_relevance_movies,
+        strict=settings.is_strict_movie(slug, platform),
         full_title_rule=slug not in settings.ambiguous_title_movies,
         posted_at=posted_at,
+        platform=platform,
     )
     return context if relevant else None
 
@@ -117,7 +118,7 @@ async def run(since: str, dry_run: bool, samples: int, allowed: set[str], only: 
             movie = movies.get(row["movie_id"])
             if movie is None:
                 continue
-            reason = lift_reason(row["content"], movie, row["posted_at"])
+            reason = lift_reason(row["content"], movie, row["posted_at"], row["platform"])
             if not reason or reason not in allowed:
                 continue
             lift.append(row["id"])

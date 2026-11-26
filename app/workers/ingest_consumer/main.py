@@ -452,6 +452,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
         strict=strict,
         full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
         posted_at=draft.get("posted_at"),
+        platform=platform,
     )
     verdict = (
         await classify_post_relevance(
@@ -529,6 +530,7 @@ async def handle_post(payload: dict[str, Any]) -> None:
             confidence=relevance_confidence,
             full_title_rule=movie.get("slug") not in settings.ambiguous_title_movies,
             posted_at=draft.get("posted_at"),
+            platform=platform,
         )
     no_film_context = ai_relevant is False
     # Sắp lưu ẩn dưới phim A vì thiếu tín hiệu phim A: bài nêu phim khác đang theo dõi thì chuyển sang phim đó.

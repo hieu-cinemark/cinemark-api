@@ -358,6 +358,34 @@ def mentions_short_title(content: str | None, movie: dict | None, posted_at: obj
     return any(contains_phrase(text, name) or squash(name) in tags for name in short_title_names(movie.get("title")))
 
 
+# 26/11/2026 - video YouTube chỉ trùng tên phim: phim bộ chia tập ("Nữ Binh Phong Hỏa - Tập 12", anime "[Việt sub]"), truyện
+# audio, nhạc chế/remix/live stage, tiết mục văn nghệ trường. Không chặn "Provided to YouTube"/"Official MV": bài hát mang tên phim
+# thường là nhạc phim. Đo trên 3.000 bài luật đã nâng thành
+# "related": đây là phần lớn rác của các phim tên thông dụng (Nhất Quỷ Nhì Ma, Viên Đạn Cuối Cùng, Huyết Thống, EM...).
+# Nhạc phim (OST) VẪN tính là bài phim (người vận hành, 26/11) - bài nhắc OST / nhạc phim / ra rạp thì không bị chặn.
+_YOUTUBE_NOISE_RE = re.compile(
+    r"\btap \d{1,3}\b|\bviet ?sub\b|\blive ?stage\b|\bremix\b|"
+    r"\baudio\b|\bdoc truyen\b|\breview truyen\b|\bnghe truyen\b|\bchuong \d+|\btiet muc\b|\bvan nghe\b|"
+    r"\bhoi thi\b|\bflashmob\b|\bdan vu\b|\bnhac che\b|\bthe masked singer\b|\bca si mat na\b|\btron bo\b"
+)
+_YOUTUBE_FILM_HINT_RE = re.compile(
+    r"\bost\b|\bnhac phim\b|\bsoundtrack\b|\btheme song\b|\bmotion picture\b|\bhau truong\b|\bbts\b|\bbehind the scenes?\b|\bra mat phim\b|\btham do\b|\bpremiere\b|\bshowcase\b|\bcinetour\b|\bphim dien anh\b|\bchieu rap\b|\bra rap\b|\bkhoi chieu\b|\bcong chieu\b|\btrailer\b|\bteaser\b"
+)
+
+
+def youtube_noise_reason(content: str | None, platform: str | None) -> str | None:
+    """Video YouTube có dấu hiệu phim bộ/nhạc/truyện/văn nghệ và không nhắc gì tới phim chiếu rạp hay OST: cụm khớp, hoặc
+    None. Chỉ YouTube - ở TikTok/Threads các từ này (remix, audio...) hay đi cùng bài thật về phim."""
+    if platform != "youtube":
+        return None
+    # Chỉ xét phần chữ: video thật về phim hay gắn hashtag rác (#remix #music #audio).
+    text = normalize_title(re.sub(r"#\S+", " ", content or ""))
+    if not text or _YOUTUBE_FILM_HINT_RE.search(text):
+        return None
+    match = _YOUTUBE_NOISE_RE.search(text)
+    return match.group(0) if match else None
+
+
 def resolve_relevance(
     label: str | None,
     content: str | None,
@@ -368,6 +396,7 @@ def resolve_relevance(
     confidence: float | None = None,
     full_title_rule: bool = True,
     posted_at: object = None,
+    platform: str | None = None,
 ) -> tuple[bool | None, str | None, str | None]:
     """Nhãn AI (related/uncertain hoặc None khi AI không kết luận - "not_related" do bên gọi xử lý trước)
     -> (ai_relevant, relevance_label, context). Dùng chung cho ingest consumer và
@@ -380,6 +409,8 @@ def resolve_relevance(
     phim. ai_relevant None = chỉ kiểm tra từ khoá quyết định.
 
     """
+    if youtube_noise_reason(content, platform):
+        return False, "uncertain", None
     if label == "related":
         if strict and not has_film_context(content, movie):
             return False, "uncertain", None
