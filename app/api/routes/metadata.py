@@ -3,6 +3,7 @@
 - Wikidata: phim theo quốc gia + năm (CC0). Phim Việt đang chiếu gần như chưa có trên Wikidata; phim Mỹ / Hàn / Nhật đầy đủ hơn.
 - TMDB: phim đang chiếu / sắp chiếu tại VN, phim theo quốc gia, tìm kiếm, chi tiết + trailer (token ở cinemark-config-db).
 - Trakt: phim trending, phòng vé Mỹ cuối tuần, lịch phát hành (key ở cinemark-config-db).
+- OMDb: điểm IMDb / Rotten Tomatoes / Metacritic theo IMDb ID (key ở cinemark-config-db, giữ trong Redis 24 giờ).
 """
 
 from datetime import date, datetime
@@ -11,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
-from app.clients import tmdb, trakt, wikidata
+from app.clients import omdb, tmdb, trakt, wikidata
 from app.core.errors import NotFoundError
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -208,7 +209,21 @@ async def trakt_movie(movie_id: str) -> dict[str, Any]:
     return _trakt(await trakt.movie(movie_id))
 
 
+# --- OMDb ------------------------------------------------------------------------------------------------------------
+
+
+@router.get("/omdb/{imdb_id}")
+async def omdb_ratings(imdb_id: str) -> dict[str, Any]:
+    """Điểm IMDb (kèm số phiếu), Rotten Tomatoes, Metacritic của một phim theo IMDb ID (tt...)."""
+    return {"source": "omdb", "attribution": omdb.ATTRIBUTION, "data": await omdb.ratings(imdb_id)}
+
+
 @router.get("/sources")
 async def sources() -> dict[str, Any]:
     """Nguồn nào đang dùng được (giao diện báo nguồn chưa cấu hình)."""
-    return {"wikidata": True, "tmdb": await tmdb.configured(), "trakt": await trakt.configured()}
+    return {
+        "wikidata": True,
+        "tmdb": await tmdb.configured(),
+        "trakt": await trakt.configured(),
+        "omdb": await omdb.configured(),
+    }

@@ -18,6 +18,8 @@ MESSAGES: dict[str, str] = {
     "app_started": "API đã khởi động",
     "external_api_key_read_failed": "Không đọc được key API nguồn ngoài, sẽ thử lại lần sau",
     "json_decode_skipped": "Bỏ qua một bản ghi JSON hỏng",
+    "omdb_cache_read_failed": "OMDb: không đọc được bộ nhớ đệm điểm phim",
+    "omdb_cache_write_failed": "OMDb: không ghi được bộ nhớ đệm điểm phim",
     "request_failed": "Request thất bại",
     "request_handled": "Đã xử lý request",
     "request_validation_failed": "Request sai định dạng, không xử lý được",
