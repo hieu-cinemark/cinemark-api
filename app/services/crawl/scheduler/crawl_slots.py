@@ -174,19 +174,26 @@ async def trigger_platform(
 
 
 async def ensure_youtube_keywords() -> int:
-    """YouTube (13/11/2026): mỗi phim đang theo dõi chưa có từ khoá YouTube nào được tạo một từ khoá = tên phim. Từ khoá
-    người vận hành đã tắt thì không tạo lại (phim đó vẫn có dòng). Trả số từ khoá mới."""
+    """Tạo từ khoá YouTube còn thiếu. Trả số từ khoá mới.
+    - Tên phim (13/11/2026): mỗi phim đang theo dõi chưa có từ khoá chữ nào được tạo một từ khoá = tên phim. Từ khoá người
+      vận hành đã tắt thì không tạo lại (phim đó vẫn có dòng).
+    - Hashtag (26/11/2026): mỗi hashtag YouTube xác nhận có từ 100 video (bảng youtube_hashtag_stats, chụp hằng ngày) được
+      tạo một từ khoá "#..." - spider-hub cào theo trang hashtag. Đã có (kể cả đang tắt, khác chữ hoa) thì thôi."""
     from sqlalchemy import select
 
+    from app.repositories.d1 import youtube_hashtag_stats
     from app.repositories.d1.keywords import get_or_create_keyword
     from app.repositories.d1.sql import d1_exec
     from app.repositories.d1.tables import keywords as keywords_table
     from app.repositories.d1.tables import movies as movies_table
 
-    has_youtube = select(keywords_table.c.movie_id).where(keywords_table.c.platform == "youtube")
+    # Chỉ từ khoá chữ mới tính là "phim đã có từ khoá": từ khoá hashtag không được làm phim mất từ khoá tên.
+    has_title_keyword = select(keywords_table.c.movie_id).where(
+        keywords_table.c.platform == "youtube", keywords_table.c.keyword.not_like("#%")
+    )
     rows = await d1_exec(
         select(movies_table.c.id, movies_table.c.title).where(
-            movies_table.c.enabled == 1, movies_table.c.id.not_in(has_youtube)
+            movies_table.c.enabled == 1, movies_table.c.id.not_in(has_title_keyword)
         ),
         quiet=True,
     )
@@ -194,6 +201,24 @@ async def ensure_youtube_keywords() -> int:
     for row in rows or []:
         if row.get("title") and await get_or_create_keyword(row["id"], "youtube", str(row["title"]).strip()):
             created += 1
+
+    known = await youtube_hashtag_stats.known_hashtags()
+    if known:
+        existing_rows = await d1_exec(
+            select(keywords_table.c.movie_id, keywords_table.c.keyword).where(
+                keywords_table.c.platform == "youtube", keywords_table.c.keyword.like("#%")
+            ),
+            quiet=True,
+        )
+        existing = {(row["movie_id"], str(row["keyword"]).casefold()) for row in existing_rows or []}
+        for row in known:
+            keyword = f"#{row['hashtag']}"
+            if (row["movie_id"], keyword.casefold()) in existing:
+                continue
+            # get_or_create_keyword trả None khi phim đã ngừng theo dõi.
+            if await get_or_create_keyword(row["movie_id"], "youtube", keyword):
+                existing.add((row["movie_id"], keyword.casefold()))
+                created += 1
     if created:
         logger.info("youtube_keywords_created", created=created)
     return created

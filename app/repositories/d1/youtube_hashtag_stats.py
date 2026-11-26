@@ -5,7 +5,7 @@ Producer là cinemark-api (job hằng ngày, app/services/youtube_hashtag_stats.
 Social Topic. Hashtag là các từ khoá TikTok dạng "#..." của phim (YouTube không có danh sách hashtag riêng), nên keyword_id
 trỏ tới từ khoá TikTok đó. Mỗi (ngày, từ khoá) một dòng; chạy lại trong ngày thì ghi đè."""
 
-from sqlalchemy import Column, Index, Integer, Table, Text
+from sqlalchemy import Column, Index, Integer, Table, Text, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.schema import CreateIndex, CreateTable
 
@@ -63,3 +63,10 @@ async def upsert_snapshot(
             },
         )
     )
+
+
+async def known_hashtags() -> list[dict]:
+    """[{movie_id, hashtag}] - mọi hashtag YouTube từng báo số video thật (từ 100 video trở lên), không lặp."""
+    await ensure_table()
+    stmt = select(youtube_hashtag_stats.c.movie_id, youtube_hashtag_stats.c.hashtag).distinct()
+    return await d1_exec(stmt, quiet=True) or []
