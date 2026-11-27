@@ -8,7 +8,8 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.services.crawl.scheduler.core import POLL_INTERVAL_SECONDS, TIMEZONE, claim, spawn
 from app.services.ops import health_checks, ops_alerts
-from app.services.stats import comment_rollup
+from app.services.stats.rollup import comment_rollup, helper, post_rollup
+from app.services.stats.rollup.constant import NIGHTLY_HOUR
 from app.services.stats.stats_reconcile import reconcile_recent_days
 
 logger = get_logger(__name__)
@@ -58,10 +59,23 @@ async def stats_reconcile_tick() -> None:
     # Mỗi câu tổng hợp có thể tới vài chục giây khi D1 bận - chạy nền, không giữ vòng lặp lịch.
     spawn(reconcile_recent_days(2 if slot == _STATS_RECONCILE_FULL_SLOT else 1))
     # Bảng tổng hợp bình luận theo phim x ngày (Social Topic / Social Buzz) cùng nhịp; lượt đêm tính lại NIGHTLY_DAYS ngày.
-    if now.hour == comment_rollup.NIGHTLY_HOUR and slot == 3:
-        spawn(comment_rollup.refresh_nightly())
+    if now.hour == NIGHTLY_HOUR and slot == 3:
+        spawn(helper.refresh_nightly(comment_rollup.rebuild_days))
     else:
-        spawn(comment_rollup.refresh_recent(include_yesterday=slot == _STATS_RECONCILE_FULL_SLOT))
+        spawn(helper.refresh_recent(comment_rollup.rebuild_days, include_yesterday=slot == _STATS_RECONCILE_FULL_SLOT))
+
+
+async def post_rollup_tick() -> None:
+    """Bảng tổng hợp bài theo ngày (post_rollup) mỗi 10 phút, lệch 5 phút với lượt đối soát/bảng bình luận ở trên để hai lượt
+    không cùng đọc D1 một lúc. Tắt khi settings.post_rollup_mode = "off"."""
+    if settings.post_rollup_mode not in post_rollup.MODES:
+        return
+    now = datetime.now(TIMEZONE)
+    if now.minute % _STATS_RECONCILE_EVERY_MINUTES < 5:
+        return
+    slot = now.minute // _STATS_RECONCILE_EVERY_MINUTES
+    if await claim(f"post_rollup:{now:%Y-%m-%dT%H}:{slot}", 2 * 3600):
+        spawn(_guarded("post_rollup", lambda: post_rollup.process(settings.post_rollup_mode)))
 
 
 async def _run_report_schedule() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PlatformStat(BaseModel):
@@ -132,3 +132,21 @@ class CommentPage(BaseModel):
 
     items: list[CommentWithPost]
     nextCursor: str | None = None
+
+
+class MovieRangeTotals(BaseModel):
+    """Tổng của một khoảng ngày (bảng tổng hợp theo ngày + prefix sum - app/services/stats/rollup/movie_series.py)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_day: str = Field(alias="from")
+    to_day: str = Field(alias="to")
+    # False: còn ngày đăng trong khoảng chưa có trong bảng tổng hợp bài - số bài có thể thiếu.
+    complete: bool
+    posts: dict[str, int]
+    comments: dict[str, int]
+
+
+class MovieTotals(MovieRangeTotals):
+    movie_id: str
+    previous: MovieRangeTotals | None = None

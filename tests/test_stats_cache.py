@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 
-from app.api.routes import stats as stats_routes
+from app.services.stats import stats_cache as stats_routes
 from app.services.stats import stats_reconcile
 
 
@@ -33,7 +33,7 @@ def test_fresh_cache_skips_d1(monkeypatch):
         calls.append(1)
         return [{"n": 2}]
 
-    assert asyncio.run(stats_routes._cached_rows("x", compute)) == [{"n": 1}]
+    assert asyncio.run(stats_routes.cached_rows("x", compute)) == [{"n": 1}]
     assert calls == []
 
 
@@ -49,8 +49,8 @@ def test_slow_or_empty_d1_serves_last_good_rows(monkeypatch):
     async def empty():
         return []
 
-    assert asyncio.run(stats_routes._cached_rows("x", slow)) == [{"n": 1}]
-    assert asyncio.run(stats_routes._cached_rows("x", empty)) == [{"n": 1}]
+    assert asyncio.run(stats_routes.cached_rows("x", slow)) == [{"n": 1}]
+    assert asyncio.run(stats_routes.cached_rows("x", empty)) == [{"n": 1}]
 
 
 def test_fresh_result_is_cached(monkeypatch):
@@ -60,7 +60,7 @@ def test_fresh_result_is_cached(monkeypatch):
     async def compute():
         return [{"n": 3}]
 
-    assert asyncio.run(stats_routes._cached_rows("x", compute)) == [{"n": 3}]
+    assert asyncio.run(stats_routes.cached_rows("x", compute)) == [{"n": 3}]
     assert json.loads(redis.kv[stats_routes._CACHE_KEY.format(name="x")])["rows"] == [{"n": 3}]
 
 

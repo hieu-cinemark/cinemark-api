@@ -212,6 +212,9 @@ class Settings(BaseSettings):
     omar_requests_per_hour: int = 0
     omar_requests_per_minute: int = 10
     omar_daily_reserve: int = 50
+    # Bảng tổng hợp bài theo ngày (app/services/stats/rollup/post_rollup.py, chuyển từ Worker 27/11/2026): "off" | "shadow" (ghi
+    # bảng _shadow để đối chiếu với bảng của Worker) | "live" (ghi bảng thật - chỉ bật khi đã gỡ processPostRollup khỏi worker.ts).
+    post_rollup_mode: str = "off"
     # Số request Omar chạy song song (mỗi worker một hashtag); nhịp bắt đầu vẫn rải theo giới hạn mỗi phút của gói.
     omar_concurrency: int = 8
     # Video Omar đã gửi lên raw_posts trong chừng này giờ thì không gửi lại (0 = luôn gửi) - xem omar_seen.claim_unseen.

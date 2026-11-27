@@ -85,6 +85,7 @@ TICKS: list[tuple[str, Callable[[], Awaitable[None]], bool]] = [
     ("report_schedule", ops.report_schedule_tick, False),
     ("news", _news_tick, False),
     ("stats_reconcile", ops.stats_reconcile_tick, False),
+    ("post_rollup", ops.post_rollup_tick, False),
     ("deep_crawl", _deep_crawl_tick, False),
     ("comment_hourly", attack.comment_hourly_tick, False),
     ("attack_detect", attack.attack_detect_tick, False),

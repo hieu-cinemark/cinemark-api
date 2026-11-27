@@ -16,7 +16,7 @@ chỉ bình luận gốc có chữ; grp = 'total' / 'icon' (bình luận gắn n
 chủ đề) / nhãn chủ đề như 'dien_vien:+'. after_premiere = bài đăng từ ngày chiếu sớm (hoặc ngày khởi chiếu) của phim trở đi,
 cho giai đoạn Chiếu sớm / Chính thức. Đếm trực tiếp trên bình luận mất tới 107 giây với khoảng ngày rộng.
 
-Tính lại theo NGUYÊN NGÀY (app/services/stats/comment_rollup.py): upsert số mới của ngày rồi xoá các dòng của ngày đó
+Tính lại theo NGUYÊN NGÀY (app/services/stats/rollup/comment_rollup.py): upsert số mới của ngày rồi xoá các dòng của ngày đó
 không còn xuất hiện (đánh dấu bằng `run`) - không có lúc nào ngày đó trống. Đọc một ngày đi qua index comments(posted_at)
 nên chỉ chạm bình luận của đúng ngày đó.
 """

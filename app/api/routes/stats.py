@@ -6,15 +6,12 @@ vì GROUP BY trên toàn bảng `posts` / `comments` của D1."""
 
 from __future__ import annotations
 
-import asyncio
-import json
-import time
-from collections.abc import Awaitable, Callable
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Query
 
-from app.clients.redis import REDIS_KEY_PREFIX, get_redis_client
+from app.core.errors import ValidationError
 from app.core.logging import get_logger
 from app.repositories.d1 import comment_repo, post_repo
 from app.repositories.d1.overview import (
@@ -31,63 +28,30 @@ from app.schemas.stats import (
     HourlyPoint,
     IngestFunnel,
     KeywordVolume,
+    MovieTotals,
     PlatformStat,
     Post,
     PostPage,
     TimeseriesPoint,
 )
+from app.services.stats.rollup.movie_series import movie_totals
+from app.services.stats.stats_cache import cached_rows
 from app.services.stats.stats_hourly import get_hourly_counts, get_ingest_funnel
 
 router = APIRouter(prefix="/stats", tags=["stats"])
 logger = get_logger(__name__)
 
-# Số liệu tổng hợp cho trang Tổng quan: D1 quá tải ("7429 overloaded") làm truy vấn mất 15-20 giây kèm thử
-# lại, dashboard hết chờ và hiện 0. Giờ: kết quả còn mới (< _FRESH_SECONDS) trả thẳng từ Redis - nhiều tab/người cùng
-# mở không nhân số truy vấn D1 lên; truy vấn D1 quá _QUERY_TIMEOUT_SECONDS hoặc lỗi/rỗng thì trả số gần nhất đã có
-# (giữ tới _STALE_SECONDS) thay vì 0.
-_FRESH_SECONDS = 60
-_STALE_SECONDS = 2 * 86400
-_QUERY_TIMEOUT_SECONDS = 8.0
-_CACHE_KEY = f"{REDIS_KEY_PREFIX}stats_cache:{{name}}"
-
-
-async def _cached_rows(name: str, compute: Callable[[], Awaitable[list[dict[str, Any]]]]) -> list[dict[str, Any]]:
-    redis = get_redis_client()
-    key = _CACHE_KEY.format(name=name)
-    cached: dict[str, Any] | None = None
-    try:
-        raw = await redis.get(key)
-        cached = json.loads(raw) if raw else None
-    except Exception as exc:  # noqa: BLE001 - Redis trục trặc: vẫn đọc D1 như cũ
-        logger.warning("stats_cache_read_failed", name=name, error=exc)
-    if cached and time.time() - float(cached.get("at") or 0) < _FRESH_SECONDS:
-        return cached["rows"]
-    try:
-        rows = await asyncio.wait_for(compute(), timeout=_QUERY_TIMEOUT_SECONDS)
-    except Exception as exc:  # noqa: BLE001 - timeout / D1 lỗi: rơi về số gần nhất
-        logger.warning("stats_query_failed", name=name, error=exc)
-        rows = None
-    if rows:
-        try:
-            await redis.set(key, json.dumps({"at": time.time(), "rows": rows}, default=str), ex=_STALE_SECONDS)
-        except Exception as exc:  # noqa: BLE001 - không lưu được cache thì vẫn trả kết quả vừa đọc
-            logger.warning("stats_cache_write_failed", name=name, error=exc)
-        return rows
-    if cached:
-        logger.info("stats_served_stale", name=name, age_seconds=round(time.time() - float(cached.get("at") or 0)))
-        return cached["rows"]
-    return rows or []
 
 
 @router.get("/platforms", response_model=list[PlatformStat])
 async def platform_stats() -> list[PlatformStat]:
-    rows = await _cached_rows("platforms", get_post_counts_by_platform)
+    rows = await cached_rows("platforms", get_post_counts_by_platform)
     return [PlatformStat(**row) for row in rows]
 
 
 @router.get("/timeseries", response_model=list[TimeseriesPoint])
 async def timeseries_stats(days: int = Query(default=14, ge=1, le=90)) -> list[TimeseriesPoint]:
-    rows = await _cached_rows(f"timeseries:{days}", lambda: get_post_timeseries(days))
+    rows = await cached_rows(f"timeseries:{days}", lambda: get_post_timeseries(days))
     return [TimeseriesPoint(**row) for row in rows]
 
 
@@ -106,20 +70,40 @@ async def ingest_funnel(hours: int = Query(default=24, ge=1, le=72)) -> list[Ing
 
 @router.get("/comment-counts", response_model=list[PlatformStat])
 async def comment_count_stats() -> list[PlatformStat]:
-    rows = await _cached_rows("comment_counts", get_comment_counts_by_platform)
+    rows = await cached_rows("comment_counts", get_comment_counts_by_platform)
     return [PlatformStat(**row) for row in rows]
 
 
 @router.get("/comment-timeseries", response_model=list[TimeseriesPoint])
 async def comment_timeseries_stats(days: int = Query(default=14, ge=1, le=90)) -> list[TimeseriesPoint]:
-    rows = await _cached_rows(f"comment_timeseries:{days}", lambda: get_comment_timeseries(days))
+    rows = await cached_rows(f"comment_timeseries:{days}", lambda: get_comment_timeseries(days))
     return [TimeseriesPoint(**row) for row in rows]
 
 
 @router.get("/keywords", response_model=list[KeywordVolume])
 async def keyword_volume_stats(platform: str | None = Query(default=None)) -> list[KeywordVolume]:
-    rows = await _cached_rows(f"keywords:{platform or 'all'}", lambda: get_keyword_volume(platform))
+    rows = await cached_rows(f"keywords:{platform or 'all'}", lambda: get_keyword_volume(platform))
     return [KeywordVolume(**row) for row in rows]
+
+
+_DAY = r"^\d{4}-\d{2}-\d{2}$"
+_MAX_RANGE_DAYS = 730
+
+
+@router.get("/movies/{movie_id}/totals", response_model=MovieTotals, response_model_by_alias=True)
+async def movie_range_totals(
+    movie_id: str,
+    from_day: str = Query(alias="from", pattern=_DAY),
+    to_day: str = Query(alias="to", pattern=_DAY),
+    previous: bool = True,
+) -> dict[str, Any]:
+    """Tổng bài + bình luận của một phim trong khoảng ngày VN [from, to] và khoảng liền trước cùng độ dài - prefix sum trên bảng
+    tổng hợp theo ngày, đổi khoảng ngày không đọc lại D1."""
+    if from_day > to_day:
+        raise ValidationError("`from` must not be after `to`")
+    if (date.fromisoformat(to_day) - date.fromisoformat(from_day)).days >= _MAX_RANGE_DAYS:
+        raise ValidationError(f"Range must be shorter than {_MAX_RANGE_DAYS} days")
+    return await movie_totals(movie_id, from_day, to_day, with_previous=previous)
 
 
 @router.get("/posts", response_model=PostPage)
