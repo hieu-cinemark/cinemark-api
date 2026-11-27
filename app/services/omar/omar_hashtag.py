@@ -82,7 +82,10 @@ async def _crawl_hashtag_now(keyword: dict[str, Any]) -> None:
             await count_cooccur(str(keyword["keyword"]), kw_id, mapped)
             await publish_videos(mapped, kw_id, stats)
             entry["pages"] = int(entry.get("pages") or 0) + 1
-            if following is None:
+            # Trang rỗng (0 video) coi như hết, kể cả khi Omar vẫn báo has_more/next_cursor - không có bước thử lại tạm
+            # thời ở đây (khác run_omar_round trong omar_tiktok.py, có _handle_empty_page) nên lượt cào riêng này sẽ
+            # LẶP MÃI nếu cứ đi theo next_cursor của một trang rỗng; cào lại từ đầu bắt lại được bất kỳ video nào bị bỏ sót.
+            if following is None or not videos:
                 entry.update(cursor=None, done_at=datetime.now(tz=UTC).isoformat())
                 break
             cursor = following
