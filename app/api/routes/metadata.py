@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Query
 
-from app.clients import omdb, tmdb, trakt, wikidata
+from app.clients import omdb, tmdb, trakt, trakt_detail, wikidata
 from app.core.errors import NotFoundError
 
 VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
@@ -207,6 +207,11 @@ async def trakt_search(
 @router.get("/trakt/movie/{movie_id}")
 async def trakt_movie(movie_id: str) -> dict[str, Any]:
     return _trakt(await trakt.movie(movie_id))
+
+
+@router.get("/trakt/movie/{movie_id}/detail")
+async def trakt_movie_detail(movie_id: str) -> dict[str, Any]:
+    return _trakt(await trakt_detail.detail(movie_id))
 
 
 # --- OMDb ------------------------------------------------------------------------------------------------------------
