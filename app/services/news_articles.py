@@ -103,6 +103,8 @@ async def enrich(articles: list[dict]) -> None:
     ) as client:
 
         async def one(article):
+            if article.get("extraction_status") == "extracted":  # đã trích khi lọc theo phim, không tải lại
+                return
             article["extraction_status"] = "snippet_only"
             async with semaphore:
                 try:

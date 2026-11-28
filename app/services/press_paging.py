@@ -11,7 +11,7 @@ from app.core.errors import AppError, NotFoundError, UpstreamError
 from app.core.logging import get_logger
 from app.repositories.d1 import press_reviews
 from app.schemas.research import GoogleNewsRequest
-from app.services import google_news, press_groups
+from app.services import google_news, press_groups, press_relevance
 
 logger = get_logger(__name__)
 
@@ -85,6 +85,7 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
     if not snapshot:
         raise NotFoundError("No press edition available to load more from")
     data = snapshot["data"]
+    movie_title = str((data.get("analysis_input") or {}).get("movieTitle") or "")
     web_base = data.get("search_parameters") or {}
     news_base = data.get("news_search_parameters") or {}
     if not web_base.get("q") and not news_base.get("q"):
@@ -113,12 +114,14 @@ async def more_pages(movie_id: str, page: int, max_pages: int = MAX_PAGES, sourc
         )
         web_failed = web_data is None
         web_data = web_data or {}
-        organic, new_organic, next_index = _merge(
-            organic, press_groups.flatten(web_data.get("organic_results", [])), next_index
-        )
-        press, new_press, next_index = _merge(
-            press, press_groups.flatten(news_data.get("news_results", [])), next_index
-        )
+        web_items = press_groups.flatten(web_data.get("organic_results", []))
+        news_items = press_groups.flatten(news_data.get("news_results", []))
+        if movie_title:  # trang sau cũng phải đúng phim
+            since = data.get("relevance_since")
+            web_items = await press_relevance.keep_relevant(movie_title, web_items, since=since)
+            news_items = await press_relevance.keep_relevant(movie_title, news_items, since=since)
+        organic, new_organic, next_index = _merge(organic, web_items, next_index)
+        press, new_press, next_index = _merge(press, news_items, next_index)
         added_organic.extend(new_organic)
         added_press.extend(new_press)
         pages_read += 1

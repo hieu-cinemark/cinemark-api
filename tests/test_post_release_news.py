@@ -61,7 +61,7 @@ def setup(monkeypatch):
         return_value={
             "organic_results": [
                 {
-                    "title": "Review",
+                    "title": "Review Út Lan 2",
                     "link": "https://example.com",
                     "snippet": "Kịch bản tốt",
                     "source": "Báo",
@@ -95,7 +95,7 @@ async def test_unreleased_or_unknown_date_cannot_fetch_or_read(setup, value):
 
 async def test_reuses_news_for_72_hours_then_invalidates_analysis(setup):
     first = await news.refresh_news("film")
-    assert setup[3].call_args.args[0].q == "phim Út Lan 2 đánh giá"
+    assert setup[3].call_args.args[0].q == 'phim "Út Lan 2" đánh giá'
     setup[4].execute(
         "UPDATE movie_press_reviews SET analysis_text = 'Khen [1]', analysis_at = '2026-11-02', analysis_model = 'bee-model'"
     )
@@ -187,11 +187,12 @@ async def test_tick_only_released_movies_and_not_more_than_once_per_hour(setup, 
 
 
 async def test_two_engines_are_merged_and_duplicates_share_one_source(setup):
-    setup[3].return_value = {"organic_results": [{"title": "One", "link": "https://example.com/one"}]}
+    setup[3].return_value = {"organic_results": [{"title": "Út Lan 2: One", "link": "https://example.com/one"}]}
     news.google_news.search.return_value = {
         "news_results": [
-            {"title": "Duplicate", "link": "https://example.com/one#section"},
-            {"title": "Two", "link": "https://example.com/two"},
+            {"title": "Út Lan 2: Duplicate", "link": "https://example.com/one#section"},
+            {"title": "Review phim khác", "link": "https://example.com/other"},
+            {"title": "Út Lan 2: Two", "link": "https://example.com/two"},
         ]
     }
     result = await news.refresh_news("film")
@@ -199,7 +200,7 @@ async def test_two_engines_are_merged_and_duplicates_share_one_source(setup):
     assert len(result["data"]["organic_results"]) == 1
     assert len(result["data"]["news_results"]) == 2
     assert setup[3].await_count == news.google_news.search.await_count == 1
-    assert news.google_news.search.call_args.args[0].q == "phim Út Lan 2 review"
+    assert news.google_news.search.call_args.args[0].q == 'phim "Út Lan 2" review'
 
 
 async def test_force_bypasses_snapshot_and_provider_cache(setup):

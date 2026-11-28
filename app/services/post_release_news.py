@@ -16,10 +16,12 @@ from app.repositories.d1 import press_reviews
 from app.repositories.d1.sql import d1_exec
 from app.repositories.d1.tables import movies
 from app.schemas.research import GoogleNewsRequest
-from app.services import google_news, news_articles, press_groups
+from app.services import google_news, news_articles, press_groups, press_relevance
 
 logger = get_logger(__name__)
 INTERVAL = timedelta(days=3)
+MIN_NEWS_ON_TOPIC = 5
+EXTRA_NEWS_PAGES = 3
 PREFIX = REDIS_KEY_PREFIX + "post_release_news:v2:"
 UNLOCK = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
 
@@ -81,7 +83,7 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         if (
             not force
             and old
-            and old["data"].get("groups_version") == 3
+            and old["data"].get("groups_version") == press_groups.GROUPS_VERSION
             and datetime.fromisoformat(old["nextRefreshAt"]) > now()
         ):
             if old["data"].get("extraction_version") != 1:
@@ -104,8 +106,9 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
             raise UpstreamError("The previous news fetch did not succeed; try again later")
         # Giãn retry khi quota/mạng lỗi, không gọi lại ở mỗi nhịp scheduler.
         await cache.set(PREFIX + movie_id + ":retry", "1", ex=3600)
-        query = f"phim {movie['title']} đánh giá"
-        news_query = f"phim {movie['title']} review"
+        name = press_relevance.search_title(movie["title"])
+        query = f'phim "{name}" đánh giá'
+        news_query = f'phim "{name}" review'
         # Chưa cấu hình nguồn kết quả web (SearXNG / key SerpApi) thì chỉ có phần tin báo (Google News RSS).
         data, press = await asyncio.gather(
             google_news.search_web(GoogleNewsRequest(q=query, no_cache=force))
@@ -114,6 +117,9 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
             google_news.search(GoogleNewsRequest(q=news_query, no_cache=force)),
         )
         data["collection_queries"] = [query, news_query]
+        since = press_relevance.published_since(movie.get("released_at"))
+        data["relevance_since"] = since
+        await _keep_this_movie(movie["title"], news_query, data, press, since)
         press_groups.select_groups(data, press)
         await news_articles.enrich(data["analysis_sources"])
         press_groups.sync_enriched(data)
@@ -138,6 +144,30 @@ async def refresh_news(movie_id: str, *, force: bool = False) -> dict:
         raise
     finally:
         await cache.eval(UNLOCK, 1, lock, owner)
+
+
+async def _keep_this_movie(title: str, news_query: str, data: dict, press: dict, since: str | None = None) -> None:
+    """Bỏ bài về phim khác (press_relevance). Còn ít tin đúng phim thì lật thêm trang tin (RSS miễn phí) cho đủ."""
+    news_items = press_groups.flatten(press.get("news_results", []))
+    aliases = press_relevance.title_aliases(title)
+    next_start = google_news.RSS_PAGE_SIZE
+    pagination = press.get("serpapi_pagination")
+    while (
+        settings.google_news_provider == "rss"
+        and pagination
+        and next_start <= google_news.RSS_PAGE_SIZE * EXTRA_NEWS_PAGES
+        and sum(press_relevance.headline_matches(item, aliases) for item in news_items) < MIN_NEWS_ON_TOPIC
+    ):
+        page = await google_news.search(GoogleNewsRequest(q=news_query, start=next_start))
+        news_items += press_groups.flatten(page.get("news_results", []))
+        pagination = page.get("serpapi_pagination")
+        next_start += google_news.RSS_PAGE_SIZE
+    press["news_results"] = await press_relevance.keep_relevant(title, news_items, since=since)
+    data["organic_results"] = await press_relevance.keep_relevant(
+        title, press_groups.flatten(data.get("organic_results", [])), since=since
+    )
+    # top_stories của SerpApi không lọc được riêng; bỏ để không lẫn phim khác.
+    data.pop("top_stories", None)
 
 
 async def _no_web_results() -> dict:

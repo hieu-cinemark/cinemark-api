@@ -1,5 +1,8 @@
 """Giữ đầy đủ một trang mỗi nguồn; chỉ giới hạn bộ nguồn đưa vào AI."""
 
+# 4 (28/11/2026): lọc bài theo đúng phim (press_relevance) - bản tin phiên bản cũ được lấy lại ở nhịp scheduler kế tiếp.
+GROUPS_VERSION = 4
+
 
 def flatten(value, depth=0) -> list[dict]:
     if depth > 4:
@@ -42,7 +45,7 @@ def select_groups(data: dict, news_data: dict) -> list[dict]:
     data["analysis_sources"] = sorted(analysis.values(), key=lambda item: item["source_index"])
     data["news_search_metadata"] = news_data.get("search_metadata", {})
     data["news_search_parameters"] = news_data.get("search_parameters", {})
-    data["groups_version"] = 3
+    data["groups_version"] = GROUPS_VERSION
     return data["sources"]
 
 
